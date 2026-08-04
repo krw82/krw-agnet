@@ -1,7 +1,7 @@
 ---
 name: scenario_output_contract
-description: "scenario_sensitivity 최종 답변 구조. 시나리오 판단→현재 베이스라인→해석 중심 시나리오 표→바인딩 민감도→가설 파기 조건"
-when_to_use: "scenario_sensitivity 최종 한국어 답변을 작성할 때"
+description: "Use when composing the scenario_sensitivity final Korean answer. Defines the scenario judgment, baseline, interpretation table, and break conditions."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Output Contract

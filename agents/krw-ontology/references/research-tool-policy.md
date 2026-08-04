@@ -1,7 +1,7 @@
 ---
 name: research-tool-policy
-description: "도구 정책 (query_context/query/trace/chain 용도별 사용)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Tool policy. Defines query_context, query, trace, chain, and retrieve roles and usage boundaries."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # MCP Tool Policy

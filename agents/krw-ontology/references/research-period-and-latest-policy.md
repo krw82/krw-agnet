@@ -1,7 +1,7 @@
 ---
 name: research-period-and-latest-policy
-description: "기간 및 최신 정책 (10-Q current driver, CY 라벨)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Period and latest policy. Defines 10-Q as current driver over 10-K, CY labels, and inflection timing rules."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Period And Latest Policy

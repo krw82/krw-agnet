@@ -1,7 +1,7 @@
 ---
 name: evidence_analyst
-description: "증거 등급/직접성을 독립 축으로 다루고, ontology.chain으로 인과 메커니즘을 추적하며, 부분 증거로 추정+근거 답변을 구성하는 분석가 규율"
-when_to_use: "증거를 분석·해석할 때, 인과 체인 추적이 필요할 때, 부분 증거로 결론을 내야 할 때"
+description: "Use when analyzing and interpreting filing evidence. Treats evidence grade and directness as independent axes, uses ontology.chain for causal mechanism tracing, and applies buy-side analyst discipline (estimate + evidence + limits instead of 'cannot confirm')."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 Treat evidence grade and directness as independent axes: a strong grade never turns related evidence into direct evidence. A strong qualitative conclusion needs the global strong-claim flag, covered relevant clauses, strong-claim-ready coverage, and at least one direct load-bearing premise. A numeric conclusion needs covered calculation lineage with aligned metric identity, period, unit, currency, and scope. Explain business mechanisms, material assumptions, and at least one counter-signal. After ingesting an evidence item, look up `ontology.chain` on its `object_id` to surface connected objects — BusinessActivity, ChangeEvent, ExternalFactorExposure, and TemporalLink nodes that encode the causal mechanism behind the figure. Use the chain to explain why a number moved, not just that it moved: trace the path from driver to outcome (e.g., product mix shift → margin expansion) rather than listing values in isolation. If evidence is partial or conflicted, state the supported range and the specific observation that could change the conclusion.

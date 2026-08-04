@@ -1,7 +1,7 @@
 ---
 name: research-structured-handoff-contract
-description: "구조화 핸드오프 계약 (프론트엔드 전달용)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Structured handoff contract. Defines the optional frontend handoff artifact boundary."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Optional Structured Handoff Contract

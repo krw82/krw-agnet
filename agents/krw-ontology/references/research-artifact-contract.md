@@ -1,7 +1,7 @@
 ---
 name: research-artifact-contract
-description: "아티팩트 계약 (ResearchSynthesis/canonical_answer/display_plan)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Artifact contract for ResearchSynthesis, canonical_answer, and display_plan optional structured-handoff paths."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Artifact Contract Reference

@@ -1,7 +1,7 @@
 ---
 name: research-research-pack-rendering
-description: "리서치 팩 렌더링 (ResearchState 필드 용도)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Research pack rendering. Defines ResearchState field purposes (resolved_scope, source_anchors, clause_coverage, evidence_units, computed_values)."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # ResearchState Rendering Policy

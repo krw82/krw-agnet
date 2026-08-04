@@ -1,7 +1,7 @@
 ---
 name: research-trace-chain-policy
-description: "trace/chain 정책 (선택적 증거 검증, 메커니즘 확장)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Trace and chain policy. trace = evidence verification for one selected object; chain = mechanism expansion. Defines when to use each."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Trace And Chain Policy

@@ -1,7 +1,7 @@
 ---
 name: idea_rejection_policy
-description: "후보 종목 거절(Reject) 기준. 키워드 매칭·일반적 위험 언어·경제적 연결 부재 등 false positive 판별"
-when_to_use: "idea_generation에서 후보를 Reject로 분류할 때"
+description: "Use during idea_generation to classify a candidate as Reject (false positive) based on keyword-only matches, generic risk language, or missing economic linkage."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Rejection Policy

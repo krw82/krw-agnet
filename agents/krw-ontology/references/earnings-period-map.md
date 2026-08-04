@@ -1,7 +1,7 @@
 ---
 name: earnings_period_map
-description: "분기 실적 기간 매핑 정책. 최신 분기/직전 분기/전년 동분기/연간 베이스라인 비교 + CY 라벨 + 비교 가능성 체크"
-when_to_use: "earnings_deep_dive에서 비교 기간을 설정할 때"
+description: "Use during earnings_deep_dive to set comparison periods (current quarter, prior quarter, year-ago quarter, annual baseline) with CY labels and comparability checks."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Earnings Period Map

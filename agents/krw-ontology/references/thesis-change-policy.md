@@ -1,7 +1,7 @@
 ---
 name: thesis_change_policy
-description: "분기 실적이 투자 가설에 미치는 영향 분류(강화/유지/혼재/약화/재검토 필요)와 필수 설명 항목"
-when_to_use: "earnings_deep_dive에서 가설 효과를 판정할 때"
+description: "Use during earnings_deep_dive to classify the thesis effect (strengthened/intact/mixed/weakened/re-underwriting) and state the required explanation."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Thesis Change Policy

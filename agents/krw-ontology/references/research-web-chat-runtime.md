@@ -1,7 +1,7 @@
 ---
 name: research-web-chat-runtime
-description: "웹챗 런타임 (Company filing anchor 처리)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Web chat runtime. Company filing anchor processing and current_driver/annual_baseline conventions."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Web Chat Runtime Contract

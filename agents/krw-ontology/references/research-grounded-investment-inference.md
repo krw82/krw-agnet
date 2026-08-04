@@ -1,7 +1,7 @@
 ---
 name: research-grounded-investment-inference
-description: "근거 기반 투자 추론 (추정+근거+한계 패턴)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Grounded investment inference. Defines the estimate-plus-evidence-plus-limits pattern for partial evidence answers."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Grounded Investment Inference

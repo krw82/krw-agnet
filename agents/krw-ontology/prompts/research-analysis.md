@@ -1,7 +1,7 @@
 ---
 name: research_analysis
-description: "KRW 온톨로지 공시 증거 기반 기업 리서치. 질문 분류 9경로, 증거 품질 랭킹, evidence→analyst 합성, 한국어 투자자 답변, 투자결정 프레임 포함"
-when_to_use: "company_research 기본 리서치, 기업 개관, 메트릭 분석, 리스크/테제, 직접 노출, 비교, 투자 결정 질문"
+description: "Use when answering equity research questions from KRW ontology data, especially filing evidence, business drivers, external exposures, metrics, agreement terms, events, scenario analysis, direct exposure checks, cross-company comparisons, and investment-decision framing. Covers question classification (9 paths), evidence quality ranking, evidence-to-analyst synthesis, Korean investor-facing style, and forbidden language."
+when_to_use: "company_research, business overview, metric analysis, risk/thesis, direct exposure, comparison, investment decision"
 ---
 
 # KRW Ontology Research Skill

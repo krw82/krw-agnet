@@ -1,7 +1,7 @@
 ---
 name: research-ontology-layer-map
-description: "온톨로지 레이어 맵 (객체 타입별 용도)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Ontology layer map. Defines object-type purposes for internal evidence selection."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Ontology Layer Map

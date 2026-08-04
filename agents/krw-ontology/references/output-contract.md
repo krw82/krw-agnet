@@ -1,7 +1,7 @@
 ---
 name: earnings_output_contract
-description: "earnings_deep_dive 최종 답변 구조. 실적 한 줄 판단→가설→달라진 것→코멘트→품질→영향→다음 확인→이어서 볼 질문 고정 헤딩"
-when_to_use: "earnings_deep_dive 최종 한국어 답변을 작성할 때"
+description: "Use when composing the earnings_deep_dive final Korean answer. Defines the fixed heading structure and interpretation table format."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Output Contract

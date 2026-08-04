@@ -1,7 +1,7 @@
 ---
 name: earnings_analysis
-description: "최신 분기 실적을 운영 가설(thesis)을 업데이트하는 새 증거로 심층 분석. 매출 구성·지역 동인·비용 추세·마진 연결·현금창출 5단계 인과 체인 + 가설 효과 분류(강화/유지/혼재/약화/재검토)"
-when_to_use: "분기/연간 실적 심층 분석, 마진 품질, 부문별 매출, 현금흐름 전환, 가설 업데이트가 필요할 때"
+description: "Use when the user asks for a filing-grounded deep analysis of a covered company's latest reported quarter, including what changed, management commentary and note explanations, quarter-over-quarter and year-over-year direction, earnings quality, margin and cash-flow conversion, capital allocation, and whether the investment thesis strengthened or weakened. Includes the 5-stage causal chain (revenue composition, geographic drivers, cost trend, margin transmission, cash generation)."
+when_to_use: "quarterly or annual earnings deep dive, margin quality, segment revenue, cash-flow conversion, thesis update"
 ---
 
 # Earnings Deep Dive

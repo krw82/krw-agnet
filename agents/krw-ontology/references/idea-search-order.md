@@ -1,7 +1,7 @@
 ---
 name: idea_search_order
-description: "아이디어 발굴 검색 순서. 화면 정의→커버드 유니버스 발견→후보 검증 3단계 호출 정책"
-when_to_use: "idea_generation에서 SearchPlan/ResearchProposal을 작성할 때"
+description: "Use during idea_generation to author ResearchProposal v4 for the 3-phase workflow (screen definition, candidate discovery, candidate validation)."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Idea Generation Search Order

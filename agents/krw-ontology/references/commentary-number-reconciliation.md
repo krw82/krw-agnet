@@ -1,7 +1,7 @@
 ---
 name: commentary_reconciliation
-description: "경영진 코멘트와 보고된 숫자의 일치/불일치 판별 기준. tension(긴장) 플래그 조건"
-when_to_use: "earnings_deep_dive에서 코멘트와 숫자가 맞는지 검증할 때"
+description: "Use during earnings_deep_dive to verify whether management commentary and reported numbers agree or flag tension."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Commentary And Number Reconciliation

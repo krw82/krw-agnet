@@ -1,7 +1,7 @@
 ---
 name: provider_proposal_contract
-description: "ResearchProposal v4 provider 호출 형태 계약. 올바른/잘못된 proposal 봉투 형태 예시"
-when_to_use: "planner 역할로 proposal을 작성하기 전에 호출 형태를 확인할 때"
+description: "Use before the planner role authors a ResearchProposal v4. Defines the exact provider call shape and common invalid shapes."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Provider proposal contract

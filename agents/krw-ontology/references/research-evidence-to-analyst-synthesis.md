@@ -1,7 +1,7 @@
 ---
 name: research-evidence-to-analyst-synthesis
-description: "증거→분석가 합성 규칙 (candidate route vs evidence, 번역 규칙, 숨길 내용)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Evidence-to-analyst synthesis guardrail. Candidate route versus evidence, internal-to-user translation rules, and what to hide from normal answers."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Evidence to Analyst Synthesis

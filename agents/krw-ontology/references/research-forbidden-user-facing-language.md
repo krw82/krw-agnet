@@ -1,7 +1,7 @@
 ---
 name: research-forbidden-user-facing-language
-description: "금지된 사용자 노출 언어 (내부 용어, 한계 표현, 도구 이름)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Forbidden user-facing language. Lists internal terms, limitation phrases, tool names, and diagnostic labels that must never appear in normal answers."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Forbidden User-Facing Language

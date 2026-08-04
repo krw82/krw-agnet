@@ -1,7 +1,7 @@
 ---
 name: idea_output_contract
-description: "idea_generation 최종 답변 구조. 우선순위 결론→후보 깔때기 표→A/B/C/Reject→차기 리서치 질문"
-when_to_use: "idea_generation 최종 한국어 답변을 작성할 때"
+description: "Use when composing the idea_generation final Korean answer. Defines the priority conclusion, candidate funnel table, and next-research prompts."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Output Contract

@@ -1,7 +1,7 @@
 ---
 name: earnings_quality_policy
-description: "실적 품질 분석: 핵심 운영 변화 vs 회계 효과 vs 운전자본 타이밍 vs 투자 부담 vs M&A/자본배분 구분"
-when_to_use: "earnings_deep_dive에서 헤드라인 EPS/순이익/FCF가 반복 가능한 운영 성과인지 검증할 때"
+description: "Use during earnings_deep_dive to verify whether headline EPS/net income/FCF represents recurring operating performance versus accounting effects or timing."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Earnings Quality Policy

@@ -1,7 +1,7 @@
 ---
 name: scenario_sensitivity_policy
-description: "1-3개 바인딩 변수 선정과 민감도 분석 규칙. 정성적 vs 정량적 민감도 사용 기준"
-when_to_use: "scenario_sensitivity에서 바인딩 변수와 민감도를 분석할 때"
+description: "Use during scenario_sensitivity to select 1-3 binding variables and apply qualitative versus quantitative sensitivity rules."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Sensitivity Policy

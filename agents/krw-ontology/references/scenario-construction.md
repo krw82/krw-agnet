@@ -1,7 +1,7 @@
 ---
 name: scenario_construction
-description: "동일한 핵심 변수에서 base/upside/downside 시나리오 구성. 서로 다른 서사를 만들지 않는 규칙"
-when_to_use: "scenario_sensitivity에서 시나리오 케이스를 구성할 때"
+description: "Use during scenario_sensitivity to build base/upside/downside cases from the same load-bearing variables. Different states of one assumption, not unrelated narratives."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Scenario Construction

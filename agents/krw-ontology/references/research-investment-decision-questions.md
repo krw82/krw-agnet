@@ -1,7 +1,7 @@
 ---
 name: research-investment-decision-questions
-description: "투자결정 질문 프레임 (지금 사? 보유? 팔아?) → 판단 라벨/대시보드/조건"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Investment decision brief rules. Converts vague buy/sell/hold questions into a structured investment-decision report with fixed headings (judgment label, dashboard, reasoning, break conditions, final judgment)."
+when_to_use: "vague buy/sell/hold questions like 'should I buy?', 'should I hold?', 'should I sell?'"
 ---
 
 # Investment Decision Brief Rules

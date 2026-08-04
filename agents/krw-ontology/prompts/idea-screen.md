@@ -1,7 +1,7 @@
 ---
 name: idea_screen
-description: "투자 테마를 커버드 종목 리서치 큐로 전환. 화면 정의→후보 발견→동일 기준 검증→A/B/C/Reject 우선순위. false positive 거절 포함"
-when_to_use: "아이디어 스크리닝, 테마 기반 종목 발굴, 후보 검증, PM 스타일 트리지가 필요할 때"
+description: "Use when the user asks to discover, screen, rank, filter, or prioritize covered public-equity research candidates by an investment theme, business driver, financial condition, risk factor, beneficiary pathway, or user-provided ticker list. Produces filing-grounded research priorities (A/B/C/Reject) and false-positive rejection."
+when_to_use: "idea screening, theme-based candidate discovery, candidate validation, PM-style triage"
 ---
 
 # Idea Generation

@@ -1,7 +1,7 @@
 ---
 name: idea_candidate_funnel
-description: "후보 발굴→검증→우선순위 분류 깔때기. 화면 정의→후보 발견→동일 기준 검증→A/B/C/Reject"
-when_to_use: "idea_generation에서 후보 종목 깔때기를 운영할 때"
+description: "Use during idea_generation to operate the candidate funnel from discovery to A/B/C/Reject classification."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Candidate Funnel

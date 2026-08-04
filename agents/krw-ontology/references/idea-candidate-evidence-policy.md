@@ -1,7 +1,7 @@
 ---
 name: idea_candidate_evidence_policy
-description: "후보 종목 증거 기준. A/B/C/Reject 분류를 위한 직접 노출·재무 경로·최근 변화·부담 요건"
-when_to_use: "idea_generation에서 후보 종목을 검증할 때"
+description: "Use during idea_generation to validate candidates on exposure, financial pathway, recent change, burden, and first-rejection axes."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Candidate Evidence Policy

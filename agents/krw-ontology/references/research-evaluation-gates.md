@@ -1,7 +1,7 @@
 ---
 name: research-evaluation-gates
-description: "평가 게이트 (답변 품질 검증 기준)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Evaluation gates for answer quality verification before final output."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Evaluation Gates

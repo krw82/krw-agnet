@@ -1,7 +1,7 @@
 ---
 name: scenario_analysis
-description: "단일 투자 가정을 스트레스 테스트. base/upside/downside는 같은 가정의 다른 상태. 운영 동인·외부 요인·자본 유동성·이벤트 경로·사용자 가정 5가지 시나리오 모드"
-when_to_use: "시나리오 분석, 민감도 분석, 하방 스트레스, 가설 파기 조건, 행동 임계값이 필요할 때"
+description: "Use when the user asks to stress-test filing-grounded investment assumptions through upside/base/downside scenarios, operating-driver sensitivity, macro or business-factor sensitivity, liquidity or dilution downside, event-path consequences, breakpoints, thesis-break conditions, or evidence-based action thresholds for a covered public company."
+when_to_use: "scenario analysis, sensitivity, downside stress, thesis-break conditions, action thresholds"
 ---
 
 # Scenario And Sensitivity

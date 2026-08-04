@@ -1,7 +1,7 @@
 ---
 name: research-financial-statement-interpretation
-description: "재무제표 해석 (P&L/FCF/investing/financing 층 분리, R&D 중복 금지)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Financial statement interpretation. Separates P&L, FCF calculation, investing cash flow, and financing cash flow layers. Prevents double-counting R&D and misclassifying M&A addbacks."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Financial Statement Interpretation

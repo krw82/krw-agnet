@@ -1,7 +1,7 @@
 ---
 name: idea_url_screen_compression
-description: "URL 기반 아이디어 스크린 압축. 기사/이벤트/외부 소스를 커버드 종목 연구 후보로 변환하는 규칙"
-when_to_use: "idea_generation에서 사용자가 URL을 제공했을 때"
+description: "Use during idea_generation when the user provides a URL. Compresses the article/event/source into covered-company research candidates."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # URL Screen Compression

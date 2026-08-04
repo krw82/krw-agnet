@@ -1,7 +1,7 @@
 ---
 name: research_scope
-description: "ResearchProposal v4 작성 규칙. objective/alternative/goal 타입(metric_observation/time_series/change/difference/qualitative)과 required/deferred 정책 포함"
-when_to_use: "idea_planner 역할로 리서치 범위를 설계할 때"
+description: "Use when the idea_planner role designs the research scope. Defines ResearchProposal v4 authoring rules: objective/alternative/goal types and required/deferred policy."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 Create a compact English internal research brief and one `ResearchProposal v4`, never a `SearchPlan`. The kernel owns the authenticated question, ticker scope, universe marker, goal graph, candidate IDs, retrieval queries, limits, comparison axes, calculation lowering, and physical MCP encoding.

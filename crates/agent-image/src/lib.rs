@@ -1873,7 +1873,7 @@ fn render_skill_catalog(
         for (name, description, when_to_use) in &entries {
             out.push_str(&format!("- **{name}**: {description}"));
             if let Some(w) = when_to_use {
-                out.push_str(&format!(" (쓰임: {w})"));
+                out.push_str(&format!(" (use when: {w})"));
             }
             out.push('\n');
         }

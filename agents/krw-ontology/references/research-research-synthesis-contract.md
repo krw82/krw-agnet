@@ -1,7 +1,7 @@
 ---
 name: research-research-synthesis-contract
-description: "리서치 합성 계약"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Research synthesis contract. Defines the ResearchSynthesis artifact shape for structured handoff."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Research Synthesis Contract

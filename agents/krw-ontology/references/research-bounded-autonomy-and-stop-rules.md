@@ -1,7 +1,7 @@
 ---
 name: research-bounded-autonomy-and-stop-rules
-description: "제한된 자율성과 중단 규칙 (루프 방지, 증거 충분 시 중단)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Bounded autonomy and stop rules. Prevents looping, enforces evidence sufficiency before answering, and defines overflow recovery."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Bounded Autonomy and Stop Rules

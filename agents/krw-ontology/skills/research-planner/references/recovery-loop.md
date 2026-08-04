@@ -1,7 +1,7 @@
 ---
 name: research_recovery_loop
-description: "capability 오류/제안 오류를 private 피드백으로 처리하는 복구 루프 규칙. replace/narrow/split repair mode"
-when_to_use: "capability가 recovery_required를 반환했을 때"
+description: "Use when a capability returns recovery_required. Defines replace/narrow/split repair modes for model-correctable errors."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Recovery loop

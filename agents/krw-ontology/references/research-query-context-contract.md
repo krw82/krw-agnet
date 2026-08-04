@@ -1,7 +1,7 @@
 ---
 name: research-query-context-contract
-description: "query_context 계약 (SearchPlan 명세, ResearchState 해석)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Query context contract. SearchPlan specification and ResearchState v2 field interpretation guide."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Query Context Contract

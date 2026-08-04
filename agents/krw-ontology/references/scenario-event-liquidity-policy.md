@@ -1,7 +1,7 @@
 ---
 name: scenario_event_liquidity_policy
-description: "이벤트 경로(계약/프로젝트/인수/M&A/소송/규제)와 유동성/자본 하방 시나리오 분석 정책"
-when_to_use: "scenario_sensitivity에서 이벤트 경로나 유동성 스트레스를 분석할 때"
+description: "Use during scenario_sensitivity for event-path scenarios (contracts, projects, M&A, litigation, regulation) and capital/liquidity downside stress."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Event And Liquidity Policy

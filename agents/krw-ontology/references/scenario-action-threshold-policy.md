@@ -1,7 +1,7 @@
 ---
 name: scenario_action_threshold_policy
-description: "시나리오 가정을 관찰 가능한 증거 조건으로 번역. 판단 강화/유지/약화/가정 파기 분류 기준"
-when_to_use: "scenario_sensitivity에서 행동 임계값을 정의할 때"
+description: "Use during scenario_sensitivity to translate tested assumptions into observable evidence conditions (strengthen/maintain/weaken/break)."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Action Threshold Policy

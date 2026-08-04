@@ -1,7 +1,7 @@
 ---
 name: research-plain-korean-investor-language
-description: "한국어 투자자 언어 스타일 (쉬운 표현, 용어 번역)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Plain Korean investor language style guide. Translation rules for finance jargon, mobile readability, and evidence-forward prose."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Plain Korean Investor Language

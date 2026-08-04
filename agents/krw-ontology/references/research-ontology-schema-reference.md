@@ -1,7 +1,7 @@
 ---
 name: research-ontology-schema-reference
-description: "온톨로지 스키마 참조 (객체/메트릭/이벤트 상세)"
-when_to_use: "company_research 리서치에서 필요할 때"
+description: "Ontology schema reference. Detailed object, metric, event, and evidence type specifications."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Ontology Schema Reference

@@ -1,7 +1,7 @@
 ---
 name: research_synthesis
-description: "증거 기반 답변 합성 절차. 결론 선행·사실 vs 해석 구분·분석가 추정 규율·한국어 답변 예시 포함"
-when_to_use: "composer 역할로 증거를 답변으로 합성할 때, '몰라요' 대신 추정+근거 답변이 필요할 때"
+description: "Use when the composer role synthesizes evidence into the final answer. Conclusion-first order, fact versus interpretation separation, analyst estimation discipline, and Korean answer examples."
+when_to_use: "when the relevant analysis context arises"
 ---
 
 # Research synthesis
