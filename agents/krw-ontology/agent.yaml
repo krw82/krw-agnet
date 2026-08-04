@@ -18,10 +18,28 @@ entrypoints:
     required_model_profile: flash_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
-    # company_research is the general-purpose entrypoint: no Tier 2 pinned
-    # skills. The skill_catalog is enough; the model loads specialized skills
-    # on demand via skill.load.
-    pinned_skills: []
+    # company_research uses the full research skill suite (original krw-ontology-research).
+    pinned_skills:
+      - research_analysis
+      - research_planner_skill
+      - provider_proposal_contract
+      - research_proposal_examples
+      - research_recovery_loop
+      - evidence_analyst
+      - retrieval_planner
+      - research_synthesis
+      - plain_korean_investor_language
+      - final_markdown_contract
+      - specialized_answer
+      - research_evidence_synthesis
+      - research_financial_interpretation
+      - research_investment_decision
+      - research_period_policy
+      - research_tool_policy
+      - research_trace_chain_policy
+      - research_forbidden_language
+      - research_bounded_autonomy
+      - research_grounded_inference
   earnings_deep_dive:
     run_kind: earnings_deep_dive
     locale: ko-KR
@@ -244,6 +262,26 @@ prompt_segments:
   - { id: idea_rejection_policy, path: references/idea-rejection-policy.md, stable_prefix: false, private: true }
   - { id: idea_output_contract, path: references/idea-output-contract.md, stable_prefix: false, private: true }
   - { id: idea_url_screen_compression, path: references/idea-url-screen-compression.md, stable_prefix: false, private: true }
+  - { id: research_analysis, path: prompts/research-analysis.md, stable_prefix: false, private: true }
+  - { id: research_artifact_contract, path: references/research-artifact-contract.md, stable_prefix: false, private: true }
+  - { id: research_bounded_autonomy, path: references/research-bounded-autonomy-and-stop-rules.md, stable_prefix: false, private: true }
+  - { id: research_evaluation_gates, path: references/research-evaluation-gates.md, stable_prefix: false, private: true }
+  - { id: research_evidence_synthesis, path: references/research-evidence-to-analyst-synthesis.md, stable_prefix: false, private: true }
+  - { id: research_financial_interpretation, path: references/research-financial-statement-interpretation.md, stable_prefix: false, private: true }
+  - { id: research_forbidden_language, path: references/research-forbidden-user-facing-language.md, stable_prefix: false, private: true }
+  - { id: research_grounded_inference, path: references/research-grounded-investment-inference.md, stable_prefix: false, private: true }
+  - { id: research_investment_decision, path: references/research-investment-decision-questions.md, stable_prefix: false, private: true }
+  - { id: research_ontology_layer_map, path: references/research-ontology-layer-map.md, stable_prefix: false, private: true }
+  - { id: research_ontology_schema_ref, path: references/research-ontology-schema-reference.md, stable_prefix: false, private: true }
+  - { id: research_period_policy, path: references/research-period-and-latest-policy.md, stable_prefix: false, private: true }
+  - { id: research_plain_korean, path: references/research-plain-korean-investor-language.md, stable_prefix: false, private: true }
+  - { id: research_query_context_contract, path: references/research-query-context-contract.md, stable_prefix: false, private: true }
+  - { id: research_pack_rendering, path: references/research-research-pack-rendering.md, stable_prefix: false, private: true }
+  - { id: research_synthesis_contract, path: references/research-research-synthesis-contract.md, stable_prefix: false, private: true }
+  - { id: research_structured_handoff, path: references/research-structured-handoff-contract.md, stable_prefix: false, private: true }
+  - { id: research_tool_policy, path: references/research-tool-policy.md, stable_prefix: false, private: true }
+  - { id: research_trace_chain_policy, path: references/research-trace-chain-policy.md, stable_prefix: false, private: true }
+  - { id: research_web_chat_runtime, path: references/research-web-chat-runtime.md, stable_prefix: false, private: true }
   - id: ontology_catalog
     ontology_schema: { root_env: KRW_ONTOLOGY_ROOT, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
     stable_prefix: true
