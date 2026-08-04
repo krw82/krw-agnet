@@ -52,6 +52,9 @@ pub enum LoadReason {
     CurrentEvidence,
     ActiveToolLineage,
     ValidationRepair,
+    /// Tier 2 pinned skill: force-loaded by the entrypoint's `pinned_skills`
+    /// declaration, not by role membership.
+    PinnedSkill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -503,8 +506,25 @@ fn compile_state_context(
         .iter()
         .find(|role| role.id == *role_id)
         .ok_or_else(|| ContextPlanError::MissingRole(role_id.clone()))?;
-    let selected_ids = role
-        .prompt_segments
+    // Tier 2 (pinned) skills: the entrypoint for this run_kind declares skill
+    // segment IDs that are force-loaded into every model state, in addition
+    // to the role's own segments. This guarantees critical analysis
+    // frameworks (e.g., earnings 5-stage chain) are always present without
+    // relying on the model to call skill.load.
+    let entrypoint = image
+        .body
+        .entrypoints
+        .values()
+        .find(|entrypoint| entrypoint.run_kind == run_kind && entrypoint.locale == locale)
+        .ok_or_else(|| ContextPlanError::MissingEntrypoint(run_kind.to_string()))?;
+    // Merge role segments and pinned skills (dedup, role-first order).
+    let mut segment_ids_to_load: Vec<String> = role.prompt_segments.clone();
+    for pinned in &entrypoint.pinned_skills {
+        if !segment_ids_to_load.iter().any(|id| id == pinned) {
+            segment_ids_to_load.push(pinned.clone());
+        }
+    }
+    let selected_ids = segment_ids_to_load
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -516,14 +536,17 @@ fn compile_state_context(
         .collect::<BTreeMap<_, _>>();
 
     let mut static_bytes = 0_u64;
-    let mut static_segments = Vec::with_capacity(role.prompt_segments.len());
-    for segment_id in &role.prompt_segments {
+    let mut static_segments = Vec::with_capacity(segment_ids_to_load.len());
+    for segment_id in &segment_ids_to_load {
         let descriptor = descriptors
             .get(segment_id.as_str())
             .ok_or_else(|| ContextPlanError::MissingPrompt(segment_id.clone()))?;
         static_bytes = static_bytes
             .checked_add(descriptor.byte_len)
             .ok_or(ContextPlanError::Limit("prompt bytes"))?;
+        // Tag pinned skills so the load reason is distinguishable from
+        // role-level segments.
+        let is_role_segment = role.prompt_segments.iter().any(|id| id == segment_id);
         static_segments.push(StaticPromptSegmentRef {
             segment_id: segment_id.clone(),
             content_hash: descriptor.content_hash.clone(),
@@ -531,7 +554,11 @@ fn compile_state_context(
             stable_prefix: descriptor.stable_prefix,
             private: descriptor.private,
             kind: ContextSegmentKind::AgentInstruction,
-            load_reason: LoadReason::RoleMatch,
+            load_reason: if is_role_segment {
+                LoadReason::RoleMatch
+            } else {
+                LoadReason::PinnedSkill
+            },
         });
     }
     let omitted_segments = image
@@ -739,6 +766,8 @@ pub enum ContextPlanError {
     MissingWorkflow(String),
     #[error("missing role: {0}")]
     MissingRole(String),
+    #[error("missing entrypoint for run kind: {0}")]
+    MissingEntrypoint(String),
     #[error("missing prompt segment: {0}")]
     MissingPrompt(String),
     #[error("model state has no role")]
@@ -935,6 +964,39 @@ mod tests {
                 .iter()
                 .any(|segment| segment.segment_id == "scenario_analysis")
         );
+    }
+
+    #[test]
+    fn pinned_skills_force_load_for_specialized_run_kind() {
+        let (image, mut request) = fixture();
+        // Switch to earnings_deep_dive: its entrypoint declares pinned_skills
+        // that must be force-loaded into every model state.
+        request.run_kind = "earnings_deep_dive".into();
+        let planner = ContextPlanner::compile(&image).unwrap();
+        let plan = planner.for_request(&request, "author_plan").unwrap();
+        let loaded = plan
+            .static_segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<BTreeSet<_>>();
+        // Tier 1 (role-level) skills are present.
+        assert!(loaded.contains("security_boundary"));
+        assert!(loaded.contains("kernel_runtime"));
+        assert!(loaded.contains("skill_catalog"));
+        // Tier 2 (pinned) skills declared by the earnings_deep_dive entrypoint
+        // are force-loaded — including the 5-stage causal chain framework.
+        assert!(loaded.contains("earnings_analysis"));
+        assert!(loaded.contains("research_planner_skill"));
+        assert!(loaded.contains("evidence_analyst"));
+        assert!(loaded.contains("research_synthesis"));
+        // Pinned skill segments carry the PinnedSkill load reason.
+        assert!(plan.static_segments.iter().any(|segment| {
+            segment.segment_id == "earnings_analysis"
+                && segment.load_reason == LoadReason::PinnedSkill
+        }));
+        // Skills not pinned by this run_kind remain omitted (Tier 3).
+        assert!(!loaded.contains("scenario_analysis"));
+        assert!(!loaded.contains("idea_screen"));
     }
 
     #[test]

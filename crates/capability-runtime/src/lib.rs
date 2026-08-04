@@ -183,7 +183,7 @@ impl EvidenceMapping {
                 NORMALIZED_CAPABILITY_RESULT_V1,
             ],
             Self::TargetedEvidenceV1 | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
-            Self::SkillContent => &[SKILL_CONTENT_V1],
+            Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
             Self::Front(mapping) => mapping.output_contracts(),
             Self::Guru(mapping) => mapping.output_contracts(),
         }

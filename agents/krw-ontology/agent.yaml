@@ -18,6 +18,10 @@ entrypoints:
     required_model_profile: flash_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
+    # company_research is the general-purpose entrypoint: no Tier 2 pinned
+    # skills. The skill_catalog is enough; the model loads specialized skills
+    # on demand via skill.load.
+    pinned_skills: []
   earnings_deep_dive:
     run_kind: earnings_deep_dive
     locale: ko-KR
@@ -26,6 +30,22 @@ entrypoints:
     required_model_profile: flash_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
+    # Tier 2 pinned skills: the earnings 5-stage causal chain framework plus
+    # the planner contract/examples and evidence analyst discipline are
+    # always in the system prompt so DeepSeek applies them without needing
+    # to discover skill.load.
+    pinned_skills:
+      - research_planner_skill
+      - provider_proposal_contract
+      - research_proposal_examples
+      - research_recovery_loop
+      - earnings_analysis
+      - evidence_analyst
+      - retrieval_planner
+      - research_synthesis
+      - plain_korean_investor_language
+      - final_markdown_contract
+      - specialized_answer
   scenario_sensitivity:
     run_kind: scenario_sensitivity
     locale: ko-KR
@@ -34,6 +54,17 @@ entrypoints:
     required_model_profile: flash_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
+    pinned_skills:
+      - research_planner_skill
+      - provider_proposal_contract
+      - research_proposal_examples
+      - research_recovery_loop
+      - scenario_analysis
+      - evidence_analyst
+      - retrieval_planner
+      - research_synthesis
+      - plain_korean_investor_language
+      - final_markdown_contract
   idea_generation:
     run_kind: idea_generation
     locale: ko-KR
@@ -42,6 +73,18 @@ entrypoints:
     required_model_profile: flash_max
     scope: { allowed_context: covered_universe, cardinality: { kind: max, value: 12 }, ticker_canonicalization: not_applicable }
     constants: {}
+    pinned_skills:
+      - research_scope
+      - research_planner_skill
+      - provider_proposal_contract
+      - research_proposal_examples
+      - research_recovery_loop
+      - idea_screen
+      - evidence_analyst
+      - retrieval_planner
+      - research_synthesis
+      - plain_korean_investor_language
+      - final_markdown_contract
 
 contracts:
   - id: search-plan/v2
@@ -329,7 +372,7 @@ capabilities:
     # capability binding is a placeholder so deployment-binding.yaml can pin
     # the tool schema hash, but the run-engine short-circuits execution.
     input_contract: skill-load/v1
-    output_contracts: [skill-content/v1]
+    output_contracts: [skill-content/v1, normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: skill_content_v1
     scope_binding: { kind: unscoped }

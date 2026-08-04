@@ -82,6 +82,15 @@ pub struct EntrypointSpec {
     pub required_model_profile: String,
     pub scope: InputScope,
     pub constants: EntrypointConstants,
+    /// Skill segment IDs force-loaded into every model state in this run
+    /// kind, in addition to the role's own prompt_segments. Tier 2 (pinned)
+    /// skills guarantee that critical analysis frameworks (e.g., the
+    /// earnings 5-stage causal chain) are always in the system prompt
+    /// regardless of whether the model calls `skill.load`. Tier 1 skills
+    /// (security, kernel, ontology, catalog) are role-level and need not be
+    /// repeated here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
