@@ -205,16 +205,18 @@ krw_expiry=$((krw_now + 2592000))
 export KRW_AGENT_DATABASE_URL="postgresql://127.0.0.1:$krw_pg_port/postgres?user=$krw_database_user"
 export KRW_AGENT_DATABASE_CA_PEM="$(< "$krw_state/ca.pem")"
 export RUST_LOG="${RUST_LOG:-info}"
-(
-  exec "$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agentd -- \
+# Use nohup+disown so agentd survives script termination (the script's
+# process tree is not the parent of the daemon when the user exits).
+nohup "$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agentd -- \
     --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
     --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
     --endpoint-registry "$krw_state/endpoint-registry.yaml" --release-authorization "$krw_release_authorization" \
     --release-trust-registry "$krw_state/release-trust-registry.json" --runtime-version 0.1.0 --worker-id local-agentd \
     --database-url-env KRW_AGENT_DATABASE_URL --database-ca-pem-env KRW_AGENT_DATABASE_CA_PEM \
-    --artifact-root "$krw_state/artifacts" --artifact-active-key-env KRW_AGENT_ARTIFACT_KEY_V1
-) >"$krw_state/logs/agentd.log" 2>&1 &
+    --artifact-root "$krw_state/artifacts" --artifact-active-key-env KRW_AGENT_ARTIFACT_KEY_V1 \
+    >"$krw_state/logs/agentd.log" 2>&1 &
 krw_daemon_pid=$!
+disown "$krw_daemon_pid" 2>/dev/null || true
 
 krw_descriptor_hash="sha256:$(shasum -a 256 "$krw_descriptor" | awk '{print $1}')"
 krw_release_set_hash=$(python3 - "$krw_descriptor" <<'PY'
@@ -234,6 +236,7 @@ export KRW_AGENT_RELEASE_SET_HASH="$krw_release_set_hash"
   exec npm run gateway:local
 ) >"$krw_state/logs/gateway.log" 2>&1 &
 krw_gateway_pid=$!
+disown "$krw_gateway_pid" 2>/dev/null || true
 for _ in $(seq 1 100); do curl --fail --silent "http://127.0.0.1:$krw_gateway_port/healthz" >/dev/null && break; sleep 0.1; done
 curl --fail --silent "http://127.0.0.1:$krw_gateway_port/healthz" >/dev/null
 
@@ -243,4 +246,4 @@ printf '  source %q\n' "$krw_secrets"
 printf '  cd %q\n' "$krw_root"
 printf '  ./scripts/with_local_env.sh cargo run -q -p krw-agent -- run --gateway-url http://127.0.0.1:%s/v1/agent --ticker AAPL --question "..." --wait\n' "$krw_gateway_port"
 printf 'Logs: %s/logs\n\n' "$krw_state"
-wait "$krw_gateway_pid"
+printf 'Stack is running in detached sessions. Stop with: pkill -f krw-agentd\\|local-gateway\\|capabilityd\n'

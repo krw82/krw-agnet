@@ -37,3 +37,15 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 4
     request_timeout_ms: 30000
+  - binding_key: krw_ontology_chain
+    mcp_tool_name: krw_ontology_chain
+    transport: mcp-http
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 30000
