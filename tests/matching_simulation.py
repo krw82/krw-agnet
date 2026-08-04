@@ -72,9 +72,9 @@ def base_plan(
         "intent": intent,
         "tickers": tickers or ["AAPL"],
         "document_types": document_types or ["10-K"],
-        "periods": periods or ["FY2023", "FY2024"],
+        "periods": periods or ["CY2022", "CY2023", "FY2024", "FY2025"],
         "answer_scope": "direct",
-        "uncertainty": "low",
+        "uncertainty": "medium",
         "clauses": clauses,
     }
 
