@@ -2070,6 +2070,28 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             warnings.append("filing_document_roles_unavailable")
 
+    # Augment periods and document_types to include the latest 10-Q and
+    # prior 10-K when the plan did not already request quarterly data.
+    # This follows period_policy: latest 10-Q as main evidence, same-FY
+    # 10-Qs for trend, and latest 10-K as annual baseline.
+    augmented_periods: list[str] = list(search_plan.periods or [])
+    augmented_doc_types: list[str] = list(search_plan.document_types or [])
+    latest_filing_periods = getattr(store, "latest_filing_periods", None)
+    if resolved_tickers and callable(latest_filing_periods):
+        try:
+            filing_periods, filing_doc_types = latest_filing_periods(
+                tickers=resolved_tickers,
+            )
+            for fp in filing_periods:
+                if fp not in augmented_periods:
+                    augmented_periods.append(fp)
+            for fdt in filing_doc_types:
+                fdt_norm = fdt.upper()
+                if fdt_norm not in {dt.upper() for dt in augmented_doc_types}:
+                    augmented_doc_types.append(fdt_norm)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            warnings.append("latest_filing_periods_unavailable")
+
     def record_clause_rows(
         clause: Any,
         rows: Sequence[Mapping[str, Any]],
@@ -2151,8 +2173,8 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
         batch_payload, batch_diagnostics = batch_query(
             clauses=clauses,
             tickers=resolved_tickers,
-            document_types=search_plan.document_types or None,
-            periods=search_plan.periods or None,
+            document_types=augmented_doc_types or None,
+            periods=augmented_periods or None,
             include_rejected=False,
             limit=search_plan.limit_results,
         )
@@ -2185,8 +2207,8 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
                 calculation_window=clause.calculation_window,
                 comparison_axes=search_plan.comparison_axes,
                 tickers=clause.tickers or resolved_tickers,
-                document_types=search_plan.document_types or None,
-                periods=search_plan.periods or None,
+                document_types=augmented_doc_types or None,
+                periods=augmented_periods or None,
                 object_types=clause.object_types or None,
                 include_rejected=False,
                 allow_relaxed=search_plan.uncertainty != PlanUncertainty.LOW,

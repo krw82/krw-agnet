@@ -211,3 +211,82 @@ materially explains the result.”
 At least one objective must be `required`. A deferred objective must not turn
 a narrow question into broad exploratory research before the evidence shows it
 is material.
+
+## 5. Earnings chain: revenue mix → cost → margin → cash
+
+Question meaning: "How do revenue composition, costs, and margins connect?"
+
+```json
+{
+  "proposal": {
+    "intent": "earnings_margin_chain",
+    "answer_scope": "direct",
+    "uncertainty": "medium",
+    "document_types": ["10-K", "10-Q"],
+    "periods": ["FY2024", "FY2025"],
+    "objectives": [
+      {
+        "priority": "required",
+        "alternatives": [
+          { "terms": ["net sales", "revenue"] },
+          { "terms": ["total net sales", "annual revenue"] }
+        ],
+        "directness": "direct_required",
+        "object_types": ["MetricObservation"],
+        "goal": {
+          "kind": "metric_observation",
+          "metric": "revenue",
+          "metric_dimensions": []
+        }
+      },
+      {
+        "priority": "required",
+        "alternatives": [
+          { "terms": ["gross margin", "gross profit"] }
+        ],
+        "directness": "direct_required",
+        "object_types": ["MetricObservation"],
+        "goal": {
+          "kind": "metric_observation",
+          "metric": "gross_margin",
+          "metric_dimensions": []
+        }
+      },
+      {
+        "priority": "required",
+        "alternatives": [
+          { "terms": ["research and development", "operating expense"] },
+          { "terms": ["R&D", "operating costs"] }
+        ],
+        "directness": "direct_required",
+        "object_types": ["MetricObservation"],
+        "goal": {
+          "kind": "metric_observation",
+          "metric": "research_and_development",
+          "metric_dimensions": []
+        }
+      },
+      {
+        "priority": "deferred",
+        "alternatives": [
+          { "terms": ["iphone", "services", "products"] },
+          { "terms": ["segment revenue", "product revenue"] }
+        ],
+        "directness": "related",
+        "object_types": ["BusinessActivity", "NumericEvidence"],
+        "goal": {
+          "kind": "qualitative_evidence",
+          "concepts": ["product mix", "segment revenue"],
+          "predicates": ["due to", "driven by"]
+        }
+      }
+    ]
+  }
+}
+```
+
+This example shows the earnings chain pattern: revenue and margin metrics are
+required, R&D/operating costs are required for the cost layer, and segment
+breakdown (BusinessActivity + NumericEvidence) is deferred but included so the
+model can attempt product-mix decomposition. Both 10-K and 10-Q document types
+are requested so quarterly and annual data are both available.

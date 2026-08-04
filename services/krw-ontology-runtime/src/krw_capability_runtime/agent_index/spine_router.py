@@ -295,6 +295,55 @@ class OntologySpineRouter:
             for row in rows
         ]
 
+    def latest_filing_periods(
+        self,
+        *,
+        ticker: str | None = None,
+        tickers: Iterable[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Compute the optimal period + document_type set for tickers.
+
+        Mirrors OntologyStore.latest_filing_periods using the global
+        document catalog. Returns (periods, document_types) following the
+        period policy: latest 10-Q + same-FY 10-Qs + latest 10-K baseline.
+        """
+        docs = self.list_documents(ticker=ticker, tickers=tickers)
+        if not docs:
+            return [], []
+        quarterly: list[str] = []
+        annual: list[str] = []
+        for doc in docs:
+            period = str(doc.get("period") or "").strip()
+            doc_type = str(doc.get("document_type") or "").strip().upper()
+            if not period:
+                continue
+            if doc_type == "10-Q":
+                quarterly.append(period)
+            elif doc_type == "10-K":
+                annual.append(period)
+        quarterly.sort(reverse=True)
+        annual.sort(reverse=True)
+        periods: list[str] = []
+        doc_types: list[str] = []
+        seen: set[str] = set()
+
+        def _add(p: str) -> None:
+            if p and p not in seen:
+                seen.add(p)
+                periods.append(p)
+
+        if quarterly:
+            latest_q = quarterly[0]
+            fy_prefix = latest_q[:7] if len(latest_q) >= 7 else latest_q[:4]
+            for q in quarterly:
+                if q.startswith(fy_prefix):
+                    _add(q)
+            doc_types.append("10-Q")
+        if annual:
+            _add(annual[0])
+            doc_types.append("10-K")
+        return periods, doc_types
+
     def index_context(
         self,
         *,

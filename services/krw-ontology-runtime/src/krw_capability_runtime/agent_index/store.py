@@ -533,6 +533,69 @@ class OntologyStore:
         ).fetchall()
         return [_document_from_row(row) for row in rows]
 
+    def latest_filing_periods(
+        self,
+        *,
+        ticker: str | None = None,
+        tickers: Iterable[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Compute the optimal period + document_type set for a ticker.
+
+        Returns (periods, document_types) following the period policy:
+          - Main evidence: the latest confirmed 10-Q.
+          - Same fiscal year: other 10-Q filings from the same FY.
+          - Annual baseline: the latest confirmed 10-K.
+
+        Example: if the latest 10-Q is CY2026Q1 and the latest 10-K is CY2025,
+        returns periods=["CY2026Q1","CY2025"], document_types=["10-Q","10-K"].
+        """
+        docs = self.list_documents(ticker=ticker, tickers=tickers)
+        if not docs:
+            return [], []
+
+        # Collect periods by document type, sorted newest-first.
+        quarterly: list[str] = []
+        annual: list[str] = []
+        for doc in docs:
+            period = str(doc.get("period") or "").strip()
+            doc_type = str(doc.get("document_type") or "").strip().upper()
+            if not period:
+                continue
+            if doc_type == "10-Q":
+                quarterly.append(period)
+            elif doc_type == "10-K":
+                annual.append(period)
+        quarterly.sort(reverse=True)
+        annual.sort(reverse=True)
+
+        periods: list[str] = []
+        doc_types: list[str] = []
+        seen: set[str] = set()
+
+        def _add(p: str) -> None:
+            if p and p not in seen:
+                seen.add(p)
+                periods.append(p)
+
+        # 1. Latest 10-Q + other 10-Qs from the same fiscal year.
+        if quarterly:
+            latest_q = quarterly[0]
+            # Extract the fiscal year prefix (e.g. "CY2026" from "CY2026Q1").
+            fy_prefix = latest_q[:7] if len(latest_q) >= 7 else latest_q[:4]
+            same_fy_quarters = [
+                q for q in quarterly if q.startswith(fy_prefix)
+            ]
+            for q in same_fy_quarters:
+                _add(q)
+            doc_types.append("10-Q")
+
+        # 2. Latest 10-K as the annual baseline.
+        if annual:
+            _add(annual[0])
+            doc_types.append("10-K")
+
+        return periods, doc_types
+
     def index_context(
         self,
         *,
