@@ -7248,6 +7248,42 @@ def _ticker_coverage(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     return coverage
 
 
+def _normalize_period(period: str) -> list[str]:
+    """Expand a period label to include both FY and CY variants.
+
+    Filings are indexed by calendar year (CY2023) but the AI may request
+    fiscal year (FY2023). Return both forms so the SQL IN filter matches
+    regardless of which convention the caller used.
+    """
+    raw = str(period or "").strip().upper()
+    if not raw:
+        return []
+    # Already CY — return as-is plus FY variant
+    if raw.startswith("CY"):
+        return [raw, "FY" + raw[2:]]
+    # FY — return as-is plus CY variant
+    if raw.startswith("FY"):
+        return [raw, "CY" + raw[2:]]
+    # Bare year (e.g. "2023") — expand to both FY and CY
+    if raw.isdigit():
+        return [f"FY{raw}", f"CY{raw}"]
+    return [raw]
+
+
+def _normalize_periods(periods: Iterable[str] | None) -> list[str]:
+    """Expand period labels to FY+CY variants and deduplicate."""
+    if not periods:
+        return []
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for period in periods:
+        for variant in _normalize_period(period):
+            if variant not in seen:
+                seen.add(variant)
+                expanded.append(variant)
+    return expanded
+
+
 def _object_filters(
     *,
     tickers: Iterable[str] | None,
@@ -7260,7 +7296,7 @@ def _object_filters(
     params: list[Any] = []
     _add_in_filter(parts, params, "objects.ticker", [t.upper() for t in tickers or []])
     _add_in_filter(parts, params, "objects.document_type", list(document_types or []))
-    _add_in_filter(parts, params, "objects.period", list(periods or []))
+    _add_in_filter(parts, params, "objects.period", _normalize_periods(periods))
     _add_in_filter(parts, params, "objects.type", list(object_types or []))
     if not include_rejected:
         parts.append("(objects.review_status IS NULL OR objects.review_status != 'rejected')")
@@ -7277,7 +7313,7 @@ def _company_topic_filters(
     params: list[Any] = []
     _add_in_filter(parts, params, "company_topic_index.ticker", [t.upper() for t in tickers or []])
     _add_in_filter(parts, params, "company_topic_index.document_type", list(document_types or []))
-    _add_in_filter(parts, params, "company_topic_index.period", list(periods or []))
+    _add_in_filter(parts, params, "company_topic_index.period", _normalize_periods(periods))
     return f"WHERE {' AND '.join(parts)}", params
 
 
@@ -7533,7 +7569,7 @@ def _scoped_fts_query(
     scope_terms = [
         *(_scope_tokens("ticker", tickers) if tickers else []),
         *(_scope_tokens("doctype", document_types) if document_types else []),
-        *(_scope_tokens("period", periods) if periods else []),
+        *(_scope_tokens("period", _normalize_periods(periods)) if periods else []),
         *(_scope_tokens("otype", object_types) if object_types else []),
     ]
     if not fts_query or not scope_terms:
