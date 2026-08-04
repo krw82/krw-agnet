@@ -1521,8 +1521,17 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
             "company_total" if is_company_total else "dimensioned" if dimensions else "unspecified"
         )
     metric_points: list[MetricPoint] = []
+    # Derive the observation period from the most authoritative source.
+    # fiscal_year is always present in MetricObservation object JSON and
+    # disambiguates comparative-year values inside the same 10-K.
+    _fy = object_payload.get("fiscal_year")
+    _fq = object_payload.get("fiscal_quarter")
+    _fy_period = (
+        f"FY{_fy}Q{_fq}" if _fy and _fq else (f"FY{_fy}" if _fy else None)
+    )
     observation_period = (
         _first_text(object_payload, "observation_period")
+        or _fy_period
         or _first_text(row, "planned_metric_observation_period")
         or row_period
         or period

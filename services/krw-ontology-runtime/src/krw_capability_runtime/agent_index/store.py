@@ -2793,12 +2793,20 @@ class OntologyStore:
         if trace is None:
             return {"id": object_id, "missing": True}
         obj = trace["object"]
+        # Use the actual fiscal observation period when available, falling
+        # back to the document filing period. Without this, three years of
+        # comparative data inside one 10-K all appear under the same filing
+        # period (e.g. CY2024), making it impossible for the model to tell
+        # which value is the current year vs. a prior-year comparison.
+        # observation_period may be set by the slow-path metric planner;
+        # fiscal_year is present in the object JSON from metric_observations.
+        period = _observation_period_for_object(obj)
         return {
             "id": obj["id"],
             "type": obj["type"],
             "ticker": obj.get("ticker"),
             "document_type": obj.get("document_type"),
-            "period": obj.get("period"),
+            "period": period,
             "section": obj.get("section_name") or obj.get("section_key"),
             "text": _display_text(obj),
             "object": obj,
@@ -8318,6 +8326,40 @@ def _object_from_row(row: sqlite3.Row) -> dict[str, Any]:
     if row["review_status"]:
         obj["review_status"] = row["review_status"]
     return obj
+
+
+def _observation_period_for_object(obj: Mapping[str, Any]) -> str | None:
+    """Derive the fiscal observation period for an evidence object.
+
+    The objects table stores the *filing* period (e.g. CY2024 for a 10-K
+    filed covering fiscal 2024). But one 10-K contains comparative data for
+    three fiscal years, and each MetricObservation object carries its own
+    ``fiscal_year`` (and optional ``fiscal_quarter``). Without translating
+    that into a period label, every comparative value inside the same 10-K
+    collapses to the same filing period, and the model cannot distinguish
+    the current year from a prior-year comparison.
+
+    Priority:
+      1. ``observation_period`` — already resolved by the metric planner.
+      2. ``fiscal_year`` + ``fiscal_quarter`` — present in every
+         MetricObservation object JSON.
+      3. ``filing_period`` — the document filing period.
+      4. ``period`` — the raw objects-table period (filing period).
+    """
+    observation_period = str(obj.get("observation_period") or "").strip()
+    if observation_period:
+        return observation_period
+    fiscal_year = obj.get("fiscal_year")
+    if fiscal_year is not None:
+        fiscal_quarter = obj.get("fiscal_quarter")
+        if fiscal_quarter:
+            return f"FY{fiscal_year}Q{fiscal_quarter}"
+        return f"FY{fiscal_year}"
+    filing_period = str(obj.get("filing_period") or "").strip()
+    if filing_period:
+        return filing_period
+    period = str(obj.get("period") or "").strip()
+    return period or None
 
 
 def _dedupe_objects(objects: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
