@@ -3198,6 +3198,13 @@ def _meets_directness(
 ) -> bool:
     if requirement == EvidenceRequirement.ANY:
         return directness != "unverified"
+    if requirement == EvidenceRequirement.DIRECT_PREFERRED:
+        # direct_preferred accepts related evidence (traceable context that
+        # does not meet the full direct-quote bar) so that causal and
+        # qualitative clauses are not permanently stuck at "missing" just
+        # because the evidence directness is "related" rather than "direct".
+        # direct_required below remains strict.
+        return directness in {"direct", "metric_lineage", "related"}
     return directness in {"direct", "metric_lineage"}
 
 
