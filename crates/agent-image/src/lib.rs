@@ -3905,7 +3905,7 @@ mod tests {
         assert_eq!(planner.execution.max_output_tokens, Some(2048));
         assert_eq!(
             image.body.answer_policy.max_research_turn_tokens,
-            Some(4096)
+            Some(16384)
         );
 
         let earnings = image
