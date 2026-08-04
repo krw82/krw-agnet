@@ -92,41 +92,41 @@ contracts:
 
 roles:
   - id: planner
-    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop]
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, ontology_catalog]
     deterministic: false
     # Planning is a closed tool-proposal task. Direct Flash avoids spending a
     # large hidden-thinking turn before the first immutable evidence lookup.
     execution: { reasoning: direct, max_output_tokens: 2048 }
   - id: analyst
-    prompt_segments: [security_boundary, kernel_runtime, research_scope, evidence_analyst]
+    prompt_segments: [security_boundary, kernel_runtime, research_scope, evidence_analyst, ontology_catalog]
     deterministic: false
   - id: composer
-    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract]
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, ontology_catalog]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: earnings_planner
-    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, earnings_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, earnings_analysis, ontology_catalog]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 2048 }
   - id: earnings_analyst
-    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, earnings_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, earnings_analysis, ontology_catalog]
     deterministic: false
   - id: scenario_planner
-    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, scenario_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, scenario_analysis, ontology_catalog]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 2048 }
   - id: scenario_analyst
-    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, scenario_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, scenario_analysis, ontology_catalog]
     deterministic: false
   - id: idea_planner
-    prompt_segments: [security_boundary, kernel_runtime, research_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, idea_screen]
+    prompt_segments: [security_boundary, kernel_runtime, research_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, idea_screen, ontology_catalog]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 2048 }
   - id: idea_analyst
-    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, idea_screen]
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, idea_screen, ontology_catalog]
     deterministic: false
   - id: specialized_composer
-    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer]
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, ontology_catalog]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: verifier
@@ -151,6 +151,10 @@ prompt_segments:
   - { id: scenario_analysis, path: prompts/scenario-analysis.md, stable_prefix: false, private: true }
   - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true }
   - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true }
+  - id: ontology_catalog
+    ontology_schema: { root_env: KRW_ONTOLOGY_ROOT, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
+    stable_prefix: true
+    private: true
 
 capabilities:
   - id: ontology.query_context

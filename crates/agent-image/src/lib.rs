@@ -1,6 +1,7 @@
 //! Canonical `AgentSpec` parser, bounded validator ISA, and immutable `AgentImage` compiler.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -280,9 +281,27 @@ pub enum ChildBudgetInheritance {
 #[serde(deny_unknown_fields)]
 pub struct PromptSegmentSource {
     pub id: String,
-    pub path: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub ontology_schema: Option<OntologySchemaSource>,
     pub stable_prefix: bool,
     pub private: bool,
+}
+
+/// Declares that a prompt segment is generated at build time from ontology
+/// schema YAML files, rather than read from a static Markdown file. The
+/// builder reads the ontology root from `root_env`, loads each named schema,
+/// and renders an AI-facing catalog Markdown blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OntologySchemaSource {
+    /// Environment variable holding the absolute ontology root path
+    /// (e.g. `"KRW_ONTOLOGY_ROOT"`).
+    pub root_env: String,
+    /// Schema file basenames under `ontology/schema/` to include, without the
+    /// `.yaml` extension (e.g. `["metric_dictionary", "quote_types"]`).
+    pub schemas: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1648,6 +1667,201 @@ pub fn parse_spec(bytes: &[u8]) -> Result<AgentSpec, ImageError> {
     Ok(spec)
 }
 
+/// Resolve a single prompt segment to its byte content. Static segments are
+/// read from `path`; ontology-catalog segments are generated from YAML at
+/// build time. Exactly one source must be present.
+fn load_prompt_segment_bytes(
+    root: &Path,
+    segment: &PromptSegmentSource,
+) -> Result<Vec<u8>, ImageError> {
+    match (&segment.path, &segment.ontology_schema) {
+        (Some(path), None) => {
+            let resolved = safe_source_path(root, path)?;
+            Ok(fs::read(resolved)?)
+        }
+        (None, Some(source)) => {
+            let markdown = render_ontology_catalog(source, &segment.id)?;
+            Ok(markdown.into_bytes())
+        }
+        (Some(_), Some(_)) => Err(ImageError::InvalidSpec(format!(
+            "prompt segment `{}` declares both path and ontology_schema; use exactly one",
+            segment.id
+        ))),
+        (None, None) => Err(ImageError::InvalidSpec(format!(
+            "prompt segment `{}` has neither path nor ontology_schema",
+            segment.id
+        ))),
+    }
+}
+
+/// Render an AI-facing ontology catalog Markdown blob from the declared schema
+/// YAML files. The ontology root is read from `source.root_env`. Each schema
+/// contributes a section: metrics, quote-type search hints, claim types, risk
+/// categories, and searchable object types.
+fn render_ontology_catalog(
+    source: &OntologySchemaSource,
+    segment_id: &str,
+) -> Result<String, ImageError> {
+    let root_str = env::var(&source.root_env).map_err(|_| {
+        ImageError::InvalidSpec(format!(
+            "ontology_schema segment `{segment_id}` requires env `{}` to be set",
+            source.root_env
+        ))
+    })?;
+    let ontology_root = PathBuf::from(&root_str);
+    let schema_dir = ontology_root.join("ontology/schema");
+    let mut out = String::new();
+    out.push_str("<!-- AUTO-GENERATED from ontology schema YAML. Do not edit by hand.\n");
+    out.push_str("     Source: $");
+    out.push_str(&source.root_env);
+    out.push_str("/ontology/schema/*.yaml -->\n\n");
+    out.push_str("# Ontology catalog\n\n");
+    out.push_str(
+        "This catalog is generated at image build time from the immutable ontology \
+         schema. Use the metric identifiers, filing-language aliases, search hints, \
+         and object types listed here when authoring a ResearchProposal or deciding \
+         what evidence to request. The kernel validates submitted values against \
+         these same schemas.\n\n",
+    );
+    for schema in &source.schemas {
+        let path = schema_dir.join(format!("{schema}.yaml"));
+        let text = fs::read_to_string(&path).map_err(|_| {
+            ImageError::InvalidSpec(format!(
+                "ontology_schema segment `{segment_id}` cannot read {}",
+                path.display()
+            ))
+        })?;
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&text).map_err(|err| {
+                ImageError::InvalidSpec(format!(
+                    "ontology_schema segment `{segment_id}` failed to parse {}: {err}",
+                    path.display()
+                ))
+            })?;
+        match schema.as_str() {
+            "metric_dictionary" => render_metric_section(&value, &mut out),
+            "quote_types" => render_quote_types_section(&value, &mut out),
+            "claim_types" => render_claim_types_section(&value, &mut out),
+            "risk_categories" => render_risk_categories_section(&value, &mut out),
+            "objects" => render_objects_section(&value, &mut out),
+            other => {
+                out.push_str(&format!("## {other}\n\n(No renderer for this schema.)\n\n"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn render_metric_section(value: &serde_yaml_ng::Value, out: &mut String) {
+    let Some(metrics) = value.get("canonical_metrics").and_then(|v| v.as_mapping()) else {
+        return;
+    };
+    out.push_str("## Metrics\n\n");
+    out.push_str(
+        "Use exactly one `metric` identifier in a metric goal. Each entry lists the \
+         canonical identifier, display name, filing-language aliases, and a short \
+         description.\n\n",
+    );
+    out.push_str("| Identifier | Display name | Aliases | Description |\n");
+    out.push_str("|---|---|---|---|\n");
+    for (key, entry) in metrics {
+        let id = key.as_str().unwrap_or("?");
+        let display = entry.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+        let aliases = entry
+            .get("aliases")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!("| `{id}` | {display} | {aliases} | {desc} |\n"));
+    }
+    out.push('\n');
+}
+
+fn render_quote_types_section(value: &serde_yaml_ng::Value, out: &mut String) {
+    let Some(types) = value.get("quote_types").and_then(|v| v.as_mapping()) else {
+        return;
+    };
+    out.push_str("## Quote type search hints\n\n");
+    out.push_str(
+        "When the evidence you need is qualitative, these are the canonical quote \
+         types and the filing vocabulary that tends to co-occur with each.\n\n",
+    );
+    for (key, entry) in types {
+        let id = key.as_str().unwrap_or("?");
+        let guidance = entry
+            .get("ai_guidance")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        out.push_str(&format!("- **{id}**: {guidance}\n"));
+    }
+    out.push('\n');
+}
+
+fn render_claim_types_section(value: &serde_yaml_ng::Value, out: &mut String) {
+    let Some(types) = value.get("claim_types").and_then(|v| v.as_mapping()) else {
+        return;
+    };
+    out.push_str("## Claim types\n\n");
+    out.push_str("Canonical claim categories and example filing language.\n\n");
+    for (key, entry) in types {
+        let id = key.as_str().unwrap_or("?");
+        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let example = entry.get("example").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!("- **{id}**: {desc}\n"));
+        if !example.is_empty() {
+            out.push_str(&format!("  - Example: \"{example}\"\n"));
+        }
+    }
+    out.push('\n');
+}
+
+fn render_risk_categories_section(value: &serde_yaml_ng::Value, out: &mut String) {
+    let Some(cats) = value.get("risk_categories").and_then(|v| v.as_mapping()) else {
+        return;
+    };
+    out.push_str("## Risk categories\n\n");
+    out.push_str("Use these category labels and their example factors when researching risk.\n\n");
+    for (key, entry) in cats {
+        let id = key.as_str().unwrap_or("?");
+        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let examples = entry
+            .get("examples")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("- **{id}**: {desc} (examples: {examples})\n"));
+    }
+    out.push('\n');
+}
+
+fn render_objects_section(value: &serde_yaml_ng::Value, out: &mut String) {
+    let Some(types) = value.get("types").and_then(|v| v.as_mapping()) else {
+        return;
+    };
+    out.push_str("## Searchable object types\n\n");
+    out.push_str(
+        "These are the object types the ontology can return as evidence. Use the \
+         exact type name in `object_types` when you want a specific kind of \
+         evidence.\n\n",
+    );
+    for (key, _) in types {
+        let id = key.as_str().unwrap_or("?");
+        out.push_str(&format!("- `{id}`\n"));
+    }
+    out.push('\n');
+}
+
 pub fn compile_agent_dir(root: impl AsRef<Path>) -> Result<CompiledImage, ImageError> {
     let root = fs::canonicalize(root.as_ref())?;
     let spec_path = root.join("agent.yaml");
@@ -1662,8 +1876,7 @@ pub fn compile_agent_dir(root: impl AsRef<Path>) -> Result<CompiledImage, ImageE
     let mut prompt_blobs = Vec::with_capacity(spec.prompt_segments.len());
     let mut total_prompt_bytes = 0_usize;
     for segment in &spec.prompt_segments {
-        let path = safe_source_path(&root, &segment.path)?;
-        let bytes = fs::read(path)?;
+        let bytes = load_prompt_segment_bytes(&root, segment)?;
         if bytes.len() > MAX_PROMPT_BLOB_BYTES {
             return Err(ImageError::Limit("prompt blob bytes"));
         }

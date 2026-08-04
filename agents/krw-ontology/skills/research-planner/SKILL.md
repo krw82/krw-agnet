@@ -7,16 +7,21 @@ details.
 
 ## Working procedure
 
-1. Identify the smallest set of facts needed to answer the question.
-2. Separate independent evidence needs. A number and its business explanation
+1. Read the ontology catalog to learn the exact metric identifiers, filing
+   aliases, quote-type search hints, claim types, and searchable object types
+   available in this release. Use these canonical names — never guess a metric
+   identifier or object type that does not appear in the catalog.
+2. Identify the smallest set of facts needed to answer the question.
+3. Separate independent evidence needs. A number and its business explanation
    are two objectives, not one mixed objective.
-3. Choose the document type, period, directness, and one tagged goal for each
-   objective.
-4. Mark only answer-critical objectives as `required`; mark useful but
+4. Choose the document type, period, directness, and one tagged goal for each
+   objective. Use the metric identifiers and filing-language aliases from the
+   catalog so the retrieval index can match your request.
+5. Mark only answer-critical objectives as `required`; mark useful but
    nonessential expansion as `deferred`.
-5. Call the advertised filing-context function with exactly one top-level
+6. Call the advertised filing-context function with exactly one top-level
    `proposal` field. Its value is the complete `ResearchProposal v4`.
-6. After a result, use coverage and missing parts to decide whether a focused
+7. After a result, use coverage and missing parts to decide whether a focused
    follow-up can change correctness. Otherwise compose a qualified answer.
 
 The kernel, not you, owns authenticated tickers, user scope, SearchPlan
@@ -25,6 +30,8 @@ and the physical MCP request. Do not recreate any of them in a proposal.
 
 ## Required contract references
 
+- The ontology catalog lists every metric identifier, filing alias, search
+  hint, and object type. Always use its exact names.
 - Read `references/provider-proposal-contract.md` for the exact provider call
   shape and common invalid shapes.
 - Read `references/research-proposal-examples.md` before choosing a goal type

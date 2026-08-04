@@ -12,6 +12,11 @@ set -euo pipefail
 krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_state=${KRW_AGENT_LOCAL_STATE_DIR:-"$krw_root/.local/agent-gateway"}
 krw_release_root=${KRW_AGENT_LOCAL_ONTOLOGY_RELEASE_ROOT:-~/krw-ontology-data/releases/prod/current}
+# Source ontology root for build-time metric prose codegen. The Rust build
+# reads `ontology/schema/metric_dictionary.yaml` from here so metric
+# natural-language phrases stay in sync with the ontology without a parallel
+# hardcoded mapping.
+export KRW_ONTOLOGY_ROOT=${KRW_ONTOLOGY_ROOT:-~/krw-ontology}
 krw_gateway_port=${KRW_AGENT_GATEWAY_PORT:-4318}
 krw_pg_port=${KRW_AGENT_LOCAL_POSTGRES_PORT:-55432}
 krw_capability_port=${KRW_AGENT_LOCAL_CAPABILITY_PORT:-19432}

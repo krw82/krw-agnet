@@ -116,36 +116,9 @@ pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
     "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49";
 
-/// Generated from the ontology release's metric dictionary. The model-facing
-/// proposal may select only one of these immutable canonical identities; the
-/// compiler never forwards an unvalidated metric spelling to `SearchPlan`.
-const RESEARCH_PROPOSAL_V4_METRICS: &[&str] = &[
-    "capital_expenditures",
-    "cash_and_equivalents",
-    "cost_of_revenue",
-    "eps",
-    "fcf_margin",
-    "free_cash_flow",
-    "gross_margin",
-    "gross_profit",
-    "net_income",
-    "net_margin",
-    "operating_cash_flow",
-    "operating_expense",
-    "operating_income",
-    "operating_margin",
-    "research_and_development",
-    "revenue",
-    "revenue_growth",
-    "roa",
-    "roe",
-    "segment_revenue",
-    "selling_general_and_admin",
-    "shareholders_equity",
-    "total_assets",
-    "total_debt",
-    "total_liabilities",
-];
+// Canonical metric identifiers accepted by ResearchProposal v4. Generated
+// from the ontology metric dictionary at build time by build.rs.
+include!(concat!(env!("OUT_DIR"), "/ontology_metrics.rs"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContractDescriptor {

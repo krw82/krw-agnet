@@ -8,6 +8,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+// Auto-generated metric prose mapping from the ontology metric dictionary.
+// Built by build.rs from `$KRW_ONTOLOGY_ROOT/ontology/schema/metric_dictionary.yaml`.
+include!(concat!(env!("OUT_DIR"), "/metric_prose.rs"));
+
 use krw_agent_contracts::{RESEARCH_PROPOSAL_V4, SEARCH_PLAN_V2, validate_value};
 use krw_agent_planning::{DirectnessRequirement, EvidenceGoal, EvidenceGoalGraph, GoalStatus};
 use krw_agent_protocol::{ContentHash, RunContextV1};
@@ -745,44 +749,6 @@ fn assemble_retrieval_query(
         return Err(InitialPlanError::PlanTooLarge);
     }
     Ok(query)
-}
-
-/// Map a canonical ResearchProposal v4 metric identifier to the natural
-/// language phrase that actually appears in filings (10-K/10-Q). The MCP
-/// retrieval index matches against filing prose, so a snake_case identifier
-/// like `gross_margin` would never match `gross margin` in the actual 10-K
-/// text. This is intentionally a one-way display/prose mapping — the
-/// canonical machine identifier is still emitted separately under the
-/// `metrics` clause field for structured metric lookups.
-fn metric_as_prose(metric: &str) -> &'static str {
-    match metric {
-        "capital_expenditures" => "capital expenditures",
-        "cash_and_equivalents" => "cash and cash equivalents",
-        "cost_of_revenue" => "cost of revenue",
-        "eps" => "earnings per share",
-        "fcf_margin" => "free cash flow margin",
-        "free_cash_flow" => "free cash flow",
-        "gross_margin" => "gross margin",
-        "gross_profit" => "gross profit",
-        "net_income" => "net income",
-        "net_margin" => "net margin",
-        "operating_cash_flow" => "cash from operating activities",
-        "operating_expense" => "operating expenses",
-        "operating_income" => "operating income",
-        "operating_margin" => "operating margin",
-        "research_and_development" => "research and development expense",
-        "revenue" => "revenue net sales",
-        "revenue_growth" => "revenue growth",
-        "roa" => "return on assets",
-        "roe" => "return on equity",
-        "segment_revenue" => "segment net sales",
-        "selling_general_and_admin" => "selling general and administrative expense",
-        "shareholders_equity" => "total shareholders equity",
-        "total_assets" => "total assets",
-        "total_debt" => "total debt",
-        "total_liabilities" => "total liabilities",
-        _ => "",
-    }
 }
 
 fn bounded_question_anchor(question: &str) -> Result<String, InitialPlanError> {
@@ -1567,7 +1533,7 @@ mod tests {
         // so the qualitative-prose retrieval path can match it in the 10-K.
         assert_eq!(
             plan["clauses"][0]["required_concepts"],
-            json!(["revenue net sales"])
+            json!(["revenue net_sales sales"])
         );
         assert_eq!(plan["clauses"][0]["required_predicates"], json!([]));
         assert!(
@@ -1682,7 +1648,7 @@ mod tests {
         // The metric's natural filing phrase is injected into required_concepts.
         assert_eq!(
             metric_clause["required_concepts"],
-            json!(["revenue net sales"])
+            json!(["revenue net_sales sales"])
         );
         assert_eq!(metric_clause["required_predicates"], json!([]));
         assert!(
