@@ -18,7 +18,7 @@ entrypoints:
     required_model_profile: flash_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
-    # company_research uses the full research skill suite (original krw-ontology-research).
+    # company_research uses the full research skill suite.
     pinned_skills:
       - research_analysis
       - research_planner_skill
@@ -180,50 +180,50 @@ roles:
     deterministic: false
     # Planning is a closed tool-proposal task. Direct Flash avoids spending a
     # large hidden-thinking turn before the first immutable evidence lookup.
-    # The planner skill body, proposal contract, and examples are loaded on
-    # demand via skill.load (progressive disclosure) to keep the system prompt
-    # compact.
-    execution: { reasoning: direct, max_output_tokens: 2048 }
+    # ResearchProposal v4 fits in 500-800 tokens; 1024 is a hard ceiling to
+    # prevent reasoning-token bloat that previously caused 13K-token turns.
+    execution: { reasoning: direct, max_output_tokens: 1024 }
   - id: analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    # Thinking-enabled role: reasoning tokens (~2k-4k) + tool_call/output (~2k-4k).
-    # 16384 leaves headroom so the reasoning_content never starves the
-    # tool_call argument assembly, which previously caused truncated JSON
-    # (finish_reason: "length" → dependency_contract_failure).
-    execution: { max_output_tokens: 16384 }
+    # Thinking-enabled role for evidence analysis. 8192 covers reasoning
+    # (~2-3k) + tool_call/output (~2-3k) without the wasted headroom that
+    # 16384 previously allowed.
+    execution: { max_output_tokens: 8192 }
   - id: composer
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    # Korean Markdown answer: 2-3k tokens is sufficient for a full answer
+    # with tables and interpretation.
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: earnings_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 2048 }
+    execution: { reasoning: direct, max_output_tokens: 1024 }
   - id: earnings_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { max_output_tokens: 16384 }
+    execution: { max_output_tokens: 8192 }
   - id: scenario_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 2048 }
+    execution: { reasoning: direct, max_output_tokens: 1024 }
   - id: scenario_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { max_output_tokens: 16384 }
+    execution: { max_output_tokens: 8192 }
   - id: idea_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 2048 }
+    execution: { reasoning: direct, max_output_tokens: 1024 }
   - id: idea_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { max_output_tokens: 16384 }
+    execution: { max_output_tokens: 8192 }
   - id: specialized_composer
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: verifier
     prompt_segments: []
     deterministic: true
@@ -453,18 +453,18 @@ workflows:
     initial: accepted
     states:
       - { id: accepted, kind: start, max_visits: 1 }
-      - { id: author_plan, kind: plan, role_id: planner, max_visits: 2 }
+      - { id: author_plan, kind: plan, role_id: planner, max_visits: 1 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: planner, max_visits: 1 }
-      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 1 }
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
-      - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 6 }
-      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 3 }
+      - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
-      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 3 }
-      - { id: verify_ir, kind: verify, max_visits: 3 }
-      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 2 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
       - { id: render_ko, kind: render, max_visits: 1 }
       - { id: commit, kind: commit, max_visits: 1 }
       - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
@@ -484,12 +484,11 @@ workflows:
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: append_context_plan, to: query_context }
-      - { from: assess_obligations, on: proposal_rejected, to: assess_obligations }
       - { from: assess_obligations, on: evidence_sufficient, to: compose_ir }
       - { from: assess_obligations, on: no_positive_value_action, to: compose_ir }
       - { from: assess_obligations, on: output_budget_reserved, to: compose_ir }
-      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
-      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: targeted_query, on: evidence_observed, to: compose_ir }
+      - { from: trace_selected, on: evidence_observed, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
@@ -502,13 +501,13 @@ workflows:
     states:
       - { id: accepted, kind: start, max_visits: 1 }
       - { id: define_quarter_thesis, kind: plan, role_id: earnings_planner, max_visits: 1 }
-      - { id: author_plan, kind: plan, role_id: earnings_planner, max_visits: 2 }
+      - { id: author_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
-      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
-      - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 5 }
-      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 1 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 3 }
+      - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 3 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
       - { id: classify_thesis_change, kind: assess, role_id: earnings_analyst, max_visits: 2 }
       - { id: compose_ir, kind: compose, role_id: specialized_composer, max_visits: 2 }
@@ -533,13 +532,12 @@ workflows:
       - { from: reconcile_periods_and_commentary, on: precise_query_has_value, to: targeted_query }
       - { from: reconcile_periods_and_commentary, on: selected_trace_has_value, to: trace_selected }
       - { from: reconcile_periods_and_commentary, on: append_context_plan, to: query_context }
-      - { from: reconcile_periods_and_commentary, on: proposal_rejected, to: reconcile_periods_and_commentary }
       - { from: reconcile_periods_and_commentary, on: obligations_resolved, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: external_input_required, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: no_positive_value_action, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: output_budget_reserved, to: compose_ir }
-      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
-      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: targeted_query, on: evidence_observed, to: compose_ir }
+      - { from: trace_selected, on: evidence_observed, to: compose_ir }
       - { from: classify_thesis_change, on: classified, to: compose_ir }
       - { from: classify_thesis_change, on: output_budget_reserved, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
@@ -743,6 +741,7 @@ validators:
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
+      - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
       - { op: max_calls, capability_id: ontology.query_context_universe, max: 2, code: universe_context_limit }
       - { op: max_calls, capability_id: ontology.query_universe, max: 3, code: universe_query_limit }
       - { op: max_calls, capability_id: ontology.trace_universe, max: 2, code: universe_trace_limit }

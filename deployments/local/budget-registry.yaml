@@ -1,65 +1,67 @@
 schema_version: 1
 registry_id: krw-ontology-local-v1
 profiles:
-  # Broad observation envelope for real-company research quality evaluation.
-  # It is pinned into each execution snapshot; later optimisation must be
-  # based on observed usage rather than turning a live run into a short path.
+  # Balanced envelope: enough turns/calls for quality answers, capped to
+  # keep latency practical (~90s average). Output tokens are bounded per role.
   - profile_id: company_research_full
     limits:
-      max_provider_turns: 32
-      max_capability_calls: 12
-      max_replans: 6
-      max_repairs: 6
-      max_input_tokens: 360000
-      max_output_tokens: 48000
-      max_evidence_bytes: 16777216
-      deadline_ms: 480000
+      max_provider_turns: 12
+      max_capability_calls: 5
+      max_replans: 3
+      max_repairs: 3
+      max_input_tokens: 200000
+      max_output_tokens: 24000
+      max_evidence_bytes: 8388608
+      deadline_ms: 180000
       capability_call_limits:
-        ontology.query_context: 4
-        ontology.query: 5
-        ontology.trace: 3
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+        ontology.chain: 1
   - profile_id: earnings_deep_dive
     limits:
-      max_provider_turns: 20
+      max_provider_turns: 10
       max_capability_calls: 5
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
       max_output_tokens: 14000
       max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      deadline_ms: 180000
       capability_call_limits:
         ontology.query_context: 2
         ontology.query: 2
         ontology.trace: 1
+        ontology.chain: 1
   - profile_id: scenario_sensitivity
     limits:
-      max_provider_turns: 20
+      max_provider_turns: 10
       max_capability_calls: 5
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
       max_output_tokens: 14000
       max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      deadline_ms: 180000
       capability_call_limits:
         ontology.query_context: 2
         ontology.query: 2
         ontology.trace: 1
+        ontology.chain: 1
   - profile_id: idea_generation
     limits:
-      max_provider_turns: 24
-      max_capability_calls: 7
+      max_provider_turns: 12
+      max_capability_calls: 5
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
-      max_output_tokens: 16000
+      max_output_tokens: 14000
       max_evidence_bytes: 8388608
-      deadline_ms: 150000
+      deadline_ms: 180000
       capability_call_limits:
         ontology.query_context_universe: 2
-        ontology.query_universe: 3
-        ontology.trace_universe: 2
+        ontology.query_universe: 2
+        ontology.trace_universe: 1
   - profile_id: display_plan_minimal
     limits:
       max_provider_turns: 4
@@ -80,7 +82,7 @@ profiles:
       max_input_tokens: 64000
       max_output_tokens: 8000
       max_evidence_bytes: 4194304
-      deadline_ms: 90000
+      deadline_ms: 180000
       capability_call_limits:
         feed.list_items: 2
         feed.get_items: 2
@@ -159,7 +161,7 @@ profiles:
       max_input_tokens: 64000
       max_output_tokens: 12000
       max_evidence_bytes: 4194304
-      deadline_ms: 90000
+      deadline_ms: 180000
       capability_call_limits: {}
   - profile_id: router_minimal
     limits:
