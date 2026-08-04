@@ -2098,6 +2098,23 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
             if clause.clause_id not in clause_ids:
                 clause_ids.append(clause.clause_id)
             clause_matches = existing.setdefault("_plan_clause_matches", [])
+            # Heuristic relation verification: if the clause has predicates,
+            # check whether all predicate tokens appear in the evidence row's
+            # retrieval text. This is not a full structural relation verifier,
+            # but it unblocks relational clauses that were permanently stuck at
+            # semantic=None because no verifier ever set this flag.
+            predicate_terms = list(clause.required_predicates)
+            relation_verified = False
+            if predicate_terms:
+                _evidence_text_parts = []
+                for _field in ("title", "summary", "quote_text", "claim_text", "retrieval_text"):
+                    _val = row.get(_field)
+                    if isinstance(_val, str) and _val:
+                        _evidence_text_parts.append(_val)
+                _joined = " ".join(_evidence_text_parts).lower()
+                relation_verified = all(
+                    term.lower() in _joined for term in predicate_terms
+                )
             clause_matches.append(
                 {
                     "clause_id": clause.clause_id,
@@ -2105,9 +2122,10 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
                     "planned_evidence_terms": list(
                         row.get("planned_evidence_terms") or _clause_evidence_terms(clause)
                     ),
-                    "planned_predicate_terms": list(clause.required_predicates),
+                    "planned_predicate_terms": predicate_terms,
                     "planned_metric_terms": _clause_metric_terms(clause),
                     "planned_metric_scope": clause.metric_scope,
+                    "planned_relation_verified": relation_verified,
                 }
             )
 

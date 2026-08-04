@@ -1396,12 +1396,15 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
         evidence_terms = _string_list(raw_clause_match.get("planned_evidence_terms"))
         predicate_terms = _string_list(raw_clause_match.get("planned_predicate_terms"))
         metric_terms = _string_list(raw_clause_match.get("planned_metric_terms"))
-        metric_clause_match = object_type == "MetricObservation" and bool(metric_terms)
+        metric_clause_match = (
+            object_type in {"MetricObservation", "XBRLFact", "FinancialMetricValue", "NumericEvidence"}
+            and bool(metric_terms)
+        )
         relation_verified = _truthy(raw_clause_match.get("planned_relation_verified"))
         relevance_terms = metric_terms if metric_clause_match else evidence_terms
         planned_metric_scope = _first_text(raw_clause_match, "planned_metric_scope") or "any"
         scope_visible = (
-            object_type != "MetricObservation"
+            object_type not in {"MetricObservation", "XBRLFact", "FinancialMetricValue", "NumericEvidence"}
             or planned_metric_scope == "any"
             or planned_metric_scope == row_metric_scope
         )
@@ -2073,12 +2076,72 @@ def _build_clause_coverage(
     rows: list[ClauseCoverage] = []
     for clause in clauses:
         comparison_tickers = list(ticker_scope_by_clause.get(clause.clause_id) or [])
+        # Primary path: evidence with explicit clause_matches from the search
+        # engine.
         matching = [
             (unit, match)
             for unit in units
             for match in unit.clause_matches
             if match.clause_id == clause.clause_id
         ]
+        # Fallback path: MetricSeries evidence units are aggregated at render
+        # time and do not carry clause_matches from the search engine. If a
+        # clause has no explicit matches, check whether any evidence unit's
+        # metric identity or required concepts overlap with the clause's
+        # required_concepts. This unblocks metric-series evidence that was
+        # correctly retrieved but never linked to a clause.
+        if not matching:
+            clause_concepts_lower = {
+                concept.lower() for concept in (clause.required_concepts or [])
+            }
+            clause_metric_terms = set(clause.metrics or [])
+            for unit in units:
+                if unit.clause_matches:
+                    continue  # already handled by primary path
+                unit_metric = (unit.metric or "").lower()
+                unit_text = f"{unit.title} {unit.summary}".lower()
+                unit_tokens = set(unit_text.replace("_", " ").split())
+                # Match if the unit's metric identity overlaps with clause
+                # metrics, or if any required concept token appears in the
+                # unit's prose. Token-level matching is used because evidence
+                # titles like "Service Revenue" won't contain the exact phrase
+                # "segment revenue" but share the "revenue" token.
+                metric_overlap = (
+                    bool(unit_metric)
+                    and bool(clause_metric_terms)
+                    and any(
+                        term.lower() == unit_metric
+                        or unit_metric in term.lower()
+                        or term.lower() in unit_metric
+                        for term in clause_metric_terms
+                    )
+                )
+                concept_visible = False
+                if clause_concepts_lower:
+                    concept_tokens: set[str] = set()
+                    for concept in clause_concepts_lower:
+                        concept_tokens.update(concept.replace("_", " ").split())
+                    concept_visible = bool(concept_tokens & unit_tokens)
+                if metric_overlap or concept_visible:
+                    from krw_capability_runtime.mcp_server.contracts import (
+                        ClauseEvidenceMatch as _CEM,
+                        EvidenceDirectness as _ED,
+                    )
+                    fallback_directness = (
+                        "metric_lineage"
+                        if unit.directness == "metric_lineage"
+                        else ("direct" if bool(unit.metric_points) else "related")
+                    )
+                    matching.append(
+                        (
+                            unit,
+                            _CEM(
+                                clause_id=clause.clause_id,
+                                match_mode="relaxed",
+                                directness=_ED(fallback_directness),  # type: ignore[arg-type]
+                            ),
+                        )
+                    )
         eligible = [
             (unit, match)
             for unit, match in matching
