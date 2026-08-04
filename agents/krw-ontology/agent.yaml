@@ -46,6 +46,11 @@ entrypoints:
       - plain_korean_investor_language
       - final_markdown_contract
       - specialized_answer
+      - thesis_change_policy
+      - earnings_quality_policy
+      - commentary_reconciliation
+      - earnings_period_map
+      - earnings_output_contract
   scenario_sensitivity:
     run_kind: scenario_sensitivity
     locale: ko-KR
@@ -213,6 +218,11 @@ prompt_segments:
   - { id: scenario_analysis, path: prompts/scenario-analysis.md, stable_prefix: false, private: true }
   - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true }
   - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true }
+  - { id: thesis_change_policy, path: references/thesis-change-policy.md, stable_prefix: false, private: true }
+  - { id: earnings_quality_policy, path: references/earnings-quality-policy.md, stable_prefix: false, private: true }
+  - { id: commentary_reconciliation, path: references/commentary-number-reconciliation.md, stable_prefix: false, private: true }
+  - { id: earnings_period_map, path: references/earnings-period-map.md, stable_prefix: false, private: true }
+  - { id: earnings_output_contract, path: references/output-contract.md, stable_prefix: false, private: true }
   - id: ontology_catalog
     ontology_schema: { root_env: KRW_ONTOLOGY_ROOT, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
     stable_prefix: true
