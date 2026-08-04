@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"skill_id":{"description":"The `name` field from a skill catalog entry. Must match a frontmatter name exactly.","minLength":1,"pattern":"^[a-z][a-z0-9_]*$","title":"Skill Id","type":"string"}},"required":["skill_id"],"title":"SkillLoadInput","type":"object"}

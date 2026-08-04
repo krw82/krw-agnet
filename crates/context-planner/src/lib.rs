@@ -651,6 +651,14 @@ fn build_frontier_tools(
     image: &AgentImageManifest,
     frontier: &BTreeSet<String>,
 ) -> Result<(Vec<ProviderToolDefinition>, Vec<CapabilitySchemaRef>), ContextPlanError> {
+    // The local skill-load capability is ambient: available from every
+    // model-driven state so the agent can pull a skill body on demand
+    // (progressive disclosure). Only inject when the image declares it, so
+    // agents without skill.load (e.g. guru-advisor) are unaffected.
+    let mut frontier = frontier.clone();
+    if image.body.capabilities.iter().any(|c| c.id == "skill.load") {
+        frontier.insert("skill.load".to_string());
+    }
     let mut definitions = Vec::with_capacity(frontier.len());
     let mut schemas = Vec::with_capacity(frontier.len());
     let mut provider_names = BTreeSet::new();
@@ -843,11 +851,16 @@ mod tests {
         let (image, request) = fixture();
         let planner = ContextPlanner::compile(&image).unwrap();
         let plan = planner.for_request(&request, "author_plan").unwrap();
-        assert_eq!(plan.capability_schemas.len(), 1);
-        assert_eq!(
-            plan.capability_schemas[0].capability_id,
-            "ontology.query_context"
-        );
+        // skill.load is ambient (available from every model state) plus the
+        // reachable ontology.query_context.
+        assert_eq!(plan.capability_schemas.len(), 2);
+        let plan_ids = plan
+            .capability_schemas
+            .iter()
+            .map(|schema| schema.capability_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(plan_ids.contains("ontology.query_context"));
+        assert!(plan_ids.contains("skill.load"));
 
         let assess = planner.for_request(&request, "assess_obligations").unwrap();
         assert_eq!(
@@ -856,12 +869,19 @@ mod tests {
                 .iter()
                 .map(|schema| schema.capability_id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["ontology.query_context", "ontology.query", "ontology.trace"])
+            BTreeSet::from([
+                "ontology.query_context",
+                "ontology.query",
+                "ontology.trace",
+                "skill.load",
+            ])
         );
 
+        // compose has no reachable evidence capabilities, but skill.load is
+        // still ambient.
         let compose = planner.for_request(&request, "compose_ir").unwrap();
-        assert!(compose.capability_schemas.is_empty());
-        assert!(compose.tool_definitions.is_empty());
+        assert_eq!(compose.capability_schemas.len(), 1);
+        assert_eq!(compose.capability_schemas[0].capability_id, "skill.load");
     }
 
     #[test]
@@ -904,7 +924,11 @@ mod tests {
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
         assert!(loaded.contains("security_boundary"));
-        assert!(loaded.contains("retrieval_planner"));
+        // Skill bodies (retrieval_planner, earnings_analysis, etc.) are no
+        // longer pinned in the system prompt; they are loaded on demand via
+        // skill.load. The compact skill_catalog replaces them.
+        assert!(loaded.contains("skill_catalog"));
+        assert!(!loaded.contains("retrieval_planner"));
         assert!(!loaded.contains("guru_answer"));
         assert!(
             plan.omitted_segments

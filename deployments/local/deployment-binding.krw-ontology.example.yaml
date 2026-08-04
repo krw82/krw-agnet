@@ -49,3 +49,20 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 4
     request_timeout_ms: 30000
+  - binding_key: krw_skill_local
+    # Local skill-body lookup (progressive disclosure). The run-engine
+    # resolves the body from the immutable image blob store before any MCP
+    # dispatch, so this binding is a resolution placeholder only. It reuses
+    # the local endpoint so binding validation passes without a separate
+    # transport declaration.
+    mcp_tool_name: krw_skill_local
+    transport: mcp-http
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 5000

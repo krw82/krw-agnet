@@ -1,3 +1,9 @@
+---
+name: plain_korean_investor_language
+description: "최종 답변을 터미널 노트가 아닌 명확한 한국어 투자 설명으로 작성하는 포맷 가이드"
+when_to_use: "composer 역할로 한국어 답변을 작성할 때"
+---
+
 # Plain Korean investor language
 
 The final answer should read like a clear Korean investment explanation, not a

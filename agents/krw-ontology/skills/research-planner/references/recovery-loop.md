@@ -1,3 +1,9 @@
+---
+name: research_recovery_loop
+description: "capability 오류/제안 오류를 private 피드백으로 처리하는 복구 루프 규칙. replace/narrow/split repair mode"
+when_to_use: "capability가 recovery_required를 반환했을 때"
+---
+
 # Recovery loop
 
 Most tool and proposal errors are private feedback, not run-ending failures.

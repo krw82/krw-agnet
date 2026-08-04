@@ -2596,25 +2596,33 @@ where
                 action.bind_receipt(&receipt)?;
                 self.guard_control(identity, deadline).await?;
                 action.mark_dispatched()?;
-                let invocation = capability_invocation(&identity.run_id, call);
-                let result = match await_until(deadline, self.capabilities.invoke(&invocation))
-                    .await
-                {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(failure)) => {
-                        if failure.delivery == DeliveryCertainty::MayHaveDispatched {
-                            self.record_ambiguous(identity, call, "capability_failure", deadline)
-                                .await?;
+                // Local skill-body lookup (progressive disclosure). The body is
+                // resolved from the immutable image blob store — no MCP round
+                // trip. Falls through to the normal MCP path for any other
+                // capability id.
+                let result = if call.capability.id == "skill.load" {
+                    invoke_skill_load(context.image, call)?
+                } else {
+                    let invocation = capability_invocation(&identity.run_id, call);
+                    match await_until(deadline, self.capabilities.invoke(&invocation))
+                        .await
+                    {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(failure)) => {
+                            if failure.delivery == DeliveryCertainty::MayHaveDispatched {
+                                self.record_ambiguous(identity, call, "capability_failure", deadline)
+                                    .await?;
+                            }
+                            return Err(EngineError::Dependency {
+                                component: "capability",
+                                failure,
+                            });
                         }
-                        return Err(EngineError::Dependency {
-                            component: "capability",
-                            failure,
-                        });
-                    }
-                    Err(()) => {
-                        self.record_ambiguous(identity, call, "capability_timeout", deadline)
-                            .await?;
-                        return Err(EngineError::DeadlineExceeded("capability"));
+                        Err(()) => {
+                            self.record_ambiguous(identity, call, "capability_timeout", deadline)
+                                .await?;
+                            return Err(EngineError::DeadlineExceeded("capability"));
+                        }
                     }
                 };
                 let result_bytes = serde_jcs::to_vec(&result)?;
@@ -2713,7 +2721,7 @@ where
         let identity = context.identity;
         let deadline = context.deadline;
         let evaluation =
-            self.evaluate_after_action(context.image, context.state, call, &result, &result_hash)?;
+            self.evaluate_after_action(&context.image, context.state, call, &result, &result_hash)?;
         let disposition = if evaluation.accepted {
             ActionDisposition::Accepted
         } else {
@@ -3267,6 +3275,68 @@ where
             RunControl::Finalized => Err(EngineError::AlreadyFinalized),
         }
     }
+}
+
+/// Resolve a `skill.load` capability call locally from the immutable image
+/// blob store (progressive disclosure). The skill body is returned verbatim
+/// as provider-visible content; no evidence ledger entries are produced. This
+/// avoids an MCP round trip for a static prompt artifact already pinned inside
+/// the image.
+fn invoke_skill_load(
+    image: &LoadedImage,
+    call: &PreparedCall,
+) -> Result<CapabilityResult, EngineError> {
+    #[derive(serde::Deserialize)]
+    struct SkillLoadInput {
+        skill_id: String,
+    }
+    let input: SkillLoadInput = serde_json::from_slice(&call.canonical_arguments)
+        .map_err(|_error| EngineError::Invariant("skill.load argument decode"))?;
+    let bytes = image
+        .prompt_blob_arc(&input.skill_id)
+        .map_err(|_| EngineError::Invariant("skill.load body lookup failed"))?;
+    // The image blob stores the raw file including frontmatter; strip it so
+    // the model receives only the instructional body.
+    let raw = std::str::from_utf8(bytes.as_ref())
+        .map_err(|_| EngineError::Invariant("skill.load body utf8"))?;
+    let body = strip_frontmatter(raw);
+    let content = serde_json::json!({
+        "skill_id": input.skill_id,
+        "content": body,
+    });
+    Ok(CapabilityResult {
+        provider_content: content,
+        evidence: Vec::new(),
+        answerability: None,
+        calculations: Vec::new(),
+    })
+}
+
+/// Remove a leading YAML frontmatter block (`---\n...\n---\n`) from a Markdown
+/// skill body. If no frontmatter is present the input is returned unchanged.
+fn strip_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    let Some(rest) = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))
+    else {
+        return content;
+    };
+    // Find the closing delimiter on its own line.
+    if let Some(idx) = rest
+        .find("\n---\n")
+        .or_else(|| rest.find("\n---\r\n"))
+    {
+        let close_len = if rest[idx..].starts_with("\n---\n") {
+            "\n---\n".len()
+        } else {
+            "\n---\r\n".len()
+        };
+        let after = &rest[idx + close_len..];
+        return after.trim_start_matches(['\n', '\r']);
+    }
+    // No closing delimiter: return original to avoid losing content.
+    content
 }
 
 #[derive(Debug)]
@@ -5641,7 +5711,7 @@ struct AfterActionValidationReceipt<'a> {
 struct ActionExecutionContext<'a> {
     identity: &'a RunIdentity,
     episode_hash: &'a ContentHash,
-    image: &'a AgentImageManifest,
+    image: &'a LoadedImage,
     state: &'a ActiveRun,
     deadline: Instant,
     max_result_bytes: usize,

@@ -1321,7 +1321,8 @@ impl FixtureCapabilityRuntime {
             | CapabilityResultIngest::FrontForm4TransactionsV1
             | CapabilityResultIngest::GuruQueryContextV1
             | CapabilityResultIngest::GuruCompanyBriefV1
-            | CapabilityResultIngest::GuruEvidenceReviewV1 => Err(fixture_dependency(
+            | CapabilityResultIngest::GuruEvidenceReviewV1
+            | CapabilityResultIngest::SkillContentV1 => Err(fixture_dependency(
                 "quality_fixture_result_ingest_unavailable",
             )),
         }

@@ -285,8 +285,28 @@ pub struct PromptSegmentSource {
     pub path: Option<String>,
     #[serde(default)]
     pub ontology_schema: Option<OntologySchemaSource>,
+    /// Auto-generate a compact skill catalog by scanning Markdown files under
+    /// `skills_dir` for YAML frontmatter (`name`, `description`). The rendered
+    /// blob replaces the full skill bodies in the system prompt so the model
+    /// can discover skills by description and load bodies on demand via the
+    /// `skill.load` capability (progressive disclosure).
+    #[serde(default)]
+    pub skill_catalog: Option<SkillCatalogSource>,
     pub stable_prefix: bool,
     pub private: bool,
+}
+
+/// Declares that a prompt segment is generated at build time by scanning
+/// skill Markdown files for YAML frontmatter. Each file contributes one
+/// catalog entry (`name`, `description`). The catalog is a compact discovery
+/// index; the full skill body is fetched on demand via `skill.load`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillCatalogSource {
+    /// One or more directories under the agent root to scan for `*.md` skill
+    /// files. Typically `["skills", "prompts", "references"]`. Each file with
+    /// valid YAML frontmatter (`name` + `description`) contributes one entry.
+    pub skills_dirs: Vec<String>,
 }
 
 /// Declares that a prompt segment is generated at build time from ontology
@@ -429,6 +449,9 @@ pub enum CapabilityResultIngest {
     GuruQueryContextV1,
     GuruCompanyBriefV1,
     GuruEvidenceReviewV1,
+    /// Local skill body loaded on demand from the immutable image blob store.
+    /// No MCP round trip; the result is a passthrough of the pinned Markdown.
+    SkillContentV1,
 }
 
 impl CapabilityResultIngest {
@@ -461,6 +484,9 @@ impl CapabilityResultIngest {
             | Self::GuruCompanyBriefV1
             | Self::GuruEvidenceReviewV1 => {
                 "Invoke the pinned read capability allowed in this workflow."
+            }
+            Self::SkillContentV1 => {
+                "Load the full body of a skill listed in the skill catalog. Call this only for skills you intend to follow, then act on the loaded instructions. The body is resolved locally — no external lookup."
             }
         }
     }
@@ -531,6 +557,11 @@ pub enum CapabilityScopeBinding {
     /// A source-filing workflow may only access the immutable filing event
     /// received in its host `RunRequest`.
     SourceFiling { filing_event_id_pointer: String },
+    /// A capability whose input carries no authenticated run scope at all —
+    /// for example a local skill-body lookup keyed only by a skill name. The
+    /// kernel imposes no ticker/filing binding because the result is a static
+    /// prompt artifact already pinned inside the immutable image.
+    Unscoped,
 }
 
 /// A bounded JSON-pointer pattern used to locate an input ticker without
@@ -1674,23 +1705,31 @@ fn load_prompt_segment_bytes(
     root: &Path,
     segment: &PromptSegmentSource,
 ) -> Result<Vec<u8>, ImageError> {
-    match (&segment.path, &segment.ontology_schema) {
-        (Some(path), None) => {
-            let resolved = safe_source_path(root, path)?;
-            Ok(fs::read(resolved)?)
-        }
-        (None, Some(source)) => {
-            let markdown = render_ontology_catalog(source, &segment.id)?;
-            Ok(markdown.into_bytes())
-        }
-        (Some(_), Some(_)) => Err(ImageError::InvalidSpec(format!(
-            "prompt segment `{}` declares both path and ontology_schema; use exactly one",
+    let source_count = [
+        segment.path.is_some(),
+        segment.ontology_schema.is_some(),
+        segment.skill_catalog.is_some(),
+    ]
+    .iter()
+    .filter(|&&flag| flag)
+    .count();
+    if source_count != 1 {
+        return Err(ImageError::InvalidSpec(format!(
+            "prompt segment `{}` must declare exactly one of path, ontology_schema, or skill_catalog (found {source_count})",
             segment.id
-        ))),
-        (None, None) => Err(ImageError::InvalidSpec(format!(
-            "prompt segment `{}` has neither path nor ontology_schema",
-            segment.id
-        ))),
+        )));
+    }
+    if let Some(path) = &segment.path {
+        let resolved = safe_source_path(root, path)?;
+        Ok(fs::read(resolved)?)
+    } else if let Some(source) = &segment.ontology_schema {
+        let markdown = render_ontology_catalog(source, &segment.id)?;
+        Ok(markdown.into_bytes())
+    } else if let Some(source) = &segment.skill_catalog {
+        let markdown = render_skill_catalog(source, root, &segment.id)?;
+        Ok(markdown.into_bytes())
+    } else {
+        unreachable!("source_count == 1 guard guarantees one branch is taken")
     }
 }
 
@@ -1750,6 +1789,130 @@ fn render_ontology_catalog(
         }
     }
     Ok(out)
+}
+
+/// Render a compact skill catalog Markdown blob by scanning Markdown files
+/// under `skills_dir` for YAML frontmatter. Each file with valid frontmatter
+/// contributes one entry: `name`, `description`, optional `when_to_use`.
+///
+/// The catalog replaces full skill bodies in the system prompt (progressive
+/// disclosure): the model discovers skills by description and loads the body
+/// on demand via the `skill.load` capability. Files without frontmatter or
+/// without a `name`/`description` are skipped silently.
+fn render_skill_catalog(
+    source: &SkillCatalogSource,
+    root: &Path,
+    segment_id: &str,
+) -> Result<String, ImageError> {
+    if source.skills_dirs.is_empty() {
+        return Err(ImageError::InvalidSpec(format!(
+            "skill_catalog segment `{segment_id}` declares an empty skills_dirs list"
+        )));
+    }
+    // Recursively collect .md files across all declared directories (sorted
+    // for deterministic output).
+    let mut md_files: Vec<PathBuf> = Vec::new();
+    for dir in &source.skills_dirs {
+        let skills_dir = safe_source_path(root, dir)?;
+        if !skills_dir.is_dir() {
+            return Err(ImageError::InvalidSpec(format!(
+                "skill_catalog segment `{segment_id}`: {} is not a directory",
+                skills_dir.display()
+            )));
+        }
+        collect_markdown_files(&skills_dir, &mut md_files);
+    }
+    md_files.sort();
+    md_files.dedup();
+
+    let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
+    for file_path in &md_files {
+        let content = match fs::read_to_string(file_path) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let Some(frontmatter) = parse_frontmatter(&content) else {
+            continue;
+        };
+        let Some(name) = frontmatter.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(description) = frontmatter.get("description").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let when_to_use = frontmatter
+            .get("when_to_use")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        entries.push((name.to_string(), description.to_string(), when_to_use));
+    }
+
+    let mut out = String::new();
+    out.push_str("<!-- AUTO-GENERATED skill catalog. Do not edit by hand.\n");
+    out.push_str("     Source: skills_dir scan for YAML frontmatter. -->\n\n");
+    out.push_str("# Skill catalog\n\n");
+    out.push_str(
+        "Each skill below is available on demand. To use one, call the \
+         `skill.load` function with `{ \"skill_id\": \"<name>\" }`. The function \
+         returns the full skill body; read it and follow it. Do not guess skill \
+         contents — load the body first when a skill is relevant to the current \
+         question.\n\n",
+    );
+    if entries.is_empty() {
+        out.push_str("(No skills with valid frontmatter found.)\n");
+    } else {
+        for (name, description, when_to_use) in &entries {
+            out.push_str(&format!("- **{name}**: {description}"));
+            if let Some(w) = when_to_use {
+                out.push_str(&format!(" (쓰임: {w})"));
+            }
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Recursively collect `.md` file paths under `dir` into `out`.
+fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_markdown_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            // Skip README-like catalog files that are not skills.
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if stem.eq_ignore_ascii_case("README") {
+                    continue;
+                }
+            }
+            out.push(path);
+        }
+    }
+}
+
+/// Parse a YAML frontmatter block delimited by `---` lines at the start of
+/// `content`. Returns the parsed mapping, or `None` if no frontmatter is
+/// present or parsing fails.
+fn parse_frontmatter(content: &str) -> Option<serde_yaml_ng::Value> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---\n") && !trimmed.starts_with("---\r\n") {
+        return None;
+    }
+    let after_open = &trimmed[3..];
+    let body_start = after_open
+        .strip_prefix('\n')
+        .or_else(|| after_open.strip_prefix("\r\n"))
+        .unwrap_or(after_open);
+    // Find the closing `---` on its own line.
+    let close_idx = body_start
+        .find("\n---\n")
+        .or_else(|| body_start.find("\n---\r\n"))
+        .or_else(|| body_start.rfind("\n---").filter(|&i| body_start[i..].trim() == "---"))?;
+    let frontmatter_text = &body_start[..close_idx];
+    serde_yaml_ng::from_str(frontmatter_text).ok()
 }
 
 fn render_metric_section(value: &serde_yaml_ng::Value, out: &mut String) {
@@ -3019,6 +3182,7 @@ fn validate_capability_scope_binding(capability: &CapabilitySpec) -> Result<(), 
         CapabilityScopeBinding::SourceFiling {
             filing_event_id_pointer,
         } => valid_json_pointer(filing_event_id_pointer),
+        CapabilityScopeBinding::Unscoped => true,
     };
     if valid && capability.permission == Permission::Read {
         Ok(())

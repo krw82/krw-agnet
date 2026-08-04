@@ -1,3 +1,9 @@
+---
+name: provider_proposal_contract
+description: "ResearchProposal v4 provider 호출 형태 계약. 올바른/잘못된 proposal 봉투 형태 예시"
+when_to_use: "planner 역할로 proposal을 작성하기 전에 호출 형태를 확인할 때"
+---
+
 # Provider proposal contract
 
 There are three deliberately separate shapes:

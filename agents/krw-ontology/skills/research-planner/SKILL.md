@@ -1,3 +1,9 @@
+---
+name: research_planner_skill
+description: "사용자 질문을 최소 증거 요청(ResearchProposal v4)으로 변환하는 플래너 절차. metric 식별자·목표 유형·required/deferred 분리 방법 포함"
+when_to_use: "planner 역할이거나 corrected research decision이 필요할 때"
+---
+
 # KRW Research Planner
 
 Use this skill only while the advertised role is a planner or the kernel asks

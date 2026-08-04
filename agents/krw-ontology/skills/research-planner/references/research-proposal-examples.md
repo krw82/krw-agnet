@@ -1,3 +1,9 @@
+---
+name: research_proposal_examples
+description: "ResearchProposal v4 의미론적 예제 모음. 단일 메트릭/시계열/변화/정성/이익 체인 등 5가지 시나리오"
+when_to_use: "planner 역할로 goal 타입을 선택하거나 혼합 증거를 분리하기 전에"
+---
+
 # ResearchProposal v4 examples
 
 These are semantic examples for the Flash planner. They are not physical MCP

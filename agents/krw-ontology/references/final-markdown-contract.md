@@ -1,3 +1,9 @@
+---
+name: final_markdown_contract
+description: "최종 상태가 반환할 Korean Markdown 답변 형식 계약. JSON/AnswerIR 금지, EvidenceLedger는 커널이 별도 저장"
+when_to_use: "composer 역할로 최종 Markdown 답변을 작성할 때"
+---
+
 # Final Markdown contract
 
 The final state returns ordinary Korean Markdown, not JSON and not an

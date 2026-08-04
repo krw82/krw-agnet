@@ -14,7 +14,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use krw_agent_contracts::{
     NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1,
-    QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2, validate_value,
+    QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1,
+    SKILL_LOAD_V1, validate_value,
     verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
@@ -116,6 +117,9 @@ enum EvidenceMapping {
     TraceLineageV1,
     Front(FrontMapping),
     Guru(GuruMapping),
+    /// Local skill body passthrough. Produces no evidence ledger entries; the
+    /// raw Markdown is forwarded as the provider-visible content.
+    SkillContent,
 }
 
 impl EvidenceMapping {
@@ -152,6 +156,7 @@ impl EvidenceMapping {
             CapabilityResultIngest::GuruQueryContextV1 => Self::Guru(GuruMapping::QueryContext),
             CapabilityResultIngest::GuruCompanyBriefV1 => Self::Guru(GuruMapping::CompanyBrief),
             CapabilityResultIngest::GuruEvidenceReviewV1 => Self::Guru(GuruMapping::EvidenceReview),
+            CapabilityResultIngest::SkillContentV1 => Self::SkillContent,
         }
     }
 
@@ -164,6 +169,7 @@ impl EvidenceMapping {
             Self::ResearchStateV2 => SEARCH_PLAN_V2,
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,
             Self::TraceLineageV1 => ONTOLOGY_TRACE_INPUT_V1,
+            Self::SkillContent => SKILL_LOAD_V1,
             Self::Front(mapping) => mapping.input_contract(),
             Self::Guru(mapping) => mapping.input_contract(),
         }
@@ -177,6 +183,7 @@ impl EvidenceMapping {
                 NORMALIZED_CAPABILITY_RESULT_V1,
             ],
             Self::TargetedEvidenceV1 | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
+            Self::SkillContent => &[SKILL_CONTENT_V1],
             Self::Front(mapping) => mapping.output_contracts(),
             Self::Guru(mapping) => mapping.output_contracts(),
         }
@@ -987,6 +994,20 @@ impl PooledMcpCapabilityRuntime {
                     calculations: Vec::new(),
                 }
             }
+            EvidenceMapping::SkillContent => {
+                // The skill body is a local prompt artifact, not evidence. It
+                // is forwarded verbatim as provider-visible content; no ledger
+                // entries, no answerability, no calculations.
+                validate_value(SKILL_CONTENT_V1, &payload).map_err(|error| {
+                    reject("skill_content_contract_invalid", format!("{error:?}"))
+                })?;
+                CapabilityResult {
+                    provider_content: payload,
+                    evidence: Vec::new(),
+                    answerability: None,
+                    calculations: Vec::new(),
+                }
+            }
         };
         validate_normalized_result(&result)?;
         let pending_hash = if matches!(descriptor.mapping, EvidenceMapping::Front(_)) {
@@ -1024,7 +1045,8 @@ impl PooledMcpCapabilityRuntime {
             EvidenceMapping::Guru(GuruMapping::QueryContext)
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
-            | EvidenceMapping::Front(_) => {
+            | EvidenceMapping::Front(_)
+            | EvidenceMapping::SkillContent => {
                 return Err(reject(
                     "untyped_tool_error",
                     "the capability has no declared typed error result",
@@ -1199,7 +1221,8 @@ impl PooledMcpCapabilityRuntime {
             }
             EvidenceMapping::ResearchStateV2
             | EvidenceMapping::TargetedEvidenceV1
-            | EvidenceMapping::TraceLineageV1 => Ok(()),
+            | EvidenceMapping::TraceLineageV1
+            | EvidenceMapping::SkillContent => Ok(()),
         }
     }
 

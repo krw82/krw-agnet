@@ -1,3 +1,9 @@
+---
+name: earnings_analysis
+description: "매출 구성·지역 동인·비용 추세·마진 연결·현금창출 5단계 인과 체인으로 분기/연간 실적을 분석한다. 최신 10-Q 메인 + 직전 10-K 베이스라인"
+when_to_use: "분기/연간 실적, 마진, 부문별 매출, 현금흐름 연결 분석이 필요할 때"
+---
+
 Treat the latest reported quarter (10-Q) as the main evidence source, with the
 latest annual 10-K as the baseline. The system now retrieves both quarterly and
 annual filings automatically. Map the current quarter, same quarter a year

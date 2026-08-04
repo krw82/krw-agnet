@@ -82,6 +82,14 @@ const STATE_FACTS_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/state-facts-v1.json"
 ));
+const SKILL_LOAD_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/krw-ontology/v2/schemas/skill-load-v1.json"
+));
+const SKILL_CONTENT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/krw-ontology/v2/schemas/skill-content-v1.json"
+));
 /// The largest canonical payload admitted by the runtime capability envelope.
 /// A single filing/document field may legitimately occupy most of this budget;
 /// per-field caps therefore belong to the typed contract that knows the field,
@@ -103,6 +111,11 @@ pub const ANSWER_IR_V1: &str = "answer-ir/v1";
 pub const FINAL_MARKDOWN_V1: &str = "final-markdown/v1";
 pub const STATE_OPERATION_OUTPUT_V1: &str = "state-operation-output/v1";
 pub const STATE_FACTS_V1: &str = "state-facts/v1";
+/// Model-authored skill load request: `{ "skill_id": "<name>" }`. The body is
+/// resolved locally from the immutable image blob store — no MCP round trip.
+pub const SKILL_LOAD_V1: &str = "skill-load/v1";
+/// Skill body returned by the local `skill.load` capability handler.
+pub const SKILL_CONTENT_V1: &str = "skill-content/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1_SCHEMA_SHA256: &str =
     "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151";
 pub const ANSWER_IR_V1_SCHEMA_SHA256: &str =
@@ -115,6 +128,10 @@ pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
     "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8";
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
     "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49";
+pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
+    "sha256:5c48e6e7a5b850c8b8586f6a56da8049b9b257406ba091a11367965751488289";
+pub const SKILL_CONTENT_V1_SCHEMA_SHA256: &str =
+    "sha256:29e76200a214632bb215b6427f1308438f11adc6437cbad1ed466818f23ab55e";
 
 // Canonical metric identifiers accepted by ResearchProposal v4. Generated
 // from the ontology metric dictionary at build time by build.rs.
@@ -200,6 +217,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: STATE_FACTS_V1_SCHEMA_SHA256,
             schema: STATE_FACTS_BYTES,
         }),
+        SKILL_LOAD_V1 => Some(ContractDescriptor {
+            id: SKILL_LOAD_V1,
+            schema_sha256: SKILL_LOAD_V1_SCHEMA_SHA256,
+            schema: SKILL_LOAD_BYTES,
+        }),
+        SKILL_CONTENT_V1 => Some(ContractDescriptor {
+            id: SKILL_CONTENT_V1,
+            schema_sha256: SKILL_CONTENT_V1_SCHEMA_SHA256,
+            schema: SKILL_CONTENT_BYTES,
+        }),
         _ => front::contract(contract_id)
             .or_else(|| guru::contract(contract_id))
             .or_else(|| product::contract(contract_id)),
@@ -219,6 +246,8 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(FINAL_MARKDOWN_V1).expect("static contract"),
         contract(STATE_OPERATION_OUTPUT_V1).expect("static contract"),
         contract(STATE_FACTS_V1).expect("static contract"),
+        contract(SKILL_LOAD_V1).expect("static contract"),
+        contract(SKILL_CONTENT_V1).expect("static contract"),
     ];
     descriptors.extend(front::descriptors());
     descriptors.extend(guru::descriptors());
