@@ -453,7 +453,18 @@ fn lower_research_proposal(
             continue;
         }
         let lowered = lower_goal(&objective.goal);
-        comparison_axes.insert(lowered.comparison_axis.to_owned());
+        // Metric clauses are emitted as qualitative (no wire-level metric
+        // identity), so any numeric comparison axis would trigger the MCP
+        // validator's "numeric comparison_axes require explicit clause
+        // metrics" rule. The metric goal kinds produce "value",
+        // "growth_rate", and "absolute_change" — all numeric. Skip all of
+        // them and rely on "directness" as the universal coverage axis.
+        if !matches!(
+            lowered.comparison_axis,
+            "value" | "growth_rate" | "absolute_change" | "difference"
+        ) {
+            comparison_axes.insert(lowered.comparison_axis.to_owned());
+        }
         comparison_axes.insert("directness".to_owned());
         goals.push(IntentGoal {
             goal_id: goal_id.clone(),
@@ -1562,7 +1573,7 @@ mod tests {
         let plan = compile_research_proposal(&proposal, company_scope(question))
             .unwrap()
             .search_plan;
-        assert_eq!(plan["comparison_axes"], json!(["directness", "value"]));
+        assert_eq!(plan["comparison_axes"], json!(["directness"]));
         // Metric clauses omit structured metric identity fields from the wire
         // payload; the natural-language retrieval_query drives retrieval.
         assert!(

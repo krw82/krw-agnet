@@ -100,6 +100,11 @@ roles:
   - id: analyst
     prompt_segments: [security_boundary, kernel_runtime, research_scope, evidence_analyst, ontology_catalog]
     deterministic: false
+    # Thinking-enabled role: reasoning tokens (~2k-4k) + tool_call/output (~2k-4k).
+    # 16384 leaves headroom so the reasoning_content never starves the
+    # tool_call argument assembly, which previously caused truncated JSON
+    # (finish_reason: "length" → dependency_contract_failure).
+    execution: { max_output_tokens: 16384 }
   - id: composer
     prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, ontology_catalog]
     deterministic: false
@@ -111,6 +116,7 @@ roles:
   - id: earnings_analyst
     prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, earnings_analysis, ontology_catalog]
     deterministic: false
+    execution: { max_output_tokens: 16384 }
   - id: scenario_planner
     prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, scenario_analysis, ontology_catalog]
     deterministic: false
@@ -118,6 +124,7 @@ roles:
   - id: scenario_analyst
     prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, scenario_analysis, ontology_catalog]
     deterministic: false
+    execution: { max_output_tokens: 16384 }
   - id: idea_planner
     prompt_segments: [security_boundary, kernel_runtime, research_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, idea_screen, ontology_catalog]
     deterministic: false
@@ -125,6 +132,7 @@ roles:
   - id: idea_analyst
     prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, idea_screen, ontology_catalog]
     deterministic: false
+    execution: { max_output_tokens: 16384 }
   - id: specialized_composer
     prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, ontology_catalog]
     deterministic: false
@@ -533,7 +541,10 @@ answer_policy:
   internal_format: final-markdown/v1
   final_output_reserve_tokens: 5120
   minimum_research_turn_tokens: 2048
-  max_research_turn_tokens: 4096
+  # Thinking-enabled research turns (analyst) consume reasoning tokens
+  # (~2k-4k) before producing a tool call or assessment. 16384 leaves room
+  # so the tool_call argument JSON is not truncated by the token cap.
+  max_research_turn_tokens: 16384
   locale: ko-KR
   conclusion_first: true
   exact_follow_up_count: 3

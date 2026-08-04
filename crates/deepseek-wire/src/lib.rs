@@ -1185,7 +1185,21 @@ impl DeepSeekClient {
                     return Err(WireError::DataAfterDone);
                 }
                 match event {
-                    SseEvent::Data(data) => assembler.push_chunk(serde_json::from_str(&data)?)?,
+                    SseEvent::Data(data) => {
+                        if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                            eprintln!(
+                                "[KRW_DEBUG_PROVIDER] sse data ({} bytes): {}",
+                                data.len(),
+                                if data.len() > 500 { &data[..500] } else { &data }
+                            );
+                        }
+                        assembler.push_chunk(serde_json::from_str(&data).map_err(|err| {
+                            if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                                eprintln!("[KRW_DEBUG_PROVIDER] json parse error: {err}");
+                            }
+                            WireError::Json(err)
+                        })?)?
+                    }
                     SseEvent::Done => {
                         assembler.mark_done()?;
                         done = true;
