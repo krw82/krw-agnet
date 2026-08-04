@@ -70,6 +70,11 @@ entrypoints:
       - research_synthesis
       - plain_korean_investor_language
       - final_markdown_contract
+      - scenario_construction
+      - scenario_sensitivity_policy
+      - scenario_event_liquidity_policy
+      - scenario_action_threshold_policy
+      - scenario_output_contract
   idea_generation:
     run_kind: idea_generation
     locale: ko-KR
@@ -90,6 +95,11 @@ entrypoints:
       - research_synthesis
       - plain_korean_investor_language
       - final_markdown_contract
+      - idea_search_order
+      - idea_candidate_funnel
+      - idea_candidate_evidence_policy
+      - idea_rejection_policy
+      - idea_output_contract
 
 contracts:
   - id: search-plan/v2
@@ -223,6 +233,17 @@ prompt_segments:
   - { id: commentary_reconciliation, path: references/commentary-number-reconciliation.md, stable_prefix: false, private: true }
   - { id: earnings_period_map, path: references/earnings-period-map.md, stable_prefix: false, private: true }
   - { id: earnings_output_contract, path: references/output-contract.md, stable_prefix: false, private: true }
+  - { id: scenario_construction, path: references/scenario-construction.md, stable_prefix: false, private: true }
+  - { id: scenario_sensitivity_policy, path: references/scenario-sensitivity-policy.md, stable_prefix: false, private: true }
+  - { id: scenario_event_liquidity_policy, path: references/scenario-event-liquidity-policy.md, stable_prefix: false, private: true }
+  - { id: scenario_action_threshold_policy, path: references/scenario-action-threshold-policy.md, stable_prefix: false, private: true }
+  - { id: scenario_output_contract, path: references/scenario-output-contract.md, stable_prefix: false, private: true }
+  - { id: idea_search_order, path: references/idea-search-order.md, stable_prefix: false, private: true }
+  - { id: idea_candidate_funnel, path: references/idea-candidate-funnel.md, stable_prefix: false, private: true }
+  - { id: idea_candidate_evidence_policy, path: references/idea-candidate-evidence-policy.md, stable_prefix: false, private: true }
+  - { id: idea_rejection_policy, path: references/idea-rejection-policy.md, stable_prefix: false, private: true }
+  - { id: idea_output_contract, path: references/idea-output-contract.md, stable_prefix: false, private: true }
+  - { id: idea_url_screen_compression, path: references/idea-url-screen-compression.md, stable_prefix: false, private: true }
   - id: ontology_catalog
     ontology_schema: { root_env: KRW_ONTOLOGY_ROOT, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
     stable_prefix: true
