@@ -685,29 +685,40 @@ class OntologySpineRouter:
                         },
                     }
                     continue
-                rows, diagnostics = store.query_planned_compact_with_diagnostics(
-                    retrieval_query=str(clause["retrieval_query"]),
-                    retrieval_terms=clause.get("retrieval_terms"),
-                    predicate_terms=clause.get("predicate_terms"),
-                    metrics=clause.get("metrics"),
-                    metric_dimensions=clause.get("metric_dimensions"),
-                    metric_scope=str(clause.get("metric_scope") or "company_total"),
-                    calculation_window=(
-                        str(clause.get("calculation_window") or "").strip() or None
-                    ),
-                    comparison_axes=clause.get("comparison_axes"),
-                    tickers=None,
-                    document_types=document_types,
-                    periods=periods,
-                    object_types=clause.get("object_types"),
-                    include_rejected=include_rejected,
-                    allow_relaxed=bool(clause.get("allow_relaxed")),
-                    limit=result_limit,
-                )
-                clause_payloads[clause_id] = {
-                    "rows": list(rows),
-                    "diagnostics": diagnostics,
-                }
+                # Isolate each clause query so a single clause failure does
+                # not discard the entire ticker shard's remaining clauses.
+                try:
+                    rows, diagnostics = store.query_planned_compact_with_diagnostics(
+                        retrieval_query=str(clause["retrieval_query"]),
+                        retrieval_terms=clause.get("retrieval_terms"),
+                        predicate_terms=clause.get("predicate_terms"),
+                        metrics=clause.get("metrics"),
+                        metric_dimensions=clause.get("metric_dimensions"),
+                        metric_scope=str(clause.get("metric_scope") or "company_total"),
+                        calculation_window=(
+                            str(clause.get("calculation_window") or "").strip() or None
+                        ),
+                        comparison_axes=clause.get("comparison_axes"),
+                        tickers=None,
+                        document_types=document_types,
+                        periods=periods,
+                        object_types=clause.get("object_types"),
+                        include_rejected=include_rejected,
+                        allow_relaxed=bool(clause.get("allow_relaxed")),
+                        limit=result_limit,
+                    )
+                    clause_payloads[clause_id] = {
+                        "rows": list(rows),
+                        "diagnostics": diagnostics,
+                    }
+                except Exception:
+                    clause_payloads[clause_id] = {
+                        "rows": [],
+                        "diagnostics": {
+                            "execution_mode": "planned_shard_batch",
+                            "clause_query_error": True,
+                        },
+                    }
             return clause_payloads
 
         payload_by_ticker, shard_errors, worker_count = self._store_fanout(

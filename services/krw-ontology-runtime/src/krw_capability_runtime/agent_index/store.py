@@ -1762,17 +1762,17 @@ class OntologyStore:
             balanced_strict_rows.append(row)
 
         # QueryClause validation keeps metric propositions independent from
-        # qualitative propositions. Preserve exact metric observations first so
-        # a two-row response can still carry a temporal pair (or two conflicting
-        # values for the same observation context) instead of one fact + one FTS hit.
-        if requested_metrics:
-            for row in metric_rows:
+        # qualitative propositions. Interleave metric rows with FTS rows so
+        # that text evidence (EvidenceQuote, ResearchClaim) is not excluded
+        # when metric results fill the limit. Reserve at least half the limit
+        # for FTS evidence so causal/qualitative context is always present.
+        metric_reserve = min(len(metric_rows), result_limit // 2) if requested_metrics else 0
+        if metric_reserve:
+            for row in metric_rows[:metric_reserve]:
                 append_strict_row(row)
-                if len(balanced_strict_rows) >= result_limit:
-                    break
 
         strict_row_index = 0
-        strict_groups = [list(fts_predicate_rows), list(fts_strict_rows)]
+        strict_groups = [list(fts_predicate_rows), list(fts_strict_rows), list(metric_rows[metric_reserve:]) if metric_reserve else []]
         while len(balanced_strict_rows) < result_limit:
             progressed = False
             for group in strict_groups:
@@ -1795,7 +1795,7 @@ class OntologyStore:
         predicate_ids = {str(row["id"]) for row in fts_predicate_rows if row["id"]}
         relaxed_ids: set[str] = set()
         relaxed_elapsed_ms = 0
-        if allow_relaxed and lexical_terms and len(ordered_rows) < result_limit:
+        if lexical_terms and len(ordered_rows) < result_limit:
             relaxed_started_at = time.perf_counter()
             relaxed_query = " OR ".join(f"{term}*" for term in lexical_terms)
             relaxed_rows = self._execute_fts(
