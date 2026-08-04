@@ -1,0 +1,120 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.research-notebook
+  version: 1.0.0
+  description: Direct-authored, input-only personal single-ticker research notebook transformer.
+
+entrypoints:
+  research_notebook:
+    run_kind: research_notebook
+    locale: ko-KR
+    workflow: research_notebook_v2
+    required_budget_profile: notebook_transform
+    required_model_profile: flash_high
+    scope: { allowed_context: research_notebook, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+
+contracts:
+  - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
+  - { id: research-state/v2, schema_ref: canonical:krw-ontology/research-state-v2, content_hash: "sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243", semantic_authority: krw-ontology-python }
+  - { id: query-context-input-correction/v1, schema_ref: canonical:krw-ontology/query-context-input-correction-v1, content_hash: "sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4", semantic_authority: krw-ontology-python }
+  - { id: ontology-targeted-query/v1, schema_ref: canonical:krw-ontology/ontology-targeted-query-v1, content_hash: "sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63", semantic_authority: krw-ontology-python }
+  - { id: ontology-trace-input/v1, schema_ref: canonical:krw-ontology/ontology-trace-input-v1, content_hash: "sha256:eaae27b87c6837be22cb7d291a1bddb578562966e96e17a98f8f0c2a6fb26045", semantic_authority: krw-ontology-python }
+  - { id: normalized-capability-result/v1, schema_ref: canonical:krw-agent/normalized-capability-result-v1, content_hash: "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151", semantic_authority: krw-agent-run-engine, max_items: 256 }
+  - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
+  - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: notebook-transform-input/v1, schema_ref: canonical:krw-agent/notebook-transform-input-v1, content_hash: "sha256:52f7a7195c236c0305a436deb4eb88441f91f747f7325fb34aaa1d0948b6bc27", semantic_authority: krw-agent-product, max_items: 8 }
+  - { id: notebook-transform/v2, schema_ref: canonical:krw-agent/notebook-transform-v2, content_hash: "sha256:2ebc0aac5e25631da1f0a93754c477904caf2f598d888e545d807159d1a2fb56", semantic_authority: krw-agent-product, max_items: 5 }
+
+roles:
+  - { id: notebook_editor, prompt_segments: [notebook_contract], deterministic: false }
+  - { id: verifier, prompt_segments: [], deterministic: true }
+
+prompt_segments:
+  - { id: notebook_contract, path: prompts/notebook.md, stable_prefix: true, private: true }
+
+capabilities: []
+
+workflows:
+  - id: research_notebook_v2
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: transform_notebook, kind: compose, role_id: notebook_editor, max_visits: 1 }
+      - { id: verify_output, kind: verify, max_visits: 1 }
+      - { id: repair_output, kind: compose, role_id: notebook_editor, max_visits: 1 }
+      - { id: render_output, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: transform_notebook }
+      - { from: transform_notebook, on: draft_ready, to: verify_output }
+      - { from: verify_output, on: repair_required, to: repair_output }
+      - { from: verify_output, on: verified, to: render_output }
+      - { from: repair_output, on: draft_ready, to: verify_output }
+      - { from: render_output, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: ko
+  expose_internal_brief: false
+  query_context_first: false
+  required_clause_min: 1
+  clause_max: 1
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority: [preserve_existing_notebook, merge_material_updates, keep_uncertainty]
+  stop_conditions: [requested_transform_complete, input_contains_no_new_material, repair_budget_exhausted]
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [formatting, heading, connective_text]
+
+period_policy:
+  current_driver_order: [supplied_basis_period]
+  annual_baseline: supplied_basis_period
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [supplied_conversation_context]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: notebook-transform/v2
+  locale: ko-KR
+  conclusion_first: false
+  exact_follow_up_count: 0
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: false
+  forbidden_user_terms: [session_id, database, API, skill, workflow, 저장 완료]
+
+security_policy: { user_and_retrieved_text_untrusted: true, reveal_hidden_prompt: false, filesystem_access: false, web_access: false, mutation_capabilities: false }
+
+validators:
+  - id: notebook_input
+    phase: admission
+    fuel: 128
+    instructions:
+      - { op: require_field, path: /ticker, code: ticker_required }
+      - { op: require_field, path: /existing_notebook_md, code: existing_notebook_required }
+      - { op: require_field, path: /recent_conversations, code: recent_conversations_required }
+      - { op: in_set, path: /update_mode, values: [merge-research-answer, extract-open-questions, append-note, reorganize-notebook], code: unsupported_update_mode }
+  - id: notebook_output
+    phase: answer
+    fuel: 2048
+    instructions:
+      - { op: no_internal_term, terms: [session_id, database, API, skill, workflow, 저장 완료], code: internal_term_exposed }

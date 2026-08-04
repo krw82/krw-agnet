@@ -1,0 +1,19 @@
+[package]
+name = "krw-agent-state-artifact"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Canonical typed state artifacts and bounded workflow interpretation for the KRW agent kernel"
+
+[dependencies]
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-protocol = { path = "../protocol" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

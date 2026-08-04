@@ -1,0 +1,581 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.research.ko
+  version: 4.2.0
+  description: Direct-authored Korean KRW filing research, earnings, scenario, and idea-screen programs.
+
+entrypoints:
+  company_research:
+    run_kind: company_research
+    locale: ko-KR
+    workflow: company_research_v2
+    # This is intentionally the full research envelope while we collect real
+    # quality/usage traces. A later release may introduce a compact profile
+    # from measured evidence; it must not silently constrain this baseline.
+    required_budget_profile: company_research_full
+    required_model_profile: flash_high
+    scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  earnings_deep_dive:
+    run_kind: earnings_deep_dive
+    locale: ko-KR
+    workflow: earnings_deep_dive_v1
+    required_budget_profile: earnings_deep_dive
+    required_model_profile: flash_high
+    scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  scenario_sensitivity:
+    run_kind: scenario_sensitivity
+    locale: ko-KR
+    workflow: scenario_sensitivity_v1
+    required_budget_profile: scenario_sensitivity
+    required_model_profile: flash_max
+    scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  idea_generation:
+    run_kind: idea_generation
+    locale: ko-KR
+    workflow: idea_generation_v1
+    required_budget_profile: idea_generation
+    required_model_profile: flash_max
+    scope: { allowed_context: covered_universe, cardinality: { kind: max, value: 12 }, ticker_canonicalization: not_applicable }
+    constants: {}
+
+contracts:
+  - id: search-plan/v2
+    schema_ref: canonical:krw-ontology/search-plan-v2
+    content_hash: sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04
+    semantic_authority: krw-ontology-python
+    max_items: 12
+  - id: research-proposal/v4
+    schema_ref: canonical:krw-agent/research-proposal-v4
+    content_hash: sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49
+    semantic_authority: krw-agent-research-planner
+    max_items: 12
+  - id: research-state/v2
+    schema_ref: canonical:krw-ontology/research-state-v2
+    content_hash: sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243
+    semantic_authority: krw-ontology-python
+  - id: query-context-input-correction/v1
+    schema_ref: canonical:krw-ontology/query-context-input-correction-v1
+    content_hash: sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4
+    semantic_authority: krw-ontology-python
+  - id: ontology-targeted-query/v1
+    schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
+    content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
+    semantic_authority: krw-ontology-python
+  - id: ontology-trace-input/v1
+    schema_ref: canonical:krw-ontology/ontology-trace-input-v1
+    content_hash: sha256:eaae27b87c6837be22cb7d291a1bddb578562966e96e17a98f8f0c2a6fb26045
+    semantic_authority: krw-ontology-python
+  - id: normalized-capability-result/v1
+    schema_ref: canonical:krw-agent/normalized-capability-result-v1
+    content_hash: sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151
+    semantic_authority: krw-agent-run-engine
+    max_items: 256
+  - id: final-markdown/v1
+    schema_ref: canonical:krw-agent/final-markdown-v1
+    content_hash: sha256:8e747a3d70dc03decffa17a7f90ab1f8026bd0464322ccfb975c39f8f3a3ec8e
+    semantic_authority: krw-agent-run-engine
+  - id: state-operation-output/v1
+    schema_ref: canonical:krw-agent/state-operation-output-v1
+    content_hash: sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c
+    semantic_authority: krw-agent-state-artifact
+    max_items: 64
+  - id: state-facts/v1
+    schema_ref: canonical:krw-agent/state-facts-v1
+    content_hash: sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8
+    semantic_authority: krw-agent-state-artifact
+    max_items: 64
+
+roles:
+  - id: planner
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop]
+    deterministic: false
+    # Planning is a closed tool-proposal task. Direct Flash avoids spending a
+    # large hidden-thinking turn before the first immutable evidence lookup.
+    execution: { reasoning: direct, max_output_tokens: 2048 }
+  - id: analyst
+    prompt_segments: [security_boundary, kernel_runtime, research_scope, evidence_analyst]
+    deterministic: false
+  - id: composer
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 4096 }
+  - id: earnings_planner
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, earnings_analysis]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 2048 }
+  - id: earnings_analyst
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, earnings_analysis]
+    deterministic: false
+  - id: scenario_planner
+    prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, scenario_analysis]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 2048 }
+  - id: scenario_analyst
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, scenario_analysis]
+    deterministic: false
+  - id: idea_planner
+    prompt_segments: [security_boundary, kernel_runtime, research_scope, retrieval_planner, research_planner_skill, provider_proposal_contract, research_proposal_examples, research_recovery_loop, idea_screen]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 2048 }
+  - id: idea_analyst
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, idea_screen]
+    deterministic: false
+  - id: specialized_composer
+    prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 4096 }
+  - id: verifier
+    prompt_segments: []
+    deterministic: true
+
+prompt_segments:
+  - { id: security_boundary, path: prompts/security-boundary.md, stable_prefix: true, private: true }
+  - { id: kernel_runtime, path: skills/kernel-runtime/SKILL.md, stable_prefix: true, private: true }
+  - { id: company_scope, path: prompts/company-scope.md, stable_prefix: true, private: true }
+  - { id: research_scope, path: prompts/research-scope.md, stable_prefix: true, private: true }
+  - { id: retrieval_planner, path: prompts/retrieval-planner.md, stable_prefix: true, private: true }
+  - { id: research_planner_skill, path: skills/research-planner/SKILL.md, stable_prefix: true, private: true }
+  - { id: provider_proposal_contract, path: skills/research-planner/references/provider-proposal-contract.md, stable_prefix: true, private: true }
+  - { id: research_proposal_examples, path: skills/research-planner/references/research-proposal-examples.md, stable_prefix: true, private: true }
+  - { id: research_recovery_loop, path: skills/research-planner/references/recovery-loop.md, stable_prefix: true, private: true }
+  - { id: evidence_analyst, path: prompts/evidence-analyst.md, stable_prefix: true, private: true }
+  - { id: research_synthesis, path: references/research-synthesis.md, stable_prefix: true, private: true }
+  - { id: plain_korean_investor_language, path: references/plain-korean-investor-language.md, stable_prefix: true, private: true }
+  - { id: final_markdown_contract, path: references/final-markdown-contract.md, stable_prefix: true, private: true }
+  - { id: earnings_analysis, path: prompts/earnings-analysis.md, stable_prefix: false, private: true }
+  - { id: scenario_analysis, path: prompts/scenario-analysis.md, stable_prefix: false, private: true }
+  - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true }
+  - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true }
+
+capabilities:
+  - id: ontology.query_context
+    binding_key: krw_ontology_query_context
+    permission: read
+    input_contract: search-plan/v2
+    model_input_contract: research-proposal/v4
+    provider_input_codec: { kind: single_field_envelope_v1, field: proposal }
+    input_derivation: { kind: research_proposal_to_search_plan_v4 }
+    research_proposal_anchor: { kind: run_question }
+    output_contracts: [research-state/v2, query-context-input-correction/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: research_state_v2
+    research_action:
+      kind: context
+      estimate: { historical_success_lower_ppm: 550000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 150000, expected_latency_ms: 1000, expected_tokens: 500, expected_tool_cost_micros: 2500, expected_result_bytes: 524288 }
+      conflict_domain: research:ontology-context
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: plan_tickers, pointer_pattern: /tickers, value_kind: string_array }
+        - { id: clause_tickers, pointer_pattern: /clauses/*/tickers, value_kind: string_array }
+      require_any_of: [plan_tickers]
+      reject_non_null_pointers: [/universe]
+    parallel_safe: false
+    prerequisites: []
+  - id: ontology.query
+    binding_key: krw_ontology_query
+    permission: read
+    input_contract: ontology-targeted-query/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: targeted_evidence_v1
+    research_action:
+      kind: targeted
+      estimate: { historical_success_lower_ppm: 600000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 80000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      conflict_domain: research:ontology-targeted
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      require_any_of: [ticker, tickers]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: ontology.trace
+    binding_key: krw_ontology_trace
+    permission: read
+    input_contract: ontology-trace-input/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: trace_lineage_v1
+    research_action:
+      kind: trace
+      estimate: { historical_success_lower_ppm: 800000, expected_duplicate_ppm: 50000, failure_risk_upper_ppm: 40000, expected_latency_ms: 300, expected_tokens: 200, expected_tool_cost_micros: 1000, expected_result_bytes: 131072 }
+      conflict_domain: research:ontology-trace
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: ontology.query_context_universe
+    binding_key: krw_ontology_query_context
+    permission: read
+    input_contract: search-plan/v2
+    model_input_contract: research-proposal/v4
+    provider_input_codec: { kind: single_field_envelope_v1, field: proposal }
+    input_derivation: { kind: research_proposal_to_search_plan_v4 }
+    research_proposal_anchor: { kind: run_question }
+    output_contracts: [research-state/v2, query-context-input-correction/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: research_state_v2
+    research_action:
+      kind: context
+      estimate: { historical_success_lower_ppm: 550000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 150000, expected_latency_ms: 1000, expected_tokens: 500, expected_tool_cost_micros: 2500, expected_result_bytes: 524288 }
+      conflict_domain: research:ontology-context
+    scope_binding:
+      kind: covered_universe
+      ticker_references:
+        - { id: plan_tickers, pointer_pattern: /tickers, value_kind: string_array }
+        - { id: clause_tickers, pointer_pattern: /clauses/*/tickers, value_kind: string_array }
+      required_string_values: [{ pointer: /universe, value: covered }]
+      bounded_integer_pointer: /limit_tickers
+    parallel_safe: false
+    prerequisites: []
+  - id: ontology.query_universe
+    binding_key: krw_ontology_query
+    permission: read
+    input_contract: ontology-targeted-query/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: targeted_evidence_v1
+    research_action:
+      kind: targeted
+      estimate: { historical_success_lower_ppm: 600000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 80000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      conflict_domain: research:ontology-targeted
+    scope_binding:
+      kind: covered_universe
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+    parallel_safe: false
+    prerequisites: [ontology.query_context_universe]
+  - id: ontology.trace_universe
+    binding_key: krw_ontology_trace
+    permission: read
+    input_contract: ontology-trace-input/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: trace_lineage_v1
+    research_action:
+      kind: trace
+      estimate: { historical_success_lower_ppm: 800000, expected_duplicate_ppm: 50000, failure_risk_upper_ppm: 40000, expected_latency_ms: 300, expected_tokens: 200, expected_tool_cost_micros: 1000, expected_result_bytes: 131072 }
+      conflict_domain: research:ontology-trace
+    scope_binding:
+      kind: covered_universe
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+    parallel_safe: false
+    prerequisites: [ontology.query_context_universe]
+
+workflows:
+  - id: company_research_v2
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: author_plan, kind: plan, role_id: planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: planner, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
+      - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 6 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 3 }
+      - { id: verify_ir, kind: verify, max_visits: 3 }
+      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 2 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: author_plan }
+      - { from: author_plan, on: plan_ready, to: validate_plan }
+      - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: query_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: query_context, on: correction_required, to: repair_server_violations }
+      - { from: query_context, on: correction_unresolved, to: assess_obligations }
+      - { from: query_context, on: evidence_observed, to: ingest_evidence }
+      - { from: repair_server_violations, on: corrected, to: query_context }
+      - { from: ingest_evidence, on: ingested, to: assess_obligations }
+      - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
+      - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
+      - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_obligations, on: append_context_plan, to: query_context }
+      - { from: assess_obligations, on: proposal_rejected, to: assess_obligations }
+      - { from: assess_obligations, on: evidence_sufficient, to: compose_ir }
+      - { from: assess_obligations, on: no_positive_value_action, to: compose_ir }
+      - { from: assess_obligations, on: output_budget_reserved, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: earnings_deep_dive_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: define_quarter_thesis, kind: plan, role_id: earnings_planner, max_visits: 1 }
+      - { id: author_plan, kind: plan, role_id: earnings_planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
+      - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 5 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: classify_thesis_change, kind: assess, role_id: earnings_analyst, max_visits: 2 }
+      - { id: compose_ir, kind: compose, role_id: specialized_composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: specialized_composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: define_quarter_thesis }
+      - { from: define_quarter_thesis, on: thesis_ready, to: author_plan }
+      - { from: author_plan, on: plan_ready, to: validate_plan }
+      - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: query_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: query_context, on: correction_required, to: repair_plan }
+      - { from: query_context, on: correction_unresolved, to: reconcile_periods_and_commentary }
+      - { from: query_context, on: evidence_observed, to: ingest_evidence }
+      - { from: ingest_evidence, on: ingested, to: reconcile_periods_and_commentary }
+      - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
+      - { from: reconcile_periods_and_commentary, on: precise_query_has_value, to: targeted_query }
+      - { from: reconcile_periods_and_commentary, on: selected_trace_has_value, to: trace_selected }
+      - { from: reconcile_periods_and_commentary, on: append_context_plan, to: query_context }
+      - { from: reconcile_periods_and_commentary, on: proposal_rejected, to: reconcile_periods_and_commentary }
+      - { from: reconcile_periods_and_commentary, on: obligations_resolved, to: classify_thesis_change }
+      - { from: reconcile_periods_and_commentary, on: external_input_required, to: classify_thesis_change }
+      - { from: reconcile_periods_and_commentary, on: no_positive_value_action, to: classify_thesis_change }
+      - { from: reconcile_periods_and_commentary, on: output_budget_reserved, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: classify_thesis_change, on: classified, to: compose_ir }
+      - { from: classify_thesis_change, on: output_budget_reserved, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: scenario_sensitivity_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: define_tested_assumption, kind: plan, role_id: scenario_planner, max_visits: 1 }
+      - { id: author_plan, kind: plan, role_id: scenario_planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: scenario_planner, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
+      - { id: assess_transmission_path, kind: assess, role_id: scenario_analyst, max_visits: 5 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: construct_scenarios, kind: assess, role_id: scenario_analyst, max_visits: 2 }
+      - { id: compose_ir, kind: compose, role_id: specialized_composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: specialized_composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: define_tested_assumption }
+      - { from: define_tested_assumption, on: assumption_ready, to: author_plan }
+      - { from: author_plan, on: plan_ready, to: validate_plan }
+      - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: query_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: query_context, on: correction_required, to: repair_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_transmission_path }
+      - { from: query_context, on: evidence_observed, to: ingest_evidence }
+      - { from: ingest_evidence, on: ingested, to: assess_transmission_path }
+      - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
+      - { from: assess_transmission_path, on: precise_query_has_value, to: targeted_query }
+      - { from: assess_transmission_path, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_transmission_path, on: append_context_plan, to: query_context }
+      - { from: assess_transmission_path, on: proposal_rejected, to: assess_transmission_path }
+      - { from: assess_transmission_path, on: evidence_sufficient, to: construct_scenarios }
+      - { from: assess_transmission_path, on: no_positive_value_action, to: construct_scenarios }
+      - { from: assess_transmission_path, on: output_budget_reserved, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: construct_scenarios, on: scenarios_ready, to: compose_ir }
+      - { from: construct_scenarios, on: output_budget_reserved, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: idea_generation_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: classify_screen, kind: validate, max_visits: 1 }
+      - { id: compose_clarification, kind: compose, role_id: specialized_composer, max_visits: 1 }
+      - { id: author_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 2 }
+      - { id: validate_discovery_plan, kind: validate, max_visits: 2 }
+      - { id: repair_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 1 }
+      - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
+      - { id: ingest_candidates, kind: ingest, max_visits: 5 }
+      - { id: assess_candidates, kind: assess, role_id: idea_analyst, max_visits: 6 }
+      - { id: candidate_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
+      - { id: candidate_trace, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
+      - { id: classify_priority, kind: assess, role_id: idea_analyst, max_visits: 2 }
+      - { id: compose_ir, kind: compose, role_id: specialized_composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: specialized_composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: classify_screen }
+      - { from: classify_screen, on: clarification_required, to: compose_clarification }
+      - { from: classify_screen, on: screen_ready, to: author_discovery_plan }
+      - { from: compose_clarification, on: draft_ready, to: verify_ir }
+      - { from: author_discovery_plan, on: plan_ready, to: validate_discovery_plan }
+      - { from: author_discovery_plan, on: proposal_contract_invalid, to: repair_discovery_plan }
+      - { from: validate_discovery_plan, on: plan_invalid, to: repair_discovery_plan }
+      - { from: validate_discovery_plan, on: plan_valid, to: discover_context }
+      - { from: repair_discovery_plan, on: plan_ready, to: validate_discovery_plan }
+      - { from: discover_context, on: correction_required, to: repair_discovery_plan }
+      - { from: discover_context, on: correction_unresolved, to: assess_candidates }
+      - { from: discover_context, on: evidence_observed, to: ingest_candidates }
+      - { from: ingest_candidates, on: ingested, to: assess_candidates }
+      - { from: ingest_candidates, on: output_budget_reserved, to: compose_ir }
+      - { from: assess_candidates, on: precise_query_has_value, to: candidate_query }
+      - { from: assess_candidates, on: selected_trace_has_value, to: candidate_trace }
+      - { from: assess_candidates, on: append_context_plan, to: discover_context }
+      - { from: assess_candidates, on: proposal_rejected, to: assess_candidates }
+      - { from: assess_candidates, on: candidates_classifiable, to: classify_priority }
+      - { from: assess_candidates, on: no_positive_value_action, to: classify_priority }
+      - { from: assess_candidates, on: output_budget_reserved, to: compose_ir }
+      - { from: candidate_query, on: evidence_observed, to: ingest_candidates }
+      - { from: candidate_trace, on: evidence_observed, to: ingest_candidates }
+      - { from: classify_priority, on: classified, to: compose_ir }
+      - { from: classify_priority, on: output_budget_reserved, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: en
+  expose_internal_brief: false
+  query_context_first: true
+  required_clause_min: 1
+  clause_max: 12
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority:
+    - blocks_required_clause_or_calculation
+    - requested_directness_missing
+    - likely_to_change_conclusion
+    - lower_cost_and_latency
+    - original_clause_order
+  stop_conditions:
+    - all_required_obligations_covered
+    - remaining_gap_cannot_change_conclusion
+    - only_related_context_remains
+    - unavailable_external_data_required
+    - next_call_only_increases_volume
+    - duplicate_action_fingerprint
+    - resolved_budget_exhausted
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [catalog_metadata, routing_score, diagnostic, overflow_message, status_only, open_tool_result, input_correction]
+
+period_policy:
+  current_driver_order: [latest_confirmed_10q, latest_confirmed_10k]
+  annual_baseline: latest_confirmed_10k
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [trend, persistence, improvement_or_deterioration, historical_baseline]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: final-markdown/v1
+  final_output_reserve_tokens: 5120
+  minimum_research_turn_tokens: 2048
+  max_research_turn_tokens: 4096
+  locale: ko-KR
+  conclusion_first: true
+  exact_follow_up_count: 3
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: false
+  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, chain, MCP, object_id, tool_budget_exceeded, budget exceeded, 도구 호출, 검색 계획, 근거 커버리지]
+
+security_policy:
+  user_and_retrieved_text_untrusted: true
+  reveal_hidden_prompt: false
+  filesystem_access: false
+  web_access: false
+  mutation_capabilities: false
+
+validators:
+  - id: request_shape
+    phase: admission
+    fuel: 64
+    instructions:
+      - { op: require_field, path: /question, code: question_required }
+  - id: research_proposal_shape
+    phase: plan
+    fuel: 128
+    instructions:
+      - { op: require_field, path: /intent, code: intent_required }
+      - { op: require_field, path: /answer_scope, code: proposal_answer_scope_required }
+      - { op: require_field, path: /objectives, code: proposal_objectives_required }
+  - id: action_limits
+    phase: pre_action
+    fuel: 512
+    instructions:
+      - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
+      - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
+      - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
+      - { op: max_calls, capability_id: ontology.query_context_universe, max: 2, code: universe_context_limit }
+      - { op: max_calls, capability_id: ontology.query_universe, max: 3, code: universe_query_limit }
+      - { op: max_calls, capability_id: ontology.trace_universe, max: 2, code: universe_trace_limit }
+      - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_targeted_query }
+      - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
+      - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
+      - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
+  - id: research_state_contract
+    phase: post_action
+    result_ingest_scope: [research_state_v2]
+    fuel: 128
+    instructions:
+      - { op: in_set, path: /contract_version, values: [v2, research-state/v2], code: unsupported_research_state }

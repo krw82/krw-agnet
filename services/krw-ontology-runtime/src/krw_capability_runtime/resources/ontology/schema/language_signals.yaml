@@ -1,0 +1,28 @@
+signal_types:
+  potential_negative:
+    description: "Language indicating a possible future negative outcome."
+    strength_values: ["strong", "medium", "weak"]
+
+  actual_negative:
+    description: "Language confirming a negative outcome has occurred."
+    strength_values: ["strong", "medium", "weak"]
+
+  potential_positive:
+    description: "Language indicating a possible future positive outcome."
+    strength_values: ["strong", "medium", "weak"]
+
+  actual_positive:
+    description: "Language confirming a positive outcome has occurred."
+    strength_values: ["strong", "medium", "weak"]
+
+  uncertainty:
+    description: "Language indicating lack of certainty about an outcome."
+    strength_values: ["strong", "medium", "weak"]
+
+  obligation:
+    description: "Language indicating a commitment or binding requirement."
+    strength_values: ["strong", "medium", "weak"]
+
+  mitigation:
+    description: "Language describing steps taken to reduce risk."
+    strength_values: ["strong", "medium", "weak"]

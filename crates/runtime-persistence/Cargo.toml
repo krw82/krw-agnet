@@ -1,0 +1,38 @@
+[package]
+name = "krw-agent-runtime-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-bounded-child = { path = "../bounded-child" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-artifact-store = { path = "../artifact-store" }
+krw-agent-capability-runtime = { path = "../capability-runtime" }
+krw-context-planner = { path = "../context-planner" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-run-engine = { path = "../run-engine" }
+krw-agent-runtime-config = { path = "../runtime-config" }
+krw-agent-tool-mcp = { path = "../tool-mcp" }
+krw-session-memory = { path = "../session-memory" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-research-planner = { path = "../research-planner" }
+tempfile = "3.26.0"
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "krw-context-planner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-contracts = { path = "../krw-contracts" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "krw-policy-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-protocol = { path = "../protocol" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

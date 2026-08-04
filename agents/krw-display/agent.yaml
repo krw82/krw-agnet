@@ -1,0 +1,114 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.display-planner
+  version: 1.0.0
+  description: Direct-authored optional display-plan generator over existing canonical research content.
+
+entrypoints:
+  answer_composition:
+    run_kind: answer_composition
+    locale: ko-KR
+    workflow: display_plan_v2
+    required_budget_profile: display_plan_minimal
+    required_model_profile: flash_direct
+    scope: { allowed_context: existing_answer, cardinality: { kind: max, value: 32 }, ticker_canonicalization: not_applicable }
+    constants: {}
+
+contracts:
+  - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
+  - { id: research-state/v2, schema_ref: canonical:krw-ontology/research-state-v2, content_hash: "sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243", semantic_authority: krw-ontology-python }
+  - { id: query-context-input-correction/v1, schema_ref: canonical:krw-ontology/query-context-input-correction-v1, content_hash: "sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4", semantic_authority: krw-ontology-python }
+  - { id: ontology-targeted-query/v1, schema_ref: canonical:krw-ontology/ontology-targeted-query-v1, content_hash: "sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63", semantic_authority: krw-ontology-python }
+  - { id: ontology-trace-input/v1, schema_ref: canonical:krw-ontology/ontology-trace-input-v1, content_hash: "sha256:eaae27b87c6837be22cb7d291a1bddb578562966e96e17a98f8f0c2a6fb26045", semantic_authority: krw-ontology-python }
+  - { id: normalized-capability-result/v1, schema_ref: canonical:krw-agent/normalized-capability-result-v1, content_hash: "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151", semantic_authority: krw-agent-run-engine, max_items: 256 }
+  - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
+  - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: canonical-display-source/v1, schema_ref: canonical:krw-agent/canonical-display-source-v1, content_hash: "sha256:688ea27e5e4b143ddceddd2785334036adefec8171e4def4a40b4cce66bc1b7a", semantic_authority: krw-agent-product, max_items: 64 }
+  - { id: display-plan/v2, schema_ref: canonical:krw-agent/display-plan-v2, content_hash: "sha256:6f3f62af5aa631894be1d5de2a4f37d88a7ebfaf3a838241d1dcfa7fdeba0ce3", semantic_authority: krw-agent-product, max_items: 64 }
+
+roles:
+  - { id: display_planner, prompt_segments: [display_contract], deterministic: false }
+  - { id: verifier, prompt_segments: [], deterministic: true }
+
+prompt_segments:
+  - { id: display_contract, path: prompts/display-planner.md, stable_prefix: true, private: true }
+
+capabilities: []
+
+workflows:
+  - id: display_plan_v2
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: compose_display_plan, kind: compose, role_id: display_planner, max_visits: 1 }
+      - { id: verify_no_new_facts, kind: verify, max_visits: 1 }
+      - { id: repair_display_plan, kind: compose, role_id: display_planner, max_visits: 1 }
+      - { id: render_display_plan, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: compose_display_plan }
+      - { from: compose_display_plan, on: draft_ready, to: verify_no_new_facts }
+      - { from: verify_no_new_facts, on: repair_required, to: repair_display_plan }
+      - { from: verify_no_new_facts, on: verified, to: render_display_plan }
+      - { from: repair_display_plan, on: draft_ready, to: verify_no_new_facts }
+      - { from: render_display_plan, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: en
+  expose_internal_brief: false
+  query_context_first: false
+  required_clause_min: 1
+  clause_max: 1
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority: [preserve_source_units, minimize_blocks, surface_validation_warning]
+  stop_conditions: [valid_display_plan, source_content_missing, repair_budget_exhausted]
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [display_title, renderer_hint, validation_warning]
+
+period_policy:
+  current_driver_order: [source_answer_period]
+  annual_baseline: source_answer_period
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [source_answer_context]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: display-plan/v2
+  locale: ko-KR
+  conclusion_first: false
+  exact_follow_up_count: 0
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: true
+  forbidden_user_terms: []
+
+security_policy: { user_and_retrieved_text_untrusted: true, reveal_hidden_prompt: false, filesystem_access: false, web_access: false, mutation_capabilities: false }
+
+validators:
+  - id: display_source
+    phase: admission
+    fuel: 64
+    instructions:
+      - { op: require_field, path: /final_receipt_hash, code: final_receipt_required }
+      - { op: require_field, path: /answer_bundle_hash, code: answer_bundle_required }
+      - { op: require_field, path: /units, code: source_units_required }

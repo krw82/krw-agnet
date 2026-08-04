@@ -1,0 +1,65 @@
+schema_version: "0.2.0"
+sector: energy_lng
+description: "LNG and natural gas infrastructure factor pack."
+
+business_activities:
+  lng_sales:
+    name: "LNG sales"
+    activity_type: "revenue_source"
+    aliases: ["LNG sales", "sell LNG", "LNG volumes sold", "LNG sales contracts", "commissioning cargos"]
+    revenue_relevance: "primary"
+    cost_relevance: "unknown"
+    related_metrics: ["revenue", "segment_revenue"]
+  feed_gas_procurement:
+    name: "Feed gas procurement"
+    activity_type: "cost_source"
+    aliases: ["feed gas", "natural gas supply", "procure gas", "gas transportation", "basis differentials"]
+    revenue_relevance: "none"
+    cost_relevance: "primary"
+    related_metrics: ["cost_of_revenue", "operating_margin"]
+  liquefaction_projects:
+    name: "Liquefaction project development"
+    activity_type: "project"
+    aliases: ["liquefaction project", "Plaquemines", "CP2", "CP3", "Calcasieu", "COD", "construction"]
+    revenue_relevance: "primary"
+    cost_relevance: "primary"
+    related_metrics: ["capital_expenditures", "revenue"]
+  commissioning_cargo_sales:
+    name: "Commissioning cargo sales"
+    activity_type: "revenue_source"
+    aliases: ["commissioning cargo", "commissioning cargos", "commissioning LNG sales"]
+    revenue_relevance: "primary"
+    cost_relevance: "unknown"
+    related_metrics: ["revenue", "operating_cash_flow", "cash_and_equivalents"]
+
+factors:
+  natural_gas_price:
+    category: "commodity"
+    aliases: ["Henry Hub", "natural gas price", "natural gas prices", "feed gas", "commodity fee"]
+    benchmarks: ["Henry Hub"]
+    channels: ["revenue", "cost_of_revenue", "operating_margin", "contract_pricing"]
+  lng_market_price:
+    category: "commodity"
+    aliases: ["LNG prices", "LNG selling prices", "market-based price", "spot sales", "commissioning LNG sales", "supply and demand market pricing"]
+    benchmarks: ["JKM", "TTF", "Brent"]
+    channels: ["revenue", "gross_margin", "operating_margin", "cash_flow"]
+  basis_differential:
+    category: "commodity"
+    aliases: ["basis differential", "basis differentials", "premium relative to Henry Hub", "transportation costs"]
+    benchmarks: ["Henry Hub"]
+    channels: ["cost_of_revenue", "operating_margin"]
+  marine_freight:
+    category: "logistics"
+    aliases: ["marine freight", "LNG tanker", "shipping", "transportation costs", "charter"]
+    benchmarks: []
+    channels: ["cost_of_revenue", "operating_margin"]
+  regulatory_approval:
+    category: "regulatory"
+    aliases: ["FERC", "DOE", "authorization", "regulatory approvals", "permit", "Non-FTA"]
+    benchmarks: []
+    channels: ["revenue", "capital_expenditures", "cash_flow", "liquidity"]
+  project_execution:
+    category: "operational"
+    aliases: ["COD", "commercial operations", "construction", "project delay", "deadline", "pipeline"]
+    benchmarks: []
+    channels: ["revenue", "capital_expenditures", "cash_flow", "liquidity"]

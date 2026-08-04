@@ -1,0 +1,26 @@
+[package]
+name = "krw-agent-research-quality"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-run-engine = { path = "../run-engine" }
+krw-ontology-adapter = { path = "../krw-ontology-adapter" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

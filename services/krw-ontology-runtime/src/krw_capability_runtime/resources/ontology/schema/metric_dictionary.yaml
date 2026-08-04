@@ -1,0 +1,208 @@
+schema_version: "0.1.0"
+
+canonical_metrics:
+  # -- Revenue/growth (3) --
+  revenue:
+    display_name: Revenue
+    category: revenue
+    unit: USD
+    description: "Total revenue from continuing operations."
+    aliases: [total_revenue, net_sales, sales]
+    xbrl_tags: [us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, us-gaap:Revenues, us-gaap:SalesRevenueNet]
+
+  revenue_growth:
+    display_name: Revenue Growth
+    category: revenue
+    unit: percent
+    description: "Year-over-year change in total revenue."
+    aliases: [revenue_growth_rate, sales_growth, net_sales_growth]
+    xbrl_tags: []
+
+  segment_revenue:
+    display_name: Segment Revenue
+    category: revenue
+    unit: USD
+    description: "Revenue breakdown by business segment."
+    aliases: [segment_sales]
+    xbrl_tags: []
+
+  # -- Margin/profitability (7) --
+  gross_margin:
+    display_name: Gross Margin
+    category: profitability
+    unit: percent
+    description: "Gross profit divided by total revenue."
+    aliases: [gross_profit_margin]
+    xbrl_tags: []
+
+  gross_profit:
+    display_name: Gross Profit
+    category: profitability
+    unit: USD
+    description: "Revenue minus cost of revenue."
+    aliases: []
+    xbrl_tags: [us-gaap:GrossProfit]
+
+  operating_margin:
+    display_name: Operating Margin
+    category: profitability
+    unit: percent
+    description: "Operating income divided by total revenue."
+    aliases: []
+    xbrl_tags: []
+
+  operating_income:
+    display_name: Operating Income
+    category: profitability
+    unit: USD
+    description: "Income from core business operations."
+    aliases: []
+    xbrl_tags: [us-gaap:OperatingIncomeLoss]
+
+  net_income:
+    display_name: Net Income
+    category: profitability
+    unit: USD
+    description: "Bottom-line profit after all expenses and taxes."
+    aliases: [net_profit]
+    xbrl_tags: [us-gaap:NetIncomeLoss]
+
+  net_margin:
+    display_name: Net Margin
+    category: profitability
+    unit: percent
+    description: "Net income divided by total revenue."
+    aliases: []
+    xbrl_tags: []
+
+  eps:
+    display_name: Earnings Per Share
+    category: profitability
+    unit: USD_per_share
+    description: "Net income available to common shareholders divided by weighted average shares."
+    aliases: [earnings_per_share]
+    xbrl_tags: [us-gaap:EarningsPerShareBasic]
+
+  # -- Costs (4) --
+  cost_of_revenue:
+    display_name: Cost of Revenue
+    category: costs
+    unit: USD
+    description: "Direct costs attributable to the production of revenue."
+    aliases: [cost_of_goods_sold, cogs]
+    xbrl_tags: [us-gaap:CostOfGoodsAndServicesSold]
+
+  operating_expense:
+    display_name: Operating Expense
+    category: costs
+    unit: USD
+    description: "Total operating expenses."
+    aliases: [total_operating_expenses, sg_and_a]
+    xbrl_tags: [us-gaap:OperatingExpenses]
+
+  research_and_development:
+    display_name: Research and Development
+    category: costs
+    unit: USD
+    description: "R&D expenditure."
+    aliases: [rd_expense, research_development_expense]
+    xbrl_tags: [us-gaap:ResearchAndDevelopmentExpense]
+
+  selling_general_and_admin:
+    display_name: Selling, General and Administrative
+    category: costs
+    unit: USD
+    description: "SG&A expenditure."
+    aliases: [sga, selling_general_administrative]
+    xbrl_tags: [us-gaap:SellingGeneralAndAdministrativeExpense]
+
+  # -- Cash flow (4) --
+  operating_cash_flow:
+    display_name: Operating Cash Flow
+    category: cash_flow
+    unit: USD
+    description: "Net cash from operating activities."
+    aliases: [cash_from_operations]
+    xbrl_tags: [us-gaap:NetCashProvidedByUsedInOperatingActivities]
+
+  capital_expenditures:
+    display_name: Capital Expenditures
+    category: cash_flow
+    unit: USD
+    description: "Cash spent on property, plant and equipment."
+    aliases: [capex, pp_and_e]
+    xbrl_tags: [us-gaap:PaymentsForAcquisitionOfPropertyPlantAndEquipment]
+
+  free_cash_flow:
+    display_name: Free Cash Flow
+    category: cash_flow
+    unit: USD
+    description: "Operating cash flow minus capital expenditures."
+    aliases: [fcf]
+    xbrl_tags: []
+
+  fcf_margin:
+    display_name: FCF Margin
+    category: cash_flow
+    unit: percent
+    description: "Free cash flow divided by total revenue."
+    aliases: [free_cash_flow_margin]
+    xbrl_tags: []
+
+  # -- Balance sheet/leverage (5) --
+  cash_and_equivalents:
+    display_name: Cash and Equivalents
+    category: balance_sheet
+    unit: USD
+    description: "Cash, cash equivalents, and short-term investments."
+    aliases: [cash, total_cash]
+    xbrl_tags: [us-gaap:CashAndCashEquivalentsAtCarryingValue]
+
+  total_assets:
+    display_name: Total Assets
+    category: balance_sheet
+    unit: USD
+    description: "Sum of all assets."
+    aliases: []
+    xbrl_tags: [us-gaap:Assets]
+
+  total_liabilities:
+    display_name: Total Liabilities
+    category: balance_sheet
+    unit: USD
+    description: "Sum of all liabilities."
+    aliases: []
+    xbrl_tags: [us-gaap:Liabilities]
+
+  total_debt:
+    display_name: Total Debt
+    category: balance_sheet
+    unit: USD
+    description: "Short-term debt plus current portion of long-term debt plus long-term debt."
+    aliases: [debt]
+    xbrl_tags: [us-gaap:ShortTermBorrowings, us-gaap:LongTermDebt]
+
+  shareholders_equity:
+    display_name: "Shareholders' Equity"
+    category: balance_sheet
+    unit: USD
+    description: "Total owners' equity."
+    aliases: [total_equity, stockholders_equity]
+    xbrl_tags: [us-gaap:StockholdersEquity]
+
+  # -- Efficiency/returns (2) --
+  roe:
+    display_name: Return on Equity
+    category: efficiency
+    unit: percent
+    description: "Net income divided by average shareholders' equity."
+    aliases: [return_on_equity]
+    xbrl_tags: []
+
+  roa:
+    display_name: Return on Assets
+    category: efficiency
+    unit: percent
+    description: "Net income divided by average total assets."
+    aliases: [return_on_assets]
+    xbrl_tags: []

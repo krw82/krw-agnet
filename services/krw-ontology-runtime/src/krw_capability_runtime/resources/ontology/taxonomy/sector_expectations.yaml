@@ -1,0 +1,42 @@
+schema_version: "0.2.0"
+description: "Coverage expectations by company profile sector. Missing expected factors produce quality warnings only; they must not create ontology objects without evidence."
+
+sectors:
+  energy_lng:
+    aliases:
+      - energy_lng
+      - lng
+      - liquefaction
+      - natural_gas_infrastructure
+      - lng_infrastructure
+    expected_factors:
+      - natural_gas_price
+      - basis_differential
+      - lng_market_price
+      - regulatory_approval
+      - project_execution
+
+  energy_integrated_oil_gas:
+    aliases:
+      - energy_integrated_oil_gas
+      - integrated_oil_gas
+      - integrated_oil
+      - energy_oil_gas
+      - energy_oil_and_gas
+      - oil_and_gas
+      - upstream_oil_gas
+      - downstream_refining
+      - energy_integrated_oil
+    expected_factors:
+      - crude_oil_price
+      - natural_gas_price
+      - refining_margin
+      - commodity_price_realization
+      - production_volume
+      - environmental_regulation
+      - litigation_outcome
+
+  generic:
+    aliases:
+      - generic
+    expected_factors: []

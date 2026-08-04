@@ -1,0 +1,31 @@
+{
+  "run_id": "fixture-run-001",
+  "session_id": "fixture-session-001",
+  "tenant_id": "fixture-tenant",
+  "principal_id": "fixture-principal",
+  "run_kind": "company_research",
+  "locale": "ko-KR",
+  "question": "VG의 현금창출력이 공시 근거로 확인되는지 설명해줘",
+  "requested_model": "deepseek-v4-flash",
+  "model_profile": "flash_high",
+  "budget": {
+    "max_provider_turns": 32,
+    "max_capability_calls": 12,
+    "max_replans": 6,
+    "max_repairs": 6,
+    "max_input_tokens": 360000,
+    "max_output_tokens": 48000,
+    "max_evidence_bytes": 16777216,
+    "deadline_ms": 480000,
+    "capability_call_limits": {
+      "ontology.query_context": 4,
+      "ontology.query": 5,
+      "ontology.trace": 3
+    }
+  },
+  "context": {
+    "kind": "company_ticker_set",
+    "tickers": ["VG"]
+  },
+  "session_memory": null
+}

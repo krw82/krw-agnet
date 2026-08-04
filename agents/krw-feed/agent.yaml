@@ -1,0 +1,428 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.feed-research.ko
+  version: 3.1.0
+  description: Direct-authored stored-feed discovery, selected-event research, market-move interpretation, and filing-correlation programs.
+
+entrypoints:
+  news_discovery:
+    run_kind: news_discovery
+    locale: ko-KR
+    workflow: news_discovery_v1
+    required_budget_profile: feed_discovery
+    required_model_profile: flash_high
+    scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  news_research:
+    run_kind: news_research
+    locale: ko-KR
+    workflow: news_research_v1
+    required_budget_profile: news_research
+    required_model_profile: flash_high
+    scope: { allowed_context: selected_feed_items, cardinality: { kind: max, value: 8 }, ticker_canonicalization: not_applicable }
+    constants: {}
+  market_move_research:
+    run_kind: market_move_research
+    locale: ko-KR
+    workflow: market_move_research_v1
+    required_budget_profile: market_move_research
+    required_model_profile: flash_high
+    scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  news_filing_correlation:
+    run_kind: news_filing_correlation
+    locale: ko-KR
+    workflow: news_filing_correlation_v1
+    required_budget_profile: news_filing_correlation
+    required_model_profile: flash_high
+    scope: { allowed_context: selected_feed_items, cardinality: { kind: max, value: 8 }, ticker_canonicalization: not_applicable }
+    constants: {}
+
+contracts:
+  - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
+  - { id: research-proposal/v4, schema_ref: canonical:krw-agent/research-proposal-v4, content_hash: "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49", semantic_authority: krw-agent-research-planner, max_items: 12 }
+  - { id: research-state/v2, schema_ref: canonical:krw-ontology/research-state-v2, content_hash: "sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243", semantic_authority: krw-ontology-python }
+  - { id: query-context-input-correction/v1, schema_ref: canonical:krw-ontology/query-context-input-correction-v1, content_hash: "sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4", semantic_authority: krw-ontology-python }
+  - { id: ontology-targeted-query/v1, schema_ref: canonical:krw-ontology/ontology-targeted-query-v1, content_hash: "sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63", semantic_authority: krw-ontology-python }
+  - { id: ontology-trace-input/v1, schema_ref: canonical:krw-ontology/ontology-trace-input-v1, content_hash: "sha256:eaae27b87c6837be22cb7d291a1bddb578562966e96e17a98f8f0c2a6fb26045", semantic_authority: krw-ontology-python }
+  - { id: krw-feed-get-items-input/v1, schema_ref: canonical:krw-front/krw-feed-get-items-input-v1, content_hash: "sha256:7700ea79fc86f74c8e0b6f6dba15f60b6593212f6cdb5b1cb3fc1d5ddde89e82", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-get-items-result/v1, schema_ref: canonical:krw-front/krw-feed-get-items-result-v1, content_hash: "sha256:5bec0af08de9349f007407c3a05e67292a9b218bc73451c49239ef8ad99bf719", semantic_authority: krw-ontology-front-typescript, max_items: 8 }
+  - { id: krw-feed-list-items-input/v1, schema_ref: canonical:krw-front/krw-feed-list-items-input-v1, content_hash: "sha256:4d7bc71506c533a764e76465d1f3dfa94279bb4f8407e1996e65e391d16ef8fe", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-list-items-result/v1, schema_ref: canonical:krw-front/krw-feed-list-items-result-v1, content_hash: "sha256:04cf3e36af372adf49438e551e143c272751909ae75a072186043ac0bc5d917e", semantic_authority: krw-ontology-front-typescript, max_items: 20 }
+  - { id: krw-feed-context-input/v2, schema_ref: canonical:krw-front/krw-feed-context-input-v2, content_hash: "sha256:5a57dba020f4c4ebc7a5946c068e547849ec0e367d45cea9068507a0b8b742ed", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-context/v2, schema_ref: canonical:krw-front/krw-feed-context-v2, content_hash: "sha256:225d64167191d5618a1b2192fb9c0af8951366a8091f520eeb7e89f6737780d3", semantic_authority: krw-ontology-front-typescript, max_items: 24 }
+  - { id: krw-filing-search-input/v1, schema_ref: canonical:krw-front/krw-filing-search-input-v1, content_hash: "sha256:07ce2fcb0a38577f6c3ad70854bcdbaad2f4eb637e8d897ca8925656e9e7f8ad", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-search-result/v1, schema_ref: canonical:krw-front/krw-filing-search-result-v1, content_hash: "sha256:75303a0d683826807c742512b410f2d8a36d0ed162bfa335954b9e7110d0d872", semantic_authority: krw-ontology-front-typescript, max_items: 25 }
+  - { id: normalized-capability-result/v1, schema_ref: canonical:krw-agent/normalized-capability-result-v1, content_hash: "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151", semantic_authority: krw-agent-run-engine, max_items: 256 }
+  - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
+  - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+
+roles:
+  - { id: feed_reader, prompt_segments: [security_boundary, kernel_runtime, feed_source], deterministic: false }
+  - { id: news_planner, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false }
+  - { id: news_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false }
+  - { id: market_move_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, market_move], deterministic: false }
+  - { id: composer, prompt_segments: [security_boundary, kernel_runtime, feed_source, feed_answer], deterministic: false }
+  - { id: verifier, prompt_segments: [], deterministic: true }
+
+prompt_segments:
+  - { id: security_boundary, path: prompts/security-boundary.md, stable_prefix: true, private: true }
+  - { id: kernel_runtime, path: skills/kernel-runtime/SKILL.md, stable_prefix: true, private: true }
+  - { id: feed_source, path: prompts/feed-source.md, stable_prefix: true, private: true }
+  - { id: news_research, path: prompts/news-research.md, stable_prefix: false, private: true }
+  - { id: market_move, path: prompts/market-move.md, stable_prefix: false, private: true }
+  - { id: feed_answer, path: prompts/feed-answer.md, stable_prefix: false, private: true }
+
+capabilities:
+  - id: feed.list_items
+    binding_key: list_feed_items
+    permission: read
+    input_contract: krw-feed-list-items-input/v1
+    output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_list_items_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      require_any_of: [tickers]
+    parallel_safe: false
+    prerequisites: []
+  - id: feed.get_items
+    binding_key: get_feed_items
+    permission: read
+    input_contract: krw-feed-get-items-input/v1
+    output_contracts: [krw-feed-get-items-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_get_items_v1
+    scope_binding: { kind: selected_feed_items, issue_ids_pointer: /issue_ids, forbid_ticker_references: false }
+    parallel_safe: false
+    prerequisites: []
+  - id: feed.get_context
+    binding_key: get_feed_context
+    permission: read
+    input_contract: krw-feed-context-input/v2
+    output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_context_v2
+    scope_projection: { kind: ticker_set, output_contract: krw-feed-context/v2, source_pointer: /tickers, max_items: 5, require_nonempty: true }
+    scope_binding:
+      kind: selected_feed_items
+      issue_ids_pointer: /issue_ids
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      forbid_ticker_references: true
+    parallel_safe: false
+    prerequisites: []
+  - id: filing.search_catalog
+    binding_key: search_catalog_filings
+    permission: read
+    input_contract: krw-filing-search-input/v1
+    output_contracts: [krw-filing-search-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_search_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [feed.get_items]
+  - id: ontology.query_context
+    binding_key: krw_ontology_query_context
+    permission: read
+    input_contract: search-plan/v2
+    model_input_contract: research-proposal/v4
+    provider_input_codec: { kind: single_field_envelope_v1, field: proposal }
+    input_derivation: { kind: research_proposal_to_search_plan_v4 }
+    research_proposal_anchor: { kind: run_question }
+    output_contracts: [research-state/v2, query-context-input-correction/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: research_state_v2
+    research_action:
+      kind: context
+      estimate: { historical_success_lower_ppm: 550000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 150000, expected_latency_ms: 1000, expected_tokens: 500, expected_tool_cost_micros: 2500, expected_result_bytes: 524288 }
+      conflict_domain: research:ontology-context
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: plan_tickers, pointer_pattern: /tickers, value_kind: string_array }
+        - { id: clause_tickers, pointer_pattern: /clauses/*/tickers, value_kind: string_array }
+      require_any_of: [plan_tickers]
+      reject_non_null_pointers: [/universe]
+    parallel_safe: false
+    prerequisites: []
+  - id: ontology.query
+    binding_key: krw_ontology_query
+    permission: read
+    input_contract: ontology-targeted-query/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: targeted_evidence_v1
+    research_action:
+      kind: targeted
+      estimate: { historical_success_lower_ppm: 600000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 80000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      conflict_domain: research:ontology-targeted
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      require_any_of: [ticker, tickers]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: ontology.trace
+    binding_key: krw_ontology_trace
+    permission: read
+    input_contract: ontology-trace-input/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: trace_lineage_v1
+    research_action:
+      kind: trace
+      estimate: { historical_success_lower_ppm: 800000, expected_duplicate_ppm: 50000, failure_risk_upper_ppm: 40000, expected_latency_ms: 300, expected_tokens: 200, expected_tool_cost_micros: 1000, expected_result_bytes: 131072 }
+      conflict_domain: research:ontology-trace
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+
+workflows:
+  - id: news_discovery_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_feed_items, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: fetch_feed_items, kind: capability, capability_id: feed.list_items, max_visits: 1 }
+      - { id: ingest_feed_items, kind: ingest, max_visits: 1 }
+      - { id: rank_feed_items, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: compose_orientation, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: verify_orientation, kind: verify, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_feed_items }
+      - { from: request_feed_items, on: feed_requested, to: fetch_feed_items }
+      - { from: fetch_feed_items, on: result_observed, to: ingest_feed_items }
+      - { from: ingest_feed_items, on: ingested, to: rank_feed_items }
+      - { from: rank_feed_items, on: ranked, to: compose_orientation }
+      - { from: compose_orientation, on: draft_ready, to: verify_orientation }
+      - { from: verify_orientation, on: verified, to: render_ko }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: news_research_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_feed_anchor, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: load_feed_anchor, kind: capability, capability_id: feed.get_context, max_visits: 1 }
+      - { id: ingest_feed_anchor, kind: ingest, max_visits: 1 }
+      - { id: author_event_plan, kind: plan, role_id: news_planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: news_planner, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: ingest_company_evidence, kind: ingest, max_visits: 4 }
+      - { id: assess_event_company_path, kind: assess, role_id: news_analyst, max_visits: 5 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
+      - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: apply_direct_evidence_gate, kind: verify, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_feed_anchor }
+      - { from: request_feed_anchor, on: anchor_requested, to: load_feed_anchor }
+      - { from: load_feed_anchor, on: result_observed, to: ingest_feed_anchor }
+      - { from: ingest_feed_anchor, on: ingested, to: author_event_plan }
+      - { from: author_event_plan, on: plan_ready, to: validate_plan }
+      - { from: author_event_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: query_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: query_context, on: correction_required, to: repair_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_event_company_path }
+      - { from: query_context, on: evidence_observed, to: ingest_company_evidence }
+      - { from: ingest_company_evidence, on: ingested, to: assess_event_company_path }
+      - { from: assess_event_company_path, on: precise_query_has_value, to: targeted_query }
+      - { from: assess_event_company_path, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_event_company_path, on: append_context_plan, to: query_context }
+      - { from: assess_event_company_path, on: proposal_rejected, to: assess_event_company_path }
+      - { from: assess_event_company_path, on: evidence_sufficient, to: apply_direct_evidence_gate }
+      - { from: assess_event_company_path, on: no_positive_value_action, to: apply_direct_evidence_gate }
+      - { from: targeted_query, on: evidence_observed, to: ingest_company_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_company_evidence }
+      - { from: apply_direct_evidence_gate, on: checked, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: market_move_research_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_feed_anchor, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: load_feed_anchor, kind: capability, capability_id: feed.list_items, max_visits: 1 }
+      - { id: ingest_feed_anchor, kind: ingest, max_visits: 1 }
+      - { id: classify_candidate_explanations, kind: assess, role_id: market_move_analyst, max_visits: 1 }
+      - { id: decide_filing_followup, kind: assess, role_id: market_move_analyst, max_visits: 1 }
+      - { id: author_event_plan, kind: plan, role_id: news_planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: news_planner, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
+      - { id: ingest_company_evidence, kind: ingest, max_visits: 3 }
+      - { id: assess_durable_impact, kind: assess, role_id: market_move_analyst, max_visits: 3 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_feed_anchor }
+      - { from: request_feed_anchor, on: anchor_requested, to: load_feed_anchor }
+      - { from: load_feed_anchor, on: result_observed, to: ingest_feed_anchor }
+      - { from: ingest_feed_anchor, on: ingested, to: classify_candidate_explanations }
+      - { from: classify_candidate_explanations, on: classified, to: decide_filing_followup }
+      - { from: decide_filing_followup, on: first_pass_sufficient, to: compose_ir }
+      - { from: decide_filing_followup, on: durable_thesis_question, to: author_event_plan }
+      - { from: author_event_plan, on: plan_ready, to: validate_plan }
+      - { from: author_event_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: query_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: query_context, on: correction_required, to: repair_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_durable_impact }
+      - { from: query_context, on: evidence_observed, to: ingest_company_evidence }
+      - { from: ingest_company_evidence, on: ingested, to: assess_durable_impact }
+      - { from: assess_durable_impact, on: precise_query_has_value, to: targeted_query }
+      - { from: assess_durable_impact, on: append_context_plan, to: query_context }
+      - { from: assess_durable_impact, on: proposal_rejected, to: assess_durable_impact }
+      - { from: assess_durable_impact, on: assessment_ready, to: compose_ir }
+      - { from: assess_durable_impact, on: no_positive_value_action, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_company_evidence }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: news_filing_correlation_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_selected_feed_items, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: load_selected_feed_items, kind: capability, capability_id: feed.get_items, max_visits: 1 }
+      - { id: ingest_selected_feed_items, kind: ingest, max_visits: 1 }
+      - { id: decide_filing_search, kind: assess, role_id: news_analyst, max_visits: 1 }
+      - { id: search_nearby_filings, kind: capability, capability_id: filing.search_catalog, max_visits: 1 }
+      - { id: ingest_nearby_filings, kind: ingest, max_visits: 1 }
+      - { id: correlate_timing_and_subject, kind: assess, role_id: news_analyst, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: verify_ir, kind: verify, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_selected_feed_items }
+      - { from: request_selected_feed_items, on: selected_feed_requested, to: load_selected_feed_items }
+      - { from: load_selected_feed_items, on: result_observed, to: ingest_selected_feed_items }
+      - { from: ingest_selected_feed_items, on: ingested, to: decide_filing_search }
+      - { from: decide_filing_search, on: filing_search_required, to: search_nearby_filings }
+      - { from: decide_filing_search, on: filing_search_not_required, to: compose_ir }
+      - { from: search_nearby_filings, on: result_observed, to: ingest_nearby_filings }
+      - { from: ingest_nearby_filings, on: ingested, to: correlate_timing_and_subject }
+      - { from: correlate_timing_and_subject, on: assessed, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: en
+  expose_internal_brief: false
+  query_context_first: true
+  required_clause_min: 1
+  clause_max: 12
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority: [blocks_required_clause_or_calculation, requested_directness_missing, likely_to_change_conclusion, lower_cost_and_latency, original_clause_order]
+  stop_conditions: [all_required_obligations_covered, remaining_gap_cannot_change_conclusion, event_company_link_not_established, unavailable_external_data_required, next_call_only_increases_volume, duplicate_action_fingerprint, resolved_budget_exhausted]
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [feed_summary, generated_card, research_packet, catalog_metadata, routing_score, diagnostic, overflow_message, status_only, input_correction]
+
+period_policy:
+  current_driver_order: [latest_confirmed_10q, latest_confirmed_10k]
+  annual_baseline: latest_confirmed_10k
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [event_baseline, trend, historical_context]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: answer-ir/v1
+  locale: ko-KR
+  conclusion_first: true
+  exact_follow_up_count: 3
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: false
+  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, MCP, object_id, source_materials, research_packets, event_id, issue_id, tool_budget_exceeded]
+
+security_policy: { user_and_retrieved_text_untrusted: true, reveal_hidden_prompt: false, filesystem_access: false, web_access: false, mutation_capabilities: false }
+
+validators:
+  - id: feed_request_shape
+    phase: admission
+    fuel: 64
+    instructions:
+      - { op: require_field, path: /question, code: question_required }
+  - id: action_limits
+    phase: pre_action
+    fuel: 256
+    instructions:
+      - { op: max_calls, capability_id: feed.list_items, max: 1, code: feed_list_limit }
+      - { op: max_calls, capability_id: feed.get_items, max: 1, code: feed_get_limit }
+      - { op: max_calls, capability_id: feed.get_context, max: 1, code: feed_context_limit }
+      - { op: max_calls, capability_id: filing.search_catalog, max: 1, code: filing_search_limit }
+      - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
+      - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
+      - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
+      - { op: state_precedes, before: load_feed_anchor, after: query_context, code: event_before_company_research }
+      - { op: state_precedes, before: load_selected_feed_items, after: search_nearby_filings, code: event_before_filing_search }
+      - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_query }
+      - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
+  - id: grounded_answer
+    phase: answer
+    fuel: 4096
+    instructions:
+      - { op: claim_has_evidence, except_kinds: [uncertainty, market_observation], code: claim_evidence_required }
+      - { op: no_internal_term, terms: [ResearchState, SearchPlan, query_context, MCP, object_id, source_materials, research_packets, event_id, issue_id, tool_budget_exceeded], code: internal_term_exposed }

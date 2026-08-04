@@ -1,0 +1,30 @@
+[package]
+name = "krw-agent-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-bounded-child = { path = "../bounded-child" }
+krw-agent-protocol = { path = "../protocol" }
+krw-session-memory = { path = "../session-memory" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

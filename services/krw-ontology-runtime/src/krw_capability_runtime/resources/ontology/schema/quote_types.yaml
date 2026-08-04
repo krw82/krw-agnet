@@ -1,0 +1,40 @@
+quote_types:
+  risk_language:
+    description: "Language describing potential or actual downside risk."
+    ai_guidance: "Look for words like: risk, may adversely, could negatively, potential loss, exposure, volatility, uncertainty."
+
+  business_description:
+    description: "Language describing how the company operates or makes money."
+    ai_guidance: "Look for words like: we operate, our business model, revenue streams, customer base, geographic segments."
+
+  revenue_driver:
+    description: "Language explaining growth or decline in sales."
+    ai_guidance: "Look for words like: grew, increased, revenue, sales, demand, expansion."
+
+  margin_driver:
+    description: "Language explaining margin, cost structure, or profitability."
+    ai_guidance: "Look for words like: margin, profitability, cost structure, gross profit, operating leverage."
+
+  headwind:
+    description: "Language describing pressure on demand, revenue, margin, or operations."
+    ai_guidance: "Look for words like: headwind, pressure, challenge, headwinds, weakening."
+
+  growth_driver:
+    description: "Language describing positive business momentum."
+    ai_guidance: "Look for words like: opportunity, tailwinds, growth, momentum, expanding."
+
+  competitive_pressure:
+    description: "Language describing competition, substitution, pricing pressure, or market share risk."
+    ai_guidance: "Look for words like: competitive, competition, market share, pricing pressure, substitute."
+
+  regulatory_exposure:
+    description: "Language describing regulation, litigation, compliance, or legal exposure."
+    ai_guidance: "Look for words like: regulatory, litigation, compliance, legal, government, investigation."
+
+  supply_chain:
+    description: "Language describing suppliers, manufacturing, logistics, inventory, or production risk."
+    ai_guidance: "Look for words like: supplier, supply chain, manufacturing, logistics, inventory, component."
+
+  assumption_support:
+    description: "Language that can support a valuation or forecast assumption."
+    ai_guidance: "Look for words like: assume, expected to, we anticipate, forecast, guidance."

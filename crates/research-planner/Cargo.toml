@@ -1,0 +1,19 @@
+[package]
+name = "krw-agent-research-planner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-planning = { path = "../planning" }
+krw-agent-protocol = { path = "../protocol" }
+krw-ontology-adapter = { path = "../krw-ontology-adapter" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

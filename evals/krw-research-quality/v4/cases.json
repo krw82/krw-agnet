@@ -1,0 +1,213 @@
+{
+  "schema_version": 4,
+  "cases": [
+    {
+      "id": "company-research-cash-generation",
+      "agent_dir": "agents/krw-ontology",
+      "run_request": "fixtures/vertical-slice/v1/run-request.json",
+      "capability_responses": [
+        {
+          "capability_id": "ontology.query_context",
+          "payload": "fixtures/vertical-slice/v1/mcp/research-state-answerable.json",
+          "mode": "materialize_research_state_plan_v2"
+        }
+      ],
+      "recorded_provider_turns": [
+        "fixtures/vertical-slice/v1/provider/turn-1-assistant.json",
+        "fixtures/vertical-slice/v1/provider/turn-2-evidence-sufficient.json",
+        "fixtures/vertical-slice/v1/provider/turn-3-answer.json"
+      ],
+      "budget": {
+        "max_provider_turns": 8,
+        "max_capability_calls": 1,
+        "max_replans": 1,
+        "max_repairs": 2,
+        "max_input_tokens": 64000,
+        "max_output_tokens": 8000,
+        "max_evidence_bytes": 1048576,
+        "deadline_ms": 120000,
+        "capability_call_limits": {
+          "ontology.query_context": 1
+        }
+      },
+      "expected": {
+        "max_provider_turns": 8,
+        "min_replans": 0,
+        "exact_capability_sequence": [
+          "ontology.query_context"
+        ],
+        "required_evidence_ids": [
+          "ev-vg-cash-001"
+        ],
+        "required_rendered_terms": [
+          "VG",
+          "현금"
+        ],
+        "forbidden_rendered_terms": [
+          "EvidenceLedger",
+          "ResearchState",
+          "SearchPlan",
+          "workflow",
+          "tool",
+          "contract"
+        ],
+        "plan": {
+          "ticker": "VG",
+          "required_document_type": "10-K",
+          "min_clauses": 1,
+          "max_clauses": 2,
+          "relevant_terms": [
+            "cash",
+            "현금"
+          ]
+        }
+      }
+    },
+    {
+      "id": "company-research-independent-cash-and-debt",
+      "agent_dir": "agents/krw-ontology",
+      "run_request": "fixtures/research-quality/v4/company-dual-claim/run-request.json",
+      "capability_responses": [
+        {
+          "capability_id": "ontology.query_context",
+          "payload": "fixtures/research-quality/v4/company-dual-claim/mcp/research-state-answerable.json",
+          "mode": "materialize_research_state_plan_v2"
+        }
+      ],
+      "recorded_provider_turns": [
+        "fixtures/research-quality/v4/company-dual-claim/provider/turn-1-assistant.json",
+        "fixtures/research-quality/v4/company-dual-claim/provider/turn-2-evidence-sufficient.json",
+        "fixtures/research-quality/v4/company-dual-claim/provider/turn-3-answer.json"
+      ],
+      "budget": {
+        "max_provider_turns": 8,
+        "max_capability_calls": 1,
+        "max_replans": 1,
+        "max_repairs": 2,
+        "max_input_tokens": 64000,
+        "max_output_tokens": 8000,
+        "max_evidence_bytes": 1048576,
+        "deadline_ms": 120000,
+        "capability_call_limits": {
+          "ontology.query_context": 1
+        }
+      },
+      "expected": {
+        "max_provider_turns": 8,
+        "min_replans": 0,
+        "exact_capability_sequence": [
+          "ontology.query_context"
+        ],
+        "required_evidence_ids": [
+          "ev-vg-cash-001",
+          "ev-vg-debt-001"
+        ],
+        "required_rendered_terms": [
+          "VG",
+          "현금",
+          "부채"
+        ],
+        "forbidden_rendered_terms": [
+          "EvidenceLedger",
+          "ResearchState",
+          "SearchPlan",
+          "workflow",
+          "tool",
+          "contract"
+        ],
+        "plan": {
+          "ticker": "VG",
+          "required_document_type": "10-K",
+          "min_clauses": 2,
+          "max_clauses": 2,
+          "relevant_terms": [
+            "cash",
+            "debt",
+            "현금",
+            "부채"
+          ]
+        }
+      }
+    },
+    {
+      "id": "company-research-partial-evidence-selective-replan",
+      "agent_dir": "agents/krw-ontology",
+      "run_request": "fixtures/vertical-slice/v1/run-request.json",
+      "capability_responses": [
+        {
+          "capability_id": "ontology.query_context",
+          "payload": "fixtures/research-quality/v4/partial-research-replan/mcp/research-state-partial.json",
+          "mode": "materialize_research_state_plan_v2"
+        },
+        {
+          "capability_id": "ontology.trace",
+          "payload": "fixtures/research-quality/v4/partial-research-replan/mcp/trace-cash-lineage.json",
+          "mode": "static"
+        },
+        {
+          "capability_id": "ontology.query_context",
+          "payload": "fixtures/research-quality/v4/partial-research-replan/mcp/research-state-answerable-after-append.json",
+          "mode": "materialize_research_state_plan_v2"
+        }
+      ],
+      "recorded_provider_turns": [
+        "fixtures/vertical-slice/v1/provider/turn-1-assistant.json",
+        "fixtures/research-quality/v4/partial-research-replan/provider/turn-2-wrong-proposal.json",
+        "fixtures/research-quality/v4/partial-research-replan/provider/turn-3-trace.json",
+        "fixtures/research-quality/v4/partial-research-replan/provider/turn-4-append-context.json",
+        "fixtures/research-quality/v4/partial-research-replan/provider/turn-5-evidence-sufficient.json",
+        "fixtures/research-quality/v4/partial-research-replan/provider/turn-6-answer.json"
+      ],
+      "budget": {
+        "max_provider_turns": 8,
+        "max_capability_calls": 3,
+        "max_replans": 4,
+        "max_repairs": 2,
+        "max_input_tokens": 64000,
+        "max_output_tokens": 8000,
+        "max_evidence_bytes": 1048576,
+        "deadline_ms": 120000,
+        "capability_call_limits": {
+          "ontology.query_context": 2,
+          "ontology.query": 1,
+          "ontology.trace": 1
+        }
+      },
+      "expected": {
+        "max_provider_turns": 8,
+        "min_replans": 3,
+        "exact_capability_sequence": [
+          "ontology.query_context",
+          "ontology.trace",
+          "ontology.query_context"
+        ],
+        "required_evidence_ids": [
+          "ev-vg-cash-001",
+          "ev-vg-cash-lineage-001"
+        ],
+        "required_rendered_terms": [
+          "VG",
+          "현금"
+        ],
+        "forbidden_rendered_terms": [
+          "EvidenceLedger",
+          "ResearchState",
+          "SearchPlan",
+          "workflow",
+          "tool",
+          "contract"
+        ],
+        "plan": {
+          "ticker": "VG",
+          "required_document_type": "10-K",
+          "min_clauses": 1,
+          "max_clauses": 2,
+          "relevant_terms": [
+            "cash",
+            "현금"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_7F4C: assess the durably ingested evidence.",
+  "tool_calls": [
+    {
+      "id": "call-evidence-sufficient-001",
+      "type": "function",
+      "function": {
+        "name": "krw_agent_transition",
+        "arguments": "{\"event\":\"evidence_sufficient\"}"
+      }
+    }
+  ]
+}

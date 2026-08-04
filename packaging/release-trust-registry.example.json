@@ -1,0 +1,1 @@
+{"keys":[{"ed25519_public_key_hex":"REPLACE_WITH_64_LOWERCASE_HEX_PUBLIC_KEY","key_id":"release-2026-a","not_after_unix_seconds":1800000000,"not_before_unix_seconds":1700000000,"revoked":false}],"minimum_sequence":1,"registry_id":"production-a","schema_version":1}

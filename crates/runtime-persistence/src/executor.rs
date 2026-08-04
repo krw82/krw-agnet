@@ -1,0 +1,1143 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use krw_agent_capability_runtime::{
+    CapabilityCatalog, McpToolTransport, PooledMcpCapabilityRuntime, RunScope,
+};
+use krw_agent_deepseek_wire::{DeepSeekClient, DeepSeekClientConfig};
+use krw_agent_image::LoadedImage;
+use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
+use krw_agent_persistence::daemon::{
+    ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
+};
+use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding};
+use krw_agent_run_engine::{
+    DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine, RunInput,
+    durable_failure_diagnostic, state_artifact_failure_code,
+};
+use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
+use krw_context_planner::ContextPlanner;
+use serde_json::json;
+use thiserror::Error;
+use tokio::time::timeout;
+
+use crate::{
+    ArtifactRepository, ClaimValidationError, DurableRunPersistence, DurableRunStore,
+    FinalizationPolicy, MemoryResolutionError, SessionMemoryPageAccumulator, ValidatedClaim,
+    validate_claim,
+};
+
+const CANCEL_DRAIN_GRACE: Duration = Duration::from_secs(2);
+const SESSION_MEMORY_PAGE_LIMIT: u16 = 8;
+
+/// Stable, content-free claim admission diagnostics.  The persisted terminal
+/// reason must let operators distinguish a host-contract drift from a corrupt
+/// receipt without retaining requests, model output, or configuration values.
+fn claim_failure_code(error: &ClaimValidationError) -> &'static str {
+    match error {
+        ClaimValidationError::InvalidEncoding => "invalid_claim_encoding",
+        ClaimValidationError::PayloadSize => "claim_payload_size_invalid",
+        ClaimValidationError::PayloadHashMismatch => "claim_payload_hash_mismatch",
+        ClaimValidationError::IdentityMismatch => "claim_identity_mismatch",
+        ClaimValidationError::DeploymentMismatch => "claim_deployment_mismatch",
+        ClaimValidationError::ResourceMismatch => "claim_resource_profile_mismatch",
+        ClaimValidationError::SnapshotMismatch => "claim_snapshot_mismatch",
+        ClaimValidationError::SnapshotContractMismatch(field) => match *field {
+            "protocol_version" => "claim_execution_protocol_version_mismatch",
+            "agent_image_hash" => "claim_execution_image_hash_mismatch",
+            "deployment_binding_hash" => "claim_execution_binding_hash_mismatch",
+            "model_registry_hash" => "claim_execution_model_registry_mismatch",
+            "budget_registry_hash" => "claim_execution_budget_registry_mismatch",
+            "model_profile" => "claim_execution_model_profile_mismatch",
+            "requested_model" | "resolved_model" => "claim_execution_model_mismatch",
+            "provider_api_version" => "claim_execution_provider_api_mismatch",
+            "provider_wire_capabilities" => "claim_execution_provider_wire_mismatch",
+            "thinking" | "reasoning_effort" => "claim_execution_thinking_profile_mismatch",
+            "capability_release_hashes" => "claim_execution_capability_release_mismatch",
+            "budget" => "claim_execution_budget_mismatch",
+            _ => "claim_execution_contract_mismatch",
+        },
+        ClaimValidationError::ModelContextExceeded => "claim_model_context_exceeded",
+        ClaimValidationError::Runtime(_) => "claim_runtime_resolution_failed",
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ProviderCatalogError {
+    #[error("resolved runtime contains no provider model")]
+    Empty,
+    #[error("resolved runtime contains a duplicate or inconsistent model")]
+    Duplicate,
+    #[error("resolved runtime must contain exactly the single DeepSeek Flash model")]
+    ModelInventory,
+    #[error("resolved runtime model API version is unsupported")]
+    ApiVersion,
+    #[error("DeepSeek provider client construction failed")]
+    Client,
+}
+
+/// Machine-wide `DeepSeek` clients grouped by exact HTTPS API base. Models on
+/// the same base share one HTTP/2 connection pool and authorization header.
+pub struct DeepSeekProviderCatalog {
+    by_model: BTreeMap<String, Arc<DeepSeekClient>>,
+}
+
+impl DeepSeekProviderCatalog {
+    pub fn compile(runtime: &ResolvedRuntime) -> Result<Arc<Self>, ProviderCatalogError> {
+        Self::compile_from(runtime.models(), runtime.deepseek_api_key())
+    }
+
+    pub fn compile_release_set(
+        releases: &ResolvedReleaseSet,
+    ) -> Result<Arc<Self>, ProviderCatalogError> {
+        Self::compile_from(releases.models(), releases.deepseek_api_key())
+    }
+
+    fn compile_from<'a>(
+        models: impl IntoIterator<Item = &'a krw_agent_protocol::ModelDescriptor>,
+        api_key: &str,
+    ) -> Result<Arc<Self>, ProviderCatalogError> {
+        let mut by_base = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut seen = BTreeSet::new();
+        for model in models {
+            if model.api_version != "chat-completions-v1" {
+                return Err(ProviderCatalogError::ApiVersion);
+            }
+            if !seen.insert(model.model_id.clone()) {
+                return Err(ProviderCatalogError::Duplicate);
+            }
+            by_base
+                .entry(model.api_base.clone())
+                .or_default()
+                .insert(model.model_id.clone());
+        }
+        if seen.is_empty() {
+            return Err(ProviderCatalogError::Empty);
+        }
+        if seen != BTreeSet::from([DEEPSEEK_MODEL_ID.to_owned()]) {
+            return Err(ProviderCatalogError::ModelInventory);
+        }
+        let mut by_model = BTreeMap::new();
+        for (api_base, models) in by_base {
+            let client = Arc::new(
+                DeepSeekClient::new(
+                    DeepSeekClientConfig::production(api_base, models.iter().cloned()),
+                    api_key,
+                )
+                .map_err(|_| ProviderCatalogError::Client)?,
+            );
+            for model in models {
+                if by_model.insert(model, Arc::clone(&client)).is_some() {
+                    return Err(ProviderCatalogError::Duplicate);
+                }
+            }
+        }
+        Ok(Arc::new(Self { by_model }))
+    }
+
+    fn exact(&self, model: &str) -> Option<Arc<DeepSeekClient>> {
+        self.by_model.get(model).cloned()
+    }
+}
+
+impl fmt::Debug for DeepSeekProviderCatalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeepSeekProviderCatalog")
+            .field("models", &self.by_model.keys().collect::<Vec<_>>())
+            .field("authorization", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Fully precompiled immutable execution entry for one exact image hash.
+pub struct ProductionReleaseEntry {
+    pub image: Arc<LoadedImage>,
+    pub deployment: Arc<DeploymentBinding>,
+    pub runtime: Arc<ResolvedRuntime>,
+    pub capability_catalog: Arc<CapabilityCatalog>,
+    pub context_planner: Arc<ContextPlanner>,
+    pub engine_config: EngineConfig,
+}
+
+impl fmt::Debug for ProductionReleaseEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProductionReleaseEntry")
+            .field("image_hash", &self.image.content_hash)
+            .field("agent_id", &self.image.body.metadata.id)
+            .field("capability_catalog", &self.capability_catalog)
+            .field("context_states", &self.context_planner.state_count())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Static hash router compiled once before claim admission. There is no
+/// default image and no mutation API.
+pub struct ProductionReleaseCatalog {
+    release_set_hash: krw_agent_protocol::ContentHash,
+    by_image_hash: BTreeMap<krw_agent_protocol::ContentHash, Arc<ProductionReleaseEntry>>,
+}
+
+impl ProductionReleaseCatalog {
+    pub fn compile(releases: &ResolvedReleaseSet) -> Result<Arc<Self>, ExecutorBuildError> {
+        let mut by_image_hash = BTreeMap::new();
+        for release in releases.releases() {
+            let capability_catalog =
+                CapabilityCatalog::compile(&release.image.manifest, Arc::clone(&release.runtime))
+                    .map_err(|_| ExecutorBuildError::InvalidConfiguration)?;
+            let engine_config = EngineConfig::production(&release.image.manifest)
+                .map_err(|_| ExecutorBuildError::InvalidConfiguration)?;
+            let context_planner = Arc::new(
+                ContextPlanner::compile(&release.image)
+                    .map_err(|_| ExecutorBuildError::InvalidConfiguration)?,
+            );
+            if release.image.content_hash != *capability_catalog.image_hash()
+                || release.image.content_hash != *context_planner.image_hash()
+            {
+                return Err(ExecutorBuildError::InvalidConfiguration);
+            }
+            let entry = Arc::new(ProductionReleaseEntry {
+                image: Arc::clone(&release.image),
+                deployment: Arc::clone(&release.deployment),
+                runtime: Arc::clone(&release.runtime),
+                capability_catalog,
+                context_planner,
+                engine_config,
+            });
+            if by_image_hash
+                .insert(release.image.content_hash.clone(), entry)
+                .is_some()
+            {
+                return Err(ExecutorBuildError::InvalidConfiguration);
+            }
+        }
+        if by_image_hash.is_empty() {
+            return Err(ExecutorBuildError::InvalidConfiguration);
+        }
+        Ok(Arc::new(Self {
+            release_set_hash: releases.release_set_hash().clone(),
+            by_image_hash,
+        }))
+    }
+
+    pub fn release_set_hash(&self) -> &krw_agent_protocol::ContentHash {
+        &self.release_set_hash
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_image_hash.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_image_hash.is_empty()
+    }
+
+    pub fn accepted_image_hashes(&self) -> Vec<krw_agent_protocol::ContentHash> {
+        self.by_image_hash.keys().cloned().collect()
+    }
+
+    pub fn release(
+        &self,
+        image_hash: &krw_agent_protocol::ContentHash,
+    ) -> Option<&Arc<ProductionReleaseEntry>> {
+        self.by_image_hash.get(image_hash)
+    }
+
+    /// Route strictly by the durable receipt hash before parsing or validating
+    /// its immutable payload, then rederive every pin against that release.
+    pub fn route_and_validate_claim(
+        &self,
+        receipt: &ClaimReceipt,
+        runtime_version: &str,
+    ) -> Result<(Arc<ProductionReleaseEntry>, ValidatedClaim), RoutedClaimError> {
+        let release = self
+            .by_image_hash
+            .get(&receipt.agent_image_hash)
+            .cloned()
+            .ok_or(RoutedClaimError::UnknownImageHash)?;
+        let validated = validate_claim(receipt, &release.image, &release.runtime, runtime_version)?;
+        Ok((release, validated))
+    }
+}
+
+impl fmt::Debug for ProductionReleaseCatalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProductionReleaseCatalog")
+            .field("release_set_hash", &self.release_set_hash)
+            .field("releases", &self.by_image_hash)
+            .finish()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RoutedClaimError {
+    #[error("claim references an image outside the immutable release set")]
+    UnknownImageHash,
+    #[error("claim does not match its selected immutable release")]
+    InvalidClaim(#[from] ClaimValidationError),
+}
+
+pub struct ProductionClaimedRunExecutor {
+    releases: Arc<ProductionReleaseCatalog>,
+    runtime_version: String,
+    providers: Arc<DeepSeekProviderCatalog>,
+    capability_transport: Arc<dyn McpToolTransport>,
+    store: Arc<dyn DurableRunStore>,
+    artifacts: ArtifactRepository,
+    finalization: FinalizationPolicy,
+}
+
+impl ProductionClaimedRunExecutor {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        releases: Arc<ProductionReleaseCatalog>,
+        runtime_version: String,
+        providers: Arc<DeepSeekProviderCatalog>,
+        capability_transport: Arc<dyn McpToolTransport>,
+        store: Arc<dyn DurableRunStore>,
+        artifacts: ArtifactRepository,
+        finalization: FinalizationPolicy,
+    ) -> Result<Self, ExecutorBuildError> {
+        if runtime_version.is_empty() || runtime_version.len() > 64 || releases.is_empty() {
+            return Err(ExecutorBuildError::InvalidConfiguration);
+        }
+        Ok(Self {
+            releases,
+            runtime_version,
+            providers,
+            capability_transport,
+            store,
+            artifacts,
+            finalization,
+        })
+    }
+}
+
+impl fmt::Debug for ProductionClaimedRunExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProductionClaimedRunExecutor")
+            .field("release_set", &self.releases)
+            .field("runtime_version", &self.runtime_version)
+            .field("providers", &self.providers)
+            .field("capability_transport", &"[REDACTED]")
+            .field("store", &self.store)
+            .field("artifacts", &self.artifacts)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ExecutorBuildError {
+    #[error("live executor configuration is invalid")]
+    InvalidConfiguration,
+}
+
+#[async_trait]
+impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
+    async fn execute(
+        &self,
+        context: ClaimedRunContext,
+    ) -> Result<SuccessfulRunOutcome, RunExecutionFailure> {
+        let (release, validated) = self
+            .releases
+            .route_and_validate_claim(context.receipt(), &self.runtime_version)
+            .map_err(|error| match error {
+                RoutedClaimError::UnknownImageHash => {
+                    RunExecutionFailure::failed("unknown_agent_image_hash")
+                }
+                RoutedClaimError::InvalidClaim(error) => {
+                    RunExecutionFailure::failed(claim_failure_code(&error))
+                }
+            })?;
+        let provider = self
+            .providers
+            .exact(&validated.snapshot().resolved_model)
+            .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
+        let persistence = Arc::new(
+            DurableRunPersistence::new(
+                Arc::clone(&self.store),
+                self.artifacts.clone(),
+                Arc::new(context.receipt().clone()),
+                context.lease.clone(),
+                Arc::clone(&context.recovery),
+                self.finalization.clone(),
+            )
+            .map_err(|_| RunExecutionFailure::failed("persistence_bridge_invalid"))?,
+        );
+        let mut memory = SessionMemoryPageAccumulator::new(
+            validated.request().run_id.clone(),
+            &validated.request().session_id,
+            validated.snapshot().fencing_token,
+        )
+        .map_err(|_| RunExecutionFailure::failed("session_memory_integrity_failure"))?;
+        let mut memory_read_mode = SessionMemoryReadMode::SnapshotTail;
+        loop {
+            let page = match persistence
+                .read_session_memory(
+                    memory.next_after_revision(),
+                    SESSION_MEMORY_PAGE_LIMIT,
+                    memory_read_mode,
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(failure)
+                    if failure.code == "session_memory_rebuild_required"
+                        && memory_read_mode == SessionMemoryReadMode::SnapshotTail
+                        && memory.next_after_revision() == 0 =>
+                {
+                    memory_read_mode = SessionMemoryReadMode::AuditRebuild;
+                    memory = SessionMemoryPageAccumulator::new(
+                        validated.request().run_id.clone(),
+                        &validated.request().session_id,
+                        validated.snapshot().fencing_token,
+                    )
+                    .map_err(|_| RunExecutionFailure::failed("session_memory_integrity_failure"))?;
+                    continue;
+                }
+                Err(failure) => {
+                    return Err(execution_failure_from_dependency(
+                        "session_memory_read",
+                        &failure,
+                    ));
+                }
+            };
+            let has_more = page.has_more;
+            memory
+                .push_page(&page)
+                .map_err(session_memory_execution_failure)?;
+            if !has_more {
+                break;
+            }
+        }
+        let resolved_memory = memory
+            .finish(&validated.request().question)
+            .map_err(session_memory_execution_failure)?;
+        // Hashing the receipt here makes the exact memory resolution auditable
+        // without retaining its plaintext view in generic logs. The carrier's
+        // hash, source revision and frontier are independently bound into the
+        // first run checkpoint by the engine.
+        resolved_memory
+            .receipt
+            .content_hash()
+            .map_err(session_memory_execution_failure)?;
+        if let Some(snapshot) = resolved_memory.checkpoint_snapshot.as_ref() {
+            persistence
+                .checkpoint_session_memory_snapshot(snapshot)
+                .await
+                .map_err(|failure| {
+                    execution_failure_from_dependency("session_memory_snapshot", &failure)
+                })?;
+        }
+        let mut effective_request = validated.request().clone();
+        effective_request.session_memory = resolved_memory.carrier;
+        let capabilities = Arc::new(
+            PooledMcpCapabilityRuntime::for_run(
+                Arc::clone(&release.capability_catalog),
+                Arc::clone(&self.capability_transport),
+                RunScope {
+                    tenant_id: effective_request.tenant_id.clone(),
+                    principal_id: effective_request.principal_id.clone(),
+                    run_id: effective_request.run_id.clone(),
+                },
+            )
+            .map_err(|_| RunExecutionFailure::failed("invalid_capability_scope"))?,
+        );
+        let engine = RunEngine::new(
+            provider,
+            capabilities,
+            Arc::clone(&persistence),
+            release.engine_config.clone(),
+        );
+        let hard_deadline = Instant::now()
+            .checked_add(Duration::from_millis(effective_request.budget.deadline_ms))
+            .ok_or_else(|| RunExecutionFailure::failed("deadline_invalid"))?;
+        let execution = engine.run(RunInput {
+            image: &release.image,
+            deployment: &release.deployment,
+            resolved_deployment_binding_hash: release.runtime.deployment_binding_hash(),
+            request: &effective_request,
+            snapshot: validated.snapshot(),
+            hard_deadline,
+        });
+        tokio::pin!(execution);
+        let result = tokio::select! {
+            biased;
+            () = context.cancellation.cancelled() => {
+                match timeout(CANCEL_DRAIN_GRACE, &mut execution).await {
+                    Ok(result) => result,
+                    Err(_) => return Err(RunExecutionFailure::deferred(
+                        "execution_cancelled",
+                        Duration::from_secs(5),
+                    )),
+                }
+            }
+            result = &mut execution => result,
+        };
+        match result {
+            Ok(outcome) if outcome.final_status == FinalStatus::Cancelled => {
+                Ok(SuccessfulRunOutcome::Cancelled)
+            }
+            Ok(_) | Err(EngineError::AlreadyFinalized) => Ok(SuccessfulRunOutcome::Committed),
+            Err(EngineError::Cancelled) => Ok(SuccessfulRunOutcome::Cancelled),
+            Err(EngineError::FinalCommitAmbiguous(hash)) => match persistence
+                .resolve_final_ambiguity(&hash)
+                .await
+                .map_err(|failure| {
+                    execution_failure_from_dependency("final_ambiguity_read", &failure)
+                })? {
+                Some(FinalStatus::Committed | FinalStatus::AlreadyCommitted) => {
+                    Ok(SuccessfulRunOutcome::Committed)
+                }
+                Some(FinalStatus::Cancelled) => Ok(SuccessfulRunOutcome::Cancelled),
+                None => Err(RunExecutionFailure::deferred(
+                    "final_outcome_unresolved",
+                    Duration::from_secs(2),
+                )),
+            },
+            Err(EngineError::Dependency { component, failure }) => {
+                Err(execution_failure_from_dependency(component, &failure))
+            }
+            Err(EngineError::StaleFence { .. }) => Err(RunExecutionFailure::deferred(
+                "stale_fence",
+                Duration::from_secs(1),
+            )),
+            Err(EngineError::DeadlineExceeded(_)) => {
+                Err(RunExecutionFailure::failed("deadline_exceeded"))
+            }
+            Err(error) => Err(engine_execution_failure(&error)),
+        }
+    }
+}
+
+fn session_memory_execution_failure(_: MemoryResolutionError) -> RunExecutionFailure {
+    RunExecutionFailure::failed("session_memory_integrity_failure")
+}
+
+fn execution_failure_from_dependency(
+    origin: &'static str,
+    failure: &krw_agent_run_engine::DependencyFailure,
+) -> RunExecutionFailure {
+    if failure.retryable {
+        RunExecutionFailure::deferred("dependency_unavailable", Duration::from_secs(2))
+    } else {
+        let mut diagnostic = json!({
+            "kind": "krw.agent/dependency-failure-diagnostic-v1",
+            "origin": origin,
+            "dependency_code_hash": ContentHash::sha256(failure.code.as_bytes()),
+            "diagnostic_hash": failure.diagnostic_hash,
+            "delivery": match failure.delivery {
+                DeliveryCertainty::NotDispatched => "not_dispatched",
+                DeliveryCertainty::MayHaveDispatched => "may_have_dispatched",
+            },
+        });
+        if let Some(code) = retained_provider_dependency_code(origin, &failure.code) {
+            diagnostic
+                .as_object_mut()
+                .expect("dependency diagnostic is an object")
+                .insert("provider_code".into(), json!(code));
+        }
+        RunExecutionFailure::failed("dependency_contract_failure").with_release(diagnostic)
+    }
+}
+
+/// Provider failures already enter the engine through a closed, redacted
+/// vocabulary (`deepseek_*`). Retaining that bounded category makes a live
+/// compatibility drift diagnosable without retaining the provider body,
+/// request, prompt, tool arguments, or account material. Other dependency
+/// origins remain hash-only because their codes may be authored by arbitrary
+/// adapters.
+fn retained_provider_dependency_code<'a>(origin: &str, code: &'a str) -> Option<&'a str> {
+    (origin == "provider").then_some(code).filter(|code| {
+        (1..=128).contains(&code.len())
+            && code.starts_with("deepseek_")
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    })
+}
+
+/// Convert an engine failure to the bounded worker ABI while preserving only
+/// a release-safe fingerprint when it materially improves root-cause
+/// diagnosis.  This is deliberately narrower than normal tracing: raw state
+/// artifacts, provider episodes, tool results, prompts, and state identifiers
+/// must never cross the durable failure boundary.
+fn engine_execution_failure(error: &EngineError) -> RunExecutionFailure {
+    let failure = RunExecutionFailure::failed(engine_reason_code(error));
+    match durable_failure_diagnostic(error) {
+        Some(diagnostic) => failure.with_release(json!({
+            "kind": "krw.agent/failure-diagnostic-v1",
+            "failure_kind": diagnostic.kind,
+            "identifier_hash": diagnostic.identifier_hash,
+        })),
+        None => failure,
+    }
+}
+
+fn engine_reason_code(error: &EngineError) -> &'static str {
+    match error {
+        // Failure reasons cross the durable worker ABI and may be visible to
+        // operations.  Keep them stable, bounded, and free of provider text,
+        // prompts, tool payloads, and identifiers.  A single
+        // `engine_contract_failure` made an early live-admission failure
+        // indistinguishable from a malformed provider response, which in turn
+        // encouraged unsafe ad-hoc diagnostics.
+        EngineError::InvalidInput(reason) => match *reason {
+            "run request exceeds fixed bounds" => "engine_input_bounds_invalid",
+            "run_id mismatch" => "engine_input_run_id_mismatch",
+            "protocol version mismatch" => "engine_input_protocol_mismatch",
+            "agent image hash mismatch" => "engine_input_image_mismatch",
+            "model identity mismatch" => "engine_input_model_mismatch",
+            "provider execution profile mismatch" => "engine_input_provider_profile_mismatch",
+            "budget snapshot mismatch" => "engine_input_budget_mismatch",
+            "deployment binding hash mismatch" => "engine_input_binding_mismatch",
+            "deadline must be non-zero" => "engine_input_deadline_invalid",
+            "engine bounds must be non-zero" => "engine_input_bounds_config_invalid",
+            "no matching image entrypoint" => "engine_input_entrypoint_missing",
+            "ambiguous image entrypoint" => "engine_input_entrypoint_ambiguous",
+            "workflow capability is missing from image" => "engine_input_workflow_mismatch",
+            "budget deadline overflow" => "engine_input_deadline_overflow",
+            "session memory schema mismatch"
+            | "session memory validation failed"
+            | "session memory ownership or hash mismatch"
+            | "session memory was not UTF-8" => "engine_input_memory_invalid",
+            _ => "engine_input_invalid",
+        },
+        EngineError::InvalidRecoverySnapshot(_)
+        | EngineError::RecoveryArtifactMismatch(_)
+        | EngineError::RecoveryStateMismatch
+        | EngineError::DurableResultHashMismatch
+        | EngineError::MissingDurableActionResult => "recovery_integrity_failure",
+        EngineError::InvalidProviderEpisode(_)
+        | EngineError::InvalidToolCallId
+        | EngineError::TooManyToolCalls { .. }
+        | EngineError::ToolArgumentsMustBeObject(_) => "provider_protocol_failure",
+        EngineError::UnknownCapability(_) => "capability_unknown",
+        EngineError::UnsafeCapability(_) => "capability_unsafe",
+        EngineError::CapabilityPrerequisiteMissing(_) => "capability_prerequisite_missing",
+        EngineError::MissingCapabilityBinding(_) => "capability_binding_missing",
+        EngineError::MissingNormalizedOutputContract(_) => "capability_output_contract_missing",
+        EngineError::MissingPinnedRelease(_) => "capability_release_pin_missing",
+        EngineError::CapabilityReleaseMismatch(_) => "capability_release_pin_mismatch",
+        EngineError::ModelProposalRejected(_) => "model_proposal_rejected",
+        EngineError::CapabilityInputDerivation(_) => "capability_input_derivation_failed",
+        EngineError::RunScopeViolation(_)
+        | EngineError::DerivedFeedScopeUnavailable
+        | EngineError::GuruAuthorMismatch
+        | EngineError::ProductContextMismatch(_)
+        | EngineError::ProductContract(_) => "immutable_scope_failure",
+        EngineError::CapabilityBudgetExceeded { .. }
+        | EngineError::NoRemainingOutputBudget
+        | EngineError::FinalOutputReserveReached
+        | EngineError::CounterOverflow(_) => "budget_exhausted",
+        EngineError::CanonicalContractGuardRequired | EngineError::CanonicalRegistry(_) => {
+            "canonical_contract_failure"
+        }
+        EngineError::SizeLimit { .. } => "engine_size_limit",
+        EngineError::InvalidActionReceipt(_)
+        | EngineError::ActionRejected(_)
+        | EngineError::CalculationConflict(_)
+        | EngineError::UncommittedCalculation(_) => "action_contract_failure",
+        EngineError::InvalidCapabilityResult(_) => "capability_result_invalid",
+        EngineError::AnswerValidation(_)
+        | EngineError::RuleViolations(_)
+        | EngineError::PhaseRuleViolations { .. } => "answer_verification_failed",
+        EngineError::AmbiguousAction(_) => "ambiguous_read_action",
+        EngineError::ReservedRuleInputField | EngineError::Policy(_) => "policy_runtime_failure",
+        EngineError::InvalidWorkflowTransitionShape => "invalid_transition_shape",
+        EngineError::CapabilityStateMappingUnavailable
+        | EngineError::InvalidStateProgram
+        | EngineError::WorkflowResolution { .. }
+        | EngineError::InvalidWorkflowControl
+        | EngineError::ResearchPlannerDecisionMismatch
+        | EngineError::WorkflowTerminated(_)
+        | EngineError::Invariant(_) => "workflow_state_failure",
+        EngineError::Contract(error) => protocol_contract_reason_code(error),
+        EngineError::Image(error) => agent_image_reason_code(error),
+        EngineError::StateArtifact(error) => state_artifact_failure_code(error),
+        EngineError::Kernel(_) => "kernel_contract_failure",
+        EngineError::Wire(_) => "provider_wire_failure",
+        EngineError::Evidence(_) => "evidence_contract_failure",
+        EngineError::ResearchPlanner(_) => "research_planner_failure",
+        EngineError::ContextPlan(_) | EngineError::ContextCompaction(_) => "context_plan_failure",
+        EngineError::BoundedChild(_) => "bounded_child_failure",
+        EngineError::Json(_) => "engine_serialization_failure",
+        _ => "engine_contract_failure",
+    }
+}
+
+/// Convert a protocol contract failure into a stable, non-content-bearing
+/// worker ABI code.  Details such as a model name or user-supplied context are
+/// deliberately discarded here; this is an observability boundary, not a
+/// second validation layer.
+fn protocol_contract_reason_code(error: &krw_agent_protocol::ContractError) -> &'static str {
+    match error {
+        krw_agent_protocol::ContractError::InvalidHash(_) => "protocol_hash_invalid",
+        krw_agent_protocol::ContractError::BudgetExceeded { .. } => "protocol_budget_exceeded",
+        krw_agent_protocol::ContractError::UnknownModelProfile(_) => {
+            "protocol_model_profile_unknown"
+        }
+        krw_agent_protocol::ContractError::UnknownModel(_) => "protocol_model_unknown",
+        krw_agent_protocol::ContractError::ModelMismatch { .. } => "protocol_model_mismatch",
+        krw_agent_protocol::ContractError::InvalidRunContext(_) => "protocol_run_context_invalid",
+        krw_agent_protocol::ContractError::InvalidSessionMemory(_) => {
+            "protocol_session_memory_invalid"
+        }
+    }
+}
+
+/// Keep immutable image/load failures distinguishable from runtime data
+/// failures without leaking file paths, prompt text, or identifiers.
+fn agent_image_reason_code(error: &krw_agent_image::ImageError) -> &'static str {
+    match error {
+        krw_agent_image::ImageError::Io(_) => "agent_image_io",
+        krw_agent_image::ImageError::Yaml(_) => "agent_image_yaml_invalid",
+        krw_agent_image::ImageError::Json(_) => "agent_image_json_invalid",
+        krw_agent_image::ImageError::InvalidSpec(_) => "agent_image_spec_invalid",
+        krw_agent_image::ImageError::InvalidCompiledWorkflow => "agent_image_workflow_invalid",
+        krw_agent_image::ImageError::DuplicateId { .. } => "agent_image_duplicate_id",
+        krw_agent_image::ImageError::UnknownReference { .. } => "agent_image_reference_unknown",
+        krw_agent_image::ImageError::PathEscape(_) => "agent_image_path_escape",
+        krw_agent_image::ImageError::OutputExists(_) => "agent_image_output_exists",
+        krw_agent_image::ImageError::InvalidPromptUtf8(_) => "agent_image_prompt_utf8_invalid",
+        krw_agent_image::ImageError::InvalidPromptText(_) => "agent_image_prompt_text_invalid",
+        krw_agent_image::ImageError::MissingBlob(_) => "agent_image_blob_missing",
+        krw_agent_image::ImageError::InternedBlobConflict(_) => "agent_image_blob_conflict",
+        krw_agent_image::ImageError::BlobLengthMismatch { .. } => {
+            "agent_image_blob_length_mismatch"
+        }
+        krw_agent_image::ImageError::BlobHashMismatch { .. } => "agent_image_blob_hash_mismatch",
+        krw_agent_image::ImageError::Limit(_) => "agent_image_limit_exceeded",
+        krw_agent_image::ImageError::UnsupportedImageFormat(_) => "agent_image_format_unsupported",
+        krw_agent_image::ImageError::UnsupportedRuleIsa(_) => "agent_image_rule_isa_unsupported",
+        krw_agent_image::ImageError::ImageHashMismatch { .. } => "agent_image_hash_mismatch",
+        krw_agent_image::ImageError::RuleFuelExhausted => "agent_image_rule_fuel_exhausted",
+        krw_agent_image::ImageError::RuleInput(_) => "agent_image_rule_input_invalid",
+        krw_agent_image::ImageError::ContractRegistry(_) => "agent_image_registry_invalid",
+        krw_agent_image::ImageError::StateArtifact(_) => "agent_image_state_artifact_invalid",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use krw_agent_image::{PromptBlobInterner, compile_agent_dir};
+    use krw_agent_persistence::agent_v1::RecoveryReceipt;
+    use krw_agent_protocol::{ContentHash, ModelRegistry, RunRequest};
+    use krw_agent_runtime_config::{
+        BudgetRegistry, ConfigError, EndpointRegistry, SecretSource, ValidationMode, load_yaml,
+        resolve_release_set,
+    };
+    use zeroize::Zeroizing;
+
+    use crate::{ImmutableRunClaimV1, RunResourceProfileV1};
+
+    use super::*;
+
+    #[test]
+    fn durable_failure_codes_preserve_contract_owner_without_content() {
+        let protocol = EngineError::Contract(krw_agent_protocol::ContractError::InvalidRunContext(
+            "private run context",
+        ));
+        let image = EngineError::Image(krw_agent_image::ImageError::InvalidSpec(
+            "private image detail".into(),
+        ));
+        assert_eq!(
+            engine_reason_code(&protocol),
+            "protocol_run_context_invalid"
+        );
+        assert_eq!(engine_reason_code(&image), "agent_image_spec_invalid");
+        for code in [engine_reason_code(&protocol), engine_reason_code(&image)] {
+            assert!(!code.contains("private"));
+        }
+    }
+
+    #[test]
+    fn ordinary_engine_failure_does_not_create_a_diagnostic_payload() {
+        let failure = engine_execution_failure(&EngineError::InvalidWorkflowControl);
+
+        assert_eq!(failure.reason_code, "workflow_state_failure");
+        assert_eq!(failure.release, json!({}));
+    }
+
+    #[test]
+    fn dependency_failure_retains_hashes_but_not_dependency_content() {
+        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+            "private-dependency-code",
+            "private dependency detail",
+            false,
+            DeliveryCertainty::NotDispatched,
+        );
+
+        let failure = execution_failure_from_dependency("checkpoint_state", &dependency);
+
+        assert_eq!(failure.reason_code, "dependency_contract_failure");
+        assert_eq!(
+            failure.release,
+            json!({
+                "kind": "krw.agent/dependency-failure-diagnostic-v1",
+                "origin": "checkpoint_state",
+                "dependency_code_hash": ContentHash::sha256("private-dependency-code"),
+                "diagnostic_hash": ContentHash::sha256("private dependency detail"),
+                "delivery": "not_dispatched",
+            })
+        );
+        let serialized = serde_json::to_string(&failure.release).unwrap();
+        assert!(!serialized.contains("private-dependency-code"));
+        assert!(!serialized.contains("private dependency detail"));
+    }
+
+    #[test]
+    fn provider_dependency_failure_retains_only_the_closed_provider_code() {
+        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+            "deepseek_http_400_invalid_param",
+            "provider body that must remain private",
+            false,
+            DeliveryCertainty::MayHaveDispatched,
+        );
+
+        let failure = execution_failure_from_dependency("provider", &dependency);
+        assert_eq!(
+            failure.release["provider_code"],
+            json!("deepseek_http_400_invalid_param")
+        );
+        let serialized = serde_json::to_string(&failure.release).unwrap();
+        assert!(!serialized.contains("provider body"));
+    }
+
+    #[test]
+    fn provider_dependency_failure_rejects_unbounded_or_foreign_code() {
+        assert!(retained_provider_dependency_code("provider", "private-detail").is_none());
+        assert!(retained_provider_dependency_code("mcp", "deepseek_http_400").is_none());
+    }
+
+    #[derive(Debug)]
+    struct FixtureSecrets {
+        ontology_mcp_url: &'static str,
+    }
+
+    impl FixtureSecrets {
+        const fn baseline() -> Self {
+            Self {
+                ontology_mcp_url: "https://ontology.invalid/mcp",
+            }
+        }
+    }
+
+    impl SecretSource for FixtureSecrets {
+        fn read_secret(&self, name: &str) -> Result<Zeroizing<String>, ConfigError> {
+            match name {
+                "DEEPSEEK_API_KEY" => Ok(Zeroizing::new("fixture-key".into())),
+                "KRW_ONTOLOGY_MCP_URL" => Ok(Zeroizing::new(self.ontology_mcp_url.into())),
+                "KRW_ONTOLOGY_READY_URL" => {
+                    Ok(Zeroizing::new("https://ontology.invalid/readyz".into()))
+                }
+                "KRW_GURU_MCP_URL" => Ok(Zeroizing::new("https://guru.invalid/mcp".into())),
+                "KRW_GURU_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://guru.invalid/readyz".into()))
+                }
+                "KRW_GURU_MCP_TOKEN" => Ok(Zeroizing::new("guru-token".into())),
+                "KRW_FEED_MCP_URL" => Ok(Zeroizing::new("https://feed.invalid/mcp".into())),
+                "KRW_FEED_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://feed.invalid/readyz".into()))
+                }
+                "KRW_FEED_MCP_TOKEN" => Ok(Zeroizing::new("feed-token".into())),
+                "KRW_FILINGS_MCP_URL" => Ok(Zeroizing::new("https://filings.invalid/mcp".into())),
+                "KRW_FILINGS_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://filings.invalid/readyz".into()))
+                }
+                "KRW_FILINGS_MCP_TOKEN" => Ok(Zeroizing::new("filings-token".into())),
+                _ => Err(ConfigError::MissingSecret(name.into())),
+            }
+        }
+    }
+
+    fn root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn fixture() -> (
+        Arc<ProductionReleaseCatalog>,
+        Arc<DeepSeekProviderCatalog>,
+        ContentHash,
+        ContentHash,
+        RunRequest,
+        RunRequest,
+    ) {
+        fixture_with_ontology_endpoint("https://ontology.invalid/mcp", "2025-06-18")
+    }
+
+    fn fixture_with_ontology_endpoint(
+        ontology_mcp_url: &'static str,
+        protocol_version: &'static str,
+    ) -> (
+        Arc<ProductionReleaseCatalog>,
+        Arc<DeepSeekProviderCatalog>,
+        ContentHash,
+        ContentHash,
+        RunRequest,
+        RunRequest,
+    ) {
+        let root = root();
+        let mut interner = PromptBlobInterner::default();
+        let ko = compile_agent_dir(root.join("agents/krw-ontology"))
+            .unwrap()
+            .into_loaded_with_interner(&mut interner)
+            .unwrap();
+        let en = compile_agent_dir(root.join("agents/krw-ontology-en"))
+            .unwrap()
+            .into_loaded_with_interner(&mut interner)
+            .unwrap();
+        let binding: DeploymentBinding =
+            load_yaml(root.join("deployments/local/deployment-binding.example.yaml")).unwrap();
+        let models: ModelRegistry =
+            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        let budgets: BudgetRegistry =
+            load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
+        let mut endpoints: EndpointRegistry =
+            load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap();
+        endpoints
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.endpoint_ref == "krw-ontology-local")
+            .unwrap()
+            .protocol_version = protocol_version.into();
+        let secrets = FixtureSecrets { ontology_mcp_url };
+        let releases = resolve_release_set(
+            vec![ko, en],
+            &binding,
+            &models,
+            &budgets,
+            &endpoints,
+            &secrets,
+            ValidationMode::Fixture,
+        )
+        .unwrap();
+        let ko_hash = releases.owner("company_research", "ko-KR").unwrap().clone();
+        let en_hash = releases
+            .owner("company_research_en", "en-US")
+            .unwrap()
+            .clone();
+        let providers = DeepSeekProviderCatalog::compile_release_set(&releases).unwrap();
+        let catalog = ProductionReleaseCatalog::compile(&releases).unwrap();
+        let ko_request: RunRequest = serde_json::from_slice(
+            &fs::read(root.join("fixtures/vertical-slice/v1/run-request.json")).unwrap(),
+        )
+        .unwrap();
+        let mut en_request = ko_request.clone();
+        en_request.run_id = "run-release-en".into();
+        en_request.run_kind = "company_research_en".into();
+        en_request.locale = "en-US".into();
+        (catalog, providers, ko_hash, en_hash, ko_request, en_request)
+    }
+
+    fn receipt(
+        catalog: &ProductionReleaseCatalog,
+        image_hash: &ContentHash,
+        request: &RunRequest,
+    ) -> ClaimReceipt {
+        let release = catalog.release(image_hash).unwrap();
+        let snapshot = release
+            .runtime
+            .resolve_run(image_hash, request, 7, 0)
+            .unwrap();
+        let payload =
+            ImmutableRunClaimV1::new(request.clone(), &snapshot, RunResourceProfileV1::default())
+                .unwrap();
+        ClaimReceipt {
+            run_id: request.run_id.clone(),
+            tenant_id: request.tenant_id.clone(),
+            principal_id: request.principal_id.clone(),
+            session_id: request.session_id.clone(),
+            fencing_token: 7,
+            run_version: 2,
+            cancel_generation: 0,
+            checkpoint_seq: 0,
+            action_frontier_seq: 0,
+            action_frontier_hash: ContentHash::sha256(b"[]"),
+            lease_deadline: "fixture".into(),
+            agent_image_hash: image_hash.clone(),
+            runtime_version: "runtime-test".into(),
+            priority: 0,
+            immutable_snapshot_hash: payload.canonical_hash().unwrap(),
+            immutable_snapshot: serde_json::to_value(&payload).unwrap(),
+            resource_profile: serde_json::to_value(RunResourceProfileV1::default()).unwrap(),
+            budgets: serde_json::to_value(&request.budget).unwrap(),
+            reclaimed: false,
+            recovery: RecoveryReceipt {
+                state_checkpoint: None,
+                episodes: Vec::new(),
+                actions: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn two_image_claims_route_to_exact_precompiled_releases() {
+        let (catalog, providers, ko_hash, en_hash, ko_request, en_request) = fixture();
+        let ko_receipt = receipt(&catalog, &ko_hash, &ko_request);
+        let en_receipt = receipt(&catalog, &en_hash, &en_request);
+
+        let (ko, ko_claim) = catalog
+            .route_and_validate_claim(&ko_receipt, "runtime-test")
+            .unwrap();
+        let (en, en_claim) = catalog
+            .route_and_validate_claim(&en_receipt, "runtime-test")
+            .unwrap();
+        assert_eq!(ko.image.content_hash, ko_hash);
+        assert_eq!(en.image.content_hash, en_hash);
+        assert_eq!(ko_claim.request().run_kind, "company_research");
+        assert_eq!(en_claim.request().run_kind, "company_research_en");
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(providers.by_model.len(), 1);
+        assert!(providers.exact(DEEPSEEK_MODEL_ID).is_some());
+    }
+
+    #[test]
+    fn unknown_hash_and_cross_image_replay_fail_before_execution() {
+        let (catalog, _providers, ko_hash, en_hash, ko_request, _en_request) = fixture();
+        let original = receipt(&catalog, &ko_hash, &ko_request);
+
+        let mut unknown = original.clone();
+        unknown.agent_image_hash = ContentHash::sha256("unknown-image");
+        unknown.immutable_snapshot = serde_json::json!({"malformed": true});
+        unknown.immutable_snapshot_hash = ContentHash::sha256("also-wrong");
+        assert!(matches!(
+            catalog.route_and_validate_claim(&unknown, "runtime-test"),
+            Err(RoutedClaimError::UnknownImageHash)
+        ));
+
+        let mut replay = original;
+        replay.agent_image_hash = en_hash;
+        assert!(matches!(
+            catalog.route_and_validate_claim(&replay, "runtime-test"),
+            Err(RoutedClaimError::InvalidClaim(
+                ClaimValidationError::DeploymentMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn queued_claim_from_before_endpoint_registry_drift_is_rejected_after_restart() {
+        let (old_catalog, _providers, ko_hash, _en_hash, ko_request, _en_request) = fixture();
+        let queued_claim = receipt(&old_catalog, &ko_hash, &ko_request);
+        let (restarted_catalog, _providers, restarted_ko_hash, _, _, _) =
+            fixture_with_ontology_endpoint("https://ontology.invalid/mcp", "2026-08-02");
+
+        assert_eq!(ko_hash, restarted_ko_hash);
+        assert_ne!(
+            old_catalog.release_set_hash(),
+            restarted_catalog.release_set_hash()
+        );
+        assert!(matches!(
+            restarted_catalog.route_and_validate_claim(&queued_claim, "runtime-test"),
+            Err(RoutedClaimError::InvalidClaim(
+                ClaimValidationError::SnapshotMismatch
+                    | ClaimValidationError::SnapshotContractMismatch(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn routing_does_not_accumulate_session_entries() {
+        let (catalog, _providers, ko_hash, _en_hash, ko_request, _en_request) = fixture();
+        let receipt = receipt(&catalog, &ko_hash, &ko_request);
+        let baseline = catalog.len();
+        for _ in 0..128 {
+            let routed = catalog
+                .route_and_validate_claim(&receipt, "runtime-test")
+                .unwrap();
+            drop(routed);
+        }
+        assert_eq!(catalog.len(), baseline);
+    }
+
+    #[test]
+    fn all_eight_checked_in_images_precompile_into_one_production_catalog() {
+        let root = root();
+        let mut interner = PromptBlobInterner::default();
+        let images = [
+            "krw-display",
+            "krw-feed",
+            "krw-guru-advisor",
+            "krw-notebook",
+            "krw-ontology-en",
+            "krw-ontology",
+            "krw-router",
+            "krw-source-filing",
+        ]
+        .into_iter()
+        .map(|package| {
+            compile_agent_dir(root.join("agents").join(package))
+                .unwrap()
+                .into_loaded_with_interner(&mut interner)
+                .unwrap()
+        })
+        .collect();
+        let binding =
+            load_yaml(root.join("deployments/local/deployment-binding.example.yaml")).unwrap();
+        let models = load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        let budgets = load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
+        let endpoints =
+            load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap();
+        let releases = resolve_release_set(
+            images,
+            &binding,
+            &models,
+            &budgets,
+            &endpoints,
+            &FixtureSecrets::baseline(),
+            ValidationMode::Fixture,
+        )
+        .unwrap();
+
+        let providers = DeepSeekProviderCatalog::compile_release_set(&releases).unwrap();
+        for release in releases.releases() {
+            CapabilityCatalog::compile(&release.image.manifest, Arc::clone(&release.runtime))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "capability catalog failed for {}: {error:?}",
+                        release.image.body.metadata.id
+                    )
+                });
+            EngineConfig::production(&release.image.manifest).unwrap_or_else(|error| {
+                panic!(
+                    "engine config failed for {}: {error:?}",
+                    release.image.body.metadata.id
+                )
+            });
+        }
+        let catalog = ProductionReleaseCatalog::compile(&releases).unwrap();
+        assert_eq!(catalog.len(), 8);
+        assert_eq!(catalog.accepted_image_hashes().len(), 8);
+        assert!(
+            catalog
+                .by_image_hash
+                .values()
+                .all(|release| release.context_planner.state_count() > 0)
+        );
+        assert_eq!(providers.by_model.len(), 1);
+    }
+
+    #[test]
+    fn provider_catalog_rejects_any_non_flash_inventory() {
+        let root = root();
+        let models: ModelRegistry =
+            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        let mut forbidden = models.models[0].clone();
+        forbidden.model_id = "forbidden-provider-model".into();
+        let descriptors = [models.models[0].clone(), forbidden];
+        assert!(matches!(
+            DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key"),
+            Err(ProviderCatalogError::ModelInventory)
+        ));
+    }
+}

@@ -1,0 +1,112 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.workflow-router
+  version: 1.0.0
+  description: Direct-authored classification-only router for durable KRW runs.
+
+entrypoints:
+  route:
+    run_kind: route
+    locale: ko-KR
+    workflow: route_v2
+    required_budget_profile: router_minimal
+    required_model_profile: flash_direct
+    scope: { allowed_context: routing_request, cardinality: { kind: exact, value: 0 }, ticker_canonicalization: not_applicable }
+    constants: {}
+
+contracts:
+  - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
+  - { id: research-state/v2, schema_ref: canonical:krw-ontology/research-state-v2, content_hash: "sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243", semantic_authority: krw-ontology-python }
+  - { id: query-context-input-correction/v1, schema_ref: canonical:krw-ontology/query-context-input-correction-v1, content_hash: "sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4", semantic_authority: krw-ontology-python }
+  - { id: ontology-targeted-query/v1, schema_ref: canonical:krw-ontology/ontology-targeted-query-v1, content_hash: "sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63", semantic_authority: krw-ontology-python }
+  - { id: ontology-trace-input/v1, schema_ref: canonical:krw-ontology/ontology-trace-input-v1, content_hash: "sha256:eaae27b87c6837be22cb7d291a1bddb578562966e96e17a98f8f0c2a6fb26045", semantic_authority: krw-ontology-python }
+  - { id: normalized-capability-result/v1, schema_ref: canonical:krw-agent/normalized-capability-result-v1, content_hash: "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151", semantic_authority: krw-agent-run-engine, max_items: 256 }
+  - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
+  - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: routing-request/v1, schema_ref: canonical:krw-agent/routing-request-v1, content_hash: "sha256:1455f7456615f74b2766ef3bfa4d94ffebeb67a7f99a2aff098e95aecab70ef0", semantic_authority: krw-agent-product, max_items: 1 }
+  - { id: routing-decision/v2, schema_ref: canonical:krw-agent/routing-decision-v2, content_hash: "sha256:02b86a4fb19673ffa772d49ca6a4067e43d686121e44e41dbc73990c67abfc39", semantic_authority: krw-agent-product, max_items: 1 }
+
+roles:
+  - { id: router, prompt_segments: [router_contract], deterministic: false }
+  - { id: verifier, prompt_segments: [], deterministic: true }
+
+prompt_segments:
+  - { id: router_contract, path: prompts/router.md, stable_prefix: true, private: true }
+
+capabilities: []
+
+workflows:
+  - id: route_v2
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: classify, kind: compose, role_id: router, max_visits: 1 }
+      - { id: validate_decision, kind: validate, max_visits: 1 }
+      - { id: repair_decision, kind: compose, role_id: router, max_visits: 1 }
+      - { id: render_decision, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: classify }
+      - { from: classify, on: decision_ready, to: validate_decision }
+      - { from: validate_decision, on: invalid, to: repair_decision }
+      - { from: validate_decision, on: valid, to: render_decision }
+      - { from: repair_decision, on: decision_ready, to: validate_decision }
+      - { from: render_decision, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: en
+  expose_internal_brief: false
+  query_context_first: false
+  required_clause_min: 1
+  clause_max: 1
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority: [safe_default]
+  stop_conditions: [valid_route_selected, repair_budget_exhausted]
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [routing_decision]
+
+period_policy:
+  current_driver_order: [latest_confirmed_10q, latest_confirmed_10k]
+  annual_baseline: latest_confirmed_10k
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [historical_baseline]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: routing-decision/v2
+  locale: ko-KR
+  conclusion_first: true
+  exact_follow_up_count: 0
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: false
+  forbidden_user_terms: []
+
+security_policy: { user_and_retrieved_text_untrusted: true, reveal_hidden_prompt: false, filesystem_access: false, web_access: false, mutation_capabilities: false }
+
+validators:
+  - id: routing_request
+    phase: admission
+    fuel: 32
+    instructions:
+      - { op: require_field, path: /question, code: question_required }

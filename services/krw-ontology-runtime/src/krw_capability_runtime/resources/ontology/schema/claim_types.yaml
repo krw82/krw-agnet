@@ -1,0 +1,20 @@
+claim_types:
+  factual:
+    description: "Verifiable factual statement from the filing."
+    example: "Services revenue grew 14% year-over-year to $85.2 billion."
+
+  forward_looking:
+    description: "Management's expectation or projection about future performance."
+    example: "We expect services revenue to continue growing at a double-digit rate."
+
+  risk_assessment:
+    description: "Statement characterizing a risk factor or its potential impact."
+    example: "Intensifying competition in smartphones could materially reduce our market share."
+
+  strategic:
+    description: "Statement about strategic direction, priorities, or investments."
+    example: "We are investing heavily in AI-enabled features across our products."
+
+  assumption:
+    description: "Implicit or explicit assumption underlying a projection."
+    example: "We assume stable foreign exchange rates relative to the prior year."

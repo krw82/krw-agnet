@@ -1,0 +1,24 @@
+risk_categories:
+  macro_economic:
+    description: "Macroeconomic factors affecting the business."
+    examples: ["foreign_exchange", "interest_rate", "inflation", "recession"]
+
+  competitive:
+    description: "Competitive dynamics in the market."
+    examples: ["market_share_pressure", "pricing_pressure", "new_entrants", "substitution_risk"]
+
+  regulatory:
+    description: "Government regulation, litigation, or legal risk."
+    examples: ["antitrust", "privacy_regulation", "tax_changes", "trade_restrictions"]
+
+  operational:
+    description: "Risks in day-to-day operations."
+    examples: ["supply_chain_disruption", "manufacturing_risk", "cybersecurity", "talent_retention"]
+
+  technology:
+    description: "Technology-related risks."
+    examples: ["rapid_technological_change", "intellectual_property", "ai_risk"]
+
+  financial:
+    description: "Financial structure and performance risks."
+    examples: ["debt_levels", "credit_risk", "customer_concentration", "acquisition_risk"]

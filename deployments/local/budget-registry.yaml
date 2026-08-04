@@ -1,0 +1,192 @@
+schema_version: 1
+registry_id: krw-ontology-local-v1
+profiles:
+  # Broad observation envelope for real-company research quality evaluation.
+  # It is pinned into each execution snapshot; later optimisation must be
+  # based on observed usage rather than turning a live run into a short path.
+  - profile_id: company_research_full
+    limits:
+      max_provider_turns: 32
+      max_capability_calls: 12
+      max_replans: 6
+      max_repairs: 6
+      max_input_tokens: 360000
+      max_output_tokens: 48000
+      max_evidence_bytes: 16777216
+      deadline_ms: 480000
+      capability_call_limits:
+        ontology.query_context: 4
+        ontology.query: 5
+        ontology.trace: 3
+  - profile_id: earnings_deep_dive
+    limits:
+      max_provider_turns: 20
+      max_capability_calls: 5
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 120000
+      max_output_tokens: 14000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+  - profile_id: scenario_sensitivity
+    limits:
+      max_provider_turns: 20
+      max_capability_calls: 5
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 120000
+      max_output_tokens: 14000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+  - profile_id: idea_generation
+    limits:
+      max_provider_turns: 24
+      max_capability_calls: 7
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 120000
+      max_output_tokens: 16000
+      max_evidence_bytes: 8388608
+      deadline_ms: 150000
+      capability_call_limits:
+        ontology.query_context_universe: 2
+        ontology.query_universe: 3
+        ontology.trace_universe: 2
+  - profile_id: display_plan_minimal
+    limits:
+      max_provider_turns: 4
+      max_capability_calls: 1
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 24000
+      max_output_tokens: 6000
+      max_evidence_bytes: 1048576
+      deadline_ms: 60000
+      capability_call_limits: {}
+  - profile_id: feed_discovery
+    limits:
+      max_provider_turns: 12
+      max_capability_calls: 4
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 64000
+      max_output_tokens: 8000
+      max_evidence_bytes: 4194304
+      deadline_ms: 90000
+      capability_call_limits:
+        feed.list_items: 2
+        feed.get_items: 2
+  - profile_id: news_research
+    limits:
+      max_provider_turns: 18
+      max_capability_calls: 8
+      max_replans: 1
+      max_repairs: 2
+      max_input_tokens: 120000
+      max_output_tokens: 12000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        feed.get_items: 2
+        feed.get_context: 2
+        ontology.query_context: 2
+        ontology.query: 1
+        ontology.trace: 1
+  - profile_id: market_move_research
+    limits:
+      max_provider_turns: 18
+      max_capability_calls: 8
+      max_replans: 1
+      max_repairs: 2
+      max_input_tokens: 120000
+      max_output_tokens: 12000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        feed.get_items: 2
+        feed.get_context: 2
+        ontology.query_context: 2
+        ontology.query: 1
+        ontology.trace: 1
+  - profile_id: news_filing_correlation
+    limits:
+      max_provider_turns: 18
+      max_capability_calls: 8
+      max_replans: 1
+      max_repairs: 2
+      max_input_tokens: 120000
+      max_output_tokens: 12000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        feed.get_items: 2
+        feed.get_context: 2
+        filing.search_catalog: 1
+        ontology.query_context: 1
+        ontology.query: 1
+        ontology.trace: 1
+  - profile_id: guru_company_advisor
+    limits:
+      max_provider_turns: 20
+      max_capability_calls: 10
+      max_replans: 1
+      max_repairs: 2
+      max_input_tokens: 120000
+      max_output_tokens: 14000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        guru.query_context: 1
+        guru.company_brief: 2
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+        guru.review_company_evidence: 2
+  - profile_id: notebook_transform
+    limits:
+      max_provider_turns: 8
+      max_capability_calls: 1
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 64000
+      max_output_tokens: 12000
+      max_evidence_bytes: 4194304
+      deadline_ms: 90000
+      capability_call_limits: {}
+  - profile_id: router_minimal
+    limits:
+      max_provider_turns: 4
+      max_capability_calls: 1
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 16000
+      max_output_tokens: 2000
+      max_evidence_bytes: 1048576
+      deadline_ms: 30000
+      capability_call_limits: {}
+  - profile_id: source_filing_followup
+    limits:
+      max_provider_turns: 20
+      max_capability_calls: 10
+      max_replans: 1
+      max_repairs: 2
+      max_input_tokens: 120000
+      max_output_tokens: 14000
+      max_evidence_bytes: 8388608
+      deadline_ms: 120000
+      capability_call_limits:
+        filing.get: 2
+        filing.get_brief: 2
+        filing.list_sections: 1
+        filing.read_section: 2
+        filing.list_documents: 1
+        filing.read_document: 1
+        filing.get_form4: 1

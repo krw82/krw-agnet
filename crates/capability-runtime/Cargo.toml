@@ -1,0 +1,25 @@
+[package]
+name = "krw-agent-capability-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-run-engine = { path = "../run-engine" }
+krw-agent-runtime-config = { path = "../runtime-config" }
+krw-agent-tool-mcp = { path = "../tool-mcp" }
+krw-ontology-adapter = { path = "../krw-ontology-adapter" }
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

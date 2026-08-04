@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_V4: trace the only unresolved filing lineage.",
+  "tool_calls": [
+    {
+      "id": "call-trace-001",
+      "type": "function",
+      "function": {
+        "name": "krw_ontology_trace__610029a71d35e373",
+        "arguments": "{\"object_id\":\"claim:vg:cash-generation:2025\",\"ticker\":\"VG\"}"
+      }
+    }
+  ]
+}

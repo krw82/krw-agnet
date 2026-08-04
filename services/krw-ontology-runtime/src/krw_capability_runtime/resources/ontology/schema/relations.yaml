@@ -1,0 +1,143 @@
+schema_version: "0.1.0"
+
+relations:
+  - id: contains
+    name: contains
+    from: SourceDocument
+    to: SourceSpan
+    edge_class: source_structure
+    evidence_level: direct
+
+  - id: contains_quote
+    name: contains_quote
+    from: SourceSpan
+    to: EvidenceQuote
+    edge_class: evidence
+    evidence_level: direct
+
+  - id: has_signal
+    name: has_signal
+    from: EvidenceQuote
+    to: LanguageSignal
+    edge_class: evidence
+    evidence_level: derived
+
+  - id: supports
+    name: supports
+    from: EvidenceQuote
+    to: ResearchClaim
+    edge_class: evidence
+    evidence_level: direct
+
+  - id: describes_activity
+    name: describes_activity
+    from: ResearchClaim
+    to: BusinessActivity
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: describes_exposure
+    name: describes_exposure
+    from: ResearchClaim
+    to: ExternalFactorExposure
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: describes_business_factor
+    name: describes_business_factor
+    from:
+      - ResearchClaim
+      - EvidenceQuote
+    to: BusinessFactor
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: describes_agreement_term
+    name: describes_agreement_term
+    from:
+      - ResearchClaim
+      - EvidenceQuote
+    to: AgreementTerm
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: describes_business_event
+    name: describes_business_event
+    from:
+      - ResearchClaim
+      - EvidenceQuote
+    to: BusinessEvent
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: manifests_as
+    name: manifests_as
+    from: ExternalFactorExposure
+    to: BusinessFactor
+    edge_class: exposure_link
+    evidence_level: derived
+
+  - id: supports_assumption
+    name: supports_assumption
+    from: EvidenceQuote
+    to: AssumptionCandidate
+    edge_class: evidence
+    evidence_level: direct
+
+  - id: derived_from
+    name: derived_from
+    from:
+      - AssumptionCandidate
+      - XBRLFact
+      - Calculation
+    to:
+      - ResearchClaim
+      - MetricObservation
+    edge_class: interpretation
+    evidence_level: derived
+
+  - id: calculated_from
+    name: calculated_from
+    from: MetricObservation
+    to:
+      - MetricObservation
+      - Calculation
+    edge_class: calculation
+    evidence_level: derived
+
+  - id: continues_as
+    name: continues_as
+    from:
+      - BusinessActivity
+      - ExternalFactorExposure
+      - BusinessFactor
+      - AgreementTerm
+      - BusinessEvent
+    to:
+      - BusinessActivity
+      - ExternalFactorExposure
+      - BusinessFactor
+      - AgreementTerm
+      - BusinessEvent
+    same_type_required: true
+    edge_class: temporal
+    evidence_level: inferred
+
+  - id: supports_change_event
+    name: supports_change_event
+    from: ResearchClaim
+    to: ChangeEvent
+    edge_class: event
+    evidence_level: direct
+
+  - id: affects_object
+    name: affects_object
+    from: ChangeEvent
+    to:
+      - BusinessActivity
+      - ExternalFactorExposure
+      - BusinessFactor
+      - AgreementTerm
+      - BusinessEvent
+    edge_class: event
+    evidence_level: derived

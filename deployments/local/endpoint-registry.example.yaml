@@ -1,0 +1,24 @@
+schema_version: 1
+registry_id: local-runtime
+endpoints:
+  - endpoint_ref: krw-ontology-local
+    url_env: KRW_ONTOLOGY_MCP_URL
+    readiness_url_env: KRW_ONTOLOGY_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://krw-agent.local
+    credential_version: public-v1
+    tls_profile: system-roots-v1
+  - endpoint_ref: krw-feed-local
+    url_env: KRW_FEED_MCP_URL
+    readiness_url_env: KRW_FEED_MCP_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://krw-agent.local
+    credential_version: feed-service-v1
+    tls_profile: system-roots-v1
+  - endpoint_ref: krw-filings-local
+    url_env: KRW_FILINGS_MCP_URL
+    readiness_url_env: KRW_FILINGS_MCP_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://krw-agent.local
+    credential_version: filings-service-v1
+    tls_profile: system-roots-v1

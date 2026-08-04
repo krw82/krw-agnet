@@ -1,0 +1,29 @@
+[package]
+name = "krw-agent-perf-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+clap.workspace = true
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-run-engine = { path = "../run-engine" }
+krw-agent-scheduler = { path = "../scheduler" }
+krw-agent-test-support = { path = "../test-support" }
+krw-agent-tool-mcp = { path = "../tool-mcp" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+stats_alloc = "0.1.10"
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

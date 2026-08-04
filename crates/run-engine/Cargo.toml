@@ -1,0 +1,33 @@
+[package]
+name = "krw-agent-run-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-bounded-child = { path = "../bounded-child" }
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-contracts = { path = "../krw-contracts" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-kernel = { path = "../agent-kernel" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-research-planner = { path = "../research-planner" }
+krw-agent-state-artifact = { path = "../state-artifact" }
+krw-context-compaction = { path = "../context-compaction" }
+krw-context-planner = { path = "../context-planner" }
+krw-session-memory = { path = "../session-memory" }
+krw-policy-runtime = { path = "../policy-runtime" }
+krw-ontology-adapter = { path = "../krw-ontology-adapter" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

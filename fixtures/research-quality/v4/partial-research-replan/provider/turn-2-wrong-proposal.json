@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_V4: propose an intentionally irrelevant query so the planner must reject it.",
+  "tool_calls": [
+    {
+      "id": "call-wrong-query-001",
+      "type": "function",
+      "function": {
+        "name": "krw_ontology_query__f0c3c51ca8e7d557",
+        "arguments": "{\"topic\":\"unrelated acquisition rumor\",\"ticker\":\"VG\"}"
+      }
+    }
+  ]
+}

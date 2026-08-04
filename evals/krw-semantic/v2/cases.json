@@ -1,0 +1,703 @@
+{
+  "schema_version": "krw-semantic-cases/v1",
+  "suite_id": "krw-semantic-contract",
+  "suite_version": "2.0.0",
+  "templates": {
+    "router": {
+      "intent": "uncertain",
+      "decision": {"run_kind": "company_research"}
+    },
+    "searchplan": {
+      "mcp_arguments": {
+        "question": "AAPL의 CY2025 매출 성장과 서비스 수익성 연결을 점검해줘.",
+        "intent": "company_research",
+        "tickers": ["AAPL"],
+        "periods": ["CY2025"],
+        "clauses": [
+          {
+            "clause_id": "revenue_growth",
+            "retrieval_query": "AAPL CY2025 revenue year over year growth",
+            "metrics": ["revenue"],
+            "metric_scope": "company_total",
+            "required_concepts": ["revenue"],
+            "calculation_window": "year_over_year",
+            "directness": "direct_required"
+          },
+          {
+            "clause_id": "services_margin",
+            "retrieval_query": "AAPL Services mix supports margin durability",
+            "required_concepts": ["Services mix", "margin durability"],
+            "required_predicates": ["supports"],
+            "directness": "direct_preferred"
+          }
+        ],
+        "comparison_axes": ["growth_rate"],
+        "limit_results": 12
+      },
+      "action_sequence": ["query_context", "query"],
+      "literal_ledger": {
+        "tickers": ["AAPL"],
+        "periods": ["CY2025"],
+        "metrics": ["revenue"],
+        "comparison_axes": ["growth_rate"],
+        "question_terms": ["서비스 수익성"]
+      }
+    },
+    "evidence": {
+      "claim": {"kind": "qualitative", "strength": "strong"},
+      "strong_claim_allowed": true,
+      "premises": [
+        {
+          "evidence_id": "ev-direct-1",
+          "load_bearing": true,
+          "coverage": "covered",
+          "directness": "direct",
+          "grade": "medium"
+        }
+      ]
+    },
+    "calculation": {
+      "calculation_id": "calc-growth-1",
+      "requires_aligned_inputs": true,
+      "inputs": [
+        {"evidence_id": "ev-1", "value": 100, "period": "CY2025", "unit": "USDm", "scope": "company_total"},
+        {"evidence_id": "ev-2", "value": 110, "period": "CY2025", "unit": "USDm", "scope": "company_total"}
+      ],
+      "lineage_ids": ["ev-1", "ev-2"],
+      "output": {"value": 10, "period": "CY2025", "unit": "USDm", "scope": "company_total"},
+      "claim": {"calculation_id": "calc-growth-1", "period": "CY2025", "unit": "USDm", "scope": "company_total"}
+    },
+    "period": {
+      "filings": [
+        {"form": "10-K", "period": "CY2025", "recency_rank": 10, "confirmed": true},
+        {"form": "10-Q", "period": "CY2026Q1", "recency_rank": 20, "confirmed": true},
+        {"form": "10-Q", "period": "CY2026Q2", "recency_rank": 30, "confirmed": false}
+      ],
+      "selected": {"current_driver": "CY2026Q1", "annual_baseline": "CY2025"},
+      "visible_period_labels": ["CY2026Q1", "CY2025"],
+      "user_supplied_future_labels": []
+    },
+    "answer": {
+      "decision_triggered": false,
+      "opening_before_heading": true,
+      "headings": [],
+      "visible_text": "최근 분기의 현금흐름은 개선됐지만 지속성은 더 확인해야 합니다.",
+      "followups": [
+        "현금흐름 개선이 이어지는 조건을 정리해줘.",
+        "상승·하락·횡보 시나리오별 체크포인트를 보여줘.",
+        "현재 판단을 깨뜨릴 반대 근거를 보여줘."
+      ],
+      "followup_markers": ["1.", "2.", "3."]
+    },
+    "news": {
+      "conclusion_shaped": true,
+      "direct_company_path": {"direct": true, "company_specific": true, "complete": true},
+      "safe_sections": [],
+      "financial_scenario": false
+    },
+    "idea": {
+      "priority": "A",
+      "direct_exposure": true,
+      "recent_filing_evidence": true,
+      "financial_path": true,
+      "offset_or_rejection_risk": true,
+      "reason_to_research_first": true,
+      "credible_pathway": true,
+      "material_gap_count": 0,
+      "advancing_supported": true,
+      "rating_language": false
+    },
+    "scenario": {
+      "inputs": [
+        {"name": "reported margin", "category": "reported_fact", "source_type": "filing", "evidence_ids": ["ev-margin"], "presented_as_company_fact": true},
+        {"name": "cost persistence", "category": "filing_assumption", "source_type": "filing_inference", "evidence_ids": ["ev-cost"], "presented_as_company_fact": false},
+        {"name": "demand growth", "category": "user_assumption", "source_type": "user", "evidence_ids": [], "presented_as_company_fact": false},
+        {"name": "margin direction", "category": "analyst_inference", "source_type": "analyst", "evidence_ids": ["ev-margin", "ev-cost"], "presented_as_company_fact": false}
+      ]
+    },
+    "guru": {
+      "selected_advisor": "buffett",
+      "author_key": "buffett",
+      "key_questions": [
+        {
+          "central_tension_count": 1,
+          "evidence_clause_count": 2,
+          "sealed_original": {
+            "question_id": "q1",
+            "wording": "현금 창출력과 재투자 부담 중 무엇이 장기 가치를 좌우하는가?",
+            "principle_ids": ["p1"],
+            "anchor_ids": ["a1"],
+            "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "sealed_used": {
+            "question_id": "q1",
+            "wording": "현금 창출력과 재투자 부담 중 무엇이 장기 가치를 좌우하는가?",
+            "principle_ids": ["p1"],
+            "anchor_ids": ["a1"],
+            "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ],
+      "workflow": [
+        "guru_query_context",
+        "guru_company_brief",
+        "company_evidence_researcher",
+        "ontology_verify_evidence",
+        "guru_review_company_evidence",
+        "final_render"
+      ],
+      "verify_evidence_call_count": 1,
+      "verifier_payload_unchanged": true,
+      "correction_call_count": 0,
+      "answerability": "interpretation_only",
+      "review_input": {
+        "question": "이 회사의 장기 경제성을 평가해줘.",
+        "agent_analysis": {
+          "assessments": [
+            {"question_id": "q1", "verdict": "mixed", "evidence_object_ids": ["ev-q1"], "reasoning": "현금 창출은 확인되지만 재투자 부담이 남아 있다."}
+          ],
+          "overall_judgment": "장점과 부담이 함께 확인된다."
+        }
+      },
+      "voice": {
+        "claims_real_person": false,
+        "first_person_as_author": false,
+        "fabricated_quote": false,
+        "fabricated_holding": false
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "router_default_positive",
+      "validator": "router",
+      "template": "router",
+      "covers": ["router.default"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_default_wrong_negative",
+      "validator": "router",
+      "template": "router",
+      "patch": {"decision": {"run_kind": "news_research"}},
+      "covers": ["router.default"],
+      "expected_pass": false,
+      "expected_codes": ["router_wrong_kind"]
+    },
+    {
+      "id": "router_company_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "ordinary_research"},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_market_move_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "observed_market_move", "decision": {"run_kind": "market_move_research"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_news_discovery_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "discover_news", "decision": {"run_kind": "news_discovery"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_selected_news_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "selected_news_event", "decision": {"run_kind": "news_research"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_idea_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "screen_candidates", "decision": {"run_kind": "idea_generation"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_scenario_positive",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "stress_scenario", "decision": {"run_kind": "scenario_sensitivity"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "router_news_keyword_not_selected_negative",
+      "validator": "router",
+      "template": "router",
+      "patch": {"intent": "discover_news", "decision": {"run_kind": "news_research"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": false,
+      "expected_codes": ["router_wrong_kind"]
+    },
+    {
+      "id": "router_extra_output_negative",
+      "validator": "router",
+      "template": "router",
+      "patch": {"decision": {"reason": "uncertain"}},
+      "covers": ["router.distinctions"],
+      "expected_pass": false,
+      "expected_codes": ["router_output_shape"]
+    },
+    {
+      "id": "searchplan_complete_positive",
+      "validator": "searchplan",
+      "template": "searchplan",
+      "covers": ["searchplan.exact_args", "searchplan.context_first", "searchplan.atomic_clauses", "searchplan.literal_ledger"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "searchplan_wrapped_envelope_negative",
+      "validator": "searchplan",
+      "template": "searchplan",
+      "patch": {"mcp_arguments": {"search_plan": {"question": "AAPL legacy envelope"}}},
+      "covers": ["searchplan.exact_args"],
+      "expected_pass": false,
+      "expected_codes": ["searchplan_argument_shape"]
+    },
+    {
+      "id": "searchplan_query_context_not_first_negative",
+      "validator": "searchplan",
+      "template": "searchplan",
+      "patch": {"action_sequence": ["query", "query_context"]},
+      "covers": ["searchplan.context_first"],
+      "expected_pass": false,
+      "expected_codes": ["searchplan_action_order"]
+    },
+    {
+      "id": "searchplan_metric_qualitative_mixed_negative",
+      "validator": "searchplan",
+      "template": "searchplan",
+      "patch": {
+        "mcp_arguments": {
+          "clauses": [
+            {
+              "clause_id": "mixed",
+              "retrieval_query": "AAPL revenue proves pricing power",
+              "metrics": ["revenue"],
+              "required_concepts": ["revenue", "pricing power"],
+              "required_predicates": ["proves"]
+            }
+          ]
+        }
+      },
+      "covers": ["searchplan.atomic_clauses"],
+      "expected_pass": false,
+      "expected_codes": ["searchplan_clause_atomicity"]
+    },
+    {
+      "id": "searchplan_literal_period_lost_negative",
+      "validator": "searchplan",
+      "template": "searchplan",
+      "patch": {"literal_ledger": {"periods": ["CY2026Q1"]}},
+      "covers": ["searchplan.literal_ledger"],
+      "expected_pass": false,
+      "expected_codes": ["searchplan_literal_loss"]
+    },
+    {
+      "id": "evidence_direct_strong_positive",
+      "validator": "evidence",
+      "template": "evidence",
+      "covers": ["evidence.directness", "evidence.strong_claim"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "evidence_related_strong_grade_negative",
+      "validator": "evidence",
+      "template": "evidence",
+      "patch": {"premises": [{"evidence_id": "ev-related", "load_bearing": true, "coverage": "covered", "directness": "related", "grade": "strong"}]},
+      "covers": ["evidence.directness"],
+      "expected_pass": false,
+      "expected_codes": ["evidence_directness_required"]
+    },
+    {
+      "id": "evidence_global_strong_gate_negative",
+      "validator": "evidence",
+      "template": "evidence",
+      "patch": {"strong_claim_allowed": false},
+      "covers": ["evidence.strong_claim"],
+      "expected_pass": false,
+      "expected_codes": ["evidence_strong_claim_disallowed"]
+    },
+    {
+      "id": "calculation_aligned_positive",
+      "validator": "calculation",
+      "template": "calculation",
+      "covers": ["calculation.lineage_alignment"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "calculation_lineage_missing_negative",
+      "validator": "calculation",
+      "template": "calculation",
+      "patch": {"lineage_ids": ["ev-1"]},
+      "covers": ["calculation.lineage_alignment"],
+      "expected_pass": false,
+      "expected_codes": ["calculation_lineage_mismatch"]
+    },
+    {
+      "id": "calculation_period_mixed_negative",
+      "validator": "calculation",
+      "template": "calculation",
+      "patch": {
+        "inputs": [
+          {"evidence_id": "ev-1", "value": 100, "period": "CY2025", "unit": "USDm", "scope": "company_total"},
+          {"evidence_id": "ev-2", "value": 110, "period": "CY2024", "unit": "USDm", "scope": "company_total"}
+        ]
+      },
+      "covers": ["calculation.lineage_alignment"],
+      "expected_pass": false,
+      "expected_codes": ["calculation_alignment_mismatch"]
+    },
+    {
+      "id": "period_roles_positive",
+      "validator": "period",
+      "template": "period",
+      "covers": ["period.roles", "period.no_future"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "period_old_10k_as_current_negative",
+      "validator": "period",
+      "template": "period",
+      "patch": {"selected": {"current_driver": "CY2025"}},
+      "covers": ["period.roles"],
+      "expected_pass": false,
+      "expected_codes": ["period_role_mismatch"]
+    },
+    {
+      "id": "period_future_label_invented_negative",
+      "validator": "period",
+      "template": "period",
+      "patch": {"visible_period_labels": ["CY2026Q1", "CY2026Q2", "CY2025"]},
+      "covers": ["period.no_future"],
+      "expected_pass": false,
+      "expected_codes": ["period_unconfirmed_label"]
+    },
+    {
+      "id": "answer_normal_positive",
+      "validator": "answer",
+      "template": "answer",
+      "covers": ["answer.followups", "answer.internal_terms", "answer.decision_headings"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "answer_two_followups_negative",
+      "validator": "answer",
+      "template": "answer",
+      "patch": {"followups": ["조건을 정리해줘.", "반대 근거를 보여줘."], "followup_markers": ["1.", "2."]},
+      "covers": ["answer.followups"],
+      "expected_pass": false,
+      "expected_codes": ["answer_followup_contract"]
+    },
+    {
+      "id": "answer_internal_term_negative",
+      "validator": "answer",
+      "template": "answer",
+      "patch": {"visible_text": "ResearchState의 근거 커버리지를 확인했습니다."},
+      "covers": ["answer.internal_terms"],
+      "expected_pass": false,
+      "expected_codes": ["answer_internal_term"]
+    },
+    {
+      "id": "answer_decision_trigger_positive",
+      "validator": "answer",
+      "template": "answer",
+      "patch": {
+        "decision_triggered": true,
+        "headings": ["판단 라벨", "판단 대시보드", "왜 이렇게 보나", "판단이 바뀌는 조건", "최종 판단", "이어서 볼 질문"]
+      },
+      "covers": ["answer.decision_headings"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "answer_decision_heading_leak_negative",
+      "validator": "answer",
+      "template": "answer",
+      "patch": {"headings": ["판단 대시보드"]},
+      "covers": ["answer.decision_headings"],
+      "expected_pass": false,
+      "expected_codes": ["answer_decision_heading_contract"]
+    },
+    {
+      "id": "news_direct_path_positive",
+      "validator": "news",
+      "template": "news",
+      "covers": ["news.direct_conclusion"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "news_safe_missing_path_positive",
+      "validator": "news",
+      "template": "news",
+      "patch": {
+        "conclusion_shaped": false,
+        "direct_company_path": {"direct": false, "company_specific": false, "complete": false},
+        "safe_sections": ["확인된 사실", "회사 영향", "확인 신호"]
+      },
+      "covers": ["news.direct_conclusion"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "news_industry_link_conclusion_negative",
+      "validator": "news",
+      "template": "news",
+      "patch": {"direct_company_path": {"direct": false, "company_specific": false, "complete": false}},
+      "covers": ["news.direct_conclusion"],
+      "expected_pass": false,
+      "expected_codes": ["news_direct_path_required"]
+    },
+    {
+      "id": "news_missing_safe_boundary_negative",
+      "validator": "news",
+      "template": "news",
+      "patch": {
+        "conclusion_shaped": false,
+        "direct_company_path": {"direct": false, "company_specific": false, "complete": false},
+        "safe_sections": [],
+        "financial_scenario": true
+      },
+      "covers": ["news.direct_conclusion"],
+      "expected_pass": false,
+      "expected_codes": ["news_safe_boundary"]
+    },
+    {
+      "id": "idea_a_positive",
+      "validator": "idea",
+      "template": "idea",
+      "covers": ["idea.priority_floor"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "idea_b_positive",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "B", "recent_filing_evidence": false, "material_gap_count": 1},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "idea_c_positive",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "C", "direct_exposure": false, "recent_filing_evidence": false, "financial_path": false, "credible_pathway": false, "material_gap_count": 2},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "idea_reject_positive",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "Reject", "direct_exposure": false, "recent_filing_evidence": false, "financial_path": false, "credible_pathway": false, "material_gap_count": 3, "advancing_supported": false},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "idea_a_thematic_only_negative",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"direct_exposure": false, "recent_filing_evidence": false, "financial_path": false},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": false,
+      "expected_codes": ["idea_priority_floor"]
+    },
+    {
+      "id": "idea_b_two_gaps_negative",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "B", "material_gap_count": 2},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": false,
+      "expected_codes": ["idea_priority_floor"]
+    },
+    {
+      "id": "idea_c_overqualified_negative",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "C"},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": false,
+      "expected_codes": ["idea_priority_floor"]
+    },
+    {
+      "id": "idea_reject_supported_negative",
+      "validator": "idea",
+      "template": "idea",
+      "patch": {"priority": "Reject"},
+      "covers": ["idea.priority_floor"],
+      "expected_pass": false,
+      "expected_codes": ["idea_priority_floor"]
+    },
+    {
+      "id": "scenario_provenance_positive",
+      "validator": "scenario",
+      "template": "scenario",
+      "covers": ["scenario.provenance"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "scenario_analyst_as_fact_negative",
+      "validator": "scenario",
+      "template": "scenario",
+      "patch": {
+        "inputs": [
+          {"name": "margin direction", "category": "analyst_inference", "source_type": "analyst", "evidence_ids": ["ev-margin"], "presented_as_company_fact": true}
+        ]
+      },
+      "covers": ["scenario.provenance"],
+      "expected_pass": false,
+      "expected_codes": ["scenario_provenance_boundary"]
+    },
+    {
+      "id": "scenario_reported_fact_wrong_source_negative",
+      "validator": "scenario",
+      "template": "scenario",
+      "patch": {
+        "inputs": [
+          {"name": "reported margin", "category": "reported_fact", "source_type": "analyst", "evidence_ids": [], "presented_as_company_fact": true}
+        ]
+      },
+      "covers": ["scenario.provenance"],
+      "expected_pass": false,
+      "expected_codes": ["scenario_provenance_boundary"]
+    },
+    {
+      "id": "guru_contract_positive",
+      "validator": "guru",
+      "template": "guru",
+      "covers": ["guru.fixed_author", "guru.sealed_question", "guru.workflow_order", "guru.runtime_boundary", "guru.verdict_boundary", "guru.no_impersonation"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "guru_ackman_fixed_author_positive",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"selected_advisor": "ackman", "author_key": "ackman"},
+      "covers": ["guru.fixed_author"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "guru_flatt_fixed_author_positive",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"selected_advisor": "flatt", "author_key": "flatt"},
+      "covers": ["guru.fixed_author"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "guru_marks_fixed_author_positive",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"selected_advisor": "marks", "author_key": "marks"},
+      "covers": ["guru.fixed_author"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "guru_terry_smith_fixed_author_positive",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"selected_advisor": "terry_smith", "author_key": "terry_smith"},
+      "covers": ["guru.fixed_author"],
+      "expected_pass": true,
+      "expected_codes": []
+    },
+    {
+      "id": "guru_author_mismatch_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"author_key": "marks"},
+      "covers": ["guru.fixed_author"],
+      "expected_pass": false,
+      "expected_codes": ["guru_author_mismatch"]
+    },
+    {
+      "id": "guru_two_tensions_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"key_questions": [{"central_tension_count": 2, "evidence_clause_count": 2, "sealed_original": {"question_id": "q1", "wording": "두 긴장을 동시에 묻는다.", "principle_ids": ["p1"], "anchor_ids": ["a1"], "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}, "sealed_used": {"question_id": "q1", "wording": "두 긴장을 동시에 묻는다.", "principle_ids": ["p1"], "anchor_ids": ["a1"], "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}}]},
+      "covers": ["guru.sealed_question"],
+      "expected_pass": false,
+      "expected_codes": ["guru_question_contract"]
+    },
+    {
+      "id": "guru_sealed_wording_changed_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"key_questions": [{"central_tension_count": 1, "evidence_clause_count": 2, "sealed_original": {"question_id": "q1", "wording": "원래 질문", "principle_ids": ["p1"], "anchor_ids": ["a1"], "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}, "sealed_used": {"question_id": "q1", "wording": "바뀐 질문", "principle_ids": ["p1"], "anchor_ids": ["a1"], "brief_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}}]},
+      "covers": ["guru.sealed_question"],
+      "expected_pass": false,
+      "expected_codes": ["guru_seal_changed"]
+    },
+    {
+      "id": "guru_workflow_order_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"workflow": ["guru_query_context", "company_evidence_researcher", "guru_company_brief", "ontology_verify_evidence", "guru_review_company_evidence", "final_render"]},
+      "covers": ["guru.workflow_order"],
+      "expected_pass": false,
+      "expected_codes": ["guru_workflow_order"]
+    },
+    {
+      "id": "guru_runtime_field_copied_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"review_input": {"ticker": "AAPL"}},
+      "covers": ["guru.runtime_boundary"],
+      "expected_pass": false,
+      "expected_codes": ["guru_runtime_field"]
+    },
+    {
+      "id": "guru_supported_interpretation_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"review_input": {"agent_analysis": {"assessments": [{"question_id": "q1", "verdict": "supported", "evidence_object_ids": ["ev-q1"], "reasoning": "직접 근거가 제한적이다."}]}}},
+      "covers": ["guru.verdict_boundary"],
+      "expected_pass": false,
+      "expected_codes": ["guru_verdict_boundary"]
+    },
+    {
+      "id": "guru_impersonation_negative",
+      "validator": "guru",
+      "template": "guru",
+      "patch": {"voice": {"first_person_as_author": true}},
+      "covers": ["guru.no_impersonation"],
+      "expected_pass": false,
+      "expected_codes": ["guru_impersonation"]
+    }
+  ]
+}

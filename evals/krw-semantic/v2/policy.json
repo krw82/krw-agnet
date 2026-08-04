@@ -1,0 +1,220 @@
+{
+  "schema_version": "krw-semantic-policy/v1",
+  "suite_id": "krw-semantic-contract",
+  "suite_version": "2.0.0",
+  "limits": {
+    "max_policy_bytes": 65536,
+    "max_cases_bytes": 262144,
+    "max_manifest_bytes": 16384,
+    "max_cases": 128,
+    "max_templates": 32,
+    "max_case_bytes": 16384,
+    "max_depth": 16,
+    "max_object_keys": 64,
+    "max_array_items": 128,
+    "max_string_bytes": 4096
+  },
+  "gates": {
+    "require_exact_expected_codes": true,
+    "require_positive_and_negative_per_rule": true,
+    "required_rule_ids": [
+      "router.default",
+      "router.distinctions",
+      "searchplan.exact_args",
+      "searchplan.context_first",
+      "searchplan.atomic_clauses",
+      "searchplan.literal_ledger",
+      "evidence.directness",
+      "evidence.strong_claim",
+      "calculation.lineage_alignment",
+      "period.roles",
+      "period.no_future",
+      "answer.followups",
+      "answer.internal_terms",
+      "answer.decision_headings",
+      "news.direct_conclusion",
+      "idea.priority_floor",
+      "scenario.provenance",
+      "guru.fixed_author",
+      "guru.sealed_question",
+      "guru.workflow_order",
+      "guru.runtime_boundary",
+      "guru.verdict_boundary",
+      "guru.no_impersonation"
+    ]
+  },
+  "router": {
+    "default_run_kind": "company_research",
+    "allowed_run_kinds": [
+      "company_research",
+      "market_move_research",
+      "news_discovery",
+      "news_research",
+      "idea_generation",
+      "scenario_sensitivity"
+    ],
+    "output_keys": ["run_kind"],
+    "intent_routes": {
+      "ordinary_research": "company_research",
+      "uncertain": "company_research",
+      "observed_market_move": "market_move_research",
+      "discover_news": "news_discovery",
+      "selected_news_event": "news_research",
+      "screen_candidates": "idea_generation",
+      "stress_scenario": "scenario_sensitivity"
+    }
+  },
+  "searchplan": {
+    "first_action": "query_context",
+    "plan_required_keys": ["question", "intent", "clauses"],
+    "plan_allowed_keys": [
+      "question",
+      "intent",
+      "tickers",
+      "universe",
+      "periods",
+      "document_types",
+      "clauses",
+      "comparison_axes",
+      "answer_scope",
+      "limit_tickers",
+      "limit_results",
+      "uncertainty"
+    ],
+    "clause_required_keys": ["clause_id", "retrieval_query"],
+    "clause_allowed_keys": [
+      "clause_id",
+      "retrieval_query",
+      "required",
+      "directness",
+      "tickers",
+      "object_types",
+      "metrics",
+      "metric_scope",
+      "metric_dimensions",
+      "required_concepts",
+      "required_predicates",
+      "calculation_window"
+    ],
+    "max_clauses": 12,
+    "metric_predicates_mutually_exclusive": true,
+    "multi_concept_qualitative_requires_predicate": true,
+    "literal_fields": ["tickers", "periods", "metrics", "comparison_axes", "question_terms"]
+  },
+  "evidence": {
+    "directness_values": ["direct", "metric_lineage", "related", "unverified"],
+    "grade_values": ["strong", "medium", "weak", "unverified"],
+    "strong_claim_global_flag": "strong_claim_allowed",
+    "strong_claim_coverage": "covered",
+    "qualitative_load_bearing_directness": "direct",
+    "numeric_load_bearing_directness": "metric_lineage",
+    "grade_never_upgrades_directness": true
+  },
+  "calculation": {
+    "require_exact_input_lineage": true,
+    "aligned_fields": ["period", "unit", "scope"],
+    "require_claim_output_alignment": true
+  },
+  "period": {
+    "current_forms": ["10-Q", "10-K"],
+    "quarter_form": "10-Q",
+    "annual_form": "10-K",
+    "future_safe_phrases": ["다음 실적 발표", "향후 공시", "다음 실적 업데이트"]
+  },
+  "answer": {
+    "follow_up_count": 3,
+    "follow_up_markers": ["1.", "2.", "3."],
+    "forbidden_internal_terms": [
+      "ResearchState",
+      "SearchPlan",
+      "query_context",
+      "trace",
+      "MCP",
+      "object_id",
+      "tool_budget_exceeded",
+      "budget exceeded",
+      "도구 호출",
+      "검색 계획",
+      "근거 커버리지",
+      "관련 체인"
+    ],
+    "decision_headings": [
+      "판단 라벨",
+      "판단 대시보드",
+      "왜 이렇게 보나",
+      "판단이 바뀌는 조건",
+      "최종 판단",
+      "이어서 볼 질문"
+    ]
+  },
+  "news": {
+    "safe_sections_without_direct_path": ["확인된 사실", "회사 영향", "확인 신호"],
+    "forbid_financial_scenario_without_direct_path": true
+  },
+  "idea": {
+    "priorities": ["A", "B", "C", "Reject"],
+    "a_required_true": [
+      "direct_exposure",
+      "recent_filing_evidence",
+      "financial_path",
+      "offset_or_rejection_risk",
+      "reason_to_research_first"
+    ],
+    "b_material_gap_count": 1,
+    "forbid_rating_language": true
+  },
+  "scenario": {
+    "categories": [
+      "reported_fact",
+      "filing_assumption",
+      "user_assumption",
+      "analyst_inference"
+    ],
+    "source_by_category": {
+      "reported_fact": "filing",
+      "filing_assumption": "filing_inference",
+      "user_assumption": "user",
+      "analyst_inference": "analyst"
+    },
+    "evidence_required_categories": ["reported_fact", "filing_assumption"]
+  },
+  "guru": {
+    "author_by_advisor": {
+      "ackman": "ackman",
+      "buffett": "buffett",
+      "flatt": "flatt",
+      "marks": "marks",
+      "terry_smith": "terry_smith"
+    },
+    "workflow_order": [
+      "guru_query_context",
+      "guru_company_brief",
+      "company_evidence_researcher",
+      "ontology_verify_evidence",
+      "guru_review_company_evidence",
+      "final_render"
+    ],
+    "sealed_fields": [
+      "question_id",
+      "wording",
+      "principle_ids",
+      "anchor_ids",
+      "brief_hash"
+    ],
+    "review_input_keys": ["question", "agent_analysis"],
+    "runtime_owned_review_fields": [
+      "company_payload",
+      "investigation_brief",
+      "brief_hash",
+      "pack_hash",
+      "ticker",
+      "author_key",
+      "author_keys",
+      "verifier_payload"
+    ],
+    "interpretation_only_verdicts": ["mixed", "unresolved"],
+    "max_key_questions": 1,
+    "max_correction_calls": 1,
+    "verify_evidence_calls": 1
+  }
+}

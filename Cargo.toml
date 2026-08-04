@@ -1,0 +1,95 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/protocol",
+  "crates/agent-image",
+  "crates/evidence",
+  "crates/deepseek-wire",
+  "crates/agent-kernel",
+  "crates/run-engine",
+  "crates/runtime-config",
+  "crates/krw-contracts",
+  "crates/scheduler",
+  "crates/planning",
+  "crates/research-planner",
+  "crates/state-artifact",
+  "crates/policy-runtime",
+  "crates/context-planner",
+  "crates/context-compaction",
+  "crates/session-memory",
+  "crates/bounded-child",
+  "crates/persistence",
+  "crates/tool-mcp",
+  "crates/krw-ontology-adapter",
+  "crates/capability-runtime",
+  "crates/runtime-persistence",
+  "crates/artifact-store",
+  "crates/release-authorization",
+  "crates/research-quality",
+  "crates/test-support",
+  "crates/perf-harness",
+  "bins/krw-agent",
+  "bins/krw-agentd",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0 OR MIT"
+authors = ["KRW Agent contributors"]
+
+[workspace.dependencies]
+async-trait = "0.1.91"
+bytes = "1.12.1"
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
+clap = { version = "4.6.5", features = ["derive"] }
+futures-util = "0.3.33"
+getrandom = "0.3.4"
+hex = "0.4.3"
+hkdf = "0.13.0"
+indexmap = { version = "2.14.0", features = ["serde"] }
+libc = "0.2.183"
+reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "stream", "rustls-no-provider"] }
+ring = "0.17.14"
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.4"
+rustls-pemfile = "2.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_jcs = "0.2.0"
+serde_json = "1.0.151"
+serde_yaml_ng = "0.10.0"
+sha2 = "0.11.0"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres = { version = "0.7.15", features = ["runtime", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.13.0"
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+zeroize = "1.9.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
+
+[profile.production]
+inherits = "release"
+lto = "fat"

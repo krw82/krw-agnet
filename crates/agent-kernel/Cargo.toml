@@ -1,0 +1,15 @@
+[package]
+name = "krw-agent-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

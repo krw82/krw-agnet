@@ -1,0 +1,23 @@
+{
+  "name": "@krw-agent/host",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "pg": "8.21.0"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "gateway:local": "tsx src/local-gateway.ts"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "@types/node": "^20.19.40",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.2"
+  }
+}

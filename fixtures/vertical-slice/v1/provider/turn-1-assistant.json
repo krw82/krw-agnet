@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_7F4C: construct the smallest valid filing plan.",
+  "tool_calls": [
+    {
+      "id": "call-query-context-001",
+      "type": "function",
+      "function": {
+        "name": "krw_ontology_query_context__1d2df3ae12bf0852",
+        "arguments": "{\"proposal\":{\"answer_scope\":\"direct\",\"document_types\":[\"10-K\"],\"intent\":\"company_research\",\"periods\":[],\"uncertainty\":\"low\",\"objectives\":[{\"priority\":\"required\",\"alternatives\":[{\"terms\":[\"VG\",\"cash generation\"]}],\"directness\":\"direct_required\",\"object_types\":[],\"goal\":{\"kind\":\"qualitative_evidence\",\"concepts\":[\"cash generation\"],\"predicates\":[]}}]}}"
+      }
+    }
+  ]
+}

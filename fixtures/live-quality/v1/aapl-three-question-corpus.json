@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "suite_id": "live-aapl-company-research-trio",
+  "suite_version": 1,
+  "cases": [
+    {
+      "case_id": "product_mix_margin",
+      "ticker": "AAPL",
+      "question": "애플의 아이폰, 서비스, 맥, 아이패드, 웨어러블 수익 구조를 공시 기준으로 정리하고 최근 성장 동인을 매출총이익률 중심으로 설명해줘.",
+      "evaluation_focus": ["product_mix", "growth_driver", "gross_margin_boundary"]
+    },
+    {
+      "case_id": "regional_cost_cash",
+      "ticker": "AAPL",
+      "question": "애플의 아이폰·서비스 매출 비중, 지역별 성장 동인, 연구개발·판관비 추세가 마진과 현금창출력에 어떻게 연결되는지 비교해줘.",
+      "evaluation_focus": ["revenue_mix", "regional_trend", "operating_cost", "cash_generation"]
+    },
+    {
+      "case_id": "risk_prioritization",
+      "ticker": "AAPL",
+      "question": "애플의 앱스토어 규제, 공급망 집중도, 중화권 수요가 성장 논지를 훼손할 수 있는 리스크를 공시 근거로 우선순위화해줘.",
+      "evaluation_focus": ["app_store_regulation", "supply_chain", "greater_china", "risk_prioritization"]
+    }
+  ]
+}

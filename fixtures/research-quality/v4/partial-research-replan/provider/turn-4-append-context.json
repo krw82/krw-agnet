@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_V4: add only the cash-flow-lineage clause revealed by the trace.",
+  "tool_calls": [
+    {
+      "id": "call-append-context-001",
+      "type": "function",
+      "function": {
+        "name": "krw_ontology_query_context__1d2df3ae12bf0852",
+        "arguments": "{\"proposal\":{\"answer_scope\":\"direct\",\"document_types\":[\"10-K\"],\"intent\":\"company_research\",\"periods\":[],\"uncertainty\":\"low\",\"objectives\":[{\"priority\":\"required\",\"alternatives\":[{\"terms\":[\"VG\",\"operating cash flow statement\",\"cash generation\",\"lineage\"]}],\"directness\":\"direct_required\",\"object_types\":[],\"goal\":{\"kind\":\"qualitative_evidence\",\"concepts\":[\"operating cash flow statement lineage\"],\"predicates\":[]}}]}}"
+      }
+    }
+  ]
+}

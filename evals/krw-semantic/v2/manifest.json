@@ -1,0 +1,11 @@
+{
+  "schema_version": "krw-semantic-manifest/v1",
+  "suite_id": "krw-semantic-contract",
+  "suite_version": "2.0.0",
+  "hash_algorithm": "sha256-canonical-json-v1",
+  "files": {
+    "policy.json": "sha256:bfb8736633f9125cd9d5d3a73a84a4eb8ada1a724acce6a0db7947f5009f3c89",
+    "cases.json": "sha256:d7928034d63d8c1378f468e23f55bb342d24f78af3d25fc7ead08d9414abea98"
+  },
+  "case_count": 56
+}

@@ -1,0 +1,23 @@
+node_modules/
+dist/
+coverage/
+.cache/
+.venv/
+.DS_Store
+.idea/
+.vscode/
+target/
+__pycache__/
+*.py[cod]
+.krw-agent/
+.env
+.env.*
+!.env.example
+*.log
+*.tgz
+benchmarks/results/
+
+# Local runtime state: TLS keys, release signing keys, secrets, PostgreSQL data,
+# encrypted artifacts. Never commit.
+.local/
+.srl

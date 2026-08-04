@@ -1,0 +1,87 @@
+registry_version: "1.0.0-alpha"
+
+objects:
+  RunManifest:
+    artifact_file: run_manifests.jsonl
+    text_fields: [run_id, pipeline_version, ontology_schema_version, ontology_registry_version, model]
+  OntologyRegistrySnapshot:
+    artifact_file: ontology_registry_snapshots.jsonl
+    text_fields: [registry_version, canonical_artifacts, text_fields_by_type]
+  ValidationReport:
+    artifact_file: validation_reports.jsonl
+    text_fields: [validation_scope, summary]
+  TaxonomyTerm:
+    artifact_file: taxonomy_terms.jsonl
+    text_fields: [taxonomy, term_type, canonical_name, display_name, aliases]
+  SourceDocument:
+    artifact_file: source_documents.jsonl
+    text_fields: [ticker, company_name, accession_number, source_url]
+  SourceLocation:
+    artifact_file: source_locations.jsonl
+    text_fields: [source_boundary, section_name, section_path, source_span_id]
+  SourceTable:
+    artifact_file: source_tables.jsonl
+    text_fields: [section_name, caption]
+  SourceTableCell:
+    artifact_file: source_table_cells.jsonl
+    text_fields: [raw_text, normalized_text]
+  SourceSpan:
+    artifact_file: spans.jsonl
+    text_fields: [text, section_name, section_key]
+  EvidenceQuote:
+    artifact_file: evidence_quotes.jsonl
+    text_fields: [quote_text, quote_type, section_name]
+  LanguageSignal:
+    artifact_file: language_signals.jsonl
+    text_fields: [signal_text, signal_type, direction, certainty]
+  SupportLink:
+    artifact_file: support_links.jsonl
+    text_fields: [support_type, support_role, stance, evidence_strength, support_strength, from_id, to_id, explanation]
+  CanonicalEntity:
+    artifact_file: canonical_entities.jsonl
+    text_fields: [entity_type, canonical_name, aliases, ticker_scope]
+  EntityMention:
+    artifact_file: entity_mentions.jsonl
+    text_fields: [mention_text, source_object_type, canonical_entity_id]
+  ResearchClaim:
+    artifact_file: claims.jsonl
+    text_fields: [claim_text, theme_hint, factor_hint, activity_hint, benchmark_hint, impact_channels, materiality_basis]
+  MetricObservation:
+    artifact_file: metric_observations.jsonl
+    text_fields: [metric_name, unit, source_type, normalization, dimensions]
+  Calculation:
+    artifact_file: calculations.jsonl
+    text_fields: [calculation_type, formula, calculation_method, validation_status]
+  BusinessFactor:
+    artifact_file: business_factors.jsonl
+    text_fields: [name, description, factor_roles, category, affected_channels, materiality_basis]
+  AgreementTerm:
+    artifact_file: agreement_terms.jsonl
+    text_fields: [name, agreement_type, agreement_subtype, economic_role, affected_channels]
+  BusinessEvent:
+    artifact_file: business_events.jsonl
+    text_fields: [name, event_type, event_subtype, event_status, date_expression, affected_channels]
+  BusinessActivity:
+    artifact_file: business_activities.jsonl
+    text_fields: [name, activity_type, description, revenue_relevance, cost_relevance]
+  ExternalFactorExposure:
+    artifact_file: external_factor_exposures.jsonl
+    text_fields: [factor, factor_category, benchmark, impact_channel, mechanism, scenario_effects, materiality_basis]
+  AssumptionCandidate:
+    artifact_file: assumption_candidates.jsonl
+    text_fields: [name, assumption_text, value_hint, assumption_type]
+  XBRLFact:
+    artifact_file: xbrl_facts.jsonl
+    text_fields: [taxonomy_tag, safe_taxonomy_tag, context_ref]
+  CompanyBusinessProfile:
+    artifact_file: company_business_profiles.jsonl
+    text_fields: [sector, business_model_summary, primary_business_activities, primary_revenue_sources, primary_cost_sources, key_external_factors, key_uncertainties]
+  TemporalLink:
+    artifact_file: temporal_links.jsonl
+    text_fields: [from_object_id, to_object_id, relation, rationale, from_period, to_period]
+  TrendObservation:
+    artifact_file: trend_observations.jsonl
+    text_fields: [subject, metric_or_factor, direction, magnitude_text, interpretation]
+  ChangeEvent:
+    artifact_file: change_events.jsonl
+    text_fields: [event_type, event_date, description]

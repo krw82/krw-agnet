@@ -1,0 +1,71 @@
+# `agent_v1` database ABI
+
+Apply migrations in lexical order. `0001_agent_v1.sql` creates private storage
+in `agent_store` and an EXECUTE-only JSON procedure surface in `agent_v1`.
+`0002_action_finalization.sql` adds the durable
+observe → validate/policy → accepted/rejected action protocol. Apply `0002`
+before deploying a daemon that prepares or calls `agent_v1.finalize_action`.
+The migration drops the pre-finalization `commit_action` procedure and rejects
+databases containing its receipt-less `committed` action state. There is no
+rolling compatibility path: every accepted or rejected result must carry the
+exact validation and deny-monotone policy receipt hashes.
+
+`0003_bounded_child.sql` adds the single bounded-child receipt state machine.
+`0004_session_memory.sql` adds the tenant + principal + session-owned,
+append-only SessionMemoryDeltaV3 log.
+`commit_final` advances the memory frontier with a parent/revision compare-and-
+swap in the same transaction as the answer bundle, settlement, terminal run,
+and outbox. `read_session_memory` is the only runtime read surface; it validates
+the exact active run owner and fence and returns at most eight ordered deltas per
+page. Delta bodies never enter any outbox payload.
+
+`0005_session_memory_snapshot.sql` adds append-only canonical
+SessionMemorySnapshotV3 projection checkpoints. Normal reads return the latest
+snapshot plus at most 32 newer audit deltas; the owner/fence-scoped
+`audit_rebuild` mode is reserved for healing a missing or stale checkpoint.
+Checkpoint insertion is a run-version mutation and requires the exact current
+revision/frontier. Apply all five files in lexical order.
+
+The migration deliberately does not create deployment roles. After applying
+it as the schema owner, deployment automation should grant the daemon role
+only:
+
+```sql
+GRANT USAGE ON SCHEMA agent_v1 TO krw_agent_daemon;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA agent_v1 TO krw_agent_daemon;
+```
+
+Do not grant the daemon role `USAGE` on `agent_store`, table CRUD, sequence
+access, schema creation, or ownership. A separate host role may receive only
+the `enqueue_run`, `request_cancel`, `read_committed_outcome`, and
+`read_final_output` functions if those calls are made outside the daemon.
+
+`request_cancel` is intentionally host-linearized: it authenticates tenant and
+locks the run row, but does not require the current worker's fence or version.
+This lets a queued run or a run whose worker has disappeared be cancelled. All
+daemon-owned mutations still require a live lease, exact fence, and expected
+run version.
+
+Every mutating request contains a unique `mutation_id`; the Rust adapter adds
+an RFC 8785-derived `mutation_hash`. PostgreSQL persists both the hash and the
+complete JSON request. A retry with byte-semantically equal JSON returns the
+stored response, while any divergent reuse raises SQLSTATE `K1004`.
+
+Provider episodes store only a content hash and encrypted/CAS artifact
+reference. `begin_action` requires that episode receipt to exist before a tool
+can be dispatched. Raw result bytes are durably referenced by `observe_action`;
+`finalize_action` then binds their exact hash to accepted/rejected disposition,
+validation receipt, and deny-monotone policy receipt. `commit_final` stores the answer bundle, settlement,
+terminal state, and all outbox rows in the same transaction. `request_cancel`
+locks the same run row, so final-first and cancel-first are the only terminal
+linearizations.
+
+Claiming is serialized to one active run per `(tenant_id, session_id)`. A
+reclaimed run receipt includes the latest provider episode plus every
+non-terminal action receipt, so a new fence can recover without redispatching
+an ambiguous call. Observed results are never downgraded to ambiguous.
+
+`fail_or_defer` releases a lease either into a delayed queue or a terminal
+failure transaction. `claim_outbox`/`ack_outbox` provide a bounded,
+lease-protected dispatcher ABI; their payloads are visible only after the
+answer/cancel/failure transaction commits.

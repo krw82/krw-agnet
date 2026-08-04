@@ -1,0 +1,23 @@
+[package]
+name = "krw-agent-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-kernel = { path = "../agent-kernel" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-research-planner = { path = "../research-planner" }
+krw-ontology-adapter = { path = "../krw-ontology-adapter" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

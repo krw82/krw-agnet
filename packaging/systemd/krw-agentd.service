@@ -1,0 +1,59 @@
+[Unit]
+Description=KRW DeepSeek Flash Agent Runtime
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=krw-agent
+Group=krw-agent
+EnvironmentFile=/etc/krw-agent/krw-agentd.env
+ExecStart=/opt/krw-agent/bin/krw-agentd \
+  --image-dir /opt/krw-agent/images/krw-ontology \
+  --image-dir /opt/krw-agent/images/krw-ontology-en \
+  --image-dir /opt/krw-agent/images/krw-feed \
+  --image-dir /opt/krw-agent/images/krw-source-filing \
+  --image-dir /opt/krw-agent/images/krw-guru-advisor \
+  --image-dir /opt/krw-agent/images/krw-router \
+  --image-dir /opt/krw-agent/images/krw-display \
+  --image-dir /opt/krw-agent/images/krw-notebook \
+  --deployment-binding /etc/krw-agent/deployment-binding.yaml \
+  --model-registry /etc/krw-agent/model-registry.yaml \
+  --budget-registry /etc/krw-agent/budget-registry.yaml \
+  --endpoint-registry /etc/krw-agent/endpoint-registry.yaml \
+  --release-authorization /etc/krw-agent/release-authorization.json \
+  --release-trust-registry /etc/krw-agent/release-trust-registry.json \
+  --worker-id krw-agentd-node-a \
+  --artifact-root /var/lib/krw-agent/artifacts \
+  --max-active-runs 16 \
+  --mcp-pool-entries 64
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=40s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadOnlyPaths=/opt/krw-agent /etc/krw-agent
+ReadWritePaths=/var/lib/krw-agent
+UMask=0077
+LimitNOFILE=4096
+TasksMax=128
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

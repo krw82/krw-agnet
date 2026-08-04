@@ -1,0 +1,261 @@
+api_version: krw.agent/spec-v3
+kind: AgentSpec
+
+metadata:
+  id: krw.source-filing-followup
+  version: 2.0.0
+  description: Direct-authored single verified SEC filing follow-up program.
+
+entrypoints:
+  source_filing_followup:
+    run_kind: source_filing_followup
+    locale: ko-KR
+    workflow: source_filing_followup_v1
+    required_budget_profile: source_filing_followup
+    required_model_profile: flash_high
+    scope: { allowed_context: source_filing, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: not_applicable }
+    constants: {}
+
+contracts:
+  - { id: krw-filing-get-input/v1, schema_ref: canonical:krw-front/krw-filing-get-input-v1, content_hash: "sha256:cdf21deb6c1fbfb0298a4d6e1146e673c238a1c59569c1b94127afd5e7ebacfb", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-metadata/v1, schema_ref: canonical:krw-front/krw-filing-metadata-v1, content_hash: "sha256:417cfbc5c31d339b7d6cd6d0100355d97873aaa408f62a1c6765b1f67a160706", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-brief-input/v1, schema_ref: canonical:krw-front/krw-filing-brief-input-v1, content_hash: "sha256:1e8d2957625c2e5e6923a0a4ca0b09eb71b2f67f268fc4a6089054b9526dcec1", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-brief-result/v1, schema_ref: canonical:krw-front/krw-filing-brief-result-v1, content_hash: "sha256:58b0c6434b19df909aa06999a8c91c7d72ca146a1aeb2297da0cf635e9559b72", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-sections-input/v1, schema_ref: canonical:krw-front/krw-filing-sections-input-v1, content_hash: "sha256:d874f6adaa131dd91ee8c5d0bb67f905290263a49a30d52ff420327f7938576d", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-sections-result/v1, schema_ref: canonical:krw-front/krw-filing-sections-result-v1, content_hash: "sha256:79ab59177dd89556dc187bd5e091e8239b8435779ebeb6dd532815bd1e598880", semantic_authority: krw-ontology-front-typescript, max_items: 512 }
+  - { id: krw-filing-read-section-input/v1, schema_ref: canonical:krw-front/krw-filing-read-section-input-v1, content_hash: "sha256:47633861aa15223666f87b1cdcff7916d494c381abc0a678c2e71081f044652b", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-read-section-result/v1, schema_ref: canonical:krw-front/krw-filing-read-section-result-v1, content_hash: "sha256:c7af43b65e714aaf29e598945fdc190869773722f6efc01b0d5d11f2d3e760e7", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-documents-input/v1, schema_ref: canonical:krw-front/krw-filing-documents-input-v1, content_hash: "sha256:c81acbf54b381e7c89efe1086fe4cfc07e9e0824fd0887af72a0e11eea506485", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-documents-result/v1, schema_ref: canonical:krw-front/krw-filing-documents-result-v1, content_hash: "sha256:6ed89ec30c578c0482fd33168e7a10a21809075b9887172a6d98da43ef14fddf", semantic_authority: krw-ontology-front-typescript, max_items: 256 }
+  - { id: krw-filing-read-document-input/v1, schema_ref: canonical:krw-front/krw-filing-read-document-input-v1, content_hash: "sha256:0fffbb7e84faaf9fc2352a27012c4435f79e64c31ce65f4ed160e2f26a901cda", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-read-document-result/v1, schema_ref: canonical:krw-front/krw-filing-read-document-result-v1, content_hash: "sha256:433a30dc97d875562146405ea43a3c34ce4f2b5fcf955490aef7d09dd1be97d1", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-form4-transactions-input/v1, schema_ref: canonical:krw-front/krw-form4-transactions-input-v1, content_hash: "sha256:b19724b83f329dc15152d201cfa711da1d60d7b4a26c5bd9e19a52a9fecbc128", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-form4-transactions-result/v1, schema_ref: canonical:krw-front/krw-form4-transactions-result-v1, content_hash: "sha256:0e145bd04ca527f0af7346d3b5785b434c222f3d35bad16e27fd4cd158b70949", semantic_authority: krw-ontology-front-typescript, max_items: 4096 }
+  - { id: normalized-capability-result/v1, schema_ref: canonical:krw-agent/normalized-capability-result-v1, content_hash: "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151", semantic_authority: krw-agent-run-engine, max_items: 256 }
+  - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
+  - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+
+roles:
+  - { id: filing_reader, prompt_segments: [source_filing_contract], deterministic: false }
+  - { id: composer, prompt_segments: [source_filing_contract], deterministic: false }
+  - { id: verifier, prompt_segments: [], deterministic: true }
+
+prompt_segments:
+  - { id: source_filing_contract, path: prompts/source-filing.md, stable_prefix: true, private: true }
+
+capabilities:
+  - id: filing.get
+    binding_key: get_filing
+    permission: read
+    input_contract: krw-filing-get-input/v1
+    output_contracts: [krw-filing-metadata/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_metadata_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: []
+  - id: filing.get_brief
+    binding_key: get_filing_brief
+    permission: read
+    input_contract: krw-filing-brief-input/v1
+    output_contracts: [krw-filing-brief-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_brief_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.get]
+  - id: filing.list_sections
+    binding_key: list_filing_sections
+    permission: read
+    input_contract: krw-filing-sections-input/v1
+    output_contracts: [krw-filing-sections-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_sections_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.get, filing.get_brief]
+  - id: filing.read_section
+    binding_key: read_filing_section
+    permission: read
+    input_contract: krw-filing-read-section-input/v1
+    output_contracts: [krw-filing-read-section-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_section_text_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.list_sections]
+  - id: filing.list_documents
+    binding_key: list_filing_documents
+    permission: read
+    input_contract: krw-filing-documents-input/v1
+    output_contracts: [krw-filing-documents-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_documents_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.read_section]
+  - id: filing.read_document
+    binding_key: read_filing_document
+    permission: read
+    input_contract: krw-filing-read-document-input/v1
+    output_contracts: [krw-filing-read-document-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_document_text_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.list_documents]
+  - id: filing.get_form4
+    binding_key: get_form4_insider_transactions
+    permission: read
+    input_contract: krw-form4-transactions-input/v1
+    output_contracts: [krw-form4-transactions-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_form4_transactions_v1
+    scope_binding: { kind: source_filing, filing_event_id_pointer: /filing_event_id }
+    parallel_safe: false
+    prerequisites: [filing.get]
+
+workflows:
+  - id: source_filing_followup_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_verified_filing, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: get_verified_filing, kind: capability, capability_id: filing.get, max_visits: 1 }
+      - { id: ingest_verified_filing, kind: ingest, max_visits: 1 }
+      - { id: classify_form, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: get_source_brief, kind: capability, capability_id: filing.get_brief, max_visits: 1 }
+      - { id: ingest_source_brief, kind: ingest, max_visits: 1 }
+      - { id: request_section_inventory, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: list_source_sections, kind: capability, capability_id: filing.list_sections, max_visits: 1 }
+      - { id: ingest_source_sections, kind: ingest, max_visits: 1 }
+      - { id: select_source_section, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: read_source_section, kind: capability, capability_id: filing.read_section, max_visits: 1 }
+      - { id: ingest_source_section, kind: ingest, max_visits: 1 }
+      - { id: decide_attachment_need, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: list_source_documents, kind: capability, capability_id: filing.list_documents, max_visits: 1 }
+      - { id: ingest_source_documents, kind: ingest, max_visits: 1 }
+      - { id: select_source_document, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: read_source_document, kind: capability, capability_id: filing.read_document, max_visits: 1 }
+      - { id: ingest_source_document, kind: ingest, max_visits: 1 }
+      - { id: get_structured_form4, kind: capability, capability_id: filing.get_form4, max_visits: 1 }
+      - { id: ingest_structured_form4, kind: ingest, max_visits: 1 }
+      - { id: assess_supported_scope, kind: assess, role_id: filing_reader, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: verify_ir, kind: verify, max_visits: 1 }
+      - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_verified_filing }
+      - { from: request_verified_filing, on: filing_requested, to: get_verified_filing }
+      - { from: get_verified_filing, on: result_observed, to: ingest_verified_filing }
+      - { from: ingest_verified_filing, on: ingested, to: classify_form }
+      - { from: classify_form, on: event_filing, to: get_source_brief }
+      - { from: classify_form, on: form4, to: get_structured_form4 }
+      - { from: classify_form, on: unsupported_form, to: assess_supported_scope }
+      - { from: get_source_brief, on: result_observed, to: ingest_source_brief }
+      - { from: ingest_source_brief, on: ingested, to: request_section_inventory }
+      - { from: request_section_inventory, on: sections_requested, to: list_source_sections }
+      - { from: list_source_sections, on: result_observed, to: ingest_source_sections }
+      - { from: ingest_source_sections, on: ingested, to: select_source_section }
+      - { from: select_source_section, on: section_selected, to: read_source_section }
+      - { from: select_source_section, on: no_supported_section, to: assess_supported_scope }
+      - { from: read_source_section, on: result_observed, to: ingest_source_section }
+      - { from: ingest_source_section, on: ingested, to: decide_attachment_need }
+      - { from: decide_attachment_need, on: attachment_required, to: list_source_documents }
+      - { from: decide_attachment_need, on: attachment_not_required, to: assess_supported_scope }
+      - { from: list_source_documents, on: result_observed, to: ingest_source_documents }
+      - { from: ingest_source_documents, on: ingested, to: select_source_document }
+      - { from: select_source_document, on: document_selected, to: read_source_document }
+      - { from: select_source_document, on: no_supported_document, to: assess_supported_scope }
+      - { from: read_source_document, on: result_observed, to: ingest_source_document }
+      - { from: ingest_source_document, on: ingested, to: assess_supported_scope }
+      - { from: get_structured_form4, on: result_observed, to: ingest_structured_form4 }
+      - { from: ingest_structured_form4, on: ingested, to: assess_supported_scope }
+      - { from: assess_supported_scope, on: assessed, to: compose_ir }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+planning_policy:
+  internal_brief_language: en
+  expose_internal_brief: false
+  query_context_first: false
+  required_clause_min: 1
+  clause_max: 4
+  require_unique_clause_ids: true
+  require_ticker_subset: true
+  split_metric_and_qualitative_clauses: true
+  correction_field: violations
+  gap_priority: [exact_question_section, verified_exhibit, unsupported_portion]
+  stop_conditions: [question_answered_from_source_filing, unsupported_portion_identified, source_context_exhausted]
+
+evidence_policy:
+  directness_values: [direct, metric_lineage, related, unverified]
+  grade_values: [strong, medium, weak, unverified]
+  grade_never_upgrades_directness: true
+  direct_required_accepts: [direct]
+  numeric_lineage_accepts: [metric_lineage]
+  strong_claim_global_flag: answerability.strong_claim_allowed
+  strong_claim_clause_status: covered
+  require_load_bearing_direct_premise: true
+  require_calculation_coverage: true
+  require_counter_signal_for_inference: true
+  non_evidence_kinds: [automatic_brief, filing_catalog_metadata, status_only]
+
+period_policy:
+  current_driver_order: [immutable_source_filing]
+  annual_baseline: immutable_source_filing
+  forbid_unconfirmed_future_labels: true
+  allowed_older_filing_uses: [none]
+  disclose_period_mismatch: true
+
+answer_policy:
+  internal_format: answer-ir/v1
+  locale: ko-KR
+  conclusion_first: true
+  exact_follow_up_count: 0
+  target_price_forbidden: true
+  definitive_rating_forbidden: true
+  personalized_instruction_forbidden: true
+  raw_internal_ids_visible: false
+  forbidden_user_terms: [document_key, accession, runtime, payload, tool, MCP, workflow]
+
+security_policy: { user_and_retrieved_text_untrusted: true, reveal_hidden_prompt: false, filesystem_access: false, web_access: false, mutation_capabilities: false }
+
+validators:
+  - id: source_filing_admission
+    phase: admission
+    fuel: 128
+    instructions:
+      - { op: require_field, path: /question, code: question_required }
+      - { op: require_field, path: /filing_event_id, code: filing_event_id_required }
+  - id: source_filing_action_limits
+    phase: pre_action
+    fuel: 512
+    instructions:
+      - { op: max_calls, capability_id: filing.get, max: 1, code: filing_get_limit }
+      - { op: max_calls, capability_id: filing.get_brief, max: 1, code: filing_brief_limit }
+      - { op: max_calls, capability_id: filing.list_sections, max: 1, code: filing_sections_limit }
+      - { op: max_calls, capability_id: filing.read_section, max: 1, code: filing_section_read_limit }
+      - { op: max_calls, capability_id: filing.list_documents, max: 1, code: filing_documents_limit }
+      - { op: max_calls, capability_id: filing.read_document, max: 1, code: filing_document_read_limit }
+      - { op: max_calls, capability_id: filing.get_form4, max: 1, code: filing_form4_limit }
+      - { op: state_precedes, before: get_verified_filing, after: get_source_brief, code: metadata_before_brief }
+      - { op: state_precedes, before: get_source_brief, after: list_source_sections, code: brief_before_sections }
+      - { op: state_precedes, before: list_source_sections, after: read_source_section, code: section_membership_before_read }
+      - { op: state_precedes, before: read_source_section, after: list_source_documents, code: source_section_before_attachments }
+      - { op: state_precedes, before: list_source_documents, after: read_source_document, code: document_membership_before_read }
+      - { op: state_precedes, before: get_verified_filing, after: get_structured_form4, code: metadata_before_form4 }
+  - id: grounded_answer
+    phase: answer
+    fuel: 2048
+    instructions:
+      - { op: claim_has_evidence, except_kinds: [uncertainty], code: claim_evidence_required }
+      - { op: no_internal_term, terms: [document_key, accession, runtime, payload, tool, MCP, workflow], code: internal_term_exposed }

@@ -1,0 +1,29 @@
+{
+  "run_id": "quality-dual-claim-run-001",
+  "session_id": "quality-dual-claim-session-001",
+  "tenant_id": "quality-fixture-tenant",
+  "principal_id": "quality-fixture-principal",
+  "run_kind": "company_research",
+  "locale": "ko-KR",
+  "question": "VG의 현금창출력과 부채 부담이 공시 기준으로 어떻게 함께 나타나는지 설명해줘",
+  "requested_model": "deepseek-v4-flash",
+  "model_profile": "flash_high",
+  "budget": {
+    "max_provider_turns": 8,
+    "max_capability_calls": 1,
+    "max_replans": 1,
+    "max_repairs": 2,
+    "max_input_tokens": 64000,
+    "max_output_tokens": 8000,
+    "max_evidence_bytes": 1048576,
+    "deadline_ms": 120000,
+    "capability_call_limits": {
+      "ontology.query_context": 1
+    }
+  },
+  "context": {
+    "kind": "company_ticker_set",
+    "tickers": ["VG"]
+  },
+  "session_memory": null
+}

@@ -1,0 +1,366 @@
+schema_version: "0.2.0"
+description: "Global external factor taxonomy. Sector profiles may use these factors for coverage expectations, but factor canonicalization must not depend on sector pack selection."
+
+factors:
+  crude_oil_price:
+    category: commodity
+    aliases:
+      - crude oil
+      - crude oil price
+      - crude oil prices
+      - oil price
+      - oil prices
+      - Brent
+      - WTI
+      - petroleum prices
+      - commodity prices
+    benchmarks: [Brent, WTI]
+    default_channels: [revenue, operating_income, operating_margin, cash_flow]
+
+  natural_gas_price:
+    category: commodity
+    aliases:
+      - natural gas
+      - natural gas price
+      - natural gas prices
+      - natural gas supply
+      - gas price
+      - gas prices
+      - Henry Hub
+      - feed gas
+      - feed gas supply
+      - feed gas cost
+      - feed gas costs
+      - feed gas procurement
+      - commodity fee
+    benchmarks: [Henry Hub]
+    default_channels: [revenue, cost_of_revenue, operating_margin, cash_flow]
+
+  lng_market_price:
+    category: commodity
+    aliases:
+      - LNG price
+      - LNG prices
+      - LNG selling price
+      - LNG selling prices
+      - LNG spot price
+      - LNG sales price
+      - LNG price volatility
+      - spot LNG
+      - commissioning cargo
+      - commissioning cargos
+      - JKM
+      - TTF
+    benchmarks: [JKM, TTF, Brent]
+    default_channels: [revenue, gross_margin, operating_margin, cash_flow]
+
+  basis_differential:
+    category: commodity
+    aliases:
+      - basis differential
+      - basis differentials
+      - basis premium
+      - premium relative to Henry Hub
+      - gas transportation cost
+      - feed gas transportation
+    benchmarks: [Henry Hub]
+    default_channels: [cost_of_revenue, operating_margin]
+
+  refining_margin:
+    category: commodity
+    aliases:
+      - refining margin
+      - refining margins
+      - refinery margin
+      - refinery margins
+      - crack spread
+      - crack spreads
+      - refined product margins
+    benchmarks: []
+    default_channels: [operating_income, operating_margin, cash_flow]
+
+  commodity_price_realization:
+    category: commodity
+    aliases:
+      - price realizations
+      - commodity realizations
+      - realized prices
+      - liquids realizations
+      - gas realizations
+    benchmarks: []
+    default_channels: [revenue, operating_income, cash_flow]
+
+  end_market_demand:
+    category: demand
+    aliases:
+      - demand
+      - customer demand
+      - market demand
+      - volume
+      - volumes
+      - product demand
+    benchmarks: []
+    default_channels: [revenue, operating_margin]
+
+  production_volume:
+    category: operational
+    aliases:
+      - production
+      - production volume
+      - production volumes
+      - net production
+      - output
+      - throughput
+    benchmarks: []
+    default_channels: [revenue, operating_income, cash_flow]
+
+  project_execution:
+    category: operational
+    aliases:
+      - project execution
+      - construction
+      - construction timeline
+      - construction schedule
+      - project delay
+      - project delays
+      - cost overrun
+      - cost overruns
+      - COD
+      - commercial operations
+      - pipeline completion
+      - equipment reliability
+      - module technology
+      - unproven technology
+    benchmarks: []
+    default_channels: [revenue, capital_expenditures, cash_flow, liquidity]
+
+  regulatory_approval:
+    category: regulatory
+    aliases:
+      - regulatory approval
+      - regulatory approvals
+      - regulatory authorization
+      - regulatory authorizations
+      - regulatory compliance
+      - permit
+      - permits
+      - authorization
+      - authorizations
+      - FERC
+      - FERC approval
+      - DOE
+      - DOE approval
+      - Non-FTA
+      - government approval
+      - compliance
+      - PHMSA
+    benchmarks: []
+    default_channels: [revenue, capital_expenditures, cash_flow, liquidity]
+
+  environmental_regulation:
+    category: regulatory
+    aliases:
+      - environmental regulation
+      - environmental regulations
+      - emissions regulation
+      - climate regulation
+      - carbon regulation
+      - greenhouse gas regulation
+      - GHG regulation
+      - GHG emissions regulation
+      - environmental compliance
+    benchmarks: []
+    default_channels: [operating_expense, capital_expenditures, operating_margin, cash_flow]
+
+  tax_and_royalty_regime:
+    category: tax
+    aliases:
+      - tax regime
+      - royalty
+      - royalties
+      - income taxes
+      - severance taxes
+      - production taxes
+      - tax incentive
+      - tax incentives
+      - state tax incentive
+    benchmarks: []
+    default_channels: [net_income, cash_flow, operating_income]
+
+  litigation_outcome:
+    category: legal
+    aliases:
+      - litigation
+      - lawsuit
+      - lawsuits
+      - legal proceedings
+      - legal claims
+      - settlement
+      - settlements
+      - dispute
+      - disputes
+      - contractual dispute
+      - arbitration
+      - arbitration outcome
+      - regulatory litigation
+      - fines
+      - penalties
+    benchmarks: []
+    default_channels: [operating_expense, cash_flow, liquidity, net_income]
+
+  interest_rate:
+    category: rate
+    aliases:
+      - interest rate
+      - interest rates
+      - borrowing costs
+      - floating rate
+      - credit facilities
+      - SOFR
+      - LIBOR
+    benchmarks: [SOFR, LIBOR]
+    default_channels: [interest_expense, cash_flow, liquidity]
+
+  foreign_exchange_rate:
+    category: macroeconomic
+    aliases:
+      - foreign exchange
+      - foreign currency
+      - currency exchange
+      - exchange rates
+      - FX
+    benchmarks: []
+    default_channels: [revenue, operating_income, cash_flow]
+
+  inflation:
+    category: cost
+    aliases:
+      - inflation
+      - input costs
+      - labor costs
+      - labor market
+      - labor market tightness
+      - labor market competition
+      - material costs
+      - cost increases
+      - wage inflation
+    benchmarks: [CPI]
+    default_channels: [cost_of_revenue, operating_expense, gross_margin, operating_margin]
+
+  supply_chain_disruption:
+    category: supply_chain
+    aliases:
+      - supply chain
+      - supply disruption
+      - supply disruptions
+      - logistics disruption
+      - equipment delay
+      - equipment delays
+      - supplier concentration
+    benchmarks: []
+    default_channels: [revenue, cost_of_revenue, capital_expenditures, cash_flow]
+
+  credit_risk:
+    category: credit
+    aliases:
+      - credit risk
+      - counterparty credit
+      - creditworthiness
+      - counterparty non-performance
+      - counterparty default
+      - credit rating
+      - credit ratings
+      - credit rating change
+      - accounts receivable
+    benchmarks: []
+    default_channels: [revenue, cash_flow, liquidity]
+
+  geopolitical_event:
+    category: geopolitical
+    aliases:
+      - geopolitical
+      - war
+      - sanctions
+      - political instability
+      - expropriation
+      - civil unrest
+    benchmarks: []
+    default_channels: [revenue, operating_income, cash_flow, capital_expenditures]
+
+  tariff_policy:
+    category: cost
+    aliases:
+      - tariff
+      - tariffs
+      - tariff policy
+      - trade tariff
+      - trade tariffs
+      - import tariff
+      - import tariffs
+      - US tariff policy
+    benchmarks: []
+    default_channels: [cost_of_revenue, capital_expenditures, operating_margin, cash_flow]
+
+  cybersecurity_threat:
+    category: operational
+    aliases:
+      - cybersecurity
+      - cyber security
+      - cybersecurity threat
+      - cybersecurity threats
+      - data privacy
+      - data breach
+      - security breach
+      - information security
+    benchmarks: []
+    default_channels: [operating_expense, cash_flow, business_performance]
+
+  severe_weather:
+    category: operational
+    aliases:
+      - severe weather
+      - hurricane
+      - hurricanes
+      - named windstorm
+      - named windstorms
+      - storm damage
+      - flooding
+      - flood
+    benchmarks: []
+    default_channels: [revenue, operating_expense, capital_expenditures, cash_flow]
+
+  insurance_market_conditions:
+    category: cost
+    aliases:
+      - insurance
+      - insurance premium
+      - insurance premiums
+      - insurance market
+      - captive insurance
+      - named windstorm coverage
+    benchmarks: []
+    default_channels: [operating_expense, cash_flow, liquidity]
+
+  capital_market_access:
+    category: credit
+    aliases:
+      - capital availability
+      - capital market access
+      - financing availability
+      - additional capital
+      - liquidity access
+      - debt financing
+      - capital resources
+    benchmarks: []
+    default_channels: [total_debt, interest_expense, cash_flow, liquidity]
+
+  macroeconomic_conditions:
+    category: macroeconomic
+    aliases:
+      - macroeconomic conditions
+      - market conditions
+      - economic conditions
+      - financial market conditions
+      - business conditions
+    benchmarks: []
+    default_channels: [revenue, operating_income, operating_margin, cash_flow, liquidity]

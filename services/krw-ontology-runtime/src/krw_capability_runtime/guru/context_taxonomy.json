@@ -1,0 +1,363 @@
+{
+  "domains": {
+    "asset_manager": {
+      "terms": [
+        "asset manager",
+        "asset management",
+        "alternative asset",
+        "carried interest",
+        "fee related earnings",
+        "aum",
+        "자산운용",
+        "대체자산",
+        "운용자산",
+        "성과보수"
+      ],
+      "topic_patterns": [
+        "carried_interest",
+        "carry_realization",
+        "realized_carried_interest",
+        "gross_carried_interest",
+        "fund_lifecycle",
+        "fee_related_earnings",
+        "fee_related_revenue",
+        "fee_related",
+        "distributable_earnings",
+        "clawback",
+        "target_return_assumptions_per_fund",
+        "aum",
+        "fund_lifecycle_stage"
+      ],
+      "filter_reason": "question does not mention asset management, AUM, funds, or carried-interest economics",
+      "mismatch_penalty": 12,
+      "sector_specific": true
+    },
+    "consumer_brand": {
+      "terms": [
+        "brand",
+        "pricing power",
+        "consumer",
+        "beverage",
+        "브랜드",
+        "가격 결정력",
+        "소비재",
+        "음료"
+      ],
+      "match_bonus": 6,
+      "sector_specific": true
+    },
+    "credit": {
+      "terms": [
+        "credit",
+        "private credit",
+        "credit spread",
+        "commercial real estate",
+        "cre",
+        "convertible",
+        "bond",
+        "coupon",
+        "loan",
+        "covenant",
+        "bank",
+        "banks",
+        "크레딧",
+        "신용스프레드",
+        "전환사채",
+        "채권",
+        "쿠폰",
+        "대출",
+        "은행",
+        "상업용 부동산"
+      ],
+      "topic_patterns": [
+        "convertible",
+        "전환사채",
+        "전환가격",
+        "전환 가격",
+        "coupon",
+        "쿠폰",
+        "put/call",
+        "풋/콜",
+        "call option",
+        "put option",
+        "loan_to_value",
+        "private_credit",
+        "distressed",
+        "credit_spread",
+        "신용스프레드",
+        "covenant",
+        "seniority",
+        "capital_structure_seniority",
+        "발행_목적",
+        "발행목적",
+        "희석_가능",
+        "희석가능",
+        "희석_비율",
+        "희석비율",
+        "dilution",
+        "issuance_purpose"
+      ],
+      "filter_reason": "question does not mention credit, bonds, convertible securities, refinancing, debt maturity, or debt-instrument analysis",
+      "mismatch_penalty": 14,
+      "sector_specific": true
+    },
+    "derivative": {
+      "terms": [
+        "derivative",
+        "derivatives",
+        "swap",
+        "option",
+        "hedging",
+        "hedge",
+        "파생상품",
+        "스왑",
+        "옵션",
+        "헤지"
+      ],
+      "mismatch_penalty": 14,
+      "sector_specific": false
+    },
+    "energy": {
+      "terms": [
+        "oil",
+        "gas",
+        "energy",
+        "commodity",
+        "원유",
+        "석유",
+        "가스",
+        "에너지",
+        "원자재"
+      ],
+      "match_bonus": 6,
+      "sector_specific": true
+    },
+    "governance": {
+      "terms": [
+        "board",
+        "director",
+        "compensation",
+        "independence",
+        "governance",
+        "이사회",
+        "이사",
+        "보수",
+        "독립성",
+        "거버넌스"
+      ],
+      "mismatch_penalty": 12,
+      "sector_specific": false
+    },
+    "insurance": {
+      "terms": [
+        "insurance",
+        "insurer",
+        "reinsurance",
+        "underwriting",
+        "float",
+        "premium",
+        "catastrophe",
+        "보험",
+        "재보험",
+        "언더라이팅",
+        "플로트"
+      ],
+      "topic_patterns": [
+        "insurance_float",
+        "float_cost",
+        "underwriting_profit",
+        "underwriting_loss",
+        "catastrophe_loss",
+        "premium_volume",
+        "reinsurance_exposure",
+        "플로트",
+        "평균_플로트",
+        "언더라이팅",
+        "인수손익",
+        "보험손실",
+        "재보험",
+        "사업별_플로트"
+      ],
+      "filter_reason": "question does not mention insurance, underwriting, float, or insurance economics",
+      "mismatch_penalty": 16,
+      "sector_specific": true
+    },
+    "management_talent": {
+      "terms": [
+        "wooden",
+        "우든",
+        "talent",
+        "manager",
+        "management",
+        "인재",
+        "권한",
+        "경영진",
+        "경영자"
+      ],
+      "mismatch_penalty": 10,
+      "intent_allowlist": [
+        "capital_allocation_check",
+        "thesis_review"
+      ],
+      "sector_specific": false
+    },
+    "real_estate": {
+      "terms": [
+        "real estate",
+        "commercial real estate",
+        "cre",
+        "부동산",
+        "상업용 부동산"
+      ],
+      "mismatch_penalty": 10,
+      "sector_specific": true
+    },
+    "regulated_utility": {
+      "terms": [
+        "regulated utility",
+        "public utility",
+        "utility",
+        "rate case",
+        "allowed return",
+        "regulator",
+        "regulatory",
+        "regulated",
+        "customer and regulator",
+        "electric utility",
+        "water utility",
+        "유틸리티",
+        "공익사업",
+        "규제기관",
+        "요금 규제",
+        "허용수익률"
+      ],
+      "topic_patterns": [
+        "rate_case",
+        "rate_case_filings",
+        "allowed_return",
+        "regulator_decisions",
+        "regulatory_approval",
+        "regulated_rate_base",
+        "customer_rate",
+        "utility_commission"
+      ],
+      "filter_reason": "question does not mention regulated utilities, rate cases, allowed returns, or utility regulators",
+      "match_bonus": 6,
+      "mismatch_penalty": 30,
+      "sector_specific": true
+    },
+    "semiconductor": {
+      "terms": [
+        "semiconductor",
+        "gpu",
+        "ai",
+        "data center",
+        "euv",
+        "lithography",
+        "반도체",
+        "데이터센터",
+        "인공지능"
+      ],
+      "match_bonus": 6,
+      "sector_specific": true
+    },
+    "transport": {
+      "terms": [
+        "rail",
+        "railroad",
+        "transport",
+        "transportation",
+        "logistics",
+        "freight",
+        "fuel surcharge",
+        "철도",
+        "운송",
+        "물류",
+        "화물",
+        "연료할증"
+      ],
+      "topic_patterns": [
+        "fuel_surcharge",
+        "fuel_surcharge_mechanism",
+        "rail_volume",
+        "carload",
+        "freight_volume"
+      ],
+      "filter_reason": "question does not mention rail, freight, transport, logistics, or fuel-surcharge economics",
+      "mismatch_penalty": 12,
+      "sector_specific": true
+    }
+  },
+  "non_filing_topic_patterns": [
+    "investor_sentiment",
+    "sentiment_psychology",
+    "psychology",
+    "fomo",
+    "behavioral",
+    "투자자_심리"
+  ],
+  "overfit_penalty_rules": [
+    {
+      "row_terms": ["ai", "인공지능", "데이터센터", "data center", "소프트웨어 부채"],
+      "query_terms": ["ai", "인공지능", "데이터센터", "data center"],
+      "penalty": 24
+    },
+    {
+      "row_terms": ["프라이빗 크레딧", "private credit", "신용시장", "신용 리스크", "사적 대출", "하이일드", "pik", "재융자", "대출자", "차입자", "레버리지", "크레딧 ="],
+      "query_terms": ["신용", "credit", "레버리지", "부채", "대출", "차입"],
+      "penalty": 16
+    },
+    {
+      "row_terms": ["sotp", "nav", "peer", "동종", "할인거래"],
+      "query_terms": ["sotp", "nav", "peer", "밸류", "가치평가", "할인"],
+      "penalty": 12
+    },
+    {
+      "row_terms": ["american tailwind", "미국의 순풍", "미국의 경제적", "미국 경제"],
+      "query_terms": ["미국", "america", "american", "경제", "거시"],
+      "penalty": 10
+    },
+    {
+      "row_terms": ["인덱스 비중", "펀드 매니저", "뇌외과", "수수료만으로"],
+      "query_terms": ["인덱스", "펀드", "매니저", "수수료"],
+      "penalty": 10
+    },
+    {
+      "row_terms": ["사회·정치", "포퓰리즘", "일자리 상실", "ubi", "정치적 분열"],
+      "query_terms": ["정치", "사회", "실업", "일자리", "ubi", "포퓰리즘"],
+      "penalty": 12
+    },
+    {
+      "row_terms": ["sparc", "상장 인수", "인수 회사", "창업자주식", "워런트"],
+      "query_terms": ["sparc", "상장 인수", "인수 회사", "워런트"],
+      "penalty": 16
+    },
+    {
+      "row_terms": ["현금보다 주식", "cash equivalents", "cash"],
+      "query_terms": ["현금", "cash", "채권", "단기자금"],
+      "penalty": 12
+    },
+    {
+      "row_terms": ["차량 리프레시", "우버", "uber"],
+      "query_terms": ["차량", "자동차", "우버", "uber"],
+      "penalty": 12
+    },
+    {
+      "row_terms": ["자율주행", "av ", "autonomous", "미국 상장", "상장 전환"],
+      "query_terms": ["자율주행", "av", "autonomous", "상장"],
+      "penalty": 12
+    },
+    {
+      "row_terms": ["보험 손실", "감가상각", "depreciation", "자본 집약", "capital intensive"],
+      "query_terms": ["비중", "몰려", "집중", "포트폴리오", "현금 비중", "position", "sizing"],
+      "penalty": 18,
+      "applies_when_query_matches": true
+    },
+    {
+      "row_terms": ["브루크필드", "brookfield"],
+      "query_terms": ["브루크필드", "brookfield"],
+      "penalty": 16,
+      "author_allowlist": ["flatt"]
+    }
+  ]
+}

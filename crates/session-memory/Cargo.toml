@@ -1,0 +1,18 @@
+[package]
+name = "krw-session-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-protocol = { path = "../protocol" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

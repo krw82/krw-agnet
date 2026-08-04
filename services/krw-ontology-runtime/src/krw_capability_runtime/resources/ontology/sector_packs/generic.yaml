@@ -1,0 +1,53 @@
+schema_version: "0.2.0"
+sector: generic
+description: "Fallback factor and activity pack for companies without a specialized sector pack."
+
+business_activities:
+  product_sales:
+    name: "Product or service sales"
+    activity_type: "revenue_source"
+    aliases: ["revenue", "sales", "customers", "products", "services"]
+    revenue_relevance: "primary"
+    cost_relevance: "unknown"
+    related_metrics: ["revenue"]
+  operating_costs:
+    name: "Operating cost base"
+    activity_type: "cost_source"
+    aliases: ["cost of revenue", "operating expense", "expenses", "costs"]
+    revenue_relevance: "none"
+    cost_relevance: "primary"
+    related_metrics: ["cost_of_revenue", "operating_expense"]
+  capital_projects:
+    name: "Capital projects"
+    activity_type: "project"
+    aliases: ["capital expenditures", "capex", "construction", "project"]
+    revenue_relevance: "secondary"
+    cost_relevance: "primary"
+    related_metrics: ["capital_expenditures"]
+
+factors:
+  end_market_demand:
+    category: "demand"
+    aliases: ["demand", "customer demand", "market demand", "volume"]
+    benchmarks: []
+    channels: ["revenue", "operating_margin"]
+  pricing_power:
+    category: "competitive"
+    aliases: ["pricing", "price competition", "discounts", "average selling price", "selling prices"]
+    benchmarks: []
+    channels: ["revenue", "gross_margin", "operating_margin"]
+  input_cost_inflation:
+    category: "cost"
+    aliases: ["inflation", "input costs", "labor costs", "material costs", "cost increases"]
+    benchmarks: ["CPI"]
+    channels: ["cost_of_revenue", "gross_margin", "operating_margin"]
+  interest_rate:
+    category: "rate"
+    aliases: ["interest rates", "borrowing costs", "floating rate", "credit facilities"]
+    benchmarks: ["SOFR", "LIBOR"]
+    channels: ["interest_expense", "cash_flow", "liquidity"]
+  regulatory_approval:
+    category: "regulatory"
+    aliases: ["regulatory approval", "permit", "authorization", "government approval", "compliance"]
+    benchmarks: []
+    channels: ["revenue", "capital_expenditures", "cash_flow"]

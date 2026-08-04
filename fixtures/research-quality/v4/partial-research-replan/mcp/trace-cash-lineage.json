@@ -1,0 +1,19 @@
+{
+  "object": {
+    "id": "claim:vg:operating-cash-flow:2025",
+    "type": "filing_claim",
+    "ticker": "VG",
+    "period": "CY2025",
+    "document_type": "10-K",
+    "text": "The filing's operating cash-flow statement is the direct lineage needed to support the cash-generation conclusion."
+  },
+  "evidence": {
+    "quotes": [
+      {
+        "text": "Net cash provided by operating activities is disclosed in the cash-flow statement."
+      }
+    ],
+    "spans": ["span:vg:operating-cash-flow:2025"],
+    "metric_lineage": null
+  }
+}

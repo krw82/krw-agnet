@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": "PRIVATE_REASONING_CANARY_V4: the refreshed ResearchState now covers both clauses directly.",
+  "tool_calls": [
+    {
+      "id": "call-replan-evidence-sufficient-001",
+      "type": "function",
+      "function": {
+        "name": "krw_agent_transition",
+        "arguments": "{\"event\":\"evidence_sufficient\"}"
+      }
+    }
+  ]
+}
