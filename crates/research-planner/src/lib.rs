@@ -444,9 +444,15 @@ impl ResearchPlanner {
                 return Err(ResearchPlannerError::IntentGoalProgressDrift);
             }
             if observed.status == GoalStatus::Unresolved {
-                if goal.status != GoalStatus::Unresolved || !new_evidence.is_empty() {
+                if goal.status != GoalStatus::Unresolved {
                     return Err(ResearchPlannerError::IntentGoalProgressDrift);
                 }
+                // A goal that is still unresolved but already has new evidence is
+                // in progress, not drifting. With multiple clauses a single
+                // capability call may cover some goals and leave others
+                // unresolved; the agent must be allowed to make further calls to
+                // resolve them. Previously, any new evidence on an unresolved
+                // goal was treated as drift and aborted the whole run.
                 continue;
             }
             if observed.evidence_ids.is_empty()

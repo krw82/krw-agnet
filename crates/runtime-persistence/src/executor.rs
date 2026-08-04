@@ -511,7 +511,16 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             Err(EngineError::DeadlineExceeded(_)) => {
                 Err(RunExecutionFailure::failed("deadline_exceeded"))
             }
-            Err(error) => Err(engine_execution_failure(&error)),
+            Err(error) => {
+                // Observability: engine_execution_failure deliberately discards
+                // content-bearing detail when writing the terminal outcome, which
+                // makes research_planner_failure / context_plan_failure etc.
+                // opaque. Log the Debug form here so a local stack can diagnose
+                // the exact planner/contract failure without changing the durable
+                // ABI reason code.
+                tracing::warn!(error = ?error, "run_engine_terminal_failure");
+                Err(engine_execution_failure(&error))
+            }
         }
     }
 }

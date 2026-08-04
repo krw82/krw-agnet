@@ -26,6 +26,8 @@ krw_daemon_pid=''
 krw_proxy_pid=''
 krw_capability_pid=''
 krw_pg_started=false
+# PostgreSQL is managed externally (init once, stays up). The script only
+# starts it if it is not already running.
 
 for krw_value in "$krw_gateway_port" "$krw_pg_port" "$krw_capability_port" "$krw_tls_port"; do
   [[ "$krw_value" =~ ^[0-9]+$ ]] && (( krw_value >= 1 && krw_value <= 65535 )) || {
@@ -69,47 +71,64 @@ cleanup() {
   for krw_pid in "$krw_gateway_pid" "$krw_daemon_pid" "$krw_proxy_pid" "$krw_capability_pid"; do
     [[ -n "$krw_pid" ]] && wait "$krw_pid" 2>/dev/null
   done
-  if [[ "$krw_pg_started" == true ]]; then
-    /opt/homebrew/bin/pg_ctl -D "$krw_state/postgres" -m fast stop >/dev/null 2>&1
-  fi
+  # PostgreSQL stays up across restarts; do not stop it here.
 }
 trap cleanup EXIT INT TERM
 
-if /opt/homebrew/bin/pg_ctl -D "$krw_state/postgres" status >/dev/null 2>&1; then
-  printf 'local PostgreSQL is already running; stop it before starting a new local gateway stack\n' >&2
-  exit 1
+# PostgreSQL: reuse if already running, otherwise init+start.
+# Once started the server stays up across script restarts. agentd connects
+# with SslMode::Require, so a reused instance MUST accept TLS; a previously
+# started server without ssl=on would make agentd fail readiness with an
+# opaque ReadinessFailed hash. We probe TLS below and refuse to continue if
+# the running server does not accept SSL.
+krw_state_abs=$(CDPATH= cd -- "$krw_state" && pwd)
+if [[ ! -f "$krw_state_abs/postgres/PG_VERSION" ]]; then
+  /opt/homebrew/bin/initdb -A trust -D "$krw_state_abs/postgres" >"$krw_state_abs/logs/initdb.log"
 fi
-if [[ ! -f "$krw_state/postgres/PG_VERSION" ]]; then
-  /opt/homebrew/bin/initdb -A trust -D "$krw_state/postgres" >"$krw_state/logs/initdb.log"
-fi
-if [[ ! -f "$krw_state/ca.pem" || ! -f "$krw_state/server.pem" || ! -f "$krw_state/server.key" ]]; then
+# Ensure CA + server cert/key exist. pg_ctl needs ABSOLUTE cert paths: when
+# given a relative path Postgres resolves it against its own CWD, not the
+# data directory, so an ssl=on start silently fails and leaves a server
+# that agentd cannot talk to over TLS.
+if [[ ! -f "$krw_state_abs/ca.pem" || ! -f "$krw_state_abs/server.pem" || ! -f "$krw_state_abs/server.key" ]]; then
   openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
     -config "$krw_root/scripts/live_e2e_openssl.cnf" -extensions certificate_authority_extensions \
-    -keyout "$krw_state/ca.key" -out "$krw_state/ca.pem" >/dev/null 2>&1
+    -keyout "$krw_state_abs/ca.key" -out "$krw_state_abs/ca.pem" >/dev/null 2>&1
   openssl req -new -newkey rsa:2048 -nodes -sha256 \
     -config "$krw_root/scripts/live_e2e_openssl.cnf" -reqexts request_extensions \
-    -keyout "$krw_state/server.key" -out "$krw_state/server.csr" >/dev/null 2>&1
-  openssl x509 -req -sha256 -days 30 -in "$krw_state/server.csr" \
-    -CA "$krw_state/ca.pem" -CAkey "$krw_state/ca.key" -CAcreateserial \
+    -keyout "$krw_state_abs/server.key" -out "$krw_state_abs/server.csr" >/dev/null 2>&1
+  openssl x509 -req -sha256 -days 30 -in "$krw_state_abs/server.csr" \
+    -CA "$krw_state_abs/ca.pem" -CAkey "$krw_state_abs/ca.key" -CAcreateserial \
     -extfile "$krw_root/scripts/live_e2e_openssl.cnf" -extensions server_certificate_extensions \
-    -out "$krw_state/server.pem" >/dev/null 2>&1
-  chmod 600 "$krw_state/ca.key" "$krw_state/server.key"
+    -out "$krw_state_abs/server.pem" >/dev/null 2>&1
+  chmod 600 "$krw_state_abs/ca.key" "$krw_state_abs/server.key"
+fi
+if ! /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" status >/dev/null 2>&1; then
+  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
+    -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
+    -w start >/dev/null
+fi
+# Reused-instance guard: agentd hard-requires SslMode::Require. If a server
+# from an earlier run is up but not TLS-capable, stop+restart it with ssl=on
+# using the absolute cert paths instead of silently inheriting a broken one.
+if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+    /opt/homebrew/bin/psql -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres -tAc "select 1" >/dev/null 2>&1; then
+  printf 'local PostgreSQL is up but does not accept TLS; restarting with ssl=on\n' >&2
+  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -m fast -w stop >/dev/null 2>&1
+  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
+    -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
+    -w start >/dev/null
 fi
 
-/opt/homebrew/bin/pg_ctl -D "$krw_state/postgres" -l "$krw_state/logs/postgres.log" \
-  -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state/server.pem' -c ssl_key_file='$krw_state/server.key'" \
-  -w start >/dev/null
-krw_pg_started=true
-
-if [[ ! -f "$krw_state/migrations-v6.done" ]]; then
+if [[ ! -f "$krw_state_abs/migrations-v6.done" ]]; then
   for krw_migration in \
     migrations/0001_agent_v1.sql migrations/0002_action_finalization.sql migrations/0003_bounded_child.sql \
     migrations/0004_session_memory.sql migrations/0005_session_memory_snapshot.sql migrations/0006_read_final_output.sql
   do
-    PGSSLMODE=disable /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" \
+    PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+      /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" \
       -d postgres -f "$krw_root/$krw_migration" >/dev/null
   done
-  : >"$krw_state/migrations-v6.done"
+  : >"$krw_state_abs/migrations-v6.done"
 fi
 
 read -r krw_build krw_schema_hash krw_release_hash < <(
@@ -174,21 +193,21 @@ krw_run_tag="$(date +%s)-$$"
 krw_image_dir="$krw_state/images/krw-ontology-$krw_run_tag"
 krw_descriptor="$krw_state/public-release-$krw_run_tag.json"
 krw_release_authorization="$krw_state/release-authorization-$krw_run_tag.json"
-"$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agent -- image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
+"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
 krw_database_user=$(id -un)
 export KRW_ONTOLOGY_MCP_URL="https://127.0.0.1:$krw_tls_port/mcp/"
 export KRW_ONTOLOGY_READY_URL="https://127.0.0.1:$krw_tls_port/healthz"
 export KRW_ONTOLOGY_CA_PEM="$(< "$krw_state/ca.pem")"
-"$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agentd -- \
+"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agentd" \
   --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
   --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
   --endpoint-registry "$krw_state/endpoint-registry.yaml" --check \
   --public-release-descriptor-output "$krw_descriptor" >/dev/null
 
 if [[ ! -f "$krw_state/release-private.pk8" ]]; then
-  "$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agent -- release keygen --private-key-out "$krw_state/release-private.pk8" >"$krw_state/release-public-key.txt"
+  "$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" release keygen --private-key-out "$krw_state/release-private.pk8" >"$krw_state/release-public-key.txt"
 fi
-krw_public_key=$("$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agent -- release public-key --private-key "$krw_state/release-private.pk8")
+krw_public_key=$("$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" release public-key --private-key "$krw_state/release-private.pk8")
 python3 - "$krw_state/release-trust-registry.json" "$krw_public_key" <<'PY'
 import json, sys
 path, public = sys.argv[1:]
@@ -197,7 +216,7 @@ open(path, "w", encoding="utf-8").write(json.dumps(value, separators=(",", ":"),
 PY
 krw_now=$(date +%s)
 krw_expiry=$((krw_now + 2592000))
-"$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agent -- release sign \
+"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" release sign \
   --descriptor "$krw_descriptor" --private-key "$krw_state/release-private.pk8" --key-id local-dev-v1 --sequence 1 \
   --issued-at-unix-seconds "$krw_now" --expires-at-unix-seconds "$krw_expiry" --runtime-version 0.1.0 --kernel-version 0.1.0 \
   --out "$krw_release_authorization" >/dev/null
@@ -205,9 +224,14 @@ krw_expiry=$((krw_now + 2592000))
 export KRW_AGENT_DATABASE_URL="postgresql://127.0.0.1:$krw_pg_port/postgres?user=$krw_database_user"
 export KRW_AGENT_DATABASE_CA_PEM="$(< "$krw_state/ca.pem")"
 export RUST_LOG="${RUST_LOG:-info}"
-# Use nohup+disown so agentd survives script termination (the script's
-# process tree is not the parent of the daemon when the user exits).
-nohup "$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agentd -- \
+# Forward provider/MCP debug flags to agentd when set in the caller's env so
+# DeepSeek SSE payloads and MCP arguments land in agentd.log for diagnosis.
+export KRW_DEBUG_PROVIDER="${KRW_DEBUG_PROVIDER:-}"
+export KRW_DEBUG_MCP_ARGS="${KRW_DEBUG_MCP_ARGS:-}"
+# Run the pre-built agentd binary directly (not via cargo run) so the log
+# stays clean and the process is a simple child of this script.
+krw_agentd_bin="$krw_root/target/debug/krw-agentd"
+"$krw_root/scripts/with_local_env.sh" "$krw_agentd_bin" \
     --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
     --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
     --endpoint-registry "$krw_state/endpoint-registry.yaml" --release-authorization "$krw_release_authorization" \
@@ -216,7 +240,6 @@ nohup "$krw_root/scripts/with_local_env.sh" cargo run -q -p krw-agentd -- \
     --artifact-root "$krw_state/artifacts" --artifact-active-key-env KRW_AGENT_ARTIFACT_KEY_V1 \
     >"$krw_state/logs/agentd.log" 2>&1 &
 krw_daemon_pid=$!
-disown "$krw_daemon_pid" 2>/dev/null || true
 
 krw_descriptor_hash="sha256:$(shasum -a 256 "$krw_descriptor" | awk '{print $1}')"
 krw_release_set_hash=$(python3 - "$krw_descriptor" <<'PY'
@@ -236,7 +259,6 @@ export KRW_AGENT_RELEASE_SET_HASH="$krw_release_set_hash"
   exec npm run gateway:local
 ) >"$krw_state/logs/gateway.log" 2>&1 &
 krw_gateway_pid=$!
-disown "$krw_gateway_pid" 2>/dev/null || true
 for _ in $(seq 1 100); do curl --fail --silent "http://127.0.0.1:$krw_gateway_port/healthz" >/dev/null && break; sleep 0.1; done
 curl --fail --silent "http://127.0.0.1:$krw_gateway_port/healthz" >/dev/null
 
@@ -246,4 +268,5 @@ printf '  source %q\n' "$krw_secrets"
 printf '  cd %q\n' "$krw_root"
 printf '  ./scripts/with_local_env.sh cargo run -q -p krw-agent -- run --gateway-url http://127.0.0.1:%s/v1/agent --ticker AAPL --question "..." --wait\n' "$krw_gateway_port"
 printf 'Logs: %s/logs\n\n' "$krw_state"
-printf 'Stack is running in detached sessions. Stop with: pkill -f krw-agentd\\|local-gateway\\|capabilityd\n'
+printf 'Stack is running. Press Ctrl-C to stop all services.\n'
+wait

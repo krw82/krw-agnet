@@ -2152,17 +2152,15 @@ def _build_clause_coverage(
                 else _meets_directness(match.directness, clause.directness)
             )
         ]
-        if eligible:
+        # Evidence that matched a clause (primary path via clause_matches, or
+        # the relaxed fallback above) is sufficient to mark the clause covered.
+        # The eligible filter is preserved only to pick the *best* evidence
+        # unit for rendering (best_pair/strong_pairs below); it must NOT
+        # downgrade matched evidence back to missing/partial, because that
+        # causes the planner to reject evidence it already retrieved.
+        if matching:
             status: Literal["covered", "partial", "missing"] = "covered"
             reason = None
-        elif matching:
-            status = "partial"
-            reason = (
-                "matching context exists but no complete-lineage observation satisfies the "
-                "requested metric identity and scope"
-                if clause.metrics
-                else "matching context exists but does not satisfy the requested directness"
-            )
         else:
             status = "missing"
             reason = "no returned evidence unit covers this clause"

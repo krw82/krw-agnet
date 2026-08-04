@@ -1137,6 +1137,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1230,6 +1231,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
  "zeroize",
 ]
 
@@ -1354,6 +1356,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "thiserror",
+ "tracing",
  "zeroize",
 ]
 
