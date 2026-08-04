@@ -9463,6 +9463,7 @@ mod tests {
                     supports: vec!["goal-1".into()],
                     refutes: Vec::new(),
                     qualifies: Vec::new(),
+                    source_object_ids: Vec::new(),
                 })
                 .into_iter()
                 .collect();

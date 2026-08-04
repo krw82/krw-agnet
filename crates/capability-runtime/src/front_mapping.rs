@@ -744,6 +744,7 @@ fn evidence_record(
         supports: Vec::new(),
         refutes: Vec::new(),
         qualifies: Vec::new(),
+        source_object_ids: Vec::new(),
     }
 }
 

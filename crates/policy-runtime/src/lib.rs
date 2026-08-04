@@ -441,13 +441,19 @@ mod tests {
                 ("ontology.query_context".into(), 2),
                 ("ontology.query".into(), 2),
                 ("ontology.trace".into(), 1),
+                ("ontology.chain".into(), 2),
             ]),
         }
     }
 
     fn ceiling() -> PolicyCeiling {
         PolicyCeiling {
-            capabilities: set(&["ontology.query_context", "ontology.query", "ontology.trace"]),
+            capabilities: set(&[
+                "ontology.query_context",
+                "ontology.query",
+                "ontology.trace",
+                "ontology.chain",
+            ]),
             context_refs: set(&["scope", "evidence", "memory"]),
             budget: budget(),
             verifier_tier: VerifierTier::Structural,

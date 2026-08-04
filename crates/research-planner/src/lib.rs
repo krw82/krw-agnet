@@ -1520,6 +1520,11 @@ fn normalize_tool(tool: &str) -> &str {
         "query_context"
     } else if tool.ends_with("query") || tool.ends_with("query_universe") {
         "query"
+    } else if tool.ends_with("chain") {
+        // The ontology chain traversal tool is declared with the targeted
+        // research action kind, so it is normalized alongside the precise
+        // query family for server-recommendation matching.
+        "query"
     } else {
         "unknown"
     }

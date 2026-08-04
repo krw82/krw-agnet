@@ -1202,6 +1202,7 @@ impl CapabilityRuntime for RetainedCapability {
                 supports: vec![clause_id.to_owned()],
                 refutes: Vec::new(),
                 qualifies: Vec::new(),
+                source_object_ids: Vec::new(),
             }],
             answerability: Some(Answerability::StrongAllowed),
             calculations: Vec::new(),

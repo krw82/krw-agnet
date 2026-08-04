@@ -285,6 +285,27 @@ capabilities:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
     parallel_safe: false
     prerequisites: [ontology.query_context_universe]
+  - id: ontology.chain
+    binding_key: krw_ontology_chain
+    permission: read
+    # The chain tool accepts the same object_id + ticker envelope as
+    # ontology.query, so the targeted-query input contract is reused. Extra
+    # optional knobs (max_depth, direction) ride along without a new contract.
+    input_contract: ontology-targeted-query/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: targeted_evidence_v1
+    research_action:
+      kind: targeted
+      estimate: { historical_success_lower_ppm: 600000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 80000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      conflict_domain: research:ontology-chain
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
 
 workflows:
   - id: company_research_v2

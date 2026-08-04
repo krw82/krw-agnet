@@ -106,6 +106,8 @@ pub struct EvidenceRecord {
     pub refutes: Vec<String>,
     #[serde(default)]
     pub qualifies: Vec<String>,
+    #[serde(default)]
+    pub source_object_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -209,6 +211,7 @@ impl EvidenceLedger {
             || record.supports.len() > MAX_RELATIONS_PER_RECORD
             || record.refutes.len() > MAX_RELATIONS_PER_RECORD
             || record.qualifies.len() > MAX_RELATIONS_PER_RECORD
+            || record.source_object_ids.len() > MAX_RELATIONS_PER_RECORD
             || record
                 .supports
                 .iter()
@@ -1140,6 +1143,7 @@ mod tests {
             supports: vec![],
             refutes: vec![],
             qualifies: vec![],
+            source_object_ids: vec![],
         }
     }
 

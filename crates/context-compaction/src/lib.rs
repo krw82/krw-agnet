@@ -439,12 +439,14 @@ fn fact_priority(
     fact: &NormalizedFact,
 ) -> FactPriority {
     let relation_priority = u8::from(!record.refutes.is_empty() || !record.qualifies.is_empty());
-    let numeric_or_boolean_priority = u8::from(
-        fact.value.is_number()
-            || fact.value.is_boolean()
-            || fact.unit.is_some()
-            || fact.period.is_some(),
-    );
+    // Causal text evidence used to rank below numeric/boolean facts, so it was
+    // the first to be dropped at a compaction boundary.  Text now carries the
+    // same base weight as typed values; numeric/boolean values and facts with
+    // unit/period context still rank higher so quantitative lineage is kept
+    // before prose when the budget is tight.
+    let has_typed_context =
+        fact.value.is_number() || fact.value.is_boolean() || fact.unit.is_some() || fact.period.is_some();
+    let numeric_or_boolean_priority = if has_typed_context { 2 } else { 1 };
     let directness_priority = match record.directness {
         Directness::Direct => 3,
         Directness::MetricLineage => 2,
@@ -597,6 +599,7 @@ mod tests {
             supports: vec!["claim-growth".into()],
             refutes: vec!["claim-no-risk".into()],
             qualifies: Vec::new(),
+            source_object_ids: Vec::new(),
         }
     }
 

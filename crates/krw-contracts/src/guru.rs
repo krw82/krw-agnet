@@ -100,6 +100,7 @@ const VECTOR_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 const CONTRACT_COUNT: usize = 14;
+const MAX_GURU_METRIC_POINTS_PER_UNIT: usize = 128;
 const GURU_FORMAT: &str = "krw-guru-workflow-contract-export/v1";
 const CONFORMANCE_FORMAT: &str = "krw-guru-workflow-contract-conformance/v1";
 const RESEARCH_PACK_FORMAT: &str = "krw-guru-research-pack/v1";
@@ -537,7 +538,7 @@ pub struct GuruEvidenceSource {
     pub object_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GuruCompanyEvidenceUnit {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -559,10 +560,18 @@ pub struct GuruCompanyEvidenceUnit {
     pub directness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_grade: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metric_points: Vec<Value>,
     pub source: GuruEvidenceSource,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GuruCompanyResearchContext {
     pub format: String,
@@ -1946,9 +1955,22 @@ pub fn build_company_research_context(
                 "summary",
                 "directness",
                 "evidence_grade",
+                "metric",
+                "unit",
+                "currency",
             ] {
                 if let Some(Value::String(value)) = object.get(field) {
                     projected.insert(field.to_owned(), Value::String(value.clone()));
+                }
+            }
+            if let Some(metric_points) = object.get("metric_points").and_then(Value::as_array) {
+                let bounded = metric_points
+                    .iter()
+                    .take(MAX_GURU_METRIC_POINTS_PER_UNIT)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !bounded.is_empty() {
+                    projected.insert("metric_points".into(), Value::Array(bounded));
                 }
             }
             projected.insert(

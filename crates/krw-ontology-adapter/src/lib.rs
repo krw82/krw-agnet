@@ -714,6 +714,18 @@ pub fn map_research_state(
             128,
             "filing_evidence",
         );
+        let mut source_object_ids = Vec::new();
+        let mut source_seen = BTreeSet::new();
+        if let Some(object_id) = &unit.object_id
+            && source_seen.insert(object_id.clone())
+        {
+            source_object_ids.push(object_id.clone());
+        }
+        for object_id in &unit.source.object_ids {
+            if source_seen.insert(object_id.clone()) {
+                source_object_ids.push(object_id.clone());
+            }
+        }
         let mut facts = Vec::new();
         if unit.metric_points.is_empty() {
             facts.push(NormalizedFact {
@@ -769,6 +781,7 @@ pub fn map_research_state(
             supports: unit.supports_clause_ids.clone(),
             refutes: Vec::new(),
             qualifies: Vec::new(),
+            source_object_ids,
         };
         ensure_record_bound(&record)?;
         records.push(record);
@@ -1034,6 +1047,7 @@ fn supplemental_record(
         supports: Vec::new(),
         refutes: Vec::new(),
         qualifies: Vec::new(),
+        source_object_ids: Vec::new(),
     };
     ensure_record_bound(&record)?;
     Ok(record)

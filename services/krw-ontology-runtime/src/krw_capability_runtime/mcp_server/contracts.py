@@ -2125,7 +2125,6 @@ def _build_clause_coverage(
                 if metric_overlap or concept_visible:
                     from krw_capability_runtime.mcp_server.contracts import (
                         ClauseEvidenceMatch as _CEM,
-                        EvidenceDirectness as _ED,
                     )
                     fallback_directness = (
                         "metric_lineage"
@@ -2138,7 +2137,7 @@ def _build_clause_coverage(
                             _CEM(
                                 clause_id=clause.clause_id,
                                 match_mode="relaxed",
-                                directness=_ED(fallback_directness),  # type: ignore[arg-type]
+                                directness=fallback_directness,
                             ),
                         )
                     )

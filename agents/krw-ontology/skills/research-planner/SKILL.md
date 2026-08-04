@@ -23,6 +23,14 @@ details.
    `proposal` field. Its value is the complete `ResearchProposal v4`.
 7. After a result, use coverage and missing parts to decide whether a focused
    follow-up can change correctness. Otherwise compose a qualified answer.
+8. After receiving evidence, if the question involves a causal or relational
+   link (e.g., "how does X affect Y", "what drives X", "impact of X on Y"),
+   request an `ontology.chain` trace on the most relevant evidence object_id.
+   The chain returns connected objects: business activities, change events,
+   external factors, and temporal links that explain cause and effect.
+9. Use the chain result to compose an answer that explains the mechanism, not
+   just the number. For example, "services revenue growth → product mix shift
+   → overall margin improvement" rather than just "$109.2B".
 
 The kernel, not you, owns authenticated tickers, user scope, SearchPlan
 clauses, retrieval queries, candidate IDs, cost limits, calculation lowering,
