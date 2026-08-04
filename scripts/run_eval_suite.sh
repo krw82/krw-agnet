@@ -96,6 +96,20 @@ for i in "${!QUESTIONS[@]}"; do
   printf '  → %s (%ds)\n' "$STATUS" "$ELAPSED" | tee -a "$SUMMARY_FILE"
   printf '  미리보기: %s...\n' "${PREVIEW:0:120}" | tee -a "$SUMMARY_FILE"
 
+  # 정확도 채점 (state=final인 경우만)
+  if [[ "$STATUS" == "PASS" ]]; then
+    QID=$(printf 'q%d' "$num")
+    ACC_RESULT=$(python3 "$krw_root/scripts/grade_numeric_accuracy.py" \
+      "$OUTPUT_FILE" --question-id "$QID" 2>&1)
+    ACC_LINE=$(echo "$ACC_RESULT" | grep "^정확도:")
+    if [[ -n "$ACC_LINE" ]]; then
+      printf '  정확도: %s\n' "$ACC_LINE" | tee -a "$SUMMARY_FILE"
+      echo "$ACC_RESULT" | grep -E "^  [✅❌]" | while IFS= read -r line; do
+        printf '    %s\n' "$line" | tee -a "$SUMMARY_FILE" >/dev/null
+      done
+    fi
+  fi
+
   # 요약 파일에 전체 답변 저장은 별도 파일에 있음
   printf '  결과 파일: %s\n' "$OUTPUT_FILE" | tee -a "$SUMMARY_FILE"
 done

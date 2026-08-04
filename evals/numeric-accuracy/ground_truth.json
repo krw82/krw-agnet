@@ -1,0 +1,146 @@
+{
+  "description": "Ground truth numeric values for eval scoring. Values sourced from metric_observations.jsonl (krw-ontology-data releases). tolerance_pct is relative error allowed (e.g. 5 = 5%). Percent metrics (gross_margin, operating_margin, net_margin, revenue_growth, eps) use tolerance_pct=15 because they are rounded to integer percentages in the source.",
+  "questions": [
+    {
+      "id": "q1", "ticker": "AAPL", "difficulty": "easy",
+      "question": "애플의 2024년 매출은 얼마야?",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 391035000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q2", "ticker": "AAPL", "difficulty": "medium",
+      "question": "애플의 2024 회계연도 순이익과 전년 대비 변화를 알려줘.",
+      "expected_metrics": [
+        {"metric": "net_income", "fiscal_year": 2024, "value": 93736000000, "unit": "USD", "tolerance_pct": 3},
+        {"metric": "net_income", "fiscal_year": 2023, "value": 96995000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q3", "ticker": "AAPL", "difficulty": "hard",
+      "question": "애플의 매출총이익률 추이와 그 원인을 분석해줘.",
+      "expected_metrics": [
+        {"metric": "gross_margin", "fiscal_year": 2024, "value": 46, "unit": "percent", "tolerance_pct": 15},
+        {"metric": "gross_margin", "fiscal_year": 2023, "value": 44, "unit": "percent", "tolerance_pct": 15}
+      ]
+    },
+    {
+      "id": "q4", "ticker": "MSFT", "difficulty": "easy",
+      "question": "마이크로소프트 2024년 영업이익은?",
+      "expected_metrics": [
+        {"metric": "operating_income", "fiscal_year": 2024, "value": 109433000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q5", "ticker": "MSFT", "difficulty": "medium",
+      "question": "마이크로소프트의 연구개발비 증가율과 매출 성장의 관계를 설명해줘.",
+      "expected_metrics": [
+        {"metric": "research_and_development", "fiscal_year": 2024, "value": 29510000000, "unit": "USD", "tolerance_pct": 3},
+        {"metric": "revenue", "fiscal_year": 2024, "value": 245122000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q6", "ticker": "MSFT", "difficulty": "hard",
+      "question": "마이크로소프트의 자산 부채 비율 변화와 재무 건전성을 분석해줘.",
+      "expected_metrics": [
+        {"metric": "total_assets", "fiscal_year": 2024, "value": 512163000000, "unit": "USD", "tolerance_pct": 5},
+        {"metric": "total_liabilities", "fiscal_year": 2024, "value": 243686000000, "unit": "USD", "tolerance_pct": 5}
+      ]
+    },
+    {
+      "id": "q7", "ticker": "GOOGL", "difficulty": "easy",
+      "question": "알파벳의 2024년 총수익은 얼마야?",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 350018000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q8", "ticker": "GOOGL", "difficulty": "medium",
+      "question": "알파벳의 영업이익률이 전년 대비 어떻게 변했어?",
+      "expected_metrics": [
+        {"metric": "operating_margin", "fiscal_year": 2024, "value": 32, "unit": "percent", "tolerance_pct": 15},
+        {"metric": "operating_margin", "fiscal_year": 2023, "value": 27, "unit": "percent", "tolerance_pct": 15}
+      ]
+    },
+    {
+      "id": "q9", "ticker": "GOOGL", "difficulty": "hard",
+      "question": "알파벳의 자본적 지출 증가와 클라우드 성장의 관계를 분석해줘.",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 350018000000, "unit": "USD", "tolerance_pct": 5}
+      ]
+    },
+    {
+      "id": "q10", "ticker": "NVDA", "difficulty": "easy",
+      "question": "엔비디아 2024 회계연도 매출은?",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 60922000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q11", "ticker": "NVDA", "difficulty": "medium",
+      "question": "엔비디아의 매출 성장률이 얼마나 되고 왜 그런지 설명해줘.",
+      "expected_metrics": [
+        {"metric": "revenue_growth", "fiscal_year": 2025, "value": 114, "unit": "percent", "tolerance_pct": 20},
+        {"metric": "revenue", "fiscal_year": 2025, "value": 130497000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q12", "ticker": "NVDA", "difficulty": "hard",
+      "question": "엔비디아의 순이익률 급증 원인과 지속 가능성을 분석해줘.",
+      "expected_metrics": [
+        {"metric": "net_margin", "fiscal_year": 2025, "value": 56, "unit": "percent", "tolerance_pct": 15}
+      ]
+    },
+    {
+      "id": "q13", "ticker": "TSLA", "difficulty": "easy",
+      "question": "테슬라 2024년 매출은 얼마야?",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 97690000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q14", "ticker": "TSLA", "difficulty": "medium",
+      "question": "테슬라의 영업이익률 변화 추이를 분석해줘.",
+      "expected_metrics": [
+        {"metric": "operating_margin", "fiscal_year": 2024, "value": 7, "unit": "percent", "tolerance_pct": 30},
+        {"metric": "operating_margin", "fiscal_year": 2023, "value": 9, "unit": "percent", "tolerance_pct": 30}
+      ]
+    },
+    {
+      "id": "q15", "ticker": "TSLA", "difficulty": "hard",
+      "question": "테슬라의 자유현금흐름과 재무 투자 전략을 분석해줘.",
+      "expected_metrics": [
+        {"metric": "operating_cash_flow", "fiscal_year": 2024, "value": 14923000000, "unit": "USD", "tolerance_pct": 5}
+      ]
+    },
+    {
+      "id": "q16", "ticker": "AMZN", "difficulty": "easy",
+      "question": "아마존 2024년 순이익은?",
+      "expected_metrics": [
+        {"metric": "net_income", "fiscal_year": 2024, "value": 59248000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q17", "ticker": "AMZN", "difficulty": "medium",
+      "question": "아마존의 매출 성장과 영업비용 증가율을 비교해줘.",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 637959000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q18", "ticker": "META", "difficulty": "easy",
+      "question": "메타 2024년 총수익은?",
+      "expected_metrics": [
+        {"metric": "revenue", "fiscal_year": 2024, "value": 164501000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    },
+    {
+      "id": "q19", "ticker": "META", "difficulty": "medium",
+      "question": "메타의 연구개발 투자와 매출 성장의 관계를 분석해줘.",
+      "expected_metrics": [
+        {"metric": "research_and_development", "fiscal_year": 2024, "value": 43873000000, "unit": "USD", "tolerance_pct": 3},
+        {"metric": "revenue", "fiscal_year": 2024, "value": 164501000000, "unit": "USD", "tolerance_pct": 3}
+      ]
+    }
+  ]
+}
