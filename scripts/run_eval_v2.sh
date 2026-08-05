@@ -89,7 +89,7 @@ PY
       set -e
       ACC_LINE=$(echo "$ACC" | grep "^정확도:" || true)
       if [[ -n "$ACC_LINE" ]]; then
-        printf '  정확도: %s\n' "$ACC_LINE" | tee -a "$SUMMARY_FILE"
+        printf '  %s\n' "$ACC_LINE" | tee -a "$SUMMARY_FILE"
       fi
       if [[ $ACC_EXIT -eq 0 ]]; then
         STATUS="PASS"
