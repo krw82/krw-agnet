@@ -456,7 +456,7 @@ workflows:
       - { id: author_plan, kind: plan, role_id: planner, max_visits: 1 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: planner, max_visits: 1 }
-      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
       - { id: ingest_evidence, kind: ingest, max_visits: 3 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
@@ -487,8 +487,8 @@ workflows:
       - { from: assess_obligations, on: evidence_sufficient, to: compose_ir }
       - { from: assess_obligations, on: no_positive_value_action, to: compose_ir }
       - { from: assess_obligations, on: output_budget_reserved, to: compose_ir }
-      - { from: targeted_query, on: evidence_observed, to: compose_ir }
-      - { from: trace_selected, on: evidence_observed, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
@@ -504,7 +504,7 @@ workflows:
       - { id: author_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
-      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 1 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
       - { id: ingest_evidence, kind: ingest, max_visits: 3 }
       - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 3 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
@@ -536,8 +536,8 @@ workflows:
       - { from: reconcile_periods_and_commentary, on: external_input_required, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: no_positive_value_action, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: output_budget_reserved, to: compose_ir }
-      - { from: targeted_query, on: evidence_observed, to: compose_ir }
-      - { from: trace_selected, on: evidence_observed, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: classify_thesis_change, on: classified, to: compose_ir }
       - { from: classify_thesis_change, on: output_budget_reserved, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }

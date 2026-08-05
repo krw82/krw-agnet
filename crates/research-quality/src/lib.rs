@@ -201,6 +201,7 @@ pub struct ProviderMessageShapeReport {
 /// assessed separately after the deterministic planner lowers this proposal.
 #[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ToolArgumentShapeReport {
     pub provider_tool_name: String,
     /// Whether the provider tool exposes a declared `proposal` envelope whose
@@ -467,7 +468,7 @@ where
 /// path used by a live quality case. This is the hermetic regression gate: it
 /// verifies the typed `DeepSeek` wire, `ResearchProposal → SearchPlan` lowering,
 /// direct-root capability call, evidence ingestion, the Markdown output
-/// boundary, EvidenceLedger receipt binding, and final commit without a
+/// boundary, `EvidenceLedger` receipt binding, and final commit without a
 /// credential or a network request.
 pub async fn run_recorded_fixture_case(
     root: &Path,

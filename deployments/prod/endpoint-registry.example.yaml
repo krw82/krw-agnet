@@ -1,0 +1,33 @@
+schema_version: 1
+registry_id: production-runtime
+# PRODUCTION TEMPLATE. Differences from deployments/local/endpoint-registry.example.yaml:
+#   - origin: real public host (MUST-REPLACE: https://REPLACE_WITH_PROD_ORIGIN)
+#   - tls_profile: system-plus-pinned-ca-v1 (with a required tls_ca_pem_env)
+# Each endpoint requires a PEM CA bundle env var when tls_profile is
+# system-plus-pinned-ca-v1. Replace REPLACE_WITH_CA_PEM_ENV_VAR_NAME with the
+# real uppercase env var name that holds the pinned CA PEM for that endpoint.
+endpoints:
+  - endpoint_ref: krw-ontology-local
+    url_env: KRW_ONTOLOGY_MCP_URL
+    readiness_url_env: KRW_ONTOLOGY_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://REPLACE_WITH_PROD_ORIGIN
+    credential_version: public-v1
+    tls_profile: system-plus-pinned-ca-v1
+    tls_ca_pem_env: REPLACE_WITH_CA_PEM_ENV_VAR_NAME
+  - endpoint_ref: krw-feed-local
+    url_env: KRW_FEED_MCP_URL
+    readiness_url_env: KRW_FEED_MCP_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://REPLACE_WITH_PROD_ORIGIN
+    credential_version: feed-service-v1
+    tls_profile: system-plus-pinned-ca-v1
+    tls_ca_pem_env: REPLACE_WITH_CA_PEM_ENV_VAR_NAME
+  - endpoint_ref: krw-filings-local
+    url_env: KRW_FILINGS_MCP_URL
+    readiness_url_env: KRW_FILINGS_MCP_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://REPLACE_WITH_PROD_ORIGIN
+    credential_version: filings-service-v1
+    tls_profile: system-plus-pinned-ca-v1
+    tls_ca_pem_env: REPLACE_WITH_CA_PEM_ENV_VAR_NAME

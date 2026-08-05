@@ -747,24 +747,57 @@ impl McpHttpClient {
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let _permit = self.acquire().await?;
-        let id = format!("request-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        let request = SensitiveJson(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        }));
-        let outcome = post_message(
-            &self.http,
-            &self.endpoint,
-            &self.protocol_version,
-            self.session_id.as_ref(),
-            &request.0,
-            Some(&id),
-            self.timeout,
-            self.max_response_bytes,
-        )
-        .await?;
+        // Bounded retry over the JSON-RPC POST for retryable transport failures
+        // only. A fresh JSON-RPC `id` (and request envelope) is minted on every
+        // attempt: retryable errors such as `MissingStreamResponse` and
+        // `IncompleteSse` occur *after* the server has observed the prior id, so
+        // reusing it would risk duplicate dispatch against non-idempotent tools
+        // or a spurious `ResponseIdMismatch`. On exhaustion the final error is
+        // propagated to the caller via `?`.
+        let max_attempts = 3u32;
+        let mut attempt = 0u32;
+        let outcome = loop {
+            let id = format!("request-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+            let request = SensitiveJson(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params,
+            }));
+            match post_message(
+                &self.http,
+                &self.endpoint,
+                &self.protocol_version,
+                self.session_id.as_ref(),
+                &request.0,
+                Some(&id),
+                self.timeout,
+                self.max_response_bytes,
+            )
+            .await
+            {
+                Ok(outcome) => break outcome,
+                Err(error) => {
+                    if attempt + 1 >= max_attempts || !error.is_retryable() {
+                        return Err(error);
+                    }
+                }
+            }
+            attempt += 1;
+            // Bounded exponential backoff, base 500ms, capped at 8s. The delay
+            // is base * permille where permille is a deterministic function of
+            // `attempt` in [750, 1250]; this is a deterministic spread around
+            // the exponential base rather than AWS-style full-jitter
+            // (uniform(0, base)). Concurrent callers are desynchronized by
+            // wall-clock arrival and the per-model in-flight semaphore, so the
+            // deterministic spread still breaks synchronization in practice.
+            let base = 500_u64 * (1_u64 << attempt.min(4));
+            let base = base.min(8_000);
+            let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
+            let delay =
+                Duration::from_millis((base.saturating_mul(permille) / 1_000).clamp(1, 8_000));
+            tokio::time::sleep(delay).await;
+        };
         response_result(outcome.response.ok_or(McpError::MissingStreamResponse)?)
     }
 

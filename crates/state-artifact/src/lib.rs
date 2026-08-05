@@ -326,7 +326,7 @@ pub enum ModelOutputMode {
     /// contract. No capability or transition function is exposed.
     TypedJson,
     /// The provider must return one user-facing Markdown document. The
-    /// kernel-owned EvidenceLedger remains attached to the same final commit,
+    /// kernel-owned `EvidenceLedger` remains attached to the same final commit,
     /// but the model is not forced to serialize its prose into a claim IR.
     /// No capability or transition function is exposed.
     Markdown,
@@ -469,14 +469,9 @@ impl StateOperation {
             (
                 Self::ModelDecision { .. },
                 ArtifactProducer::Kernel {
-                    reason: KernelArtifactReason::RejectedModelCapabilityProposal,
-                    ..
-                },
-            ) => true,
-            (
-                Self::ModelDecision { .. },
-                ArtifactProducer::Kernel {
-                    reason: KernelArtifactReason::OutputBudgetReserved,
+                    reason:
+                        KernelArtifactReason::RejectedModelCapabilityProposal
+                        | KernelArtifactReason::OutputBudgetReserved,
                     ..
                 },
             ) => true,

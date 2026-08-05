@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,10 +12,11 @@ use krw_agent_artifact_store::{
 };
 use krw_agent_capability_runtime::{McpToolTransport, PooledMcpTransport};
 use krw_agent_image::load_image_set;
-use krw_agent_persistence::agent_v1::AgentV1Client;
+use krw_agent_persistence::agent_v1::{AgentV1Client, AgentV1Procedure, JsonProcedureExecutor};
 use krw_agent_persistence::daemon::{
     AgentV1Store, ClaimedRunExecutor, RecoveryArtifactStore, RunSupervisor, RunWorkerConfig,
 };
+use krw_agent_persistence::metrics;
 use krw_agent_persistence::postgres::{
     PostgresJsonExecutor, PostgresPoolOptions, ProcessEnvironmentDatabaseSecrets,
 };
@@ -116,6 +118,14 @@ struct Args {
     mcp_pool_entries: usize,
     #[arg(long, default_value_t = 16)]
     max_active_runs: usize,
+    /// Minimum age, in days, before a terminal run becomes eligible for the
+    /// hourly row-retention reaper. 0 disables cleanup.
+    #[arg(long, default_value_t = 30)]
+    retention_days: u32,
+    /// Address (ip:port) for the Prometheus `/metrics` scrape endpoint.
+    /// Disabled unless a bind address is supplied.
+    #[arg(long)]
+    metrics_bind: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -240,6 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_id
         .clone()
         .ok_or(StartupError::MissingLiveSetting("worker_id"))?;
+    let retention_worker_id = worker_id.clone();
     let artifact_root = args
         .artifact_root
         .as_deref()
@@ -303,9 +314,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         signal_shutdown.cancel();
     });
+    let cleanup_task = if args.retention_days > 0 {
+        let cleanup_client = Arc::clone(&client);
+        let cleanup_shutdown = shutdown.clone();
+        let retention_days = args.retention_days;
+        Some(tokio::spawn(async move {
+            run_retention_reaper(
+                cleanup_client,
+                retention_worker_id,
+                retention_days,
+                cleanup_shutdown,
+            )
+            .await;
+        }))
+    } else {
+        None
+    };
+    // Initialize the shared Prometheus registry so collectors exist even before
+    // the first scrape, then optionally serve /metrics.
+    let registry = metrics::registry();
+    let metrics_task = match args.metrics_bind.as_deref().map(parse_bind_address) {
+        Some(Ok(bind)) => {
+            info!(%bind, "Prometheus /metrics endpoint enabled");
+            Some(spawn_metrics_server(bind, registry))
+        }
+        Some(Err(error)) => {
+            warn!(bind = ?args.metrics_bind, error = %error, "invalid --metrics-bind address; /metrics disabled");
+            None
+        }
+        None => {
+            info!("--metrics-bind not supplied; /metrics endpoint disabled");
+            None
+        }
+    };
     let result = supervisor.run(shutdown.clone()).await;
     shutdown.cancel();
     signal_task.abort();
+    if let Some(task) = cleanup_task {
+        task.abort();
+    }
+    if let Some(task) = metrics_task {
+        task.abort();
+    }
     result?;
     let pool_stats = mcp_pool.stats().await;
     info!(
@@ -629,6 +679,164 @@ async fn shutdown_signal() -> Result<(), std::io::Error> {
 #[cfg(not(unix))]
 async fn shutdown_signal() -> Result<(), std::io::Error> {
     tokio::signal::ctrl_c().await
+}
+
+/// Periodically reaps terminal runs older than the retention cutoff. Runs once
+/// shortly after startup and then on an hourly cadence until the shutdown token
+/// is cancelled. Failures are logged and never abort the daemon: the reaper is
+/// best-effort background hygiene and the next tick will retry.
+async fn run_retention_reaper(
+    client: Arc<AgentV1Client<PostgresJsonExecutor>>,
+    worker_id: String,
+    retention_days: u32,
+    shutdown: CancellationToken,
+) {
+    use tokio::time::{Duration, interval};
+    #[allow(
+        clippy::duration_suboptimal_units,
+        reason = "std Duration has no from_hours"
+    )]
+    const REAPER_PERIOD: Duration = Duration::from_secs(60 * 60);
+    const REAPER_MAX_RUNS: u64 = 1000;
+    let request = serde_json::json!({
+        "abi_version": krw_agent_persistence::agent_v1::ABI_VERSION,
+        "worker_id": worker_id,
+        "retention_days": retention_days,
+        "max_runs": REAPER_MAX_RUNS,
+    });
+    let mut ticker = interval(REAPER_PERIOD);
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            _ = ticker.tick() => {}
+        }
+        if shutdown.is_cancelled() {
+            break;
+        }
+        match client
+            .executor()
+            .execute_json(AgentV1Procedure::ReapRetainedRuns, request.clone())
+            .await
+        {
+            Ok(response) => {
+                let reaped = response.get("reaped").and_then(serde_json::Value::as_u64);
+                info!(
+                    reaped,
+                    retention_days, "row retention reaper completed a sweep"
+                );
+            }
+            Err(failure) => {
+                let hash = failure.diagnostic_hash;
+                warn!(
+                    diagnostic_hash = %hash,
+                    "row retention reaper sweep failed; will retry next tick"
+                );
+            }
+        }
+    }
+}
+
+/// Parse a `host:port` metrics bind string into a [`SocketAddr`].
+fn parse_bind_address(value: &str) -> Result<SocketAddr, std::net::AddrParseError> {
+    value.parse::<SocketAddr>()
+}
+
+/// Spawn a minimal HTTP server that serves the Prometheus text exposition
+/// format at `/metrics`. Any other path receives a 404. The server is
+/// intentionally tiny: no routing framework, no request body parsing.
+fn spawn_metrics_server(
+    bind: SocketAddr,
+    registry: &'static prometheus::Registry,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(bind).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                warn!(%bind, error = %error, "metrics TCP listener bind failed; /metrics disabled");
+                return;
+            }
+        };
+        info!(%bind, "Prometheus /metrics endpoint listening");
+        loop {
+            let accept = listener.accept().await;
+            let (mut socket, peer) = match accept {
+                Ok((socket, peer)) => (socket, peer),
+                Err(error) => {
+                    warn!(%error, "metrics listener accept failed");
+                    continue;
+                }
+            };
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let request_line = match read_http_request_line(&mut socket).await {
+                    Ok(line) => line,
+                    Err(error) => {
+                        warn!(%peer, error = %error, "metrics request read failed");
+                        return;
+                    }
+                };
+                let body = if request_line.starts_with("GET /metrics") {
+                    let metric_families = registry.gather();
+                    let mut buffer = String::new();
+                    let encoder = prometheus::TextEncoder::new();
+                    match encoder.encode_utf8(&metric_families, &mut buffer) {
+                        Ok(()) => buffer.into_bytes(),
+                        Err(error) => {
+                            warn!(%error, "metrics encoding failed");
+                            return;
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                let (status, content_type) = if request_line.starts_with("GET /metrics") {
+                    ("200 OK", "text/plain; version=0.0.4; charset=utf-8")
+                } else {
+                    ("404 Not Found", "text/plain; charset=utf-8")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    })
+}
+
+/// Read just enough of an HTTP/1.x request to obtain the request line. The
+/// metrics endpoint never inspects headers or bodies, so we discard everything
+/// after the first line up to a small cap.
+async fn read_http_request_line(socket: &mut tokio::net::TcpStream) -> std::io::Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut buffer = [0_u8; 1024];
+    let mut filled = 0_usize;
+    loop {
+        if filled >= buffer.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "metrics request line exceeded 1024 bytes",
+            ));
+        }
+        let read = socket.read(&mut buffer[filled..]).await?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "metrics connection closed before request line",
+            ));
+        }
+        filled += read;
+        let window = &buffer[..filled];
+        if let Some(newline) = window.iter().position(|byte| *byte == b'\n') {
+            let mut end = newline;
+            if end > 0 && buffer[end - 1] == b'\r' {
+                end -= 1;
+            }
+            return Ok(String::from_utf8_lossy(&buffer[..end]).into_owned());
+        }
+    }
 }
 
 #[cfg(test)]

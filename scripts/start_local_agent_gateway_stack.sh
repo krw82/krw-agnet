@@ -119,17 +119,9 @@ if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
     -w start >/dev/null
 fi
 
-if [[ ! -f "$krw_state_abs/migrations-v6.done" ]]; then
-  for krw_migration in \
-    migrations/0001_agent_v1.sql migrations/0002_action_finalization.sql migrations/0003_bounded_child.sql \
-    migrations/0004_session_memory.sql migrations/0005_session_memory_snapshot.sql migrations/0006_read_final_output.sql
-  do
-    PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
-      /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" \
-      -d postgres -f "$krw_root/$krw_migration" >/dev/null
-  done
-  : >"$krw_state_abs/migrations-v6.done"
-fi
+PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+  "$krw_root/scripts/apply_migrations.sh" -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
+  >/dev/null
 
 read -r krw_build krw_schema_hash krw_release_hash < <(
   (

@@ -15,8 +15,7 @@ use async_trait::async_trait;
 use krw_agent_contracts::{
     NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1,
     QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1,
-    SKILL_LOAD_V1, validate_value,
-    verify_pin,
+    SKILL_LOAD_V1, validate_value, verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{
@@ -589,18 +588,26 @@ impl McpToolTransport for PooledMcpTransport {
                     DeliveryCertainty::NotDispatched,
                 )
             })?;
-        client
-            .call_tool(tool_name, arguments)
-            .await
-            .map_err(|error| {
+        // Single dispatch attempt. The bounded transport retry lives inside
+        // `McpHttpClient::request` (one layer only) to avoid nested retry
+        // storms. Capability calls carry `DeliveryCertainty::MayHaveDispatched`
+        // because a stream-level failure can occur after the server has acted;
+        // blindly re-POSTing here would risk duplicate dispatch against the
+        // evidence ledger. The run-engine's capability recovery directive
+        // (see `model_recovery_directive`) routes retryable MayHaveDispatched
+        // failures to recovery instead of re-executing the capability.
+        match client.call_tool(tool_name, arguments).await {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
                 let retryable = retryable_mcp_error(&error);
-                mcp_failure(
+                Err(mcp_failure(
                     "mcp_call",
                     &error,
                     retryable,
                     DeliveryCertainty::MayHaveDispatched,
-                )
-            })
+                ))
+            }
+        }
     }
 }
 

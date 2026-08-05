@@ -444,8 +444,10 @@ fn fact_priority(
     // same base weight as typed values; numeric/boolean values and facts with
     // unit/period context still rank higher so quantitative lineage is kept
     // before prose when the budget is tight.
-    let has_typed_context =
-        fact.value.is_number() || fact.value.is_boolean() || fact.unit.is_some() || fact.period.is_some();
+    let has_typed_context = fact.value.is_number()
+        || fact.value.is_boolean()
+        || fact.unit.is_some()
+        || fact.period.is_some();
     let numeric_or_boolean_priority = if has_typed_context { 2 } else { 1 };
     let directness_priority = match record.directness {
         Directness::Direct => 3,

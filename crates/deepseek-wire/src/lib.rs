@@ -824,14 +824,14 @@ pub struct ChatCompletionRequest {
     pub user_id: Option<String>,
     /// Optional provider-level preference for a function call. The semantic
     /// decision contract lives in the AgentImage/state program; this field is
-    /// emitted only when the pinned DeepSeek mode explicitly supports it.
+    /// emitted only when the pinned `DeepSeek` mode explicitly supports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
 }
 
-/// Closed subset of DeepSeek's tool-choice surface used by the kernel. A
+/// Closed subset of `DeepSeek`'s tool-choice surface used by the kernel. A
 /// named function is deliberately unnecessary: autonomous assessment states
 /// must be able to choose among the image-declared action frontier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1120,13 +1120,57 @@ impl DeepSeekClient {
                 serde_json::to_string(request).unwrap_or_else(|_| "<serialize-failed>".into())
             );
         }
-        let response = self
-            .http
-            .post(&self.endpoint)
-            .timeout(self.request_timeout)
-            .json(request)
-            .send()
-            .await?;
+        let response = {
+            // Bounded retry ONLY over the dispatch of the POST request, before
+            // any response byte is consumed. A connect/timeout failure or a
+            // retryable provider status (429/500/503) is safe to re-issue
+            // because no episode output has been emitted yet; the existing
+            // status/body error mapping below still owns the final error shape.
+            let max_attempts = 3u32;
+            let mut attempt = 0u32;
+            loop {
+                match self
+                    .http
+                    .post(&self.endpoint)
+                    .timeout(self.request_timeout)
+                    .json(request)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        if status.is_success() || !matches!(status.as_u16(), 429 | 500 | 503) {
+                            break resp;
+                        }
+                        // Retryable provider status. Drop the body and retry
+                        // unless the attempt budget is exhausted; on exhaustion
+                        // fall through to the existing status handler.
+                        if attempt + 1 >= max_attempts {
+                            break resp;
+                        }
+                        drop(resp);
+                    }
+                    Err(err) => {
+                        if attempt + 1 >= max_attempts || !(err.is_connect() || err.is_timeout()) {
+                            return Err(err.into());
+                        }
+                    }
+                }
+                attempt += 1;
+                // Bounded exponential backoff, base 500ms, capped at 8s. The
+                // delay is base * permille where permille is a deterministic
+                // spread in [0.75, 1.25] derived from `attempt`; this is NOT
+                // AWS-style full-jitter (uniform(0, base)), but the
+                // per-model in-flight semaphore and wall-clock arrival
+                // desynchronize concurrent callers in practice.
+                let base = 500_u64 * (1_u64 << attempt.min(4));
+                let base = base.min(8_000);
+                let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
+                let delay =
+                    Duration::from_millis((base.saturating_mul(permille) / 1_000).clamp(1, 8_000));
+                tokio::time::sleep(delay).await;
+            }
+        };
         let status = response.status();
         if !status.is_success() {
             let mut bytes = Vec::new();
@@ -1190,15 +1234,21 @@ impl DeepSeekClient {
                             eprintln!(
                                 "[KRW_DEBUG_PROVIDER] sse data ({} bytes): {}",
                                 data.len(),
-                                if data.len() > 500 { &data[..500] } else { &data }
+                                if data.len() > 500 {
+                                    &data[..500]
+                                } else {
+                                    &data
+                                }
                             );
                         }
-                        assembler.push_chunk(serde_json::from_str(&data).map_err(|err| {
-                            if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
-                                eprintln!("[KRW_DEBUG_PROVIDER] json parse error: {err}");
-                            }
-                            WireError::Json(err)
-                        })?)?
+                        let parsed =
+                            serde_json::from_str::<ChatCompletionChunk>(&data).map_err(|err| {
+                                if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                                    eprintln!("[KRW_DEBUG_PROVIDER] json parse error: {err}");
+                                }
+                                WireError::Json(err)
+                            })?;
+                        assembler.push_chunk(parsed)?;
                     }
                     SseEvent::Done => {
                         assembler.mark_done()?;

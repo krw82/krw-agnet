@@ -24,7 +24,43 @@ SessionMemorySnapshotV3 projection checkpoints. Normal reads return the latest
 snapshot plus at most 32 newer audit deltas; the owner/fence-scoped
 `audit_rebuild` mode is reserved for healing a missing or stale checkpoint.
 Checkpoint insertion is a run-version mutation and requires the exact current
-revision/frontier. Apply all five files in lexical order.
+revision/frontier. Apply `0001` through `0005` in lexical order.
+
+`0006_read_final_output.sql` adds the host-facing `read_final_output`
+projection of a terminal run's rendered answer for callers outside the daemon.
+
+`0007_deferred_attempts_cap.sql` adds the `runs.deferred_attempts` counter and
+replaces `fail_or_defer` so the defer branch increments it and transitions to
+`failed` with `reason_code='deferred_attempts_exhausted'` once 16 defers are
+recorded. The explicit `fail` branch is unchanged. The cap binds *consecutive
+defers within a single claim lifetime*, not the cumulative lifetime total of a
+long-running run: `0010` resets the counter to 0 whenever `claim_run` freshly
+claims a non-active run (see `0010`).
+
+`0008_row_retention.sql` adds `reap_retained_runs`, a bounded reaper that
+deletes terminal runs older than a retention cutoff along with their run-owned
+child rows (mutations, provider_episodes, actions, run_state_checkpoints,
+answer_bundles, settlements, outbox, child_executions, and
+session_memory_snapshot_mutations), in FK order, capped at `max_runs` per
+invocation using `FOR UPDATE SKIP LOCKED`. Session-scoped memory projections
+(`session_memory_frontiers`, `session_memory_snapshots`, and the append-only
+`session_memory_deltas`) are intentionally preserved: they are keyed by session
+rather than run, and deltas reject deletion by trigger.
+
+`0009_migration_tracking.sql` adds the `agent_store.schema_migrations` table
+that records which migration versions have been applied, replacing the legacy
+sentinel-file mechanism. `scripts/apply_migrations.sh` consults this table to
+decide which files to run; it takes a session-level advisory lock so two
+concurrent runners cannot double-apply the same migration.
+
+`0010_claim_resets_deferred_attempts.sql` redefines `agent_v1.claim_run` so
+that freshly claiming a queued/deferred run resets
+`runs.deferred_attempts` to 0 (reclaims of an already-active run preserve the
+counter). This makes the 16-cap from `0007` a per-claim-lifetime bound on
+consecutive defers without progress, so a long-running run that legitimately
+defers across many claims does not surface a false
+`deferred_attempts_exhausted` failure. Apply `0007` through `0010` in lexical
+order after `0006`.
 
 The migration deliberately does not create deployment roles. After applying
 it as the schema owner, deployment automation should grant the daemon role

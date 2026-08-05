@@ -1,33 +1,34 @@
 BEGIN;
 
-CREATE SCHEMA agent_store;
-CREATE SCHEMA agent_v1;
+CREATE SCHEMA IF NOT EXISTS agent_store;
+CREATE SCHEMA IF NOT EXISTS agent_v1;
 
 REVOKE ALL ON SCHEMA agent_store FROM PUBLIC;
 REVOKE ALL ON SCHEMA agent_v1 FROM PUBLIC;
 
-CREATE TABLE agent_store.session_claim_locks (
+CREATE TABLE IF NOT EXISTS agent_store.session_claim_locks (
     tenant_id text NOT NULL CHECK (char_length(tenant_id) BETWEEN 1 AND 128),
     session_id text NOT NULL CHECK (char_length(session_id) BETWEEN 1 AND 128),
     PRIMARY KEY (tenant_id, session_id)
 );
 
-CREATE TABLE agent_store.fair_queue_clock (
+CREATE TABLE IF NOT EXISTS agent_store.fair_queue_clock (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     virtual_start_tag bigint NOT NULL DEFAULT 0 CHECK (virtual_start_tag >= 0)
 );
 
 INSERT INTO agent_store.fair_queue_clock(singleton, virtual_start_tag)
-VALUES (true, 0);
+VALUES (true, 0)
+ON CONFLICT (singleton) DO NOTHING;
 
-CREATE TABLE agent_store.principal_fair_queue (
+CREATE TABLE IF NOT EXISTS agent_store.principal_fair_queue (
     tenant_id text NOT NULL CHECK (char_length(tenant_id) BETWEEN 1 AND 128),
     principal_id text NOT NULL CHECK (char_length(principal_id) BETWEEN 1 AND 128),
     tail_finish_tag bigint NOT NULL DEFAULT 0 CHECK (tail_finish_tag >= 0),
     PRIMARY KEY (tenant_id, principal_id)
 );
 
-CREATE TABLE agent_store.runs (
+CREATE TABLE IF NOT EXISTS agent_store.runs (
     run_id text PRIMARY KEY CHECK (char_length(run_id) BETWEEN 1 AND 128),
     tenant_id text NOT NULL CHECK (char_length(tenant_id) BETWEEN 1 AND 128),
     principal_id text NOT NULL CHECK (char_length(principal_id) BETWEEN 1 AND 128),
@@ -64,30 +65,30 @@ CREATE TABLE agent_store.runs (
     CHECK (queue_finish_tag = queue_start_tag + 1)
 );
 
-CREATE INDEX runs_expired_active_claim_idx
+CREATE INDEX IF NOT EXISTS runs_expired_active_claim_idx
     ON agent_store.runs (lease_deadline, created_at, run_id)
     INCLUDE (tenant_id, session_id, runtime_version, agent_image_hash)
     WHERE state = 'active';
 
-CREATE INDEX runs_fair_claim_order_idx
+CREATE INDEX IF NOT EXISTS runs_fair_claim_order_idx
     ON agent_store.runs (
         queue_start_tag, queue_finish_tag, available_at, created_at, run_id
     )
     INCLUDE (tenant_id, principal_id, session_id, runtime_version, agent_image_hash)
     WHERE state IN ('queued', 'deferred');
 
-CREATE INDEX runs_fair_claim_available_idx
+CREATE INDEX IF NOT EXISTS runs_fair_claim_available_idx
     ON agent_store.runs (
         available_at, queue_start_tag, queue_finish_tag, created_at, run_id
     )
     INCLUDE (tenant_id, principal_id, session_id, runtime_version, agent_image_hash)
     WHERE state IN ('queued', 'deferred');
 
-CREATE UNIQUE INDEX runs_one_active_per_session_idx
+CREATE UNIQUE INDEX IF NOT EXISTS runs_one_active_per_session_idx
     ON agent_store.runs (tenant_id, session_id)
     WHERE state = 'active';
 
-CREATE TABLE agent_store.mutations (
+CREATE TABLE IF NOT EXISTS agent_store.mutations (
     run_id text NOT NULL REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     mutation_id text NOT NULL CHECK (char_length(mutation_id) BETWEEN 1 AND 128),
     operation text NOT NULL CHECK (char_length(operation) BETWEEN 1 AND 64),
@@ -98,7 +99,7 @@ CREATE TABLE agent_store.mutations (
     PRIMARY KEY (run_id, mutation_id)
 );
 
-CREATE TABLE agent_store.provider_episodes (
+CREATE TABLE IF NOT EXISTS agent_store.provider_episodes (
     run_id text NOT NULL REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     episode_hash text NOT NULL CHECK (episode_hash ~ '^sha256:[0-9a-f]{64}$'),
     checkpoint_seq bigint NOT NULL CHECK (checkpoint_seq >= 1),
@@ -109,7 +110,7 @@ CREATE TABLE agent_store.provider_episodes (
     UNIQUE (run_id, checkpoint_seq)
 );
 
-CREATE TABLE agent_store.actions (
+CREATE TABLE IF NOT EXISTS agent_store.actions (
     run_id text NOT NULL REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     action_key text NOT NULL CHECK (char_length(action_key) BETWEEN 1 AND 128),
     request_hash text NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -139,11 +140,11 @@ CREATE TABLE agent_store.actions (
     CHECK ((stage = 'ambiguous') = (ambiguous_reason_code IS NOT NULL))
 );
 
-CREATE INDEX actions_recovery_idx
+CREATE INDEX IF NOT EXISTS actions_recovery_idx
     ON agent_store.actions (run_id, stage)
     WHERE stage IN ('begun', 'observed', 'ambiguous');
 
-CREATE TABLE agent_store.run_state_checkpoints (
+CREATE TABLE IF NOT EXISTS agent_store.run_state_checkpoints (
     run_id text PRIMARY KEY REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     state_hash text NOT NULL CHECK (state_hash ~ '^sha256:[0-9a-f]{64}$'),
     state_artifact_ref text NOT NULL
@@ -158,7 +159,7 @@ CREATE TABLE agent_store.run_state_checkpoints (
     committed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE TABLE agent_store.answer_bundles (
+CREATE TABLE IF NOT EXISTS agent_store.answer_bundles (
     run_id text PRIMARY KEY REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     answer_bundle_hash text NOT NULL
         CHECK (answer_bundle_hash ~ '^sha256:[0-9a-f]{64}$'),
@@ -170,14 +171,14 @@ CREATE TABLE agent_store.answer_bundles (
     committed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE TABLE agent_store.settlements (
+CREATE TABLE IF NOT EXISTS agent_store.settlements (
     run_id text PRIMARY KEY REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     settlement_kind text NOT NULL CHECK (settlement_kind IN ('settled', 'released')),
     settlement_payload jsonb NOT NULL,
     committed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE TABLE agent_store.outbox (
+CREATE TABLE IF NOT EXISTS agent_store.outbox (
     outbox_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id text NOT NULL REFERENCES agent_store.runs(run_id) ON DELETE RESTRICT,
     event_kind text NOT NULL CHECK (char_length(event_kind) BETWEEN 1 AND 128),
@@ -194,11 +195,11 @@ CREATE TABLE agent_store.outbox (
     UNIQUE (event_kind, dedupe_key)
 );
 
-CREATE INDEX outbox_pending_idx
+CREATE INDEX IF NOT EXISTS outbox_pending_idx
     ON agent_store.outbox (outbox_id)
     WHERE delivered_at IS NULL;
 
-CREATE FUNCTION agent_store.assert_request(
+CREATE OR REPLACE FUNCTION agent_store.assert_request(
     p_request jsonb,
     p_allowed text[],
     p_required text[]
@@ -232,7 +233,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.assert_hash(p_value text) RETURNS void
+CREATE OR REPLACE FUNCTION agent_store.assert_hash(p_value text) RETURNS void
 LANGUAGE plpgsql
 IMMUTABLE
 SET search_path = pg_catalog
@@ -244,7 +245,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.advance_action_frontier(
+CREATE OR REPLACE FUNCTION agent_store.advance_action_frontier(
     p_current_hash text,
     p_mutation_hash text
 ) RETURNS text
@@ -267,7 +268,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.request_bigint(
+CREATE OR REPLACE FUNCTION agent_store.request_bigint(
     p_request jsonb,
     p_key text,
     p_min bigint,
@@ -296,7 +297,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.request_boolean(p_request jsonb, p_key text) RETURNS boolean
+CREATE OR REPLACE FUNCTION agent_store.request_boolean(p_request jsonb, p_key text) RETURNS boolean
 LANGUAGE plpgsql
 IMMUTABLE
 SET search_path = pg_catalog
@@ -309,7 +310,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.assert_text(
+CREATE OR REPLACE FUNCTION agent_store.assert_text(
     p_request jsonb,
     p_key text,
     p_max_length integer
@@ -326,7 +327,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.assert_json_size(
+CREATE OR REPLACE FUNCTION agent_store.assert_json_size(
     p_value jsonb,
     p_max_bytes integer
 ) RETURNS void
@@ -341,7 +342,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.allocate_fair_queue_tag(
+CREATE OR REPLACE FUNCTION agent_store.allocate_fair_queue_tag(
     p_tenant_id text,
     p_principal_id text
 ) RETURNS TABLE(queue_start_tag bigint, queue_finish_tag bigint)
@@ -394,7 +395,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.replay_mutation(
+CREATE OR REPLACE FUNCTION agent_store.replay_mutation(
     p_run_id text,
     p_mutation_id text,
     p_operation text,
@@ -423,7 +424,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_store.record_mutation(
+CREATE OR REPLACE FUNCTION agent_store.record_mutation(
     p_run_id text,
     p_mutation_id text,
     p_operation text,
@@ -443,7 +444,7 @@ AS $$
     );
 $$;
 
-CREATE FUNCTION agent_v1.enqueue_run(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.enqueue_run(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -539,7 +540,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.claim_run(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.claim_run(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -708,7 +709,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.renew_lease(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.renew_lease(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -776,7 +777,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.checkpoint_episode(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.checkpoint_episode(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -867,7 +868,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.checkpoint_run_state(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.checkpoint_run_state(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1005,7 +1006,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.begin_action(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.begin_action(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1122,7 +1123,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.observe_action(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.observe_action(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1193,7 +1194,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.commit_action(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.commit_action(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1257,7 +1258,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.mark_action_ambiguous(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.mark_action_ambiguous(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1328,7 +1329,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.commit_final(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.commit_final(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1437,7 +1438,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.request_cancel(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.request_cancel(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1500,7 +1501,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.fail_or_defer(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.fail_or_defer(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1602,7 +1603,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.claim_outbox(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.claim_outbox(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1650,7 +1651,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.ack_outbox(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.ack_outbox(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, agent_store
@@ -1700,7 +1701,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION agent_v1.read_committed_outcome(p_request jsonb) RETURNS jsonb
+CREATE OR REPLACE FUNCTION agent_v1.read_committed_outcome(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER

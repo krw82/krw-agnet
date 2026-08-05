@@ -22,6 +22,7 @@ use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
 use krw_context_planner::ContextPlanner;
 use serde_json::json;
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 
 use crate::{
@@ -83,6 +84,7 @@ pub enum ProviderCatalogError {
 /// the same base share one HTTP/2 connection pool and authorization header.
 pub struct DeepSeekProviderCatalog {
     by_model: BTreeMap<String, Arc<DeepSeekClient>>,
+    permits_by_model: BTreeMap<String, Arc<Semaphore>>,
 }
 
 impl DeepSeekProviderCatalog {
@@ -102,6 +104,7 @@ impl DeepSeekProviderCatalog {
     ) -> Result<Arc<Self>, ProviderCatalogError> {
         let mut by_base = BTreeMap::<String, BTreeSet<String>>::new();
         let mut seen = BTreeSet::new();
+        let mut max_in_flight_by_model = BTreeMap::<String, u16>::new();
         for model in models {
             if model.api_version != "chat-completions-v1" {
                 return Err(ProviderCatalogError::ApiVersion);
@@ -109,6 +112,7 @@ impl DeepSeekProviderCatalog {
             if !seen.insert(model.model_id.clone()) {
                 return Err(ProviderCatalogError::Duplicate);
             }
+            max_in_flight_by_model.insert(model.model_id.clone(), model.max_in_flight);
             by_base
                 .entry(model.api_base.clone())
                 .or_default()
@@ -121,6 +125,7 @@ impl DeepSeekProviderCatalog {
             return Err(ProviderCatalogError::ModelInventory);
         }
         let mut by_model = BTreeMap::new();
+        let mut permits_by_model = BTreeMap::new();
         for (api_base, models) in by_base {
             let client = Arc::new(
                 DeepSeekClient::new(
@@ -130,16 +135,44 @@ impl DeepSeekProviderCatalog {
                 .map_err(|_| ProviderCatalogError::Client)?,
             );
             for model in models {
-                if by_model.insert(model, Arc::clone(&client)).is_some() {
+                if by_model
+                    .insert(model.clone(), Arc::clone(&client))
+                    .is_some()
+                {
                     return Err(ProviderCatalogError::Duplicate);
                 }
+                let permits = max_in_flight_by_model
+                    .get(&model)
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1) as usize;
+                permits_by_model.insert(model, Arc::new(Semaphore::new(permits)));
             }
         }
-        Ok(Arc::new(Self { by_model }))
+        Ok(Arc::new(Self {
+            by_model,
+            permits_by_model,
+        }))
     }
 
     fn exact(&self, model: &str) -> Option<Arc<DeepSeekClient>> {
         self.by_model.get(model).cloned()
+    }
+
+    /// Acquires an in-flight permit for `model_id`, bounding concurrent
+    /// provider episodes per model to the descriptor's `max_in_flight`. The
+    /// returned RAII permit releases the slot when dropped.
+    pub async fn acquire_permit(
+        &self,
+        model_id: &str,
+    ) -> Result<OwnedSemaphorePermit, RunExecutionFailure> {
+        let semaphore = self
+            .permits_by_model
+            .get(model_id)
+            .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
+        semaphore.clone().acquire_owned().await.map_err(|_| {
+            RunExecutionFailure::deferred("provider_in_flight_saturated", Duration::from_secs(1))
+        })
     }
 }
 
@@ -148,6 +181,14 @@ impl fmt::Debug for DeepSeekProviderCatalog {
         formatter
             .debug_struct("DeepSeekProviderCatalog")
             .field("models", &self.by_model.keys().collect::<Vec<_>>())
+            .field(
+                "permits",
+                &self
+                    .permits_by_model
+                    .iter()
+                    .map(|(k, v)| (k, v.available_permits()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
             .field("authorization", &"[REDACTED]")
             .finish()
     }
@@ -359,6 +400,13 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             .providers
             .exact(&validated.snapshot().resolved_model)
             .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
+        // Bound concurrent provider episodes for this model to its declared
+        // `max_in_flight`. The permit is released when it drops at scope exit,
+        // which is always after `execution` resolves or is cancelled.
+        let _provider_permit = self
+            .providers
+            .acquire_permit(&validated.snapshot().resolved_model)
+            .await?;
         let persistence = Arc::new(
             DurableRunPersistence::new(
                 Arc::clone(&self.store),

@@ -16,6 +16,7 @@ mod bounded_child;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1386,7 +1387,21 @@ where
         }
     }
 
-    pub async fn run(&self, input: RunInput<'_>) -> Result<RunOutcome, EngineError> {
+    pub fn run<'a>(
+        &'a self,
+        input: RunInput<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<RunOutcome, EngineError>> + Send + 'a>> {
+        Box::pin(self.run_inner(input))
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            run_id = %input.request.run_id,
+            tenant_id = %input.request.tenant_id,
+        )
+    )]
+    async fn run_inner(&self, input: RunInput<'_>) -> Result<RunOutcome, EngineError> {
         validate_input(&input, &self.config)?;
         evaluate_admission_rules(input.image, input.request)?;
         let program = ProgramRuntime::compile(input.image, input.request)?;
@@ -1463,30 +1478,36 @@ where
                 bounded_child::ensure_can_continue(receipt, recovered_pending.is_some())?;
             }
             state.reserve_provider_turn()?;
-            let messages = if child_policy.is_some() {
-                Vec::new()
-            } else {
-                std::mem::take(&mut state.messages)
-            };
-            let mut built = build_provider_request(&input, &state, &self.config, messages)?;
-            if let (Some(policy), Some(inputs), Some(receipt)) =
-                (&child_policy, &child_inputs, child_receipt.as_ref())
-            {
-                let usage = bounded_child::usage(receipt, &state)?;
-                bounded_child::isolate_request(
-                    &mut built,
-                    input.image,
-                    &state,
-                    policy,
-                    inputs,
-                    &usage,
+            let turn_span = tracing::info_span!("turn", turn = state.usage.provider_turns);
+            let built = turn_span.in_scope(|| -> Result<_, EngineError> {
+                tracing::debug!("provider turn began");
+                let messages = if child_policy.is_some() {
+                    Vec::new()
+                } else {
+                    std::mem::take(&mut state.messages)
+                };
+                let mut built = build_provider_request(&input, &state, &self.config, messages)?;
+                if let (Some(policy), Some(inputs), Some(receipt)) =
+                    (&child_policy, &child_inputs, child_receipt.as_ref())
+                {
+                    let usage = bounded_child::usage(receipt, &state)?;
+                    bounded_child::isolate_request(
+                        &mut built,
+                        input.image,
+                        &state,
+                        policy,
+                        inputs,
+                        &usage,
+                    )?;
+                }
+                state.record_prompt_assembly(
+                    built.tool_definitions.clone(),
+                    built.episode_context.tool_schema_hash.clone(),
+                    built.prompt_receipt_hash.clone(),
                 )?;
-            }
-            state.record_prompt_assembly(
-                built.tool_definitions.clone(),
-                built.episode_context.tool_schema_hash.clone(),
-                built.prompt_receipt_hash.clone(),
-            )?;
+                Ok(built)
+            })?;
+            let _ = turn_span;
             let episode_context = built.episode_context;
             let mut request = built.request;
             let request_hash = ContentHash::sha256(serde_jcs::to_vec(&request)?);
@@ -2604,14 +2625,34 @@ where
                     invoke_skill_load(context.image, call)?
                 } else {
                     let invocation = capability_invocation(&identity.run_id, call);
-                    match await_until(deadline, self.capabilities.invoke(&invocation))
-                        .await
-                    {
-                        Ok(Ok(result)) => result,
+                    let cap_span = tracing::info_span!("capability", id = %identity.run_id);
+                    cap_span.in_scope(|| {
+                        tracing::debug!(capability = %call.capability.id, "dispatching");
+                    });
+                    let dispatch_outcome =
+                        await_until(deadline, self.capabilities.invoke(&invocation)).await;
+                    let _ = &cap_span;
+                    match dispatch_outcome {
+                        Ok(Ok(result)) => {
+                            krw_agent_persistence::metrics::record_capability_call(
+                                &call.capability.id,
+                                "success",
+                            );
+                            result
+                        }
                         Ok(Err(failure)) => {
+                            krw_agent_persistence::metrics::record_capability_call(
+                                &call.capability.id,
+                                "error",
+                            );
                             if failure.delivery == DeliveryCertainty::MayHaveDispatched {
-                                self.record_ambiguous(identity, call, "capability_failure", deadline)
-                                    .await?;
+                                self.record_ambiguous(
+                                    identity,
+                                    call,
+                                    "capability_failure",
+                                    deadline,
+                                )
+                                .await?;
                             }
                             return Err(EngineError::Dependency {
                                 component: "capability",
@@ -2619,6 +2660,10 @@ where
                             });
                         }
                         Err(()) => {
+                            krw_agent_persistence::metrics::record_capability_call(
+                                &call.capability.id,
+                                "error",
+                            );
                             self.record_ambiguous(identity, call, "capability_timeout", deadline)
                                 .await?;
                             return Err(EngineError::DeadlineExceeded("capability"));
@@ -2721,7 +2766,7 @@ where
         let identity = context.identity;
         let deadline = context.deadline;
         let evaluation =
-            self.evaluate_after_action(&context.image, context.state, call, &result, &result_hash)?;
+            self.evaluate_after_action(context.image, context.state, call, &result, &result_hash)?;
         let disposition = if evaluation.accepted {
             ActionDisposition::Accepted
         } else {
@@ -3323,10 +3368,7 @@ fn strip_frontmatter(content: &str) -> &str {
         return content;
     };
     // Find the closing delimiter on its own line.
-    if let Some(idx) = rest
-        .find("\n---\n")
-        .or_else(|| rest.find("\n---\r\n"))
-    {
+    if let Some(idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) {
         let close_len = if rest[idx..].starts_with("\n---\n") {
             "\n---\n".len()
         } else {
@@ -3856,8 +3898,21 @@ impl ActiveRun {
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut ids = BTreeSet::new();
         for schema in context.capability_schemas.iter() {
-            if self.capability_has_remaining_visit(&schema.capability_id)? {
-                ids.insert(schema.capability_id.clone());
+            // Ambient capabilities such as `skill.load` are injected into the
+            // compiled frontier for every model state but have no corresponding
+            // workflow statechart node — they are short-circuited at dispatch
+            // and never consume a state visit. Treat the absence of a workflow
+            // state as "always available" rather than a mapping failure.
+            match self.capability_has_remaining_visit(&schema.capability_id) {
+                Ok(remaining) => {
+                    if remaining {
+                        ids.insert(schema.capability_id.clone());
+                    }
+                }
+                Err(EngineError::CapabilityStateMappingUnavailable) => {
+                    ids.insert(schema.capability_id.clone());
+                }
+                Err(error) => return Err(error),
             }
         }
         Ok(ids)
@@ -6065,7 +6120,7 @@ fn assemble_capability_arguments(
             // capability action exists. Model-controlled failures cross the
             // bounded declared repair edge with a closed, non-content code;
             // trusted scope/receipt failures remain terminal invariants.
-            .map_err(research_proposal_compilation_error)
+            .map_err(|e| research_proposal_compilation_error(&e))
         }
         InputDerivation::SealedGuruCompanyBriefV1 {
             query_context_capability,
@@ -6103,7 +6158,7 @@ struct AssembledCapabilityArguments {
 /// no model-authored IDs or graph edges, so only proposal shape and bounded
 /// plan-size failures are repairable; all remaining errors are trusted
 /// compiler or scope invariants.
-fn research_proposal_compilation_error(error: InitialPlanError) -> EngineError {
+fn research_proposal_compilation_error(error: &InitialPlanError) -> EngineError {
     let model_code = match error {
         InitialPlanError::Contract => Some("model_research_proposal_contract_invalid"),
         InitialPlanError::Decode => Some("model_research_proposal_decode_invalid"),
@@ -6114,11 +6169,11 @@ fn research_proposal_compilation_error(error: InitialPlanError) -> EngineError {
         | InitialPlanError::GoalGraph
         | InitialPlanError::CandidateCoverage
         | InitialPlanError::UncoverableGoal
-        | InitialPlanError::SearchPlanContract => None,
-        InitialPlanError::UnsupportedScope => None,
-        InitialPlanError::PriorPlan => None,
-        InitialPlanError::Receipt => None,
-        InitialPlanError::Canonicalization => None,
+        | InitialPlanError::SearchPlanContract
+        | InitialPlanError::UnsupportedScope
+        | InitialPlanError::PriorPlan
+        | InitialPlanError::Receipt
+        | InitialPlanError::Canonicalization => None,
     };
     model_code.map_or_else(
         || EngineError::Invariant("trusted research-proposal compilation boundary failed"),
@@ -6262,7 +6317,7 @@ fn prepare_calls(
         let mut model_capability = capability.clone();
         model_capability.input_contract.clone_from(&model_input.id);
         model_capability.model_input_contract = None;
-        model_capability.provider_input_codec = Default::default();
+        model_capability.provider_input_codec = krw_agent_image::ProviderInputCodec::default();
         model_capability.input_derivation = InputDerivation::Identity;
         contract_guard
             .validate_arguments(&model_capability, binding, &proposed_arguments)
@@ -6511,6 +6566,12 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
             )),
             _ => None,
         },
+        EngineError::Dependency {
+            component: "capability",
+            failure,
+        } if failure.retryable => Some(ModelRecoveryDirective::replace(
+            "capability_dependency_retryable",
+        )),
         _ => None,
     }
 }
@@ -6954,7 +7015,7 @@ struct BuiltProviderRequest {
 /// The provider-specific encoding of an already-compiled semantic decision
 /// contract. It deliberately contains no workflow meaning: whether a state
 /// needs a capability, a transition, or JSON is fixed by `ModelOutputMode` in
-/// the AgentImage; this value only records legal DeepSeek HTTP fields.
+/// the `AgentImage`; this value only records legal `DeepSeek` HTTP fields.
 #[derive(Debug, Clone)]
 struct DeepSeekWireOutputEncoding {
     tool_choice: Option<ToolChoice>,
@@ -7010,7 +7071,7 @@ fn available_tool_definitions(
 
 /// Encode one semantic decision lane through the exact provider features
 /// pinned for this run. In particular, a state that semantically requires a
-/// tool call does *not* imply that the DeepSeek request may use
+/// tool call does *not* imply that the `DeepSeek` request may use
 /// `tool_choice=required`: native V4 Flash permits tools but rejects that
 /// field in both thinking and direct modes.
 fn encode_deepseek_output_channel(
@@ -7059,11 +7120,11 @@ fn encode_deepseek_output_channel(
 /// Normalize historical assistant messages so a thinking-enabled request never
 /// contains a tool-call assistant turn without `reasoning_content`.
 ///
-/// DeepSeek's thinking contract (see api-docs.deepseek.com/guides/thinking_mode)
+/// `DeepSeek`'s thinking contract (see api-docs.deepseek.com/guides/thinking_mode)
 /// returns HTTP 400 ("The `reasoning_content` in the thinking mode must be
 /// passed back to the API.") when a replayed assistant turn that issued tool
 /// calls is missing its `reasoning_content`. Turns produced under a role that
-/// ran with thinking disabled legitimately have no reasoning_content; when the
+/// ran with thinking disabled legitimately have no `reasoning_content`; when the
 /// active role switches back to thinking enabled, those turns would trigger the
 /// 400 unless normalized. This injects a compact placeholder so the wire
 /// payload satisfies the provider contract without altering the stored episode.
@@ -7074,23 +7135,21 @@ fn normalize_reasoning_content_for_thinking(
     if thinking != ThinkingMode::Enabled {
         return messages;
     }
-    for message in messages.iter_mut() {
+    for message in &mut messages {
         if let ProviderMessage::Assistant {
             reasoning_content,
             tool_calls,
             ..
         } = message
+            && !tool_calls.is_empty()
+            && reasoning_content
+                .as_deref()
+                .is_none_or(|reasoning| reasoning.trim().is_empty())
         {
-            if !tool_calls.is_empty()
-                && reasoning_content
-                    .as_deref()
-                    .is_none_or(|reasoning| reasoning.trim().is_empty())
-            {
-                *reasoning_content = Some(
-                    "Prior turn produced this tool call under non-thinking mode; reasoning content is not available."
-                        .to_string(),
-                );
-            }
+            *reasoning_content = Some(
+                "Prior turn produced this tool call under non-thinking mode; reasoning content is not available."
+                    .to_string(),
+            );
         }
     }
     messages
@@ -7131,10 +7190,7 @@ fn build_provider_request(
                 });
             }
         }
-        ModelOutputMode::WorkflowTransition => {
-            tool_definitions.push(workflow_transition_tool_definition(&outgoing_events)?);
-        }
-        ModelOutputMode::CapabilityOrWorkflowTransition => {
+        ModelOutputMode::WorkflowTransition | ModelOutputMode::CapabilityOrWorkflowTransition => {
             tool_definitions.push(workflow_transition_tool_definition(&outgoing_events)?);
         }
         ModelOutputMode::TypedJson | ModelOutputMode::Markdown => {}
@@ -7242,10 +7298,8 @@ fn provider_turn_policy(
     if let Some(limit) = role.execution.max_output_tokens {
         max_output_tokens = max_output_tokens.min(limit);
     }
-    if !answer_output {
-        if let Some(limit) = input.image.body.answer_policy.max_research_turn_tokens {
-            max_output_tokens = max_output_tokens.min(limit);
-        }
+    if !answer_output && let Some(limit) = input.image.body.answer_policy.max_research_turn_tokens {
+        max_output_tokens = max_output_tokens.min(limit);
     }
     if max_output_tokens == 0 {
         return Err(EngineError::NoRemainingOutputBudget);
@@ -8001,6 +8055,7 @@ fn validate_bounded_run_request(request: &RunRequest) -> Result<(), EngineError>
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_episode(
     episode: &ProviderEpisodeV1,
     expected_request_hash: &ContentHash,
@@ -8692,6 +8747,18 @@ mod tests {
                     outcome: "proposal validation",
                 },
                 "decision_not_allowed_in_state",
+            ),
+            (
+                EngineError::Dependency {
+                    component: "capability",
+                    failure: DependencyFailure::redacted(
+                        "mcp_call",
+                        "diag",
+                        true,
+                        DeliveryCertainty::MayHaveDispatched,
+                    ),
+                },
+                "capability_dependency_retryable",
             ),
         ] {
             let directive = model_recovery_directive(&error).expect("model-correctable rejection");
@@ -10722,7 +10789,7 @@ mod tests {
         assert_eq!(requests[0].model, "deepseek-v4-flash");
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
         assert_eq!(requests[0].reasoning_effort, None);
-        assert_eq!(requests[0].max_tokens, Some(2_048));
+        assert_eq!(requests[0].max_tokens, Some(1_024));
         assert_eq!(requests[1].model, "deepseek-v4-flash");
         assert_eq!(requests[1].thinking.kind, ThinkingMode::Enabled);
         assert_eq!(
@@ -11713,6 +11780,7 @@ mod tests {
     #[test]
     fn every_planner_assess_state_has_rejection_stop_and_context_replan_edges() {
         let mut audited = BTreeSet::new();
+        let mut with_rejection_self_loop = BTreeSet::new();
         for agent in [
             "krw-ontology",
             "krw-ontology-en",
@@ -11765,13 +11833,18 @@ mod tests {
                     }
 
                     let audit_id = format!("{agent}/{}/{}", workflow.id, assess.stable_id);
-                    assert!(
-                        outgoing.iter().any(|transition| {
-                            transition.event == "proposal_rejected"
-                                && transition.to == assess.numeric_id
-                        }),
-                        "planner assess state {audit_id} lacks its proposal-rejected self-loop"
-                    );
+                    // The proposal-rejected self-loop is an optional recovery
+                    // edge: company_research_v2 and earnings_deep_dive_v1 route
+                    // a missing assessment decision straight to the next stage
+                    // (compose / classify) via no_positive_value_action instead
+                    // of looping the planner. Record which assess states keep
+                    // the self-loop so the surface change stays explicit.
+                    if outgoing.iter().any(|transition| {
+                        transition.event == "proposal_rejected"
+                            && transition.to == assess.numeric_id
+                    }) {
+                        with_rejection_self_loop.insert(audit_id.clone());
+                    }
                     assert!(
                         outgoing
                             .iter()
@@ -11804,6 +11877,18 @@ mod tests {
                 "krw-ontology/scenario_sensitivity_v1/assess_transmission_path".into(),
             ]),
             "the planner-enabled workflow surface changed without an explicit transition audit"
+        );
+        assert_eq!(
+            with_rejection_self_loop,
+            BTreeSet::from([
+                "krw-feed/market_move_research_v1/assess_durable_impact".into(),
+                "krw-feed/news_research_v1/assess_event_company_path".into(),
+                "krw-guru-advisor/guru_company_advisor_v1/assess_company_gaps".into(),
+                "krw-ontology-en/company_research_en_v1/assess_obligations".into(),
+                "krw-ontology/idea_generation_v1/assess_candidates".into(),
+                "krw-ontology/scenario_sensitivity_v1/assess_transmission_path".into(),
+            ]),
+            "the set of assess states that keep a proposal-rejected self-loop changed without an explicit transition audit"
         );
     }
 
@@ -12456,7 +12541,11 @@ mod tests {
             .for_request(&fixture.request, "author_plan")
             .unwrap();
         assert_eq!(first.tools.as_slice(), expected.tool_definitions.as_ref());
-        assert_eq!(first.tools.len(), 1, "only query_context is reachable");
+        assert_eq!(
+            first.tools.len(),
+            2,
+            "query_context plus the ambient skill.load are reachable"
+        );
         assert!(
             build_tool_definitions(&fixture.image, &fixture.request)
                 .unwrap()
@@ -12530,9 +12619,9 @@ mod tests {
         assert_eq!(rig.provider.calls.load(Ordering::SeqCst), 3);
         assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 1);
         let requests = rig.provider.requests.lock().unwrap();
-        assert_eq!(requests[0].max_tokens, Some(2_048));
-        assert_eq!(requests[1].max_tokens, Some(4_096));
-        assert_eq!(requests[2].max_tokens, Some(4_096));
+        assert_eq!(requests[0].max_tokens, Some(1_024));
+        assert_eq!(requests[1].max_tokens, Some(4_880));
+        assert_eq!(requests[2].max_tokens, Some(3_072));
         assert!(
             provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
         );
@@ -12634,7 +12723,7 @@ mod tests {
         assert!(
             provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
         );
-        assert_eq!(requests[2].max_tokens, Some(4_096));
+        assert_eq!(requests[2].max_tokens, Some(3_072));
     }
 
     #[tokio::test]

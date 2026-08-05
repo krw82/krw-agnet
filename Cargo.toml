@@ -50,6 +50,7 @@ hex = "0.4.3"
 hkdf = "0.13.0"
 indexmap = { version = "2.14.0", features = ["serde"] }
 libc = "0.2.183"
+prometheus = "0.13"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "stream", "rustls-no-provider"] }
 ring = "0.17.14"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }

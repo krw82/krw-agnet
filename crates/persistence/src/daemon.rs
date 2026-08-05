@@ -270,6 +270,7 @@ impl RunExecutionFailure {
     /// results, or raw diagnostic text. It exists so a durable failure can
     /// retain a release-safe fingerprint without opening an ad-hoc logging
     /// path for private run artifacts.
+    #[must_use]
     pub fn with_release(mut self, release: Value) -> Self {
         self.release = release;
         self
@@ -707,6 +708,8 @@ async fn drive_claim(
     claim_round_trip: Duration,
     cancellation: CancellationToken,
 ) {
+    let run_started = Instant::now();
+    crate::metrics::record_run_started();
     let lease = LeaseCoordinator::from_claim(&receipt, config.lease_duration, claim_round_trip);
     let heartbeat_stop = CancellationToken::new();
     let heartbeat = tokio::spawn(heartbeat_loop(
@@ -763,14 +766,29 @@ async fn drive_claim(
     }
 
     match outcome {
-        Ok(SuccessfulRunOutcome::Committed | SuccessfulRunOutcome::Cancelled) => {
+        Ok(SuccessfulRunOutcome::Committed) => {
             lease.mark_terminal().await;
+            crate::metrics::record_run_outcome(
+                crate::metrics::OUTCOME_FINAL,
+                run_started.elapsed(),
+            );
+        }
+        Ok(SuccessfulRunOutcome::Cancelled) => {
+            lease.mark_terminal().await;
+            crate::metrics::record_run_outcome(
+                crate::metrics::OUTCOME_CANCELLED,
+                run_started.elapsed(),
+            );
         }
         Err(failure) => {
             if lease.is_lost().await {
                 debug!(
                     run_id_hash = %ContentHash::sha256(&receipt.run_id),
                     "run stopped after lease loss; no stale failure mutation attempted"
+                );
+                crate::metrics::record_run_outcome(
+                    crate::metrics::OUTCOME_FAILED,
+                    run_started.elapsed(),
                 );
                 return;
             }
@@ -784,6 +802,10 @@ async fn drive_claim(
                     "could not persist run failure disposition; lease expiry will recover it"
                 );
             }
+            crate::metrics::record_run_outcome(
+                crate::metrics::OUTCOME_FAILED,
+                run_started.elapsed(),
+            );
         }
     }
 }

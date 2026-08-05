@@ -294,9 +294,15 @@ impl PromptAssemblyReceipt {
         let mut segment_ids = BTreeSet::new();
         for segment in &self.static_segments {
             validate_segment_id(&segment.segment_id)?;
+            // Static prompt segments are either role-matched prompt segments
+            // or entrypoint-pinned skills (progressive disclosure). Both are
+            // trusted agent instructions assembled at compile time.
             if segment.byte_len == 0
                 || segment.kind != ContextSegmentKind::AgentInstruction
-                || segment.load_reason != LoadReason::RoleMatch
+                || !matches!(
+                    segment.load_reason,
+                    LoadReason::RoleMatch | LoadReason::PinnedSkill
+                )
                 || !segment_ids.insert(segment.segment_id.as_str())
             {
                 return Err(ContextPlanError::InvalidReceipt);

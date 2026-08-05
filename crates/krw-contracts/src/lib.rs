@@ -106,7 +106,7 @@ pub const ONTOLOGY_TRACE_INPUT_V1: &str = "ontology-trace-input/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1: &str = "normalized-capability-result/v1";
 pub const ANSWER_IR_V1: &str = "answer-ir/v1";
 /// Direct user-facing Markdown emitted after evidence collection.  The
-/// EvidenceLedger remains kernel-owned; this contract deliberately carries
+/// `EvidenceLedger` remains kernel-owned; this contract deliberately carries
 /// no model-authored claim graph or presentation wrapper.
 pub const FINAL_MARKDOWN_V1: &str = "final-markdown/v1";
 pub const STATE_OPERATION_OUTPUT_V1: &str = "state-operation-output/v1";
@@ -398,6 +398,7 @@ impl ResearchProposalRepairDirective {
 pub fn research_proposal_v4_repair_directive(
     value: &Value,
 ) -> Option<ResearchProposalRepairDirective> {
+    #[allow(clippy::match_same_arms)]
     let violation = match validate_value(RESEARCH_PROPOSAL_V4, value) {
         Ok(()) => return None,
         Err(ContractValueError::UnknownContract(_)) => ResearchProposalViolation::ShapeInvalid,

@@ -9,18 +9,19 @@
   "requested_model": "deepseek-v4-flash",
   "model_profile": "flash_high",
   "budget": {
-    "max_provider_turns": 32,
-    "max_capability_calls": 12,
-    "max_replans": 6,
-    "max_repairs": 6,
-    "max_input_tokens": 360000,
-    "max_output_tokens": 48000,
-    "max_evidence_bytes": 16777216,
-    "deadline_ms": 480000,
+    "max_provider_turns": 12,
+    "max_capability_calls": 5,
+    "max_replans": 3,
+    "max_repairs": 3,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 24000,
+    "max_evidence_bytes": 8388608,
+    "deadline_ms": 300000,
     "capability_call_limits": {
-      "ontology.query_context": 4,
-      "ontology.query": 5,
-      "ontology.trace": 3
+      "ontology.query_context": 2,
+      "ontology.query": 2,
+      "ontology.trace": 1,
+      "ontology.chain": 1
     }
   },
   "context": {

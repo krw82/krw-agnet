@@ -419,7 +419,7 @@ pub fn compile_research_proposal(
     let proposal: ResearchProposal =
         serde_json::from_value(proposal.clone()).map_err(|_| InitialPlanError::Decode)?;
     let intent = lower_research_proposal(proposal, scope)?;
-    compile_lowered_research_intent(intent, scope)
+    compile_lowered_research_intent(&intent, scope)
 }
 
 /// Lower a bounded model proposal into the private semantic IR.  This is the
@@ -694,8 +694,8 @@ fn lower_goal(goal: &ResearchProposalGoal) -> LoweredGoal {
         ResearchProposalGoal::MetricObservation {
             metric,
             metric_dimensions,
-        } => metric_goal(metric, metric_dimensions, "value"),
-        ResearchProposalGoal::MetricTimeSeries {
+        }
+        | ResearchProposalGoal::MetricTimeSeries {
             metric,
             metric_dimensions,
         } => metric_goal(metric, metric_dimensions, "value"),
@@ -776,9 +776,9 @@ fn bounded_question_anchor(question: &str) -> Result<String, InitialPlanError> {
 }
 
 /// Compile a private, kernel-owned semantic IR into a canonical root
-/// `SearchPlan`. It is intentionally not exported as an AgentImage ABI.
+/// `SearchPlan`. It is intentionally not exported as an `AgentImage` ABI.
 fn compile_lowered_research_intent(
-    intent: ResearchIntent,
+    intent: &ResearchIntent,
     scope: InitialPlanScope<'_>,
 ) -> Result<ResearchIntentCompilation, InitialPlanError> {
     let (goals, intent_graph) = index_and_validate_goals(&intent.goals, scope.question)?;
@@ -1344,7 +1344,10 @@ fn search_plan_clause(
             let prose = metric_as_prose(metric);
             if !prose.is_empty() {
                 let normalized = prose.to_string();
-                if !required_concepts.iter().any(|c| c.eq_ignore_ascii_case(&normalized)) {
+                if !required_concepts
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(&normalized))
+                {
                     required_concepts.push(normalized);
                 }
             }
@@ -1370,10 +1373,8 @@ fn search_plan_clause(
         "directness": candidate.directness.as_search_plan(),
         "object_types": candidate.object_types,
     });
-    if let Some(obj) = clause.as_object_mut() {
-        if let Some(metric_obj) = metric_fields.as_object() {
-            obj.extend(metric_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
-        }
+    if let (Some(obj), Some(metric_obj)) = (clause.as_object_mut(), metric_fields.as_object()) {
+        obj.extend(metric_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
     Ok(clause)
 }
@@ -1548,9 +1549,7 @@ mod tests {
         );
         assert_eq!(plan["clauses"][0]["required_predicates"], json!([]));
         assert!(
-            plan["clauses"][0]
-                .get("retrieval_query")
-                .is_some(),
+            plan["clauses"][0].get("retrieval_query").is_some(),
             "metric clause still carries a natural-language retrieval query"
         );
     }
@@ -1648,8 +1647,7 @@ mod tests {
         let metric_clause = clauses
             .iter()
             .find(|clause| {
-                clause["required_predicates"] == json!([])
-                    && clause.get("metrics").is_none()
+                clause["required_predicates"] == json!([]) && clause.get("metrics").is_none()
             })
             .expect("one pure revenue metric clause without wire metric fields");
         let qualitative_clause = clauses
@@ -1663,9 +1661,7 @@ mod tests {
         );
         assert_eq!(metric_clause["required_predicates"], json!([]));
         assert!(
-            metric_clause
-                .get("retrieval_query")
-                .is_some(),
+            metric_clause.get("retrieval_query").is_some(),
             "metric clause carries a natural-language retrieval query"
         );
         assert_eq!(qualitative_clause["metrics"], json!([]));

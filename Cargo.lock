@@ -854,7 +854,7 @@ dependencies = [
  "jni-sys",
  "log",
  "simd_cesu8",
- "thiserror",
+ "thiserror 2.0.19",
  "walkdir",
  "windows-link",
 ]
@@ -918,7 +918,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -938,7 +938,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -951,7 +951,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -969,7 +969,7 @@ dependencies = [
  "krw-ontology-adapter",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -984,7 +984,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -999,7 +999,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -1011,7 +1011,7 @@ dependencies = [
  "krw-agent-protocol",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1029,7 +1029,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1039,7 +1039,7 @@ dependencies = [
  "krw-agent-persistence",
  "krw-agent-protocol",
  "serde",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1061,7 +1061,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "stats_alloc",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
 ]
 
@@ -1073,13 +1073,14 @@ dependencies = [
  "krw-agent-bounded-child",
  "krw-agent-protocol",
  "krw-session-memory",
+ "prometheus",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -1095,7 +1096,7 @@ dependencies = [
  "krw-agent-protocol",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1107,7 +1108,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
  "zeroize",
 ]
 
@@ -1121,7 +1122,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1136,7 +1137,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "serde_yaml_ng",
- "thiserror",
+ "thiserror 2.0.19",
  "tracing",
 ]
 
@@ -1156,7 +1157,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -1184,8 +1185,9 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
+ "tracing",
  "zeroize",
 ]
 
@@ -1200,7 +1202,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "serde_yaml_ng",
- "thiserror",
+ "thiserror 2.0.19",
  "zeroize",
 ]
 
@@ -1228,7 +1230,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1239,7 +1241,7 @@ dependencies = [
 name = "krw-agent-scheduler"
 version = "0.1.0"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1251,7 +1253,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1269,7 +1271,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1283,7 +1285,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "zeroize",
 ]
@@ -1304,10 +1306,11 @@ dependencies = [
  "krw-agent-runtime-config",
  "krw-agent-runtime-persistence",
  "krw-agent-tool-mcp",
+ "prometheus",
  "serde_jcs",
  "serde_json",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1327,7 +1330,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "zeroize",
 ]
 
@@ -1342,7 +1345,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1355,7 +1358,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "tracing",
  "zeroize",
 ]
@@ -1368,7 +1371,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1380,7 +1383,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "zeroize",
 ]
 
@@ -1632,6 +1635,27 @@ checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "prometheus"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "protobuf",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "protobuf"
+version = "2.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "quote"
@@ -2175,11 +2199,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.19",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

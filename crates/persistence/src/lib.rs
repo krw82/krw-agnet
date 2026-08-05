@@ -2,6 +2,7 @@
 
 pub mod agent_v1;
 pub mod daemon;
+pub mod metrics;
 pub mod postgres;
 
 use std::collections::{BTreeMap, BTreeSet};

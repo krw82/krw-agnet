@@ -1,4 +1,5 @@
 //! Canonical `AgentSpec` parser, bounded validator ISA, and immutable `AgentImage` compiler.
+#![allow(clippy::format_push_string)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
@@ -83,7 +84,7 @@ pub struct EntrypointSpec {
     pub scope: InputScope,
     pub constants: EntrypointConstants,
     /// Skill segment IDs force-loaded into every model state in this run
-    /// kind, in addition to the role's own prompt_segments. Tier 2 (pinned)
+    /// kind, in addition to the role's own `prompt_segments`. Tier 2 (pinned)
     /// skills guarantee that critical analysis frameworks (e.g., the
     /// earnings 5-stage causal chain) are always in the system prompt
     /// regardless of whether the model calls `skill.load`. Tier 1 skills
@@ -231,7 +232,7 @@ pub struct RoleSpec {
     pub deterministic: bool,
     /// Image-owned execution policy for a model role. This expresses whether
     /// the role needs deliberation; it never names a provider model or puts a
-    /// deployment-owned model profile into the AgentImage.
+    /// deployment-owned model profile into the `AgentImage`.
     #[serde(default, skip_serializing_if = "RoleExecutionPolicy::is_default")]
     pub execution: RoleExecutionPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -614,26 +615,21 @@ pub enum TransportCodec {
 /// Provider-facing encoding for a capability's model-authored semantic input.
 ///
 /// This is intentionally separate from [`TransportCodec`]: the former only
-/// describes DeepSeek function arguments, while the latter describes the
+/// describes `DeepSeek` function arguments, while the latter describes the
 /// canonical arguments that the kernel sends to a real capability.  A model
 /// may naturally use a named argument such as `proposal`, even when the
 /// kernel's canonical contract is a root object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderInputCodec {
     /// Expose and consume the canonical model-input contract as the function
     /// arguments root object.
+    #[default]
     CanonicalRootV1,
     /// Expose one named function argument whose value is the canonical
     /// model-input contract. The kernel validates and unwraps that field
     /// before running any domain compiler or physical capability.
     SingleFieldEnvelopeV1 { field: String },
-}
-
-impl Default for ProviderInputCodec {
-    fn default() -> Self {
-        Self::CanonicalRootV1
-    }
 }
 
 impl ProviderInputCodec {
@@ -967,7 +963,7 @@ pub struct PeriodPolicy {
 pub struct AnswerPolicySpec {
     pub internal_format: String,
     /// Output tokens held back from research turns for the terminal answer.
-    /// This is part of the immutable AgentImage because it protects answer
+    /// This is part of the immutable `AgentImage` because it protects answer
     /// completion quality, not a deployment-specific model selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_output_reserve_tokens: Option<u32>,
@@ -1779,13 +1775,12 @@ fn render_ontology_catalog(
                 path.display()
             ))
         })?;
-        let value: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&text).map_err(|err| {
-                ImageError::InvalidSpec(format!(
-                    "ontology_schema segment `{segment_id}` failed to parse {}: {err}",
-                    path.display()
-                ))
-            })?;
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).map_err(|err| {
+            ImageError::InvalidSpec(format!(
+                "ontology_schema segment `{segment_id}` failed to parse {}: {err}",
+                path.display()
+            ))
+        })?;
         match schema.as_str() {
             "metric_dictionary" => render_metric_section(&value, &mut out),
             "quote_types" => render_quote_types_section(&value, &mut out),
@@ -1836,9 +1831,8 @@ fn render_skill_catalog(
 
     let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
     for file_path in &md_files {
-        let content = match fs::read_to_string(file_path) {
-            Ok(text) => text,
-            Err(_) => continue,
+        let Ok(content) = fs::read_to_string(file_path) else {
+            continue;
         };
         let Some(frontmatter) = parse_frontmatter(&content) else {
             continue;
@@ -1852,7 +1846,7 @@ fn render_skill_catalog(
         let when_to_use = frontmatter
             .get("when_to_use")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
         entries.push((name.to_string(), description.to_string(), when_to_use));
     }
 
@@ -1892,10 +1886,10 @@ fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
             collect_markdown_files(&path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             // Skip README-like catalog files that are not skills.
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if stem.eq_ignore_ascii_case("README") {
-                    continue;
-                }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && stem.eq_ignore_ascii_case("README")
+            {
+                continue;
             }
             out.push(path);
         }
@@ -1919,7 +1913,11 @@ fn parse_frontmatter(content: &str) -> Option<serde_yaml_ng::Value> {
     let close_idx = body_start
         .find("\n---\n")
         .or_else(|| body_start.find("\n---\r\n"))
-        .or_else(|| body_start.rfind("\n---").filter(|&i| body_start[i..].trim() == "---"))?;
+        .or_else(|| {
+            body_start
+                .rfind("\n---")
+                .filter(|&i| body_start[i..].trim() == "---")
+        })?;
     let frontmatter_text = &body_start[..close_idx];
     serde_yaml_ng::from_str(frontmatter_text).ok()
 }
@@ -1938,7 +1936,10 @@ fn render_metric_section(value: &serde_yaml_ng::Value, out: &mut String) {
     out.push_str("|---|---|---|---|\n");
     for (key, entry) in metrics {
         let id = key.as_str().unwrap_or("?");
-        let display = entry.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+        let display = entry
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let aliases = entry
             .get("aliases")
             .and_then(|v| v.as_sequence())
@@ -1949,7 +1950,10 @@ fn render_metric_section(value: &serde_yaml_ng::Value, out: &mut String) {
                     .join(", ")
             })
             .unwrap_or_default();
-        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = entry
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         out.push_str(&format!("| `{id}` | {display} | {aliases} | {desc} |\n"));
     }
     out.push('\n');
@@ -1983,7 +1987,10 @@ fn render_claim_types_section(value: &serde_yaml_ng::Value, out: &mut String) {
     out.push_str("Canonical claim categories and example filing language.\n\n");
     for (key, entry) in types {
         let id = key.as_str().unwrap_or("?");
-        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = entry
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let example = entry.get("example").and_then(|v| v.as_str()).unwrap_or("");
         out.push_str(&format!("- **{id}**: {desc}\n"));
         if !example.is_empty() {
@@ -2001,7 +2008,10 @@ fn render_risk_categories_section(value: &serde_yaml_ng::Value, out: &mut String
     out.push_str("Use these category labels and their example factors when researching risk.\n\n");
     for (key, entry) in cats {
         let id = key.as_str().unwrap_or("?");
-        let desc = entry.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = entry
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let examples = entry
             .get("examples")
             .and_then(|v| v.as_sequence())
@@ -3688,7 +3698,7 @@ fn compile_model_output_mode(
 ) -> Result<ModelOutputMode, ImageError> {
     let capability_input_contracts = capabilities
         .iter()
-        .map(|capability| capability.model_input_contract_id())
+        .map(CapabilitySpec::model_input_contract_id)
         .collect::<BTreeSet<_>>();
     let exposes_capability = output_contracts
         .iter()

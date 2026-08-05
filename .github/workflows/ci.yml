@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace --lib --bins
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Sync dependencies
+        run: cd services/krw-ontology-runtime && uv sync --extra dev --frozen
+      - name: Ruff
+        run: cd services/krw-ontology-runtime && uv run ruff check src tests
+      - name: Pytest
+        run: cd services/krw-ontology-runtime && uv run pytest
+      - name: Semantic evals
+        run: python3 scripts/validate_semantic_evals.py --suite evals/krw-semantic/v2
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/host-ts/package-lock.json
+      - name: Install
+        run: cd packages/host-ts && npm ci
+      - name: Typecheck
+        run: cd packages/host-ts && npm run typecheck
+      - name: Test
+        run: cd packages/host-ts && npm test

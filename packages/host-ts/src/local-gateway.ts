@@ -41,6 +41,20 @@ interface Config {
   readonly descriptorPath: string;
   readonly descriptorHash: string;
   readonly releaseSetHash: string;
+  readonly corsOrigin: string | null;
+  readonly rateLimitWindowMs: number;
+  readonly rateLimitMax: number;
+}
+
+interface RequestPrincipal {
+  readonly tenantId: string;
+  readonly principalId: string;
+}
+
+function resolvePrincipal(config: Config, _request: IncomingMessage): RequestPrincipal {
+  // Phase 1: single-tenant fallback from env. Phase 2 will inspect a
+  // session/JWT token from the request and override these values.
+  return { tenantId: config.tenantId, principalId: config.principalId };
 }
 
 interface StoredRun {
@@ -70,6 +84,73 @@ function port(value: string | undefined): number {
   return parsed;
 }
 
+function corsOrigin(value: string | null): string | null {
+  if (value === null) return null;
+  // Accept any non-empty URL-like string. The Origin/URL shape is validated
+  // loosely on purpose: the value is echoed back as an ACAO header and never
+  // used as a fetch target by this server.
+  if (value.length === 0 || value.length > 512) throw new Error("invalid_gateway_cors_origin");
+  try {
+    // eslint-disable-next-line no-new
+    new URL(value);
+  } catch {
+    throw new Error("invalid_gateway_cors_origin");
+  }
+  return value;
+}
+
+function positiveInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`invalid_${name}`);
+  return parsed;
+}
+
+class RateLimiter {
+  private hits = new Map<string, number>();
+  constructor(private readonly windowMs: number, private readonly max: number) {}
+  check(ip: string): boolean {
+    const now = Date.now();
+    const bucket = Math.floor(now / this.windowMs);
+    const key = `${ip}:${bucket}`;
+    const count = (this.hits.get(key) ?? 0) + 1;
+    this.hits.set(key, count);
+    // Opportunistic cleanup of stale buckets (keep memory bounded)
+    if (this.hits.size > 10_000) {
+      const currentBucket = bucket;
+      for (const k of this.hits.keys()) {
+        if (Number(k.slice(k.lastIndexOf(":") + 1)) < currentBucket) this.hits.delete(k);
+      }
+    }
+    return count <= this.max;
+  }
+}
+
+function applyCorsHeaders(_request: IncomingMessage, response: ServerResponse, corsOrigin: string | null): void {
+  if (corsOrigin === null) return;
+  response.setHeader("Access-Control-Allow-Origin", corsOrigin);
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  // Static allow-list is the complete contract for this gateway's own
+  // clients. Echoing the request's Access-Control-Request-Headers would expand
+  // the surface; instead we declare exactly what we accept. `Vary: Origin` is
+  // always emitted so caches/CDNs do not serve an ACAO from one origin to a
+  // request carrying a different Origin even though today ACAO is a fixed
+  // configured value (defensive against a future multi-origin change).
+  response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  response.setHeader("Access-Control-Max-Age", "600");
+  response.setHeader("Vary", "Origin");
+}
+
+// Routes that are allowed to participate in CORS. Preflight (OPTIONS) is
+// answered only for these paths; anything else falls through to the normal
+// 404 so attackers cannot spam arbitrary paths to get a 204 with CORS headers
+// (and an unauthenticated, un-rate-limited response).
+function isCorsApiRoute(path: string): boolean {
+  if (path === `${API_PREFIX}/runs`) return true;
+  if (path.startsWith(`${API_PREFIX}/sessions/`) && path.endsWith("/runs")) return true;
+  if (path.startsWith(`${API_PREFIX}/runs/`)) return true;
+  return false;
+}
+
 async function config(): Promise<Config> {
   const host = process.env.KRW_AGENT_GATEWAY_HOST ?? DEFAULT_HOST;
   if (host !== "127.0.0.1" && host !== "::1") throw new Error("gateway_must_bind_loopback");
@@ -84,6 +165,15 @@ async function config(): Promise<Config> {
   if (caFile && inlineCa) throw new Error("gateway_database_ca_source_ambiguous");
   const databaseCaPem = caFile ? await readFile(caFile, "utf8") : inlineCa ?? null;
   if (databaseCaPem !== null && databaseCaPem.length === 0) throw new Error("invalid_gateway_database_ca");
+  const corsOriginValue = process.env.KRW_AGENT_GATEWAY_CORS_ORIGIN ?? null;
+  const rateLimitWindowMs = positiveInteger(
+    process.env.KRW_AGENT_GATEWAY_RATE_LIMIT_WINDOW_MS ?? "60000",
+    "gateway_rate_limit_window_ms",
+  );
+  const rateLimitMax = positiveInteger(
+    process.env.KRW_AGENT_GATEWAY_RATE_LIMIT_MAX ?? "120",
+    "gateway_rate_limit_max",
+  );
   return {
     host,
     port: port(process.env.KRW_AGENT_GATEWAY_PORT),
@@ -95,6 +185,9 @@ async function config(): Promise<Config> {
     descriptorPath,
     descriptorHash: hash(required("KRW_AGENT_RELEASE_DESCRIPTOR_HASH"), "release_descriptor_hash"),
     releaseSetHash: hash(required("KRW_AGENT_RELEASE_SET_HASH"), "release_set_hash"),
+    corsOrigin: corsOrigin(corsOriginValue),
+    rateLimitWindowMs,
+    rateLimitMax,
   };
 }
 
@@ -190,9 +283,11 @@ async function createRun(
   pool: Pool,
   artifact: Awaited<ReturnType<typeof loadPinnedReleaseArtifact>>,
   config: Config,
+  request: IncomingMessage,
   sessionId: string | null,
   body: unknown,
 ): Promise<JsonObject> {
+  const principal = resolvePrincipal(config, request);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -201,13 +296,13 @@ async function createRun(
       await client.query({
         name: "krw_gateway_create_session_v1",
         text: "INSERT INTO krw_gateway_local.sessions(session_id, tenant_id, principal_id) VALUES ($1, $2, $3)",
-        values: [resolvedSessionId, config.tenantId, config.principalId],
+        values: [resolvedSessionId, principal.tenantId, principal.principalId],
       });
     } else {
       const owned = await client.query<{ readonly session_id: string }>({
         name: "krw_gateway_read_session_owner_v1",
         text: "SELECT session_id FROM krw_gateway_local.sessions WHERE session_id=$1 AND tenant_id=$2 AND principal_id=$3",
-        values: [resolvedSessionId, config.tenantId, config.principalId],
+        values: [resolvedSessionId, principal.tenantId, principal.principalId],
       });
       if (owned.rowCount !== 1) throw new ContractViolation("gateway_session_not_owned");
     }
@@ -215,8 +310,8 @@ async function createRun(
     const runId = generatedId("run");
     const ownership = {
       schema_version: 1 as const,
-      tenant_id: config.tenantId,
-      principal_id: config.principalId,
+      tenant_id: principal.tenantId,
+      principal_id: principal.principalId,
       session_id: resolvedSessionId,
       run_id: runId,
     };
@@ -230,7 +325,7 @@ async function createRun(
     await client.query({
       name: "krw_gateway_create_run_v1",
       text: "INSERT INTO krw_gateway_local.runs(run_id, session_id, tenant_id, principal_id) VALUES ($1, $2, $3, $4)",
-      values: [runId, resolvedSessionId, config.tenantId, config.principalId],
+      values: [runId, resolvedSessionId, principal.tenantId, principal.principalId],
     });
     // The fixed agent ABI call occurs before committing local ownership so a
     // visible Gateway run can never exist without a matching immutable claim.
@@ -246,17 +341,24 @@ async function createRun(
   }
 }
 
-async function readRun(pool: Pool, agent: HostAgentClient, config: Config, runId: string): Promise<JsonObject> {
+async function readRun(
+  pool: Pool,
+  agent: HostAgentClient,
+  config: Config,
+  request: IncomingMessage,
+  runId: string,
+): Promise<JsonObject> {
+  const principal = resolvePrincipal(config, request);
   const owned = await pool.query<StoredRun>({
     name: "krw_gateway_read_run_owner_v1",
     text: "SELECT session_id FROM krw_gateway_local.runs WHERE run_id=$1 AND tenant_id=$2 AND principal_id=$3",
-    values: [runId, config.tenantId, config.principalId],
+    values: [runId, principal.tenantId, principal.principalId],
   });
   if (owned.rowCount !== 1 || !owned.rows[0]) throw new ContractViolation("gateway_run_not_owned");
   const ownership = {
     schema_version: 1 as const,
-    tenant_id: config.tenantId,
-    principal_id: config.principalId,
+    tenant_id: principal.tenantId,
+    principal_id: principal.principalId,
     session_id: owned.rows[0].session_id,
     run_id: runId,
   };
@@ -292,11 +394,35 @@ async function main(): Promise<void> {
   });
   await initializeGatewayStore(pool);
   const agent = new HostAgentClient(new HostPostgresTransport(pgClient(pool)));
+  const rateLimiter = new RateLimiter(settings.rateLimitWindowMs, settings.rateLimitMax);
   const server = createServer(async (request, response) => {
     try {
+      applyCorsHeaders(request, response, settings.corsOrigin);
       const path = new URL(request.url ?? "/", `http://${settings.host}`).pathname;
       if (request.method === "GET" && path === "/healthz") {
         writeJson(response, 200, { schema_version: 1, status: "ok" });
+        return;
+      }
+      if (request.method === "OPTIONS") {
+        // Only advertise CORS preflight for real API routes. For any other
+        // path, fall through to the 404 below so OPTIONS cannot be abused as
+        // an unauthenticated, un-rate-limited endpoint on arbitrary paths.
+        if (isCorsApiRoute(path)) {
+          response.writeHead(204, { "content-length": "0" });
+          response.end();
+          return;
+        }
+        writeJson(response, 404, { schema_version: 1, error: "not_found" });
+        return;
+      }
+      const ip = request.socket.remoteAddress ?? "unknown";
+      if (!rateLimiter.check(ip)) {
+        response.writeHead(429, {
+          "content-type": "application/json; charset=utf-8",
+          "retry-after": String(Math.ceil(settings.rateLimitWindowMs / 1000)),
+          "cache-control": "no-store",
+        });
+        response.end(Buffer.from(JSON.stringify({ schema_version: 1, error: "rate_limited" })));
         return;
       }
       if (!sameToken(request.headers.authorization, settings.bearerToken)) {
@@ -304,17 +430,17 @@ async function main(): Promise<void> {
         return;
       }
       if (request.method === "POST" && path === `${API_PREFIX}/runs`) {
-        writeJson(response, 202, await createRun(pool, artifact, settings, null, await readJson(request)));
+        writeJson(response, 202, await createRun(pool, artifact, settings, request, null, await readJson(request)));
         return;
       }
       const continuation = new RegExp(`^${API_PREFIX}/sessions/([A-Za-z0-9_-]{1,128})/runs$`).exec(path);
       if (request.method === "POST" && continuation) {
-        writeJson(response, 202, await createRun(pool, artifact, settings, continuation[1] ?? null, await readJson(request)));
+        writeJson(response, 202, await createRun(pool, artifact, settings, request, continuation[1] ?? null, await readJson(request)));
         return;
       }
       const status = new RegExp(`^${API_PREFIX}/runs/([A-Za-z0-9_-]{1,128})$`).exec(path);
       if (request.method === "GET" && status) {
-        writeJson(response, 200, await readRun(pool, agent, settings, status[1] ?? ""));
+        writeJson(response, 200, await readRun(pool, agent, settings, request, status[1] ?? ""));
         return;
       }
       writeJson(response, 404, { schema_version: 1, error: "not_found" });

@@ -9,6 +9,7 @@ license.workspace = true
 clap.workspace = true
 hex.workspace = true
 krw-agent-artifact-store = { path = "../../crates/artifact-store" }
+prometheus.workspace = true
 krw-agent-capability-runtime = { path = "../../crates/capability-runtime" }
 krw-agent-image = { path = "../../crates/agent-image" }
 krw-agent-protocol = { path = "../../crates/protocol" }

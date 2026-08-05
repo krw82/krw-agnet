@@ -1216,7 +1216,7 @@ impl CapabilityRuntime for RetainedCapability {
 
 fn replace_active_fixture_clause_reference(value: &mut Value, from: &str, to: &str) {
     match value {
-        Value::String(current) if current == from => *current = to.to_owned(),
+        Value::String(current) if current == from => current.clone_from(&to.to_owned()),
         Value::Array(values) => values
             .iter_mut()
             .for_each(|value| replace_active_fixture_clause_reference(value, from, to)),

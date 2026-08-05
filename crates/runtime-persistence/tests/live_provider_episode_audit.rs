@@ -30,7 +30,7 @@ fn required(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("{name} is required when {ENABLE_ENV}=1"))
 }
 
-fn initial_plan_code(error: InitialPlanError) -> &'static str {
+fn initial_plan_code(error: &InitialPlanError) -> &'static str {
     match error {
         InitialPlanError::Contract => "proposal_contract_invalid",
         InitialPlanError::Decode => "proposal_decode_invalid",
@@ -38,10 +38,12 @@ fn initial_plan_code(error: InitialPlanError) -> &'static str {
         InitialPlanError::PriorPlan => "proposal_prior_plan_invalid",
         InitialPlanError::DuplicateClause => "proposal_duplicate_clause",
         InitialPlanError::UnlinkedUserGoal => "proposal_anchor_invalid",
-        InitialPlanError::UnlinkedDependency => "proposal_graph_invalid",
-        InitialPlanError::GoalGraph => "proposal_graph_invalid",
-        InitialPlanError::CandidateCoverage => "proposal_lowering_invalid",
-        InitialPlanError::UncoverableGoal => "proposal_lowering_invalid",
+        InitialPlanError::UnlinkedDependency | InitialPlanError::GoalGraph => {
+            "proposal_graph_invalid"
+        }
+        InitialPlanError::CandidateCoverage | InitialPlanError::UncoverableGoal => {
+            "proposal_lowering_invalid"
+        }
         InitialPlanError::PlanTooLarge => "proposal_plan_too_large",
         InitialPlanError::SearchPlanContract => "compiled_search_plan_invalid",
         InitialPlanError::Receipt => "proposal_receipt_invalid",
@@ -50,7 +52,7 @@ fn initial_plan_code(error: InitialPlanError) -> &'static str {
 }
 
 fn contract_code(
-    error: krw_agent_contracts::ContractValueError,
+    error: &krw_agent_contracts::ContractValueError,
     arguments: &Value,
 ) -> &'static str {
     match error {
@@ -64,7 +66,7 @@ fn contract_code(
     }
 }
 
-fn final_output_contract_code(error: krw_agent_contracts::ContractValueError) -> &'static str {
+fn final_output_contract_code(error: &krw_agent_contracts::ContractValueError) -> &'static str {
     match error {
         krw_agent_contracts::ContractValueError::UnknownContract(_) => "unknown_contract",
         krw_agent_contracts::ContractValueError::Shape(_) => "shape_invalid",
@@ -154,7 +156,7 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
         let output = Value::String(content.to_owned());
         let contract =
             krw_agent_contracts::validate_value(krw_agent_contracts::FINAL_MARKDOWN_V1, &output)
-                .map_or_else(final_output_contract_code, |_| "valid");
+                .map_or_else(|error| final_output_contract_code(&error), |()| "valid");
         let looks_like_json = content.trim_start().starts_with(['{', '[']);
         println!(
             "live_episode_audit=final_content kind=markdown byte_len={} looks_like_json={looks_like_json} final_markdown_contract={contract}",
@@ -165,15 +167,12 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
     let [tool] = episode.assistant.tool_calls.as_slice() else {
         return;
     };
-    let arguments: Value = match serde_json::from_str(&tool.function.arguments) {
-        Ok(arguments) => arguments,
-        Err(_) => {
-            println!(
-                "live_episode_audit=tool_arguments_json_invalid tool={}",
-                tool.function.name.as_str()
-            );
-            return;
-        }
+    let Ok(arguments) = serde_json::from_str::<Value>(&tool.function.arguments) else {
+        println!(
+            "live_episode_audit=tool_arguments_json_invalid tool={}",
+            tool.function.name.as_str()
+        );
+        return;
     };
     let arguments_are_object = arguments.is_object();
     println!(
@@ -193,12 +192,9 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
         .iter()
         .find(|capability| capability.id == "ontology.query_context")
         .expect("query-context capability");
-    let arguments = match capability.provider_input_codec.decode(arguments) {
-        Ok(arguments) => arguments,
-        Err(_) => {
-            println!("live_episode_audit=provider_input_envelope_invalid");
-            return;
-        }
+    let Ok(arguments) = capability.provider_input_codec.decode(arguments) else {
+        println!("live_episode_audit=provider_input_envelope_invalid");
+        return;
     };
     let context = RunContextV1::CompanyTickerSet {
         tickers: vec!["AAPL".into()],
@@ -221,13 +217,13 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
             println!("live_episode_audit=proposal_compiles selected_clauses={selected}");
             return;
         }
-        Err(error) => initial_plan_code(error),
+        Err(error) => initial_plan_code(&error),
     };
     // Only stable structural metadata leaves this audit.  The tool name is an
     // internal ABI identifier; provider content and argument values never do.
     println!(
         "live_episode_audit=proposal_rejected tool={} contract={} reason={compile_code}",
         tool.function.name.as_str(),
-        contract.map_or_else(|error| contract_code(error, &arguments), |_| "valid")
+        contract.map_or_else(|error| contract_code(&error, &arguments), |()| "valid")
     );
 }

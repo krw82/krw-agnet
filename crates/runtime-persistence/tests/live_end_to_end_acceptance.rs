@@ -1,11 +1,11 @@
 //! Opt-in live acceptance for the complete read-only company-research path.
 //!
-//! The enclosing script supplies an ephemeral, certificate-verified PostgreSQL
+//! The enclosing script supplies an ephemeral, certificate-verified `PostgreSQL`
 //! instance and TLS ingress for a separately started `krw-capabilityd`. This
 //! test then exercises the actual production `RunSupervisor` path:
 //!
 //! `DeepSeek Flash` -> real immutable ontology release -> immutable evidence
-//! ledger + direct Korean Markdown -> PostgreSQL `commit_final` and outbox.
+//! ledger + direct Korean Markdown -> `PostgreSQL` `commit_final` and outbox.
 //!
 //! No prompt, answer, provider reasoning, capability payload, URL, or secret
 //! is emitted by this test. It is skipped unless an operator sets the explicit
@@ -69,9 +69,7 @@ fn required_hash(name: &str) -> ContentHash {
 }
 
 fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").clone()
 }
 
 fn live_endpoint_registry() -> EndpointRegistry {
@@ -106,7 +104,7 @@ fn live_ontology_binding(root: &Path) -> DeploymentBinding {
         ));
         capability.server_schema_bundle_hash = schema_hash.clone();
         capability.data_release_hash = release_hash.clone();
-        capability.server_build = server_build.clone();
+        capability.server_build.clone_from(&server_build);
     }
     binding.deployment_id = "live-ontology-acceptance-v1".into();
     binding

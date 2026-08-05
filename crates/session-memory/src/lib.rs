@@ -1585,7 +1585,7 @@ pub struct CompletedTurnInputV3<'a> {
 /// does not pretend that free prose contains kernel-validated claims. It
 /// preserves only bounded conversational continuity (question, answer,
 /// ticker scope, and user constraints); grounded claims remain in the
-/// durable per-run EvidenceLedger.
+/// durable per-run `EvidenceLedger`.
 pub struct CompletedMarkdownTurnInputV3<'a> {
     pub session_id: &'a str,
     pub parent_frontier_hash: ContentHash,

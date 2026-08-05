@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 use crate::agent_v1::ABI_VERSION;
 use crate::agent_v1::{AgentV1Procedure, DatabaseFailure, JsonProcedureExecutor};
 
-const PROCEDURES: [AgentV1Procedure; 20] = [
+const PROCEDURES: [AgentV1Procedure; 21] = [
     AgentV1Procedure::EnqueueRun,
     AgentV1Procedure::ClaimRun,
     AgentV1Procedure::RenewLease,
@@ -50,6 +50,7 @@ const PROCEDURES: [AgentV1Procedure; 20] = [
     AgentV1Procedure::AckOutbox,
     AgentV1Procedure::ReadCommittedOutcome,
     AgentV1Procedure::ReadFinalOutput,
+    AgentV1Procedure::ReapRetainedRuns,
 ];
 
 const MIN_TIMEOUT: Duration = Duration::from_millis(100);

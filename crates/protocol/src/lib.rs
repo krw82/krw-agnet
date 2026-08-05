@@ -275,6 +275,7 @@ pub struct ModelDescriptor {
 /// supporting tools or JSON output in that mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ProviderWireModeCapabilities {
     pub supported: bool,
     pub supports_tools: bool,

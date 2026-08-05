@@ -10,6 +10,7 @@ async-trait.workspace = true
 krw-agent-bounded-child = { path = "../bounded-child" }
 krw-agent-protocol = { path = "../protocol" }
 krw-session-memory = { path = "../session-memory" }
+prometheus.workspace = true
 serde.workspace = true
 serde_jcs.workspace = true
 serde_json.workspace = true

@@ -57,6 +57,7 @@ pub enum AgentV1Procedure {
     AckOutbox,
     ReadCommittedOutcome,
     ReadFinalOutput,
+    ReapRetainedRuns,
 }
 
 impl AgentV1Procedure {
@@ -82,6 +83,7 @@ impl AgentV1Procedure {
             Self::AckOutbox => "agent_v1.ack_outbox",
             Self::ReadCommittedOutcome => "agent_v1.read_committed_outcome",
             Self::ReadFinalOutput => "agent_v1.read_final_output",
+            Self::ReapRetainedRuns => "agent_v1.reap_retained_runs",
         }
     }
 
@@ -113,6 +115,7 @@ impl AgentV1Procedure {
             Self::AckOutbox => "SELECT agent_v1.ack_outbox($1::jsonb)",
             Self::ReadCommittedOutcome => "SELECT agent_v1.read_committed_outcome($1::jsonb)",
             Self::ReadFinalOutput => "SELECT agent_v1.read_final_output($1::jsonb)",
+            Self::ReapRetainedRuns => "SELECT agent_v1.reap_retained_runs($1::jsonb)",
         }
     }
 }
@@ -2115,22 +2118,22 @@ mod tests {
     #[test]
     fn embedded_migration_contains_security_and_atomicity_contracts() {
         for required in [
-            "CREATE SCHEMA agent_store",
-            "CREATE SCHEMA agent_v1",
+            "SCHEMA IF NOT EXISTS agent_store",
+            "SCHEMA IF NOT EXISTS agent_v1",
             "SECURITY DEFINER",
             "REVOKE ALL ON ALL TABLES IN SCHEMA agent_store FROM PUBLIC",
-            "CREATE FUNCTION agent_v1.begin_action",
-            "CREATE FUNCTION agent_v1.checkpoint_episode",
-            "CREATE FUNCTION agent_v1.checkpoint_run_state",
-            "CREATE FUNCTION agent_v1.commit_final",
-            "CREATE FUNCTION agent_v1.request_cancel",
-            "CREATE FUNCTION agent_v1.fail_or_defer",
-            "CREATE FUNCTION agent_v1.claim_outbox",
-            "CREATE FUNCTION agent_v1.ack_outbox",
-            "CREATE TABLE agent_store.outbox",
-            "CREATE TABLE agent_store.run_state_checkpoints",
-            "CREATE FUNCTION agent_store.advance_action_frontier",
-            "CREATE UNIQUE INDEX runs_one_active_per_session_idx",
+            "FUNCTION agent_v1.begin_action",
+            "FUNCTION agent_v1.checkpoint_episode",
+            "FUNCTION agent_v1.checkpoint_run_state",
+            "FUNCTION agent_v1.commit_final",
+            "FUNCTION agent_v1.request_cancel",
+            "FUNCTION agent_v1.fail_or_defer",
+            "FUNCTION agent_v1.claim_outbox",
+            "FUNCTION agent_v1.ack_outbox",
+            "TABLE IF NOT EXISTS agent_store.outbox",
+            "TABLE IF NOT EXISTS agent_store.run_state_checkpoints",
+            "FUNCTION agent_store.advance_action_frontier",
+            "UNIQUE INDEX IF NOT EXISTS runs_one_active_per_session_idx",
             "'recovery', jsonb_build_object(",
             "principal_id text NOT NULL",
             "'episodes', COALESCE((",
@@ -2221,18 +2224,18 @@ mod tests {
     #[test]
     fn embedded_migration_contains_principal_fair_queue_contracts() {
         for required in [
-            "CREATE TABLE agent_store.fair_queue_clock",
-            "CREATE TABLE agent_store.principal_fair_queue",
+            "TABLE IF NOT EXISTS agent_store.fair_queue_clock",
+            "TABLE IF NOT EXISTS agent_store.principal_fair_queue",
             "PRIMARY KEY (tenant_id, principal_id)",
             "queue_start_tag bigint NOT NULL",
             "queue_finish_tag bigint NOT NULL",
             "CHECK (queue_finish_tag = queue_start_tag + 1)",
-            "CREATE FUNCTION agent_store.allocate_fair_queue_tag",
+            "FUNCTION agent_store.allocate_fair_queue_tag",
             "GREATEST(v_virtual_start_tag, v_tail_finish_tag)",
             "ERRCODE='K1022',MESSAGE='fair_queue_tag_overflow'",
-            "CREATE INDEX runs_expired_active_claim_idx",
-            "CREATE INDEX runs_fair_claim_order_idx",
-            "CREATE INDEX runs_fair_claim_available_idx",
+            "INDEX IF NOT EXISTS runs_expired_active_claim_idx",
+            "INDEX IF NOT EXISTS runs_fair_claim_order_idx",
+            "INDEX IF NOT EXISTS runs_fair_claim_available_idx",
             "ORDER BY r.lease_deadline, r.created_at, r.run_id",
             "ORDER BY r.queue_start_tag, r.queue_finish_tag,",
             "SET virtual_start_tag = GREATEST(virtual_start_tag, v_run.queue_start_tag)",
