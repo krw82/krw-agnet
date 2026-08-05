@@ -443,9 +443,11 @@ def validate_ground_truth(path: str) -> int:
         if not isinstance(em, list):
             errors.append(f"{ctx} ({qid}): 'expected_metrics' must be array")
             continue
-        if len(em) == 0:
-            errors.append(f"{ctx} ({qid}): 'expected_metrics' is empty")
-            continue
+        # Empty expected_metrics is allowed: such questions are graded on
+        # state=final alone (see scripts/run_eval_v2.sh and evals/README.md).
+        # Task 9 introduces qualitative / insufficient-evidence / false-premise
+        # / conflict-disclosure categories that intentionally have no numeric
+        # expected values.
         for j, m in enumerate(em):
             mctx = f"{ctx}.expected_metrics[{j}] ({qid})"
             if not isinstance(m, dict):
@@ -470,9 +472,13 @@ def validate_ground_truth(path: str) -> int:
     if errors:
         _emit_validate_errors(errors)
         return 1
+    n_questions = len(gt["questions"])
+    n_metrics = sum(len(q.get("expected_metrics", [])) for q in gt["questions"])
+    n_empty = sum(1 for q in gt["questions"] if not q.get("expected_metrics"))
     print(
-        f"[validate] OK: {len(gt['questions'])} questions, "
-        f"{sum(len(q.get('expected_metrics', [])) for q in gt['questions'])} metrics"
+        f"[validate] OK: {n_questions} questions, "
+        f"{n_metrics} metrics, "
+        f"{n_empty} qualitative (expected_metrics=[])"
     )
     return 0
 
