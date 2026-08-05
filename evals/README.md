@@ -51,3 +51,32 @@ python3 scripts/validate_semantic_evals.py \
 별도의 좁은 `ResearchIntent`이며, trusted planner가 이를 검증하고 최소 충분 `SearchPlan`으로
 컴파일한다. 따라서 `{"search_plan": {...}}` 형태는 호환 입력이 아니라 반드시 실패해야 하는
 반례 fixture로만 존재한다.
+
+## numeric-accuracy — 범위 제한(scooping) 채점 의미론
+
+`scripts/grade_numeric_accuracy.py`는 `evals/numeric-accuracy/ground_truth.json`의
+`expected_metrics`를 답변 텍스트에서 검사한다. 과거에는 답변 전체에서 추출한 모든 숫자를
+대상으로 기대값에 가장 가까운 것을 고르는(closest-match) 방식이라서, 다른 지표나 다른 연도의
+숫자가 빈 자리를 통과시킬 수 있었다. Task 8부터는 다음과 같이 바뀌었다.
+
+- **문장 단위 범위 제한**: 답변을 문장(`. `, `다.`, `\n`, `! `, `? ` 기준)으로 쪼갠 뒤,
+  한 문장 안에 (a) `metric` 키워드와 (b) `fiscal_year` 표시(예: `2024`, `FY2024`,
+  `2024년`, `fiscal 2024`)가 **모두** 등장하는 문장에서만 숫자를 수집한다. `metric` →
+  키워드 매핑은 `METRIC_KEYWORD_MAP`(`revenue`, `operating_income`, `net_income`,
+  `eps`, `fcf`, `*_margin`, `revenue_growth`, `research_and_development`,
+  `total_assets`, `total_liabilities`, `operating_cash_flow` 등 영문+한글)에 있다.
+- **문맥 미발견 = 실패**: 해당 지표·연도 쌍을 함께 언급하는 문장이 없으면 그 지표는
+  `metric_context_not_found` 사유로 **실패** 처리된다(빈 점수로 통과하지 않는다). 단, 단위가
+  `percent`인 지표도 같은 방식으로 범위 제한된 `%` 수치만 비교한다.
+- **PASS 게이트**: `scripts/run_eval_v2.sh`는 `state=final`을 전제로 한 뒤, qid가
+  `ground_truth.json`에 `expected_metrics`를 가지면 numeric grader의 종료 코드(0=모두 통과,
+  1=일부 실패)가 PASS를 결정한다. grader가 0이 아니면 `STATUS=FAIL`, 사유
+  `numeric_mismatch`가 된다. qid가 ground_truth에 없거나 `expected_metrics`가 비어 있으면
+  `state=final`만으로 PASS한다.
+- **스키마 검증**: `python3 scripts/grade_numeric_accuracy.py --validate <ground_truth.json>`
+  는 JSON 스키마, 중복 id, 단위/허용오차 범위 등을 검사해 유효하면 0, 아니면 1로 종료한다.
+  CI와 Task 9에서 ground_truth 변경을 fail-closed로 막는 데 쓰인다.
+
+변경 규칙: ground_truth에 새 지표(metric 식별자)를 추가할 때는
+`METRIC_KEYWORD_MAP`에 영문/한글 키워드도 함께 넣어야 한다. 매핑이 비어 있으면 그 지표는
+항상 `metric_context_not_found`로 실패한다.

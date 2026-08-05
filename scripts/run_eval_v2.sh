@@ -61,8 +61,48 @@ for i in "${!QUESTIONS[@]}"; do
   ELAPSED=$((END_TIME - START_TIME))
 
   if grep -q "state=final" "$OUTPUT_FILE"; then
-    STATUS="PASS"
-    PASS=$((PASS + 1))
+    # state=final is the prerequisite. Numeric grading now gates PASS for
+    # qids that have expected_metrics in ground_truth.json. If the qid has
+    # no metrics (or isn't in ground_truth), state=final alone is enough.
+    HAS_METRICS=$(python3 - "$qid" "$krw_root/evals/numeric-accuracy/ground_truth.json" <<'PY' 2>/dev/null || echo "0"
+import json, sys
+qid, gt_path = sys.argv[1], sys.argv[2]
+try:
+    with open(gt_path, encoding="utf-8") as f:
+        gt = json.load(f)
+except Exception:
+    print("0"); sys.exit(0)
+for q in gt.get("questions", []):
+    if q.get("id") == qid:
+        print("1" if q.get("expected_metrics") else "0")
+        sys.exit(0)
+print("0")
+PY
+)
+    if [[ "$HAS_METRICS" == "1" ]]; then
+      # Numeric grader gates PASS: exit 0 = all pass, 1 = some fail.
+      set +e
+      ACC=$(python3 "$krw_root/scripts/grade_numeric_accuracy.py" \
+        "$OUTPUT_FILE" --question-id "$qid" \
+        --ground-truth "$krw_root/evals/numeric-accuracy/ground_truth.json" 2>&1)
+      ACC_EXIT=$?
+      set -e
+      ACC_LINE=$(echo "$ACC" | grep "^정확도:" || true)
+      if [[ -n "$ACC_LINE" ]]; then
+        printf '  정확도: %s\n' "$ACC_LINE" | tee -a "$SUMMARY_FILE"
+      fi
+      if [[ $ACC_EXIT -eq 0 ]]; then
+        STATUS="PASS"
+        PASS=$((PASS + 1))
+      else
+        STATUS="FAIL"
+        FAIL=$((FAIL + 1))
+        printf '  사유: numeric_mismatch\n' | tee -a "$SUMMARY_FILE"
+      fi
+    else
+      STATUS="PASS"
+      PASS=$((PASS + 1))
+    fi
   elif [ $EXIT_CODE -eq 124 ]; then
     STATUS="TIMEOUT"
     FAIL=$((FAIL + 1))
@@ -74,16 +114,6 @@ for i in "${!QUESTIONS[@]}"; do
   PREVIEW=$(grep -v "^$" "$OUTPUT_FILE" | head -5 | tr '\n' ' ' | cut -c1-120)
   printf '  → %s (%ds)\n' "$STATUS" "$ELAPSED" | tee -a "$SUMMARY_FILE"
   printf '  미리보기: %s...\n' "${PREVIEW:0:100}" | tee -a "$SUMMARY_FILE"
-
-  # 정확도 채점
-  if [[ "$STATUS" == "PASS" ]]; then
-    ACC=$(python3 "$krw_root/scripts/grade_numeric_accuracy.py" \
-      "$OUTPUT_FILE" --question-id "$qid" --ground-truth "$krw_root/evals/numeric-accuracy/ground_truth.json" 2>&1)
-    ACC_LINE=$(echo "$ACC" | grep "^정확도:" || true)
-    if [[ -n "$ACC_LINE" ]]; then
-      printf '  정확도: %s\n' "$ACC_LINE" | tee -a "$SUMMARY_FILE"
-    fi
-  fi
 done
 
 printf '\n%s\n' "================================================" | tee -a "$SUMMARY_FILE"
