@@ -126,6 +126,23 @@ struct Args {
     /// Disabled unless a bind address is supplied.
     #[arg(long)]
     metrics_bind: Option<String>,
+    /// Number of tokio worker threads driving the multi-thread runtime.
+    /// Defaults to `min(available_parallelism, 8)` so a default deployment
+    /// doesn't pin the provider/MCP pools to the historical hard-coded 2.
+    #[arg(long, default_value_t = default_worker_threads())]
+    worker_threads: usize,
+    /// Per-host idle connection limit handed to the `DeepSeek` HTTP pool. Tune
+    /// together with `--max-active-runs` and the model `max_in_flight`.
+    #[arg(long, default_value_t = 8, alias = "deepseek_max_idle_per_host")]
+    deepseek_max_idle_per_host: usize,
+}
+
+/// Default tokio worker thread count: cap at 8 so very large hosts don't
+/// oversubscribe, fall back to 8 if `available_parallelism` errors out.
+fn default_worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(8, std::num::NonZero::get)
+        .min(8)
 }
 
 #[derive(Debug, Error)]
@@ -138,6 +155,8 @@ enum StartupError {
     InvalidKeyValue,
     #[error("active run limit exceeds the resident recovery-memory bound")]
     ActiveRunLimit,
+    #[error("--worker-threads must be greater than 0")]
+    WorkerThreadsZero,
     #[error("startup release set must contain 1..=64 image directories")]
     ReleaseImageCount,
     #[error("release authorization and trust registry must be supplied together")]
@@ -176,8 +195,7 @@ struct KeyEnvironmentReference {
     environment_name: String,
 }
 
-#[tokio::main(worker_threads = 2)]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -185,6 +203,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
     let args = Args::parse();
+    if args.worker_threads == 0 {
+        return Err(Box::new(StartupError::WorkerThreadsZero));
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(args.worker_threads)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main(args))
+}
+
+#[allow(clippy::too_many_lines)]
+async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     validate_image_dir_count(&args.image_dirs)?;
     let images = load_image_set(&args.image_dirs)?;
     let binding: DeploymentBinding = load_yaml(&args.deployment_binding)?;
@@ -200,7 +230,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ProcessEnvironment,
         ValidationMode::Production,
     )?;
-    let providers = DeepSeekProviderCatalog::compile_release_set(&releases)?;
+    let providers = DeepSeekProviderCatalog::compile_release_set_with_idle(
+        &releases,
+        args.deepseek_max_idle_per_host,
+    )?;
     let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
     verify_release_authorization(&args, &descriptor)?;

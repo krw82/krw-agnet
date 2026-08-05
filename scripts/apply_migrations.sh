@@ -10,6 +10,13 @@ set -euo pipefail
 # concurrent runners cannot both read the same APPLIED_MAX and double-apply
 # the same migration file. The lock is held for the lifetime of the wrapper
 # psql session and released on disconnect.
+#
+# Checksum verification: for every already-applied migration file (version <=
+# APPLIED_MAX), shasum -a 256 of the file is compared against the stored
+# checksum in schema_migrations. Mismatch aborts the run before any new
+# migration is applied. Rows where checksum == 'backfill' (written by the
+# 0009 backfill for versions 1-9) are skipped because they are not real
+# hashes. New migrations recorded by this script always carry a real sha256.
 
 set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,6 +41,47 @@ discover_applied_max() {
 APPLIED_MAX="$(discover_applied_max "$@")"
 APPLIED_MAX=$((10#$APPLIED_MAX))
 echo "apply_migrations: highest applied version=$APPLIED_MAX"
+
+# Verify checksums of already-applied migrations before applying any pending
+# file. This catches drifted / locally edited migration files that have
+# already been recorded. The advisory lock is not held yet, but verification
+# is read-only against schema_migrations and idempotent across concurrent
+# runners; a mismatch is a hard pre-flight failure regardless of the lock.
+if (( APPLIED_MAX > 0 )); then
+  # version<TAB>checksum for all applied rows, one per line, in version order.
+  APPLIED_ROWS="$(psql "$@" -tAF $'\t' \
+    "SELECT version, checksum FROM agent_store.schema_migrations ORDER BY version" \
+    2>/dev/null || true)"
+  while IFS=$'\t' read -r row_version row_checksum; do
+    [[ -z "$row_version" ]] && continue
+    # Skip backfill rows written by 0009: checksum is the literal 'backfill',
+    # not a real hash, so there is nothing to compare against.
+    [[ "$row_checksum" == "backfill" ]] && continue
+    # Locate the migration file for this version. Filename format is
+    # NNNN_name.sql; NNNN is zero-padded to 4 digits (versions 1-9999).
+    pad="$(printf '%04d' "$((10#$row_version))")"
+    match="$(ls "$MIGRATIONS_DIR"/${pad}_*.sql 2>/dev/null || true)"
+    if [[ -z "$match" ]]; then
+      # Version recorded but no file present. This is not a checksum mismatch
+      # (different failure mode); leave it to the operator rather than guess.
+      echo "apply_migrations: warning: no file found for applied version $row_version" >&2
+      continue
+    fi
+    # Exactly one file should match. If glob expanded to multiple, complain.
+    file_for_version="$(printf '%s\n' "$match" | head -n1)"
+    extra="$(printf '%s\n' "$match" | tail -n +2)"
+    if [[ -n "$extra" ]]; then
+      echo "checksum_ambiguous: multiple files for version $row_version: $match" >&2
+      exit 1
+    fi
+    file_checksum="$(shasum -a 256 "$file_for_version" | cut -d' ' -f1)"
+    if [[ "$file_checksum" != "$row_checksum" ]]; then
+      echo "checksum_mismatch: $(basename "$file_for_version") (recorded=$row_checksum actual=$file_checksum)" >&2
+      exit 1
+    fi
+    echo "apply_migrations: verified $(basename "$file_for_version") checksum"
+  done <<< "$APPLIED_ROWS"
+fi
 
 # Build a SQL script: take the advisory lock, then for each pending file apply
 # it (\i, each file owns its own BEGIN/COMMIT) and record the tracking row.

@@ -496,6 +496,30 @@ UCB가 아니라 uncertainty를 빼는 conservative lower estimate를 쓴다.
 
 tool 결과는 병렬로 받아도 original tool-call order로 provider message에 넣는다.
 
+#### parallel_safe field — currently advisory only
+
+`CapabilitySpec.parallel_safe`는 현재 **advisory only** 상태다. `agent.yaml`에 작성된 값은
+compile 과정에서 `CapabilitySpec`로 parse되고 `agent_image_hash`에 포함되어 pin된다. ABI 상으로는
+forward compatibility를 위해 유지된다.
+
+하지만 현재 runtime/kernel은 이 플래그를 **읽지 않는다**. 모든 capability는 `parallel_safe` 값과
+무관하게 순차적으로 실행된다. `parallel_safe: true`를 작성하더라도 오늘 날 병렬 실행을 기대해서는 안
+된다. 이는 read site가 zero인 dead field 상태이므로 authoring 시 참고 용도로만 다뤄야 한다.
+
+이 플래그를 real parallel dispatch에 연결하려면 다음 위험을 해결해야 한다(architecture review 참조).
+
+- **Ordering** — tool 결과를 병렬로 받더라도 original tool-call order를 provider message에 유지해야
+  한다. 순서가 틀어지면 replay/caching과 verifier의 deterministic 가정이 깨진다.
+- **Budget** — parallel batch는 parent deadline과 model/tool/memory permit, byte budget 안에서
+  실행되어야 한다. 병렬 fan-out이 예산을 초과하면 run 전체가 중단된다.
+- **MCP tail** — pooled MCP server의 connection tail, auth scope 분리, evidence ledger의 쓰기 순서가
+  interleaving에 안전해야 한다. 단일 capability의 실패가 pool 전체를 폐기시키지 않도록 격리해야 한다.
+
+8.4의 parallel batch predicate(`parallel_safe=true` 외에 dependency / read-only / auth scope /
+overlap / permits / budget 조건)를 모두 만족하는 action만 같이 실행한다는 설계 의도는 남아 있지만,
+오늘 runtime에는 이 predicate를 평가하는 enforcement가 없다. 플래그를 real dispatch에 연결하는 작업은
+별도 kernel release로 다뤄야 하며, 그 전까지는 문서화된 의도로만 취급한다.
+
 ### 8.5 Stop rules
 
 다음 중 하나면 검색을 멈춘다.

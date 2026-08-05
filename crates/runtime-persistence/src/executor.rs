@@ -89,18 +89,35 @@ pub struct DeepSeekProviderCatalog {
 
 impl DeepSeekProviderCatalog {
     pub fn compile(runtime: &ResolvedRuntime) -> Result<Arc<Self>, ProviderCatalogError> {
-        Self::compile_from(runtime.models(), runtime.deepseek_api_key())
+        Self::compile_from(runtime.models(), runtime.deepseek_api_key(), 8)
     }
 
+    /// Backwards-compatible default entry point: keeps the pre-existing
+    /// `max_idle_per_host = 8` semantics for callers that don't have a CLI
+    /// override handy.
     pub fn compile_release_set(
         releases: &ResolvedReleaseSet,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
-        Self::compile_from(releases.models(), releases.deepseek_api_key())
+        Self::compile_from(releases.models(), releases.deepseek_api_key(), 8)
+    }
+
+    /// Same as `compile_release_set` but lets the daemon thread a CLI-supplied
+    /// `--deepseek-max-idle-per-host` value into the underlying HTTP pool.
+    pub fn compile_release_set_with_idle(
+        releases: &ResolvedReleaseSet,
+        max_idle_per_host: usize,
+    ) -> Result<Arc<Self>, ProviderCatalogError> {
+        Self::compile_from(
+            releases.models(),
+            releases.deepseek_api_key(),
+            max_idle_per_host,
+        )
     }
 
     fn compile_from<'a>(
         models: impl IntoIterator<Item = &'a krw_agent_protocol::ModelDescriptor>,
         api_key: &str,
+        max_idle_per_host: usize,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
         let mut by_base = BTreeMap::<String, BTreeSet<String>>::new();
         let mut seen = BTreeSet::new();
@@ -129,7 +146,11 @@ impl DeepSeekProviderCatalog {
         for (api_base, models) in by_base {
             let client = Arc::new(
                 DeepSeekClient::new(
-                    DeepSeekClientConfig::production(api_base, models.iter().cloned()),
+                    DeepSeekClientConfig::production(
+                        api_base,
+                        models.iter().cloned(),
+                        max_idle_per_host,
+                    ),
                     api_key,
                 )
                 .map_err(|_| ProviderCatalogError::Client)?,
@@ -1193,7 +1214,7 @@ mod tests {
         forbidden.model_id = "forbidden-provider-model".into();
         let descriptors = [models.models[0].clone(), forbidden];
         assert!(matches!(
-            DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key"),
+            DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key", 8),
             Err(ProviderCatalogError::ModelInventory)
         ));
     }

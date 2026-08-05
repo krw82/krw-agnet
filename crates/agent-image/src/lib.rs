@@ -765,6 +765,13 @@ pub struct CapabilitySpec {
     /// run-context authority. The absence of a scope binding is never an
     /// implicit authorization.
     pub scope_binding: CapabilityScopeBinding,
+    /// Declares a capability eligible for in-run parallel dispatch. Currently
+    /// **not enforced** by the run engine or capability runtime — all
+    /// capabilities execute sequentially regardless of this flag. Retained in
+    /// the ABI for forward compatibility; do not author `parallel_safe: true`
+    /// expecting concurrent execution today. Wiring this flag to real
+    /// parallel dispatch requires careful handling of ordering, budget, and
+    /// MCP-tail semantics (see architecture review).
     pub parallel_safe: bool,
     pub prerequisites: Vec<String>,
 }

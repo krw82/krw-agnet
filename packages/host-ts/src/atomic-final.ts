@@ -112,6 +112,14 @@ export interface BillingUsageV1 extends JsonObject {
   readonly input_tokens: number;
   readonly output_tokens: number;
   readonly evidence_bytes: number;
+  /**
+   * Cumulative wall-clock time in milliseconds. Optional because runs
+   * persisted before these fields were introduced have `0`/missing values;
+   * readers must treat absence as zero.
+   */
+  readonly provider_total_ms?: number;
+  readonly capability_total_ms?: number;
+  readonly compact_total_ms?: number;
 }
 
 export interface AnswerBillingMetadataV1 extends JsonObject {

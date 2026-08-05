@@ -22,6 +22,8 @@ static RUNS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 static RUN_DURATION: OnceLock<HistogramVec> = OnceLock::new();
 static ACTIVE_RUNS: OnceLock<IntGauge> = OnceLock::new();
 static CAPABILITY_CALLS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
+static CAPABILITY_DURATION: OnceLock<HistogramVec> = OnceLock::new();
+static PROVIDER_TURN_DURATION: OnceLock<HistogramVec> = OnceLock::new();
 
 /// Lazily initialize and return the shared Prometheus [`Registry`].
 ///
@@ -63,6 +65,28 @@ pub fn registry() -> &'static Registry {
         )
         .expect("krw_capability_calls_total collector is unique");
 
+        // Finer buckets than `krw_run_duration_seconds` because per-call
+        // latency lives in the tens-of-ms to single-digit-seconds range.
+        let cap_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "krw_capability_duration_seconds",
+                "Wall-clock duration of a single capability dispatch by outcome",
+            )
+            .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
+            &["capability_id", "outcome"],
+        )
+        .expect("krw_capability_duration_seconds collector is unique");
+
+        let provider_turn_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "krw_provider_turn_duration_seconds",
+                "Wall-clock duration of a single provider turn (Provider::complete)",
+            )
+            .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
+            &[],
+        )
+        .expect("krw_provider_turn_duration_seconds collector is unique");
+
         registry
             .register(Box::new(runs.clone()))
             .expect("krw_runs_total registers");
@@ -75,11 +99,19 @@ pub fn registry() -> &'static Registry {
         registry
             .register(Box::new(cap_calls.clone()))
             .expect("krw_capability_calls_total registers");
+        registry
+            .register(Box::new(cap_duration.clone()))
+            .expect("krw_capability_duration_seconds registers");
+        registry
+            .register(Box::new(provider_turn_duration.clone()))
+            .expect("krw_provider_turn_duration_seconds registers");
 
         let _ = RUNS_TOTAL.set(runs);
         let _ = RUN_DURATION.set(duration);
         let _ = ACTIVE_RUNS.set(active);
         let _ = CAPABILITY_CALLS_TOTAL.set(cap_calls);
+        let _ = CAPABILITY_DURATION.set(cap_duration);
+        let _ = PROVIDER_TURN_DURATION.set(provider_turn_duration);
 
         registry
     })
@@ -134,6 +166,42 @@ pub fn record_capability_call(capability_id: &str, outcome: &str) {
         .inc();
 }
 
+/// Record the wall-clock duration of a single capability dispatch.
+///
+/// `ms` is the elapsed time in milliseconds spent inside the capability
+/// invocation (including any MCP round trip). It is converted to seconds
+/// (as a float) for the Prometheus histogram observation. Observe at the same
+/// call site as [`record_capability_call`].
+pub fn record_capability_duration_seconds(capability_id: &str, outcome: &str, ms: u64) {
+    let _ = registry();
+    CAPABILITY_DURATION
+        .get()
+        .expect("registry initializes CAPABILITY_DURATION")
+        .with_label_values(&[capability_id, outcome])
+        .observe(milliseconds_to_seconds(ms));
+}
+
+/// Record the wall-clock duration of a single provider turn (the
+/// `Provider::complete` future). `ms` is the elapsed time in milliseconds.
+pub fn record_provider_turn_duration_seconds(ms: u64) {
+    let _ = registry();
+    PROVIDER_TURN_DURATION
+        .get()
+        .expect("registry initializes PROVIDER_TURN_DURATION")
+        .with_label_values(&[])
+        .observe(milliseconds_to_seconds(ms));
+}
+
+/// Convert a millisecond `u64` measurement into seconds for histogram
+/// observation. Sub-millisecond precision is irrelevant for the bucket layout
+/// in use here, so the clippy `cast_precision_loss` lint is intentionally
+/// allowed: a wall-clock measurement of, say, 2^53 ms (~285k years) is not a
+/// meaningful runtime input.
+#[allow(clippy::cast_precision_loss)]
+fn milliseconds_to_seconds(ms: u64) -> f64 {
+    ms as f64 / 1000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +219,8 @@ mod tests {
         record_run_outcome(OUTCOME_FAILED, std::time::Duration::from_secs(10));
         record_capability_call("ontology.query", "success");
         record_capability_call("ontology.query", "error");
+        record_capability_duration_seconds("ontology.query", "success", 250);
+        record_provider_turn_duration_seconds(1_200);
 
         let metric_families = first.gather();
         let mut buffer = String::new();
@@ -160,6 +230,8 @@ mod tests {
         assert!(buffer.contains("krw_runs_total"));
         assert!(buffer.contains("krw_run_duration_seconds"));
         assert!(buffer.contains("krw_capability_calls_total"));
+        assert!(buffer.contains("krw_capability_duration_seconds"));
+        assert!(buffer.contains("krw_provider_turn_duration_seconds"));
         assert!(buffer.contains("ontology.query"));
     }
 }

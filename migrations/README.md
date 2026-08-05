@@ -51,7 +51,30 @@ rather than run, and deltas reject deletion by trigger.
 that records which migration versions have been applied, replacing the legacy
 sentinel-file mechanism. `scripts/apply_migrations.sh` consults this table to
 decide which files to run; it takes a session-level advisory lock so two
-concurrent runners cannot double-apply the same migration.
+concurrent runners cannot double-apply the same migration. Each newly applied
+file is recorded with its `shasum -a 256` checksum.
+
+### Checksum verification policy
+
+Before applying any pending migration, `apply_migrations.sh` verifies the
+checksum of every already-applied migration file (version <= `APPLIED_MAX`):
+
+- For each `schema_migrations` row with `version <= APPLIED_MAX`, the runner
+  computes `shasum -a 256` of the matching `migrations/NNNN_*.sql` file and
+  compares it to the stored `checksum`.
+- On mismatch, the script prints `checksum_mismatch: <file>` to stderr and
+  exits non-zero, *before* any pending migration is applied. A drifted or
+  locally edited migration file that has already been recorded is therefore
+  a hard pre-flight failure.
+- Rows written by the 0009 backfill carry the literal checksum `'backfill'`
+  (versions 1-9 on databases that ran 0001-0008 before tracking existed).
+  These are skipped, because `'backfill'` is not a real hash. Only migrations
+  recorded by the runner itself (version >= the first migration applied after
+  0009) carry a sha256 and are verified.
+
+This makes the migration set tamper-evident: editing an applied migration in
+place, or swapping in a different file with the same version number, is
+detected on the next run.
 
 `0010_claim_resets_deferred_attempts.sql` redefines `agent_v1.claim_run` so
 that freshly claiming a queued/deferred run resets
