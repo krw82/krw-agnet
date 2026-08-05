@@ -106,11 +106,16 @@ fi
     # \i runs the file in the current session context. Each migration file
     # manages its own transaction boundaries.
     echo "\\i '$f'"
-    # Record the apply. If the file itself already inserted the row (idempotent
-    # self-tracking), ON CONFLICT keeps this a no-op. The advisory lock
-    # guarantees no other runner is racing this insert, so we do NOT swallow
-    # errors here: a real tracking failure must abort the run.
-    echo "INSERT INTO agent_store.schema_migrations(version, checksum) VALUES ($version, '$checksum') ON CONFLICT (version) DO NOTHING;"
+    # Record the apply. schema_migrations is created by migration 0009, so
+    # earlier versions (1-8) cannot self-track — the INSERT is wrapped in a
+    # conditional that silently skips when the table doesn't exist yet. Once
+    # 0009 has run, all subsequent INSERTs execute normally. ON CONFLICT
+    # handles idempotent self-tracking by 0009's backfill rows.
+    echo "DO \$\$ BEGIN"
+    echo "  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='agent_store' AND table_name='schema_migrations') THEN"
+    echo "    INSERT INTO agent_store.schema_migrations(version, checksum) VALUES ($version, '$checksum') ON CONFLICT (version) DO NOTHING;"
+    echo "  END IF;"
+    echo "END \$\$;"
   done
   echo "SELECT pg_advisory_unlock($LOCK_KEY_EXPR);"
 } | psql "$@" -v ON_ERROR_STOP=1
