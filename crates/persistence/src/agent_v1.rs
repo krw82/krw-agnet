@@ -713,6 +713,8 @@ pub enum RejectionKind {
     ChildExecutionConflict,
     SessionMemoryConflict,
     SessionMemoryOwnershipMismatch,
+    PrincipalMismatch,
+    SessionMismatch,
 }
 
 impl RejectionKind {
@@ -745,6 +747,8 @@ impl RejectionKind {
             "K1024" => Self::ChildExecutionConflict,
             "K1025" => Self::SessionMemoryConflict,
             "K1026" => Self::SessionMemoryOwnershipMismatch,
+            "K1027" => Self::PrincipalMismatch,
+            "K1028" => Self::SessionMismatch,
             _ => return None,
         })
     }

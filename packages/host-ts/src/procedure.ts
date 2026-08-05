@@ -6,7 +6,8 @@ export type HostProcedure =
   | "agent_v1.enqueue_run"
   | "agent_v1.request_cancel"
   | "agent_v1.read_committed_outcome"
-  | "agent_v1.read_final_output";
+  | "agent_v1.read_final_output"
+  | "agent_v1.read_final_projection";
 
 export type OutboxProcedure = "agent_v1.claim_outbox" | "agent_v1.ack_outbox";
 

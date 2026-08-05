@@ -438,6 +438,96 @@ test("host client exposes only enqueue, cancel and committed outcome", async () 
   );
 });
 
+test("readFinalProjection sends full ownership and parses the projection envelope", async () => {
+  const ownership = {
+    schema_version: 1 as const,
+    tenant_id: "tenant-01",
+    principal_id: "principal-01",
+    session_id: "session-01",
+    run_id: "run-01",
+  };
+  const validProjection = {
+    run_id: "run-01",
+    answer_bundle_hash: hash("a"),
+    final_output_hash: hash("b"),
+    markdown: "# final answer",
+    usage: { input_tokens: 100, output_tokens: 20 },
+    evidence_ledger_hash: hash("c"),
+    memory_revision: 4,
+    memory_frontier_hash: hash("d"),
+  };
+
+  const transport = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(procedure: HostProcedure, request: JsonObject): Promise<unknown> {
+      assert.equal(procedure, "agent_v1.read_final_projection");
+      // Full ownership must be carried so the DB can enforce principal/session.
+      assert.deepEqual(request, {
+        abi_version: 1,
+        run_id: "run-01",
+        tenant_id: "tenant-01",
+        principal_id: "principal-01",
+        session_id: "session-01",
+      });
+      return validProjection;
+    }
+  })();
+  const parsed = await new HostAgentClient(transport).readFinalProjection(ownership);
+  assert.deepEqual(parsed, validProjection);
+
+  // Nullable ledger fields are accepted.
+  const transportNull = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return {
+        run_id: "run-01",
+        answer_bundle_hash: hash("a"),
+        final_output_hash: hash("b"),
+        markdown: "# final answer",
+        usage: {},
+        evidence_ledger_hash: null,
+        memory_revision: null,
+        memory_frontier_hash: null,
+      };
+    }
+  })();
+  const parsedNull = await new HostAgentClient(transportNull).readFinalProjection(ownership);
+  assert.equal(parsedNull.evidence_ledger_hash, null);
+  assert.equal(parsedNull.memory_revision, null);
+  assert.equal(parsedNull.memory_frontier_hash, null);
+
+  // Unknown fields are rejected (exactObject contract).
+  const transportExtra = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return { ...validProjection, evidence_ids: ["must-not-leak"] };
+    }
+  })();
+  await assert.rejects(
+    () => new HostAgentClient(transportExtra).readFinalProjection(ownership),
+    /unknown_or_missing_response_field/,
+  );
+
+  // Malformed hash is rejected.
+  const transportBadHash = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return { ...validProjection, answer_bundle_hash: "not-a-hash" };
+    }
+  })();
+  await assert.rejects(
+    () => new HostAgentClient(transportBadHash).readFinalProjection(ownership),
+    /invalid_final_projection_identity/,
+  );
+
+  // Non-integer memory_revision is rejected.
+  const transportBadRev = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return { ...validProjection, memory_revision: "4" };
+    }
+  })();
+  await assert.rejects(
+    () => new HostAgentClient(transportBadRev).readFinalProjection(ownership),
+    /invalid_final_projection_memory_revision/,
+  );
+});
+
 test("outbox delivery uses a separately typed least-privilege client", async () => {
   const transport = new CaptureOutboxTransport();
   const client = new HostOutboxClient(transport);

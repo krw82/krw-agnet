@@ -5,6 +5,7 @@ import {
   type OutboxReceipt,
   type ReadCommittedOutcomeResponse,
   type ReadFinalOutputResponse,
+  type ReadFinalProjectionResponse,
 } from "./contracts.js";
 import { isContentHash, type JsonObject } from "./json.js";
 import {
@@ -66,7 +67,10 @@ export class HostAgentClient {
     return parseOutcomeResponse(response, ownership.run_id);
   }
 
-  /** Reads only committed final Markdown through the fixed host ABI. */
+  /**
+   * Reads only committed final Markdown through the fixed host ABI.
+   * @deprecated use readFinalProjection
+   */
   async readFinalOutput(
     ownership: AuthenticatedRunOwnershipV1,
   ): Promise<ReadFinalOutputResponse> {
@@ -77,6 +81,26 @@ export class HostAgentClient {
       tenant_id: ownership.tenant_id,
     });
     return parseFinalOutputResponse(response, ownership.run_id);
+  }
+
+  /**
+   * Stronger final projection. Verifies full ownership (tenant+principal+
+   * session+run) on the database side, matching `commit_final`'s checks, and
+   * returns the rendered Markdown plus the public ledger hashes and usage
+   * counters required for product projection.
+   */
+  async readFinalProjection(
+    ownership: AuthenticatedRunOwnershipV1,
+  ): Promise<ReadFinalProjectionResponse> {
+    validateAuthenticatedRunOwnership(ownership);
+    const response = await this.transport.execute("agent_v1.read_final_projection", {
+      abi_version: AGENT_V1_ABI_VERSION,
+      run_id: ownership.run_id,
+      tenant_id: ownership.tenant_id,
+      principal_id: ownership.principal_id,
+      session_id: ownership.session_id,
+    });
+    return parseFinalProjectionResponse(response, ownership.run_id);
   }
 }
 
@@ -193,6 +217,57 @@ function parseFinalOutputResponse(value: unknown, runId: string): ReadFinalOutpu
     throw new ContractViolation("invalid_final_output_markdown");
   }
   return object as unknown as ReadFinalOutputResponse;
+}
+
+function parseFinalProjectionResponse(
+  value: unknown,
+  runId: string,
+): ReadFinalProjectionResponse {
+  const object = exactObject(value, [
+    "run_id",
+    "answer_bundle_hash",
+    "final_output_hash",
+    "markdown",
+    "usage",
+    "evidence_ledger_hash",
+    "memory_revision",
+    "memory_frontier_hash",
+  ]);
+  if (
+    object.run_id !== runId ||
+    !isContentHash(object.answer_bundle_hash) ||
+    !isContentHash(object.final_output_hash)
+  ) {
+    throw new ContractViolation("invalid_final_projection_identity");
+  }
+  if (
+    typeof object.markdown !== "string" ||
+    object.markdown.length === 0 ||
+    object.markdown.includes("\0") ||
+    Buffer.byteLength(object.markdown, "utf8") > 64 * 1024
+  ) {
+    throw new ContractViolation("invalid_final_projection_markdown");
+  }
+  if (!isJsonValue(object.usage)) {
+    throw new ContractViolation("invalid_final_projection_usage");
+  }
+  if (!isNullableContentHash(object.evidence_ledger_hash)) {
+    throw new ContractViolation("invalid_final_projection_evidence_ledger_hash");
+  }
+  if (
+    object.memory_revision !== null &&
+    (!Number.isSafeInteger(object.memory_revision) || (object.memory_revision as number) < 0)
+  ) {
+    throw new ContractViolation("invalid_final_projection_memory_revision");
+  }
+  if (!isNullableContentHash(object.memory_frontier_hash)) {
+    throw new ContractViolation("invalid_final_projection_memory_frontier_hash");
+  }
+  return object as unknown as ReadFinalProjectionResponse;
+}
+
+function isNullableContentHash(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && isContentHash(value));
 }
 
 function parseOutboxReceipt(value: unknown): OutboxReceipt {

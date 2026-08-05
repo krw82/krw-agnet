@@ -238,6 +238,26 @@ export interface ReadFinalOutputResponse {
   readonly markdown: string;
 }
 
+/**
+ * Host-only final projection. Carries the rendered Markdown plus the public
+ * ledger/usage counters required for product projection. Mirrors the SQL
+ * return of `agent_v1.read_final_projection`, which verifies full ownership
+ * (tenant+principal+session+run) before exposing anything.
+ *
+ * `memory_revision` and `memory_frontier_hash` are nullable today; the
+ * current answer-bundle schema does not always populate them.
+ */
+export interface ReadFinalProjectionResponse {
+  readonly run_id: string;
+  readonly answer_bundle_hash: ContentHash;
+  readonly final_output_hash: ContentHash;
+  readonly markdown: string;
+  readonly usage: JsonValue;
+  readonly evidence_ledger_hash: ContentHash | null;
+  readonly memory_revision: number | null;
+  readonly memory_frontier_hash: ContentHash | null;
+}
+
 export interface OutboxReceipt {
   readonly outbox_id: number;
   readonly run_id: string;
