@@ -221,25 +221,39 @@ def _year_patterns(fiscal_year) -> list[str]:
     ]
 
 
+def _split_paragraphs(text: str) -> list[str]:
+    """Split text into paragraphs on blank lines. Falls back to the whole
+    text as one paragraph if no blank-line boundaries exist (common for
+    markdown table-heavy answers)."""
+    parts = re.split(r"\n\s*\n", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
 def extract_numbers_near(
     text: str,
     metric_keywords: list[str],
     fiscal_year,
 ) -> list[float]:
-    """Extract numbers only from sentences that mention the metric AND the year.
+    """Extract numbers from regions that mention the metric AND the year.
 
-    A sentence matches if (any keyword, case-insensitive substring) AND (any
-    year pattern) both appear. Returns Korean-unit + raw-large numbers from
-    matching sentences only. Percentages are NOT collected here; the percent
-    branch of check_metric handles its own scoping.
+    Uses two-pass scoping and MERGES results from both passes:
+    1. Sentence-level: keyword + year in the SAME sentence (strict).
+    2. Paragraph-level: keyword appears anywhere in the paragraph
+       AND year appears anywhere in the same paragraph. This catches the
+       common pattern of an overview sentence with the keyword followed by
+       a data sentence/table row with the year and numbers.
+    Both passes run unconditionally — a sentence-level match in one region
+    doesn't prevent a paragraph-level match in another region that contains
+    the actual target number. Returns deduplicated sorted numbers.
     """
     if not metric_keywords:
         return []
     sentences = _split_sentences(text)
-    text_lower = None  # compute lazily per need
     year_pats = _year_patterns(fiscal_year)
     keyword_pats = [k.lower() for k in metric_keywords]
     collected: list[float] = []
+
+    # Pass 1: strict sentence-level match (keyword + year in same sentence)
     for sent in sentences:
         sl = sent.lower()
         has_keyword = any(k in sl for k in keyword_pats)
@@ -250,7 +264,18 @@ def extract_numbers_near(
             continue
         collected.extend(extract_korean_units(sent))
         collected.extend(extract_raw_large_numbers(sent))
-    return collected
+
+    # Pass 2: paragraph-level (keyword anywhere + year anywhere in same paragraph)
+    for para in _split_paragraphs(text):
+        pl = para.lower()
+        has_keyword = any(k in pl for k in keyword_pats)
+        has_year = any(p.lower() in pl for p in year_pats)
+        if not (has_keyword and has_year):
+            continue
+        collected.extend(extract_korean_units(para))
+        collected.extend(extract_raw_large_numbers(para))
+
+    return sorted(set(collected))
 
 
 def extract_percentages_near(
@@ -258,13 +283,19 @@ def extract_percentages_near(
     metric_keywords: list[str],
     fiscal_year,
 ) -> list[float]:
-    """Extract percentages from sentences mentioning the metric AND the year."""
+    """Extract percentages from regions mentioning the metric AND the year.
+
+    Two-pass scoping (sentence-level + paragraph-level), results MERGED and
+    deduplicated. Both passes always run.
+    """
     if not metric_keywords:
         return []
     sentences = _split_sentences(text)
     year_pats = _year_patterns(fiscal_year)
     keyword_pats = [k.lower() for k in metric_keywords]
     collected: list[float] = []
+
+    # Pass 1: strict sentence-level
     for sent in sentences:
         sl = sent.lower()
         if not any(k in sl for k in keyword_pats):
@@ -272,7 +303,17 @@ def extract_percentages_near(
         if not any(p.lower() in sl for p in year_pats):
             continue
         collected.extend(extract_percentages(sent))
-    return collected
+
+    # Pass 2: paragraph-level
+    for para in _split_paragraphs(text):
+        pl = para.lower()
+        has_keyword = any(k in pl for k in keyword_pats)
+        has_year = any(p.lower() in pl for p in year_pats)
+        if not (has_keyword and has_year):
+            continue
+        collected.extend(extract_percentages(para))
+
+    return sorted(set(collected))
 
 
 # ── Grading logic ────────────────────────────────────────────────────────
