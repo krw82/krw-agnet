@@ -18,6 +18,8 @@
 -- run (lease takeover) preserve the counter because the run has not made
 -- observable progress since the prior claim.
 
+BEGIN;
+
 CREATE OR REPLACE FUNCTION agent_v1.claim_run(p_request jsonb) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -201,3 +203,5 @@ COMMENT ON FUNCTION agent_v1.claim_run(jsonb) IS
     'Atomically claims a queued/deferred/active-expired run under the session lock. '
     'Resets runs.deferred_attempts to 0 when a non-active run is freshly claimed, '
     'so the 16-cap (see 0007) binds consecutive defers within one claim lifetime.';
+
+COMMIT;
