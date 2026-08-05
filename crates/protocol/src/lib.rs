@@ -139,7 +139,11 @@ pub struct BudgetUsage {
     /// still deserialize.
     #[serde(default)]
     pub provider_total_ms: u64,
-    /// Cumulative wall-clock time spent inside capability (tool) calls.
+    /// Cumulative wall-clock time spent in the capability lifecycle path
+    /// (authorization, `begin_action`, tool dispatch, restore, and episode
+    /// commit) — not just the MCP tool call itself. Useful for relative
+    /// comparison across runs; the MCP-dispatch-only portion is observed by
+    /// the `krw_capability_duration_seconds` histogram.
     #[serde(default)]
     pub capability_total_ms: u64,
     /// Cumulative wall-clock time spent inside phase compaction.

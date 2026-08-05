@@ -37,6 +37,15 @@ BEGIN
     IF v_run.session_id IS DISTINCT FROM p_request->>'session_id' THEN
         RAISE EXCEPTION USING ERRCODE='K1028',MESSAGE='session_mismatch';
     END IF;
+    -- NOTE: K1024/K1025/K1026 below are SHARED with other procedures (see
+    -- session-memory 0004/0005/0008 and read_final_output 0006). The typed
+    -- RejectionKind produced by from_sqlstate will therefore be coarse
+    -- (ChildExecutionConflict / SessionMemoryConflict /
+    -- SessionMemoryOwnershipMismatch) and callers MUST inspect the MESSAGE
+    -- ('final_output_unavailable' / 'final_bundle_missing' /
+    -- 'final_bundle_shape_invalid' / 'final_markdown_empty') for
+    -- procedure-specific semantics. K1027/K1028 are presently unique to this
+    -- procedure's principal/session ownership checks.
     IF v_run.state <> 'final' THEN
         RAISE EXCEPTION USING ERRCODE='K1024',MESSAGE='final_output_unavailable';
     END IF;

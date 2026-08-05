@@ -684,6 +684,15 @@ pub fn session_memory_frontier_hash(
     ContentHash::sha256(preimage)
 }
 
+/// `RejectionKind` is intentionally coarse-grained — multiple SQL procedures
+/// may raise the same K-code for procedure-local conditions. Callers requiring
+/// procedure-scoped semantics must inspect the error message, not just the
+/// typed variant.
+///
+/// Known collisions: K1024/K1025/K1026 are shared between session-memory
+/// procedures (0004/0005/0008) and `read_final_output`/`read_final_projection`
+/// (0006/0011). K1027/K1028 are presently unique to `read_final_projection`
+/// (0011) principal/session ownership checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectionKind {
     InvalidRequest,
