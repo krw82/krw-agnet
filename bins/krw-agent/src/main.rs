@@ -609,7 +609,7 @@ fn deepseek_flash_client() -> Result<DeepSeekClient, Box<dyn std::error::Error>>
     }
 
     let client = DeepSeekClient::new(
-        DeepSeekClientConfig::production(DEEPSEEK_API_BASE, [DEEPSEEK_MODEL_ID.to_owned()]),
+        DeepSeekClientConfig::production(DEEPSEEK_API_BASE, [DEEPSEEK_MODEL_ID.to_owned()], 8),
         api_key.as_str(),
     )?;
     Ok(client)

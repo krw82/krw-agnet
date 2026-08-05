@@ -190,6 +190,17 @@ impl Provider for DeepSeekClient {
 }
 
 /// Stable, non-secret provider failure labels for operators and quality gates.
+/// Convert an [`Instant`] elapsed duration to whole milliseconds as a `u64`.
+///
+/// Wall-clock measurements taken inside the run engine are bounded by run
+/// deadlines (minutes, not years), so the clippy `cast_possible_truncation`
+/// lint on `u128 -> u64` is intentionally silenced here. Centralizing the cast
+/// keeps every duration accumulator consistent.
+#[allow(clippy::cast_possible_truncation)]
+fn elapsed_millis(start: Instant) -> u64 {
+    start.elapsed().as_millis() as u64
+}
+
 /// The raw API body stays outside ordinary logs; only the HTTP status is
 /// exposed when one exists.
 fn deepseek_failure_code(error: &WireError) -> String {
@@ -1538,12 +1549,17 @@ where
                 }
                 serde_json::from_slice(&recovered.episode.episode_bytes).map_err(EngineError::from)
             } else {
-                dependency_call(
+                let provider_t0 = Instant::now();
+                let provider_outcome = dependency_call(
                     deadline,
                     "provider",
                     self.provider.complete(&request, &episode_context),
                 )
-                .await
+                .await;
+                let provider_ms = elapsed_millis(provider_t0);
+                state.record_provider_duration_ms(provider_ms);
+                krw_agent_persistence::metrics::record_provider_turn_duration_seconds(provider_ms);
+                provider_outcome
             };
             if request.messages.len() < TRUSTED_PREFIX_MESSAGE_COUNT {
                 return Err(EngineError::Invariant("trusted prompt prefix disappeared"));
@@ -1952,7 +1968,14 @@ where
                     deadline,
                     max_result_bytes: self.config.max_capability_result_bytes,
                 };
+                let cap_t0 = Instant::now();
                 let result = self.execute_action(&action_context, &call).await?;
+                // On success only: charge the wall-clock capability duration
+                // against the run budget. Error/timeout paths are observed by
+                // the histogram inside `execute_action` but intentionally not
+                // accumulated, since a failed dispatch does not consume a
+                // successful turn.
+                state.record_capability_duration_ms(elapsed_millis(cap_t0));
                 let invocation = capability_invocation(&identity.run_id, &call);
                 self.capabilities
                     .restore_committed_result(&invocation, &result)
@@ -2128,6 +2151,17 @@ where
             Some(checkpoint) => {
                 let declared: ActiveRunCheckpoint =
                     serde_json::from_slice(&checkpoint.state_bytes)?;
+                // The duration accumulators (`provider_total_ms`,
+                // `capability_total_ms`, `compact_total_ms`) are
+                // observability-only fields: replay rebuilds kernel state
+                // without re-executing the underlying provider/capability/
+                // compaction work, so the freshly reconstructed `state` will
+                // always have zeros here. Restore the persisted values so the
+                // recovery-equivalence check below is not perturbed by
+                // telemetry that has no correctness bearing on the run.
+                state.usage.provider_total_ms = declared.usage.provider_total_ms;
+                state.usage.capability_total_ms = declared.usage.capability_total_ms;
+                state.usage.compact_total_ms = declared.usage.compact_total_ms;
                 if declared.schema_version != ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION
                     || declared != state.checkpoint_value()?
                 {
@@ -2629,8 +2663,10 @@ where
                     cap_span.in_scope(|| {
                         tracing::debug!(capability = %call.capability.id, "dispatching");
                     });
+                    let dispatch_t0 = Instant::now();
                     let dispatch_outcome =
                         await_until(deadline, self.capabilities.invoke(&invocation)).await;
+                    let dispatch_ms = elapsed_millis(dispatch_t0);
                     let _ = &cap_span;
                     match dispatch_outcome {
                         Ok(Ok(result)) => {
@@ -2638,12 +2674,22 @@ where
                                 &call.capability.id,
                                 "success",
                             );
+                            krw_agent_persistence::metrics::record_capability_duration_seconds(
+                                &call.capability.id,
+                                "success",
+                                dispatch_ms,
+                            );
                             result
                         }
                         Ok(Err(failure)) => {
                             krw_agent_persistence::metrics::record_capability_call(
                                 &call.capability.id,
                                 "error",
+                            );
+                            krw_agent_persistence::metrics::record_capability_duration_seconds(
+                                &call.capability.id,
+                                "error",
+                                dispatch_ms,
                             );
                             if failure.delivery == DeliveryCertainty::MayHaveDispatched {
                                 self.record_ambiguous(
@@ -2663,6 +2709,11 @@ where
                             krw_agent_persistence::metrics::record_capability_call(
                                 &call.capability.id,
                                 "error",
+                            );
+                            krw_agent_persistence::metrics::record_capability_duration_seconds(
+                                &call.capability.id,
+                                "error",
+                                dispatch_ms,
                             );
                             self.record_ambiguous(identity, call, "capability_timeout", deadline)
                                 .await?;
@@ -4692,6 +4743,7 @@ impl ActiveRun {
         provider_episode_hash: ContentHash,
         max_context_bytes: usize,
     ) -> Result<(), EngineError> {
+        let compact_t0 = Instant::now();
         let mut source_messages = std::mem::take(&mut self.messages);
         let output = (|| -> Result<_, EngineError> {
             let artifact = self
@@ -4739,6 +4791,7 @@ impl ActiveRun {
             receipt_hash,
             boundary_hash,
         });
+        self.record_compact_duration_ms(elapsed_millis(compact_t0));
         Ok(())
     }
 
@@ -4994,6 +5047,23 @@ impl ActiveRun {
             .checked_add(episode.usage.completion_tokens)
             .ok_or(EngineError::CounterOverflow("output_tokens"))?;
         self.check_budget()
+    }
+
+    /// Accumulate wall-clock time spent inside one provider turn (the
+    /// `Provider::complete` future). Saturating on overflow keeps an inflated
+    /// measurement from turning into a kernel panic.
+    fn record_provider_duration_ms(&mut self, ms: u64) {
+        self.usage.provider_total_ms = self.usage.provider_total_ms.saturating_add(ms);
+    }
+
+    /// Accumulate wall-clock time spent inside one capability dispatch.
+    fn record_capability_duration_ms(&mut self, ms: u64) {
+        self.usage.capability_total_ms = self.usage.capability_total_ms.saturating_add(ms);
+    }
+
+    /// Accumulate wall-clock time spent inside phase compaction.
+    fn record_compact_duration_ms(&mut self, ms: u64) {
+        self.usage.compact_total_ms = self.usage.compact_total_ms.saturating_add(ms);
     }
 
     fn record_provider_episode_hash(&mut self, episode_hash: ContentHash) {

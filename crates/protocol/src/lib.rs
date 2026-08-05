@@ -134,6 +134,17 @@ pub struct BudgetUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub evidence_bytes: u64,
+    /// Cumulative wall-clock time spent inside provider turns for the run.
+    /// Defaults to 0 so persisted bundles written before this field existed
+    /// still deserialize.
+    #[serde(default)]
+    pub provider_total_ms: u64,
+    /// Cumulative wall-clock time spent inside capability (tool) calls.
+    #[serde(default)]
+    pub capability_total_ms: u64,
+    /// Cumulative wall-clock time spent inside phase compaction.
+    #[serde(default)]
+    pub compact_total_ms: u64,
 }
 
 impl BudgetUsage {
@@ -1240,5 +1251,46 @@ mod tests {
         let rendered = format!("{context:?}");
         assert!(!rendered.contains("550e8400"));
         assert!(rendered.contains("SelectedFeedItems"));
+    }
+
+    #[test]
+    fn budget_usage_roundtrips_duration_fields() {
+        // New bundles with explicit duration values must round-trip exactly.
+        let usage = BudgetUsage {
+            provider_turns: 3,
+            capability_calls: 7,
+            replans: 1,
+            repairs: 0,
+            input_tokens: 12_345,
+            output_tokens: 6_789,
+            evidence_bytes: 4_567,
+            provider_total_ms: 18_200,
+            capability_total_ms: 9_400,
+            compact_total_ms: 250,
+        };
+        let encoded = serde_json::to_string(&usage).unwrap();
+        let decoded: BudgetUsage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(usage, decoded);
+    }
+
+    #[test]
+    fn budget_usage_old_bundle_without_duration_fields_defaults_to_zero() {
+        // A bundle persisted before the duration fields existed must still
+        // deserialize: `deny_unknown_fields` is satisfied because the new
+        // fields are `#[serde(default)]`, and missing values become 0.
+        let legacy = serde_json::json!({
+            "provider_turns": 2,
+            "capability_calls": 4,
+            "replans": 0,
+            "repairs": 0,
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "evidence_bytes": 200,
+        });
+        let decoded: BudgetUsage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.provider_total_ms, 0);
+        assert_eq!(decoded.capability_total_ms, 0);
+        assert_eq!(decoded.compact_total_ms, 0);
+        assert_eq!(decoded.capability_calls, 4);
     }
 }

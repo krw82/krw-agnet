@@ -987,6 +987,7 @@ impl DeepSeekClientConfig {
     pub fn production(
         api_base: impl Into<String>,
         allowed_models: impl IntoIterator<Item = String>,
+        max_idle_per_host: usize,
     ) -> Self {
         Self {
             api_base: api_base.into(),
@@ -997,8 +998,18 @@ impl DeepSeekClientConfig {
             max_sse_frame_bytes: 2 * 1024 * 1024,
             max_stream_bytes: 8 * 1024 * 1024,
             max_episode_bytes: 4 * 1024 * 1024,
-            max_idle_per_host: 8,
+            max_idle_per_host,
         }
+    }
+
+    /// Chainable override for the per-host idle connection limit. Kept as a
+    /// separate method so call sites that don't have a value handy can stay on
+    /// `production(.., 8)` and only callers that need to thread a CLI flag use
+    /// the third parameter.
+    #[must_use]
+    pub fn with_max_idle_per_host(mut self, max_idle_per_host: usize) -> Self {
+        self.max_idle_per_host = max_idle_per_host;
+        self
     }
 }
 
@@ -1888,6 +1899,7 @@ mod tests {
         let config = DeepSeekClientConfig::production(
             "https://api.deepseek.com",
             ["claude-sonnet".to_owned()],
+            8,
         );
         assert!(matches!(
             DeepSeekClient::new(config, "not-a-live-key"),
@@ -1900,6 +1912,7 @@ mod tests {
                 DEEPSEEK_MODEL_ID.to_owned(),
                 "forbidden-provider-model".to_owned(),
             ],
+            8,
         );
         assert!(matches!(
             DeepSeekClient::new(config, "not-a-live-key"),
