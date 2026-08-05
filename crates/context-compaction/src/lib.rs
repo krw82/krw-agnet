@@ -124,6 +124,212 @@ impl fmt::Debug for CompactedProviderContext {
     }
 }
 
+/// Role-filtered runtime projection of a [`CompactedProviderContext`].
+///
+/// The durable compaction receipt is computed over the FULL canonical context
+/// (see [`CompactedProviderContext::canonical`] / [`CompactionOutput`]); a view
+/// is only a prompt-time slice that reduces the bytes shown to a specific role.
+/// The receipt's `compacted_context_hash` and the prompt-assembly segment's
+/// `content_hash` therefore continue to pin the full canonical — never the view
+/// — so receipt verification is unaffected by role filtering.
+#[derive(Debug, Clone)]
+pub struct CompactedContextView {
+    /// Role-filtered canonical text (JCS-serialized projection). This is what
+    /// goes into the `<verified-compacted-context>` prompt block.
+    canonical: String,
+    /// Length of `canonical` in bytes.
+    byte_len: u64,
+    /// The role this view was built for.
+    role_id: String,
+}
+
+impl CompactedContextView {
+    /// The role-filtered canonical text.
+    pub fn canonical(&self) -> &str {
+        &self.canonical
+    }
+
+    /// Length of the filtered canonical in bytes.
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    /// The role this view was built for.
+    pub fn role_id(&self) -> &str {
+        &self.role_id
+    }
+
+    /// Take ownership of the filtered canonical string, zeroizing the buffer
+    /// held by this view.
+    pub fn into_canonical(self) -> String {
+        // `Drop` is implemented for `CompactedContextView` to scrub the
+        // canonical buffer; wrap in `ManuallyDrop` so we can move the field
+        // out without triggering the drop glue on `self`.
+        let mut me = std::mem::ManuallyDrop::new(self);
+        std::mem::take(&mut me.canonical)
+    }
+}
+
+impl Drop for CompactedContextView {
+    fn drop(&mut self) {
+        self.canonical.zeroize();
+    }
+}
+
+/// Canonical role identifiers used by `view_for_role`. These match the role
+/// `id` values declared in agent images (`planner`, `analyst`, `composer`,
+/// `repair`).
+pub const ROLE_PLANNER: &str = "planner";
+pub const ROLE_ANALYST: &str = "analyst";
+pub const ROLE_COMPOSER: &str = "composer";
+pub const ROLE_REPAIR: &str = "repair";
+
+/// Maximum number of top-grade evidence entries retained for the `analyst` and
+/// `repair` views. Keeps the analyst focused on research gaps rather than
+/// re-reading the full evidence corpus.
+const ANALYST_MAX_EVIDENCE: usize = 16;
+/// Cap on retained facts in the minimal `repair` view. Repair reasoning
+/// operates over the validated state artifact plus a small defect-relevant
+/// fact slice; the full fact set remains durable in the receipt.
+const REPAIR_MAX_FACTS: usize = 8;
+
+impl CompactedProviderContext {
+    /// Build a role-filtered runtime view of this compacted context.
+    ///
+    /// Filtering rules (per the runtime-perf-eval plan, task 6):
+    ///
+    /// - `planner` and any unrecognized role: the FULL canonical is returned
+    ///   (current behavior). The planner orchestrates and needs every field.
+    /// - `composer`: retained facts, calculations, citation handles from the
+    ///   evidence index, and the validated state. The research projection
+    ///   (unresolved goals, conflicts, missing parts) is omitted — composition
+    ///   works from established facts, not open research gaps.
+    /// - `analyst`: the full research projection, top-graded evidence, and
+    ///   retained facts (needed to interpret goals). Detailed calculations are
+    ///   omitted — the analyst reasons about coverage gaps, not computation.
+    /// - `repair`: a minimal defect-relevant slice — the validated state
+    ///   artifact plus a small fact subset. Repair context is small anyway;
+    ///   the projection, calculations, and the bulk of the evidence index are
+    ///   omitted.
+    ///
+    /// # Receipt safety
+    ///
+    /// The returned view is a NEW canonical string produced by re-serializing a
+    /// filtered CLONE of this context. The durable `CompactionReceipt`
+    /// (computed in [`compact`]) and the prompt-assembly receipt both pin the
+    /// FULL canonical — callers MUST use the full canonical (e.g. via
+    /// [`CompactedProviderContext::canonical`]) when constructing the receipt
+    /// segment, and only use this view for the prompt body text. See the
+    /// run-engine `build_trusted_messages` wiring for the canonical usage.
+    pub fn view_for_role(&self, role_id: &str) -> Result<CompactedContextView, CompactionError> {
+        // Planner (and any unrecognized role) gets the full, unfiltered view.
+        // This preserves the prior behavior for every code path that has not
+        // been explicitly migrated to role-filtered views.
+        if role_id != ROLE_ANALYST && role_id != ROLE_COMPOSER && role_id != ROLE_REPAIR {
+            let canonical = String::from_utf8(serde_jcs::to_vec(self)?)
+                .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))?;
+            let byte_len = u64::try_from(canonical.len())
+                .map_err(|_| CompactionError::Limit("compacted view bytes"))?;
+            return Ok(CompactedContextView {
+                canonical,
+                byte_len,
+                role_id: role_id.to_owned(),
+            });
+        }
+
+        // Build a filtered clone. We never mutate `self`; the durable context
+        // is preserved so the receipt continues to verify.
+        let mut filtered = self.clone();
+
+        match role_id {
+            ROLE_COMPOSER => {
+                // Composer assembles the answer from established facts and
+                // calculations; it does not need the open research projection.
+                filtered.research_projection = None;
+                // Keep evidence_index (citation handles), retained_facts, and
+                // calculations in full — these are exactly what composition
+                // grounds its claims in.
+            }
+            ROLE_ANALYST => {
+                // The analyst reasons about research coverage; drop the
+                // detailed calculation transcript and trim the evidence index
+                // to the top-graded entries so the analyst can scan gaps.
+                filtered.calculations.clear();
+                trim_evidence_by_grade(&mut filtered.evidence_index, ANALYST_MAX_EVIDENCE);
+                // Retain the full research_projection (goals, missing parts,
+                // recommended actions) and retained_facts (needed to interpret
+                // goal status).
+            }
+            ROLE_REPAIR => {
+                // Minimal defect-relevant slice: state artifact + small fact
+                // subset. Drop projection, calculations, and almost all
+                // evidence; cap facts.
+                filtered.research_projection = None;
+                filtered.calculations.clear();
+                filtered.omitted_fact_refs.clear();
+                trim_evidence_by_grade(&mut filtered.evidence_index, REPAIR_MAX_FACTS);
+                if filtered.retained_facts.len() > REPAIR_MAX_FACTS {
+                    let split = filtered.retained_facts.len() - REPAIR_MAX_FACTS;
+                    let drained: Vec<_> = filtered.retained_facts.drain(split..).collect();
+                    // The dropped facts are not erased from the durable record
+                    // (the receipt still accounts for them); we only narrow the
+                    // runtime view. Stash their refs under omitted_fact_refs so
+                    // the view remains internally honest about what was hidden.
+                    filtered
+                        .omitted_fact_refs
+                        .extend(drained.into_iter().map(|fact| fact.fact_ref.clone()));
+                    filtered.omitted_fact_refs.sort();
+                }
+            }
+            _ => unreachable!("role gate above excludes every other branch"),
+        }
+
+        let canonical = String::from_utf8(serde_jcs::to_vec(&filtered)?)
+            .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))?;
+        let byte_len = u64::try_from(canonical.len())
+            .map_err(|_| CompactionError::Limit("compacted view bytes"))?;
+        // Zeroize the filtered clone's sensitive buffers eagerly; Drop on
+        // CompactedFact / CompactedStateArtifact already scrubs on drop, but
+        // clearing the projection here keeps the filtered text from lingering
+        // in heap fragments longer than necessary.
+        drop(filtered);
+        Ok(CompactedContextView {
+            canonical,
+            byte_len,
+            role_id: role_id.to_owned(),
+        })
+    }
+
+    /// Produce the FULL canonical JCS serialization of this context. This is
+    /// the bytes over which the durable receipt is computed and the bytes that
+    /// must be pinned in the prompt-assembly segment. Role views are derived
+    /// from — but never replace — this canonical form.
+    pub fn canonical(&self) -> Result<String, CompactionError> {
+        String::from_utf8(serde_jcs::to_vec(self)?)
+            .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))
+    }
+}
+
+/// Keep only the top `max` evidence entries by grade (Strong > Medium > Weak >
+/// Unverified), breaking ties on `evidence_id` for determinism. The durable
+/// receipt is unaffected: the FULL `evidence_index` remains in `self.context`.
+fn trim_evidence_by_grade(entries: &mut Vec<CompactedEvidenceIndexEntry>, max: usize) {
+    if entries.len() <= max {
+        return;
+    }
+    entries.sort_by(|left, right| {
+        // Higher grade first; tie-break on evidence_id for determinism.
+        right
+            .grade
+            .cmp(&left.grade)
+            .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+    });
+    entries.truncate(max);
+    // Restore the durable canonical ordering (sorted by evidence_id) so the
+    // serialized view is stable regardless of input order.
+    entries.sort_by(|left, right| left.evidence_id.cmp(&right.evidence_id));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompactionReceipt {
@@ -852,5 +1058,169 @@ mod tests {
             }
             messages = vec![ProviderMessage::user(output.canonical_context())];
         }
+    }
+
+    /// Build a `CompactedProviderContext` fixture that has BOTH facts (revenue,
+    /// a calculation) and a research projection (an unresolved goal + a missing
+    /// part). This is the shape required to differentiate role views.
+    fn fixture_context_with_projection() -> CompactedProviderContext {
+        let (artifact, boundary) = artifact_and_boundary();
+        let mut ledger = EvidenceLedger::default();
+        ledger
+            .append(evidence(
+                "evidence-1",
+                vec![NormalizedFact {
+                    subject: "TEST".into(),
+                    predicate: "revenue".into(),
+                    value: json!(12_345_678.91),
+                    unit: Some("USD".into()),
+                    period: Some("FY2025".into()),
+                }],
+            ))
+            .unwrap();
+        ledger.set_answerability(Answerability::StrongAllowed);
+        let calculation = Calculation {
+            calculation_id: "calc-1".into(),
+            expression: "12345678.91 / 2".into(),
+            input_evidence_ids: vec!["evidence-1".into()],
+            output: json!(6_172_839.455),
+            unit: Some("USD".into()),
+            rounding: None,
+            subject: Some("TEST".into()),
+            metric: Some("half_revenue".into()),
+            period: Some("FY2025".into()),
+            currency: Some("USD".into()),
+        };
+        ledger.append_calculation(calculation.clone()).unwrap();
+        let calculations = BTreeMap::from([("calc-1".into(), calculation)]);
+        // Build the research projection via JSON deserialization so the test
+        // does not need a direct dependency on the planning crate. The graph
+        // contains one unresolved goal and one missing part.
+        let projection_json = json!({
+            "graph": {
+                "version": 1,
+                "goals": {
+                    "goal-coverage": {
+                        "goal_id": "goal-coverage",
+                        "required": true,
+                        "weight": 100,
+                        "dependencies": [],
+                        "directness": "direct",
+                        "calculation_required": true,
+                        "status": "unresolved",
+                        "coverage_ppm": 0,
+                        "evidence_ids": [],
+                        "calculation_ids": []
+                    }
+                },
+                "original_order": ["goal-coverage"]
+            },
+            "clauses": [],
+            "missing_parts": [
+                {"code":"missing_counter_evidence","detail":"No refuting evidence collected for claim-risk","clause_id":null,"ticker":null}
+            ],
+            "recommended_actions": []
+        });
+        let projection: ResearchPlanningProjection =
+            serde_json::from_value(projection_json).unwrap();
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::Assistant {
+                content: Some("settled".into()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+            }],
+            ledger: &ledger,
+            calculations: &calculations,
+            research_projection: Some(&projection),
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+        output.verify().unwrap();
+        // `CompactionOutput` implements `Drop` (it zeroizes the canonical
+        // string), so we cannot move `context` out by field access. Wrap in
+        // `ManuallyDrop` and read the field by reference-clone instead.
+        let me = std::mem::ManuallyDrop::new(output);
+        me.context.clone()
+    }
+
+    #[test]
+    fn planner_and_unknown_roles_get_full_canonical_view() {
+        let context = fixture_context_with_projection();
+        let full = context.canonical().unwrap();
+        let planner_view = context.view_for_role(ROLE_PLANNER).unwrap();
+        assert_eq!(planner_view.role_id(), ROLE_PLANNER);
+        assert_eq!(planner_view.canonical(), full);
+        assert_eq!(planner_view.byte_len(), u64::try_from(full.len()).unwrap());
+        // An unrecognized role also gets the full canonical — preserves prior
+        // behavior for any code path not yet migrated to role views.
+        let unknown = context.view_for_role("supervisor").unwrap();
+        assert_eq!(unknown.canonical(), full);
+    }
+
+    #[test]
+    fn role_views_differ_in_byte_length_and_receipt_pins_full_canonical() {
+        let context = fixture_context_with_projection();
+        let full = context.canonical().unwrap();
+        let full_len = full.len();
+
+        let composer = context.view_for_role(ROLE_COMPOSER).unwrap();
+        let analyst = context.view_for_role(ROLE_ANALYST).unwrap();
+        let repair = context.view_for_role(ROLE_REPAIR).unwrap();
+
+        // Every view MUST be strictly smaller than the full canonical.
+        assert!(
+            composer.byte_len() < u64::try_from(full_len).unwrap(),
+            "composer view must be smaller than full canonical"
+        );
+        assert!(
+            analyst.byte_len() < u64::try_from(full_len).unwrap(),
+            "analyst view must be smaller than full canonical"
+        );
+        assert!(
+            repair.byte_len() < u64::try_from(full_len).unwrap(),
+            "repair view must be smaller than full canonical"
+        );
+        // The composer and analyst views are filtered differently (composer
+        // keeps calculations but drops the projection; analyst drops
+        // calculations but keeps the projection). For this fixture the two
+        // views therefore land at different byte lengths.
+        assert_ne!(
+            composer.byte_len(),
+            analyst.byte_len(),
+            "composer and analyst views must differ in byte length for a fixture with both facts and conflicts"
+        );
+        // Repair is the minimal slice — smaller than both composer and analyst.
+        assert!(repair.byte_len() < composer.byte_len());
+        assert!(repair.byte_len() < analyst.byte_len());
+
+        // Composer: projection is gone (no unresolved goal text), but the
+        // calculation transcript is still present.
+        assert!(!composer.canonical().contains("goal-coverage"));
+        assert!(composer.canonical().contains("6172839.455"));
+        // Analyst: projection (goals + missing parts) is present; the detailed
+        // calculation transcript is gone.
+        assert!(analyst.canonical().contains("goal-coverage"));
+        assert!(analyst.canonical().contains("missing_counter_evidence"));
+        assert!(!analyst.canonical().contains("6172839.455"));
+        // Repair: minimal slice — projection and calculations gone.
+        assert!(!repair.canonical().contains("goal-coverage"));
+        assert!(!repair.canonical().contains("6172839.455"));
+
+        // Receipt-safety invariant: the FULL canonical is still recoverable and
+        // unchanged after producing every view. The view methods never mutate
+        // `self`; the durable canonical form that the receipt pins is intact.
+        let full_again = context.canonical().unwrap();
+        assert_eq!(full, full_again);
+    }
+
+    #[test]
+    fn view_for_role_is_deterministic() {
+        let context = fixture_context_with_projection();
+        let first = context.view_for_role(ROLE_COMPOSER).unwrap();
+        let second = context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert_eq!(first.canonical(), second.canonical());
+        assert_eq!(first.byte_len(), second.byte_len());
     }
 }
