@@ -1785,6 +1785,88 @@ mod tests {
     }
 
     #[test]
+    fn attested_stateless_keys_reuse_partition_across_runs_but_run_scoped_does_not() {
+        // Same binding, tenant, principal, server identity. Only the run id
+        // changes between the two scopes. The whole point of activation:
+        // attested-stateless-v1 (auth_scope = tenant) must derive an identical
+        // pool key so the second run reuses the first run's initialized session,
+        // while run-scoped always forks a fresh run-private partition.
+        let run_one = PoolScope {
+            tenant_id: "tenant-a".into(),
+            principal_id: "principal-a".into(),
+            run_id: "run-1".into(),
+        };
+        let run_two = PoolScope {
+            tenant_id: "tenant-a".into(),
+            principal_id: "principal-a".into(),
+            run_id: "run-2".into(),
+        };
+        let args = (
+            "https://mcp.example.test/rpc",
+            "https://mcp.example.test/readyz",
+            "https://krw-agent.example.test",
+        );
+
+        let stateless = binding(AuthScope::Tenant, McpToolSessionReuse::AttestedStatelessV1);
+        let stateless_run_one = PoolKey::from_binding(
+            "server",
+            &stateless,
+            args.0,
+            args.1,
+            args.2,
+            "2025-06-18",
+            &run_one,
+            "credential-v1",
+            "tls-v1",
+            None,
+        )
+        .expect("attested-stateless pool key for run one");
+        let stateless_run_two = PoolKey::from_binding(
+            "server",
+            &stateless,
+            args.0,
+            args.1,
+            args.2,
+            "2025-06-18",
+            &run_two,
+            "credential-v1",
+            "tls-v1",
+            None,
+        )
+        .expect("attested-stateless pool key for run two");
+        assert_eq!(
+            stateless_run_one.session_partition_hash, stateless_run_two.session_partition_hash,
+            "attested-stateless-v1 with tenant auth_scope must collapse to the \
+             same partition across runs (cross-run pool reuse eligibility)",
+        );
+        assert_eq!(stateless_run_one, stateless_run_two);
+
+        let run_scoped = binding(AuthScope::Tenant, McpToolSessionReuse::RunScoped);
+        let run_scoped_one = PoolKey::from_binding(
+            "server",
+            &run_scoped,
+            args.0,
+            args.1,
+            args.2,
+            "2025-06-18",
+            &run_one,
+            "credential-v1",
+            "tls-v1",
+            None,
+        )
+        .expect("run-scoped pool key");
+        assert_ne!(
+            stateless_run_one, run_scoped_one,
+            "run-scoped must partition by run even when the binding is otherwise identical",
+        );
+        assert_eq!(
+            run_scoped_one.session_partition_hash,
+            run_one.partition_hash(&AuthScope::Run).unwrap(),
+            "run-scoped derives its partition from the Run scope regardless of data auth_scope",
+        );
+    }
+
+    #[test]
     fn deployment_cannot_omit_the_session_reuse_policy() {
         let value = serde_json::json!({
             "binding_key": "ontology.query_context",

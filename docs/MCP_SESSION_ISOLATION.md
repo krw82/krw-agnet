@@ -14,9 +14,63 @@ Every `CapabilityBinding` must declare exactly one `tool_session_reuse` value:
   contract described below. Missing, malformed, stale, or mismatched evidence
   fails connection initialization before any tool call.
 
-There is no default and deployment binding schema v1 is rejected. The checked-in
-schema-v2 local examples explicitly use `run-scoped`, so they are safe before
-any existing MCP server implements the opt-in attestation.
+There is no default and deployment binding schema v1 is rejected. The
+checked-in schema-v3 local and production example bindings now activate
+`attested-stateless-v1` for read-only ontology and guru capabilities (see the
+matrix below). Every other capability, including all `krw_feed_*`, filings, and
+insider-transaction tools, stays `run-scoped` because its MCP session may carry
+state that must not cross a run boundary. `auth_scope` remains `tenant` for the
+activated capabilities; only `tool_session_reuse` changes.
+
+## Capability matrix (checked-in example bindings)
+
+| Capability | `tool_session_reuse` | `auth_scope` | Why |
+| --- | --- | --- | --- |
+| `krw_ontology_query_context` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_ontology_query` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_ontology_trace` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_ontology_chain` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_skill_local` | `attested-stateless-v1` | tenant | resolution placeholder, stateless |
+| `krw_guru_query_context` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_guru_company_brief` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `krw_guru_review_company_evidence` | `attested-stateless-v1` | tenant | pure read, no session state |
+| `list_feed_items`, `get_feed_items`, `get_feed_context` | `run-scoped` | tenant | feed service may carry session state |
+| `search_catalog_filings`, `get_filing`, `get_filing_brief`, `list_filing_sections`, `read_filing_section`, `list_filing_documents`, `read_filing_document`, `get_form4_insider_transactions` | `run-scoped` | tenant | filings service may carry cursor/personalization state |
+
+The `deployments/prod/deployment-binding.krw-ontology.example.yaml` profile
+ships all five of its capabilities (the four `krw_ontology_*` tools plus
+`krw_skill_local`) as `attested-stateless-v1`.
+
+## Attestation contract identifier
+
+The contract id is defined as the Rust constant
+`STATELESS_TOOL_SESSION_CONTRACT_ID` in `crates/tool-mcp/src/lib.rs`:
+
+```rust
+pub const STATELESS_TOOL_SESSION_CONTRACT_ID: &str =
+    "krw-agent/mcp-tool-session-stateless/v1";
+```
+
+## Deployment dependency: krw-capabilityd
+
+Activating `attested-stateless-v1` in a binding is a deployment contract, not a
+purely agent-side switch. The agent runtime fail-closes connection initialization
+before any tool call when the required evidence is absent, malformed, stale, or
+mismatched, so production rollout requires that `krw-capabilityd` (the MCP
+capability sidecar) emit the attestation in **both** of these places:
+
+1. The HTTPS readiness document, under `tool_session_contract`.
+2. The MCP `initialize` result, under
+   `capabilities.experimental.krwAgentToolSession`.
+
+Both objects must independently carry `contract_id` and `attestation_sha256`,
+the `contract_id` must equal the constant above, and `attestation_sha256` must
+equal the JCS digest derived from the deployment-pinned
+`protocol_version`/`server_build`/`server_schema_bundle_hash`/`data_release_hash`.
+Until a capabilityd build emits both attestations, leaving that capability's
+binding at `run-scoped` is the only correct option. `krw-agentd --check` does
+not verify attestation (no live server is contacted); attestation is enforced at
+session initialization time only.
 
 ## Versioned cryptographic attestation
 

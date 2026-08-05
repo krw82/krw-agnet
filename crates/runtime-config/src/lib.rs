@@ -2215,7 +2215,7 @@ mod tests {
 
         let mut session_reuse_binding = binding.clone();
         binding_mut(&mut session_reuse_binding, "krw_ontology_query").tool_session_reuse =
-            McpToolSessionReuse::AttestedStatelessV1;
+            McpToolSessionReuse::RunScoped;
         variants.push((
             "tool-session reuse policy",
             session_reuse_binding,

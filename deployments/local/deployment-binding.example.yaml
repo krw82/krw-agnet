@@ -7,7 +7,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -19,7 +19,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -31,7 +31,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -43,7 +43,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -55,7 +55,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -67,7 +67,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -79,7 +79,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -91,7 +91,7 @@ capabilities:
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
-    tool_session_reuse: run-scoped
+    tool_session_reuse: attested-stateless-v1
     server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     server_build: fixture
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
