@@ -329,6 +329,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
 pub enum ResearchProposalViolation {
     ShapeInvalid {
         pointer: String,
+        offending: Option<String>,
+        allowed: Vec<String>,
     },
     LimitExceeded,
     SerializationInvalid,
@@ -413,17 +415,26 @@ pub fn research_proposal_v4_repair_directive(
     #[allow(clippy::match_same_arms)]
     let violation = match validate_value(RESEARCH_PROPOSAL_V4, value) {
         Ok(()) => return None,
-        Err(ContractValueError::UnknownContract(_)) => ResearchProposalViolation::ShapeInvalid {
-            pointer: "/".to_string(),
-        },
-        Err(ContractValueError::Shape(_)) => ResearchProposalViolation::ShapeInvalid {
-            pointer: "/".to_string(),
-        },
+        Err(ContractValueError::UnknownContract(_)) => research_proposal_v4_shape_detail(value)
+            .unwrap_or(ResearchProposalViolation::ShapeInvalid {
+                pointer: "/".to_string(),
+                offending: None,
+                allowed: vec![],
+            }),
+        Err(ContractValueError::Shape(_)) => research_proposal_v4_shape_detail(value).unwrap_or(
+            ResearchProposalViolation::ShapeInvalid {
+                pointer: "/".to_string(),
+                offending: None,
+                allowed: vec![],
+            },
+        ),
         Err(ContractValueError::Limit(_)) => ResearchProposalViolation::LimitExceeded,
         Err(ContractValueError::Json(_)) => ResearchProposalViolation::SerializationInvalid,
         Err(ContractValueError::Semantic(_)) => research_proposal_v4_semantic_violation(value)
             .unwrap_or(ResearchProposalViolation::ShapeInvalid {
                 pointer: "/".to_string(),
+                offending: None,
+                allowed: vec![],
             }),
     };
     Some(ResearchProposalRepairDirective {
@@ -942,11 +953,134 @@ fn research_proposal_v4_semantic_violation(value: &Value) -> Option<ResearchProp
             _ => {
                 return Some(ResearchProposalViolation::ShapeInvalid {
                     pointer: format!("{pointer}/kind"),
+                    offending: goal.get("kind").and_then(Value::as_str).map(String::from),
+                    allowed: vec![
+                        "metric_observation".into(),
+                        "metric_time_series".into(),
+                        "metric_change".into(),
+                        "metric_difference".into(),
+                        "qualitative_evidence".into(),
+                    ],
                 });
             }
         }
     }
     (!has_required_objective).then_some(ResearchProposalViolation::RequiredObjectiveMissing)
+}
+
+/// Re-derive a precise `ShapeInvalid` with offending value and allowed set by
+/// re-walking the proposal JSON. This runs only when the main validator
+/// returned `Shape` (structural failure), recovering information the
+/// `ContractValueError::Shape(&'static str)` type discards. All values
+/// surfaced here (keys, enum tokens) are schema-public.
+fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalViolation> {
+    let proposal = value.as_object()?;
+    let allowed_top: &[&str] = &[
+        "answer_scope",
+        "document_types",
+        "intent",
+        "objectives",
+        "periods",
+        "uncertainty",
+    ];
+    // Check for extra/unknown top-level keys (e.g. double-wrapped proposal).
+    for key in proposal.keys() {
+        if !allowed_top.contains(&key.as_str()) {
+            return Some(ResearchProposalViolation::ShapeInvalid {
+                pointer: format!("/{key}"),
+                offending: Some(key.clone()),
+                allowed: allowed_top.iter().map(|s| (*s).to_string()).collect(),
+            });
+        }
+    }
+    // Check enum fields at the top level.
+    for (field, allowed_vals) in [
+        ("answer_scope", vec!["direct", "supporting_context_only"]),
+        ("uncertainty", vec!["low", "medium", "high"]),
+    ] {
+        if let Some(actual) = proposal.get(field).and_then(Value::as_str)
+            && !allowed_vals.contains(&actual)
+        {
+            return Some(ResearchProposalViolation::ShapeInvalid {
+                pointer: format!("/{field}"),
+                offending: Some(actual.to_string()),
+                allowed: allowed_vals.iter().map(|s| (*s).to_string()).collect(),
+            });
+        }
+    }
+    // Check each objective's enum fields.
+    let objectives = proposal.get("objectives")?.as_array()?;
+    for (idx, objective) in objectives.iter().enumerate() {
+        let obj = objective.as_object()?;
+        let base = format!("/objectives/{idx}");
+        for (field, allowed_vals) in [
+            ("priority", vec!["required", "deferred"]),
+            (
+                "directness",
+                vec!["any", "direct_preferred", "direct_required"],
+            ),
+        ] {
+            if let Some(actual) = obj.get(field).and_then(Value::as_str)
+                && !allowed_vals.contains(&actual)
+            {
+                return Some(ResearchProposalViolation::ShapeInvalid {
+                    pointer: format!("{base}/{field}"),
+                    offending: Some(actual.to_string()),
+                    allowed: allowed_vals.iter().map(|s| (*s).to_string()).collect(),
+                });
+            }
+        }
+        // Check goal.kind and goal enums.
+        if let Some(goal) = obj.get("goal").and_then(Value::as_object)
+            && let Some(kind) = goal.get("kind").and_then(Value::as_str)
+        {
+            let known_kinds = [
+                "metric_observation",
+                "metric_time_series",
+                "metric_change",
+                "metric_difference",
+                "qualitative_evidence",
+            ];
+            if !known_kinds.contains(&kind) {
+                return Some(ResearchProposalViolation::ShapeInvalid {
+                    pointer: format!("{base}/goal/kind"),
+                    offending: Some(kind.to_string()),
+                    allowed: known_kinds.iter().map(|s| (*s).to_string()).collect(),
+                });
+            }
+            // Check metric_change enums.
+            if kind == "metric_change" {
+                for (field, allowed_vals) in [
+                    ("change", vec!["absolute_change", "growth_rate"]),
+                    (
+                        "window",
+                        vec![
+                            "year_over_year",
+                            "quarter_over_quarter",
+                            "sequential",
+                            "period_over_period",
+                        ],
+                    ),
+                ] {
+                    if let Some(actual) = goal.get(field).and_then(Value::as_str)
+                        && !allowed_vals.contains(&actual)
+                    {
+                        return Some(ResearchProposalViolation::ShapeInvalid {
+                            pointer: format!("{base}/goal/{field}"),
+                            offending: Some(actual.to_string()),
+                            allowed: allowed_vals.iter().map(|s| (*s).to_string()).collect(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: shape error we couldn't localise.
+    Some(ResearchProposalViolation::ShapeInvalid {
+        pointer: "/".to_string(),
+        offending: None,
+        allowed: allowed_top.iter().map(|s| (*s).to_string()).collect(),
+    })
 }
 
 fn validate_targeted_query(value: &Value) -> Result<(), ContractValueError> {
@@ -1397,14 +1531,14 @@ mod tests {
     #[test]
     fn embedded_export_is_complete_canonical_and_hash_bound() {
         let verified = verify_embedded().expect("generated contracts must verify");
-        assert_eq!(verified.contract_count, 5);
+        assert_eq!(verified.contract_count, 7);
         assert_eq!(verified.manifest_sha256, GENERATED_MANIFEST_SHA256);
     }
 
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 53);
+        assert_eq!(descriptors().len(), 55);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
