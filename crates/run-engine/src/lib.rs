@@ -720,7 +720,10 @@ fn canonical_value_failure(
     error: &krw_agent_contracts::ContractValueError,
 ) -> DependencyFailure {
     let category = match error {
-        krw_agent_contracts::ContractValueError::UnknownContract(_) => "unknown_contract",
+        krw_agent_contracts::ContractValueError::UnknownContract(id) => {
+            tracing::warn!(contract_id = %id, prefix, "canonical_input_unknown_contract");
+            "unknown_contract"
+        }
         krw_agent_contracts::ContractValueError::Shape(_) => "shape_invalid",
         krw_agent_contracts::ContractValueError::Semantic(_) => "semantic_invalid",
         krw_agent_contracts::ContractValueError::Limit(_) => "limit_exceeded",
@@ -1985,7 +1988,15 @@ where
                         component: "capability.restore_committed_result",
                         failure,
                     })?;
-                state.commit_research_result(&call, &result)?;
+                if let Err(error) = state.commit_research_result(&call, &result) {
+                    let Some(directive) = model_recovery_directive(&error) else {
+                        return Err(error);
+                    };
+                    if !state.recover_model_decision(input.image, &episode, directive)? {
+                        return Err(error);
+                    }
+                    continue;
+                }
                 let result_bytes = serde_jcs::to_vec(&result)?;
                 state.record_evidence_bytes(result_bytes.len())?;
                 state.ingest(&result)?;
@@ -2509,7 +2520,15 @@ where
                     component: "capability.restore_recovered_result",
                     failure,
                 })?;
-            state.commit_research_result(&call, &result)?;
+            if let Err(error) = state.commit_research_result(&call, &result) {
+                let Some(directive) = model_recovery_directive(&error) else {
+                    return Err(error);
+                };
+                if !state.recover_model_decision(input.image, &episode, directive)? {
+                    return Err(error);
+                }
+                continue;
+            }
             state.reserve_capability_call(&call.capability.id, &call.action_key)?;
             if child_call_kind == Some(bounded_child::ChildCallKind::Capability) {
                 bounded_child::usage(
@@ -6651,13 +6670,13 @@ fn model_input_rejection_code(failure: &DependencyFailure) -> Option<ModelPropos
 /// Extract a bounded diagnostic from a research-proposal violation. Only
 /// `MetricIdentityInvalid` carries enough context to be actionable; other
 /// violations return `None` (the `reason_code` alone suffices).
-fn violation_to_detail(violation: &ResearchProposalViolation) -> Option<RecoveryDetailV1> {
+fn violation_to_detail(violation: &ResearchProposalViolation) -> RecoveryDetailV1 {
     match violation {
         ResearchProposalViolation::MetricIdentityInvalid {
             offending,
             valid,
             pointer,
-        } => Some(RecoveryDetailV1 {
+        } => RecoveryDetailV1 {
             schema_version: 1,
             field: pointer.clone(),
             offending_value: offending.clone(),
@@ -6666,8 +6685,71 @@ fn violation_to_detail(violation: &ResearchProposalViolation) -> Option<Recovery
                    valid_alternatives. Use canonical identifiers from the ontology \
                    catalog, not aliases."
                 .to_string(),
-        }),
-        _ => None,
+        },
+        ResearchProposalViolation::ShapeInvalid {
+            pointer,
+            offending,
+            allowed,
+        } => RecoveryDetailV1 {
+            schema_version: 1,
+            field: pointer.clone(),
+            offending_value: offending.clone().unwrap_or_default(),
+            valid_alternatives: allowed.clone(),
+            hint: if offending.is_some() && !allowed.is_empty() {
+                "The field identified by detail.field has an invalid value. \
+                 Use one of detail.valid_alternatives instead. If the field is \
+                 an unknown key, remove it — the proposal must not be \
+                 double-wrapped or have extra top-level keys."
+                    .to_string()
+            } else {
+                "The proposal has a structural error. Check that top-level keys \
+                 are exactly: answer_scope, document_types, intent, objectives, \
+                 periods, uncertainty. Do not wrap the proposal in an extra \
+                 object."
+                    .to_string()
+            },
+        },
+        ResearchProposalViolation::RequiredObjectiveMissing => RecoveryDetailV1 {
+            schema_version: 1,
+            field: "/objectives".to_string(),
+            offending_value: String::new(),
+            valid_alternatives: vec!["required".into(), "deferred".into()],
+            hint: "At least one objective must have priority \"required\".".to_string(),
+        },
+        ResearchProposalViolation::QualitativeConceptsMissing { pointer } => RecoveryDetailV1 {
+            schema_version: 1,
+            field: pointer.clone(),
+            offending_value: String::new(),
+            valid_alternatives: vec![],
+            hint: "The concepts array must be non-empty (1–16 strings).".to_string(),
+        },
+        ResearchProposalViolation::QualitativePredicateMissing { pointer } => RecoveryDetailV1 {
+            schema_version: 1,
+            field: pointer.clone(),
+            offending_value: String::new(),
+            valid_alternatives: vec![],
+            hint: "When the concepts array has 2+ entries, predicates must \
+                   be a non-empty array (1–16 strings)."
+                .to_string(),
+        },
+        ResearchProposalViolation::LimitExceeded => RecoveryDetailV1 {
+            schema_version: 1,
+            field: "/".to_string(),
+            offending_value: String::new(),
+            valid_alternatives: vec![],
+            hint: "The proposal exceeds a size or count limit. Reduce the number \
+                   of objectives, alternatives, or terms."
+                .to_string(),
+        },
+        ResearchProposalViolation::SerializationInvalid => RecoveryDetailV1 {
+            schema_version: 1,
+            field: "/".to_string(),
+            offending_value: String::new(),
+            valid_alternatives: vec![],
+            hint: "The proposal could not be canonicalized. Reduce nesting or \
+                   remove non-finite values."
+                .to_string(),
+        },
     }
 }
 
@@ -6678,7 +6760,7 @@ fn violation_to_detail(violation: &ResearchProposalViolation) -> Option<Recovery
 fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirective> {
     match error {
         EngineError::ModelProposalRejected(rejection) => {
-            let detail = rejection.violation().and_then(violation_to_detail);
+            let detail = rejection.violation().map(violation_to_detail);
             match detail {
                 Some(d) => Some(ModelRecoveryDirective::with_detail(
                     rejection.code(),
