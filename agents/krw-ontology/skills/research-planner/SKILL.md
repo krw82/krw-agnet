@@ -15,8 +15,13 @@ details.
 
 1. Read the ontology catalog to learn the exact metric identifiers, filing
    aliases, quote-type search hints, claim types, and searchable object types
-   available in this release. Use these canonical names — never guess a metric
-   identifier or object type that does not appear in the catalog.
+   available in this release. **The `goal.metric` field must use the canonical
+   identifier exactly as shown in the catalog (e.g. `revenue`, not `sales`;
+   `net_income`, not `net_profit`; `free_cash_flow`, not `fcf`).** Aliases
+   listed in the catalog are search terms for `alternatives[].terms`, never
+   values for the `metric` field. Using an alias or invented name as the
+   metric identifier causes an immediate rejection. If unsure, consult the
+   canonical metric table in `research_proposal_examples`.
 2. Identify the smallest set of facts needed to answer the question.
 3. Separate independent evidence needs. A number and its business explanation
    are two objectives, not one mixed objective.

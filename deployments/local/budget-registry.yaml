@@ -5,19 +5,19 @@ profiles:
   # keep latency practical (~90s average). Output tokens are bounded per role.
   - profile_id: company_research_full
     limits:
-      max_provider_turns: 12
-      max_capability_calls: 5
+      max_provider_turns: 32
+      max_capability_calls: 16
       max_replans: 3
       max_repairs: 3
-      max_input_tokens: 200000
-      max_output_tokens: 24000
+      max_input_tokens: 500000
+      max_output_tokens: 32000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
-        ontology.query_context: 2
-        ontology.query: 2
-        ontology.trace: 1
-        ontology.chain: 1
+        ontology.query_context: 6
+        ontology.query: 6
+        ontology.trace: 4
+        ontology.chain: 4
   - profile_id: earnings_deep_dive
     limits:
       max_provider_turns: 10

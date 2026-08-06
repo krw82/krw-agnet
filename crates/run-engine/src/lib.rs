@@ -34,11 +34,11 @@ use krw_agent_contracts::{
     KRW_GURU_COMPANY_BRIEF_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1,
     NOTEBOOK_TRANSFORM_V2, NotebookTransformInputV1, NotebookTransformV2,
     QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2,
-    ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective, RoutingDecisionV2,
-    RoutingRequestV1, STATE_FACTS_V1, build_company_brief_input, build_company_research_context,
-    build_evidence_review_input, contract as canonical_contract,
-    research_proposal_v4_repair_directive, validate_display_plan_linkage,
-    validate_notebook_linkage, validate_routing_linkage,
+    ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
+    ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, STATE_FACTS_V1,
+    build_company_brief_input, build_company_research_context, build_evidence_review_input,
+    contract as canonical_contract, research_proposal_v4_repair_directive,
+    validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
 use krw_agent_deepseek_wire::{
@@ -3692,24 +3692,39 @@ struct DerivedTickerScope {
 /// Closed, content-free feedback that can safely cross the model boundary.
 /// It describes how to repair a decision, never the user's question, evidence,
 /// raw provider output, or an internal state identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRecoveryDirective {
     reason_code: &'static str,
     repair_mode: &'static str,
+    detail: Option<RecoveryDetailV1>,
 }
 
 impl ModelRecoveryDirective {
-    const fn replace(reason_code: &'static str) -> Self {
+    fn replace(reason_code: &'static str) -> Self {
         Self {
             reason_code,
             repair_mode: "replace",
+            detail: None,
         }
     }
 
-    const fn with_mode(reason_code: &'static str, repair_mode: &'static str) -> Self {
+    fn with_mode(reason_code: &'static str, repair_mode: &'static str) -> Self {
         Self {
             reason_code,
             repair_mode,
+            detail: None,
+        }
+    }
+
+    fn with_detail(
+        reason_code: &'static str,
+        repair_mode: &'static str,
+        detail: RecoveryDetailV1,
+    ) -> Self {
+        Self {
+            reason_code,
+            repair_mode,
+            detail: Some(detail),
         }
     }
 }
@@ -3728,6 +3743,22 @@ struct RecoveryEnvelopeV1 {
     allowed_actions: Vec<&'static str>,
     retryable: bool,
     contains_evidence: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<RecoveryDetailV1>,
+}
+
+/// Bounded diagnostic that is safe to cross the provider boundary. Contains
+/// only structural identifiers (JSON pointer, metric names) that are already
+/// advertised in the system prompt ontology catalog — never user text,
+/// evidence, or internal state identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryDetailV1 {
+    schema_version: u8,
+    field: String,
+    offending_value: String,
+    valid_alternatives: Vec<String>,
+    hint: String,
 }
 
 const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 12;
@@ -4640,9 +4671,19 @@ impl ActiveRun {
         } else {
             // Do not replay an unadvertised or malformed tool call. A fresh
             // kernel user message preserves the valid transcript and gives
-            // Flash a closed, content-free correction target.
+            // Flash a closed correction target. When a diagnostic detail is
+            // present, the message explicitly tells the model how to read it.
+            let guidance = if envelope.get("detail").is_some() {
+                "KRW kernel rejected the preceding decision. Read the recovery result's \
+                 detail.field to find where the error is, detail.offending_value for what \
+                 was wrong, and detail.valid_alternatives for what you may use instead. \
+                 Fix the error and resubmit."
+            } else {
+                "KRW kernel did not execute the preceding decision. Continue the current \
+                 research using only the currently advertised output mode and tools."
+            };
             self.messages.push(ProviderMessage::user(format!(
-                "KRW kernel did not execute the preceding decision. Continue the current research using only the currently advertised output mode and tools. Recovery result: {}",
+                "{guidance} Recovery result: {}",
                 serde_jcs::to_string(&envelope)?
             )));
         }
@@ -4672,6 +4713,7 @@ impl ActiveRun {
             allowed_actions,
             retryable: true,
             contains_evidence: false,
+            detail: directive.detail,
         })?)
     }
 
@@ -6261,17 +6303,23 @@ fn research_proposal_compilation_error(error: &InitialPlanError) -> EngineError 
         InitialPlanError::Contract => Some("model_research_proposal_contract_invalid"),
         InitialPlanError::Decode => Some("model_research_proposal_decode_invalid"),
         InitialPlanError::PlanTooLarge => Some("model_research_proposal_plan_too_large"),
-        InitialPlanError::DuplicateClause
-        | InitialPlanError::UnlinkedUserGoal
-        | InitialPlanError::UnlinkedDependency
-        | InitialPlanError::GoalGraph
-        | InitialPlanError::CandidateCoverage
-        | InitialPlanError::UncoverableGoal
-        | InitialPlanError::SearchPlanContract
-        | InitialPlanError::UnsupportedScope
-        | InitialPlanError::PriorPlan
-        | InitialPlanError::Receipt
-        | InitialPlanError::Canonicalization => None,
+        // These compiler-internal errors were previously terminal Invariants,
+        // but they often stem from the model producing a proposal that is
+        // schema-valid yet semantically inconsistent (e.g. duplicate search
+        // clauses, goals the planner cannot cover). Routing them through the
+        // repair channel gives the model a bounded retry instead of an
+        // immediate run failure.
+        InitialPlanError::DuplicateClause => Some("proposal_duplicate_search_clause"),
+        InitialPlanError::UnlinkedUserGoal => Some("proposal_unlinked_user_goal"),
+        InitialPlanError::UnlinkedDependency => Some("proposal_unlinked_dependency"),
+        InitialPlanError::GoalGraph => Some("proposal_goal_graph_invalid"),
+        InitialPlanError::CandidateCoverage => Some("proposal_candidate_coverage_gap"),
+        InitialPlanError::UncoverableGoal => Some("proposal_uncoverable_goal"),
+        InitialPlanError::SearchPlanContract => Some("proposal_search_plan_contract_invalid"),
+        InitialPlanError::UnsupportedScope => Some("proposal_unsupported_scope"),
+        InitialPlanError::PriorPlan => Some("proposal_prior_plan_conflict"),
+        InitialPlanError::Receipt => Some("proposal_receipt_invalid"),
+        InitialPlanError::Canonicalization => Some("proposal_canonicalization_failed"),
     };
     model_code.map_or_else(
         || EngineError::Invariant("trusted research-proposal compilation boundary failed"),
@@ -6509,29 +6557,31 @@ fn prepare_calls(
     Ok(prepared)
 }
 
-/// A bounded, content-free correction instruction. Generic canonical schemas
-/// use `replace`; proposal contracts may additionally carry the declared
-/// `narrow` or `split` mode. This prevents the run loop from accumulating a
-/// question-specific repair branch for every validation condition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A bounded correction instruction. Generic canonical schemas use `replace`;
+/// proposal contracts may additionally carry the declared `narrow` or `split`
+/// mode and a diagnostic detail (JSON pointer, offending value, valid
+/// alternatives). The detail is safe to cross the provider boundary because
+/// it contains only structural identifiers already advertised in the system
+/// prompt, never user text, evidence, or internal state.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelProposalRejection {
     Generic { reason_code: &'static str },
     ResearchProposalV4(ResearchProposalRepairDirective),
 }
 
 impl ModelProposalRejection {
-    const fn generic(reason_code: &'static str) -> Self {
+    fn generic(reason_code: &'static str) -> Self {
         Self::Generic { reason_code }
     }
 
-    const fn code(self) -> &'static str {
+    fn code(&self) -> &'static str {
         match self {
             Self::Generic { reason_code } => reason_code,
             Self::ResearchProposalV4(directive) => directive.code(),
         }
     }
 
-    const fn repair_mode(self) -> &'static str {
+    fn repair_mode(&self) -> &'static str {
         match self {
             Self::Generic { .. } => "replace",
             Self::ResearchProposalV4(directive) => match directive.repair_mode {
@@ -6539,6 +6589,17 @@ impl ModelProposalRejection {
                 krw_agent_contracts::ResearchProposalRepairMode::Narrow => "narrow",
                 krw_agent_contracts::ResearchProposalRepairMode::Split => "split",
             },
+        }
+    }
+
+    /// Returns the research-proposal violation if this rejection originated
+    /// from a `ResearchProposal` v4 contract check. The caller uses the payload
+    /// (offending metric, JSON pointer, valid alternatives) to build a
+    /// diagnostic detail for the model recovery envelope.
+    fn violation(&self) -> Option<&ResearchProposalViolation> {
+        match self {
+            Self::ResearchProposalV4(directive) => Some(&directive.violation),
+            Self::Generic { .. } => None,
         }
     }
 }
@@ -6587,16 +6648,49 @@ fn model_input_rejection_code(failure: &DependencyFailure) -> Option<ModelPropos
     }
 }
 
+/// Extract a bounded diagnostic from a research-proposal violation. Only
+/// `MetricIdentityInvalid` carries enough context to be actionable; other
+/// violations return `None` (the `reason_code` alone suffices).
+fn violation_to_detail(violation: &ResearchProposalViolation) -> Option<RecoveryDetailV1> {
+    match violation {
+        ResearchProposalViolation::MetricIdentityInvalid {
+            offending,
+            valid,
+            pointer,
+        } => Some(RecoveryDetailV1 {
+            schema_version: 1,
+            field: pointer.clone(),
+            offending_value: offending.clone(),
+            valid_alternatives: valid.clone(),
+            hint: "Replace the offending metric identifier with one of the \
+                   valid_alternatives. Use canonical identifiers from the ontology \
+                   catalog, not aliases."
+                .to_string(),
+        }),
+        _ => None,
+    }
+}
+
 /// Classify only errors caused by a provider decision that can be corrected
-/// without changing an immutable run boundary. Every returned code is closed
-/// and content-free; deployment, release, scope, replay, and persistence
-/// integrity errors intentionally do not enter this loop.
+/// without changing an immutable run boundary. Metric identifiers and JSON
+/// pointers in the detail are safe to disclose: they are already advertised
+/// in the system prompt ontology catalog and tool schema.
 fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirective> {
     match error {
-        EngineError::ModelProposalRejected(rejection) => Some(ModelRecoveryDirective::with_mode(
-            rejection.code(),
-            rejection.repair_mode(),
-        )),
+        EngineError::ModelProposalRejected(rejection) => {
+            let detail = rejection.violation().and_then(violation_to_detail);
+            match detail {
+                Some(d) => Some(ModelRecoveryDirective::with_detail(
+                    rejection.code(),
+                    rejection.repair_mode(),
+                    d,
+                )),
+                None => Some(ModelRecoveryDirective::with_mode(
+                    rejection.code(),
+                    rejection.repair_mode(),
+                )),
+            }
+        }
         EngineError::InvalidToolCallId => {
             Some(ModelRecoveryDirective::replace("tool_call_id_invalid"))
         }
@@ -6629,6 +6723,9 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::ResearchPlannerDecisionMismatch => {
             Some(ModelRecoveryDirective::replace("proposal_not_actionable"))
         }
+        EngineError::ResearchPlanner(ResearchPlannerError::IntentGoalDefinitionDrift) => Some(
+            ModelRecoveryDirective::replace("proposal_goal_definition_changed"),
+        ),
         EngineError::InvalidProviderEpisode(reason) => match *reason {
             "final episode must finish with stop" | "final episode has no content" => {
                 Some(ModelRecoveryDirective::replace("answer_output_invalid"))

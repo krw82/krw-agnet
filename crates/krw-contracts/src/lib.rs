@@ -318,20 +318,32 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
     }
 }
 
-/// Closed, content-free model-input violation families. This is deliberately
-/// an enum rather than a growing collection of prompt wording or capability
-/// conditionals: every model-authored research proposal gets the same bounded
-/// repair protocol regardless of the question or ontology capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Closed model-input violation families. The variant payload carries a
+/// bounded diagnostic — a JSON pointer to the offending site and, for metric
+/// identity failures, the bad value plus the canonical list. These fields are
+/// safe to cross the provider boundary because metric identifiers are already
+/// advertised in the system prompt ontology catalog; they are not user text,
+/// evidence, or internal state identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ResearchProposalViolation {
-    ShapeInvalid,
+    ShapeInvalid {
+        pointer: String,
+    },
     LimitExceeded,
     SerializationInvalid,
     RequiredObjectiveMissing,
-    MetricIdentityInvalid,
-    QualitativeConceptsMissing,
-    QualitativePredicateMissing,
+    MetricIdentityInvalid {
+        offending: String,
+        valid: Vec<String>,
+        pointer: String,
+    },
+    QualitativeConceptsMissing {
+        pointer: String,
+    },
+    QualitativePredicateMissing {
+        pointer: String,
+    },
 }
 
 /// The only corrective operations the kernel may suggest. It never provides
@@ -347,7 +359,7 @@ pub enum ResearchProposalRepairMode {
 /// A safe repair directive may cross the provider boundary and be checkpointed
 /// as a kernel artifact. It contains no model terms, user text, or retrieved
 /// evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchProposalRepairDirective {
     pub violation: ResearchProposalViolation,
@@ -356,36 +368,36 @@ pub struct ResearchProposalRepairDirective {
 
 impl ResearchProposalViolation {
     #[must_use]
-    pub const fn code(self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
-            Self::ShapeInvalid => "proposal_shape_invalid",
+            Self::ShapeInvalid { .. } => "proposal_shape_invalid",
             Self::LimitExceeded => "proposal_limit_exceeded",
             Self::SerializationInvalid => "proposal_serialization_invalid",
             Self::RequiredObjectiveMissing => "proposal_required_objective_missing",
-            Self::MetricIdentityInvalid => "proposal_metric_identity_invalid",
-            Self::QualitativeConceptsMissing => "proposal_qualitative_concepts_missing",
-            Self::QualitativePredicateMissing => "proposal_qualitative_predicate_missing",
+            Self::MetricIdentityInvalid { .. } => "proposal_metric_identity_invalid",
+            Self::QualitativeConceptsMissing { .. } => "proposal_qualitative_concepts_missing",
+            Self::QualitativePredicateMissing { .. } => "proposal_qualitative_predicate_missing",
         }
     }
 
     #[must_use]
-    pub const fn repair_mode(self) -> ResearchProposalRepairMode {
+    pub fn repair_mode(&self) -> ResearchProposalRepairMode {
         match self {
             Self::LimitExceeded => ResearchProposalRepairMode::Narrow,
-            Self::QualitativeConceptsMissing | Self::QualitativePredicateMissing => {
+            Self::QualitativeConceptsMissing { .. } | Self::QualitativePredicateMissing { .. } => {
                 ResearchProposalRepairMode::Split
             }
-            Self::ShapeInvalid
+            Self::ShapeInvalid { .. }
             | Self::SerializationInvalid
             | Self::RequiredObjectiveMissing
-            | Self::MetricIdentityInvalid => ResearchProposalRepairMode::Replace,
+            | Self::MetricIdentityInvalid { .. } => ResearchProposalRepairMode::Replace,
         }
     }
 }
 
 impl ResearchProposalRepairDirective {
     #[must_use]
-    pub const fn code(self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         self.violation.code()
     }
 }
@@ -401,12 +413,18 @@ pub fn research_proposal_v4_repair_directive(
     #[allow(clippy::match_same_arms)]
     let violation = match validate_value(RESEARCH_PROPOSAL_V4, value) {
         Ok(()) => return None,
-        Err(ContractValueError::UnknownContract(_)) => ResearchProposalViolation::ShapeInvalid,
-        Err(ContractValueError::Shape(_)) => ResearchProposalViolation::ShapeInvalid,
+        Err(ContractValueError::UnknownContract(_)) => ResearchProposalViolation::ShapeInvalid {
+            pointer: "/".to_string(),
+        },
+        Err(ContractValueError::Shape(_)) => ResearchProposalViolation::ShapeInvalid {
+            pointer: "/".to_string(),
+        },
         Err(ContractValueError::Limit(_)) => ResearchProposalViolation::LimitExceeded,
         Err(ContractValueError::Json(_)) => ResearchProposalViolation::SerializationInvalid,
         Err(ContractValueError::Semantic(_)) => research_proposal_v4_semantic_violation(value)
-            .unwrap_or(ResearchProposalViolation::ShapeInvalid),
+            .unwrap_or(ResearchProposalViolation::ShapeInvalid {
+                pointer: "/".to_string(),
+            }),
     };
     Some(ResearchProposalRepairDirective {
         repair_mode: violation.repair_mode(),
@@ -418,8 +436,7 @@ pub fn research_proposal_v4_repair_directive(
 /// `research_proposal_v4_repair_directive` so repair mode is not lost.
 #[must_use]
 pub fn research_proposal_v4_validation_code(value: &Value) -> &'static str {
-    research_proposal_v4_repair_directive(value)
-        .map_or("valid", ResearchProposalRepairDirective::code)
+    research_proposal_v4_repair_directive(value).map_or("valid", |directive| directive.code())
 }
 
 fn validate_state_operation_output(value: &Value) -> Result<(), ContractValueError> {
@@ -889,31 +906,44 @@ fn research_proposal_v4_semantic_violation(value: &Value) -> Option<ResearchProp
     let proposal = value.as_object()?;
     let objectives = proposal.get("objectives")?.as_array()?;
     let mut has_required_objective = false;
-    for objective in objectives {
+    for (idx, objective) in objectives.iter().enumerate() {
         let objective = objective.as_object()?;
         has_required_objective |= objective.get("priority")?.as_str()? == "required";
         let goal = objective.get("goal")?.as_object()?;
+        let pointer = format!("/objectives/{idx}/goal");
         match goal.get("kind")?.as_str()? {
             "metric_observation" | "metric_time_series" | "metric_change" | "metric_difference" => {
-                if !goal
-                    .get("metric")
-                    .and_then(Value::as_str)
-                    .is_some_and(|metric| RESEARCH_PROPOSAL_V4_METRICS.contains(&metric))
-                {
-                    return Some(ResearchProposalViolation::MetricIdentityInvalid);
+                let metric_val = goal.get("metric").and_then(Value::as_str).unwrap_or("");
+                if !RESEARCH_PROPOSAL_V4_METRICS.contains(&metric_val) {
+                    return Some(ResearchProposalViolation::MetricIdentityInvalid {
+                        offending: metric_val.to_string(),
+                        valid: RESEARCH_PROPOSAL_V4_METRICS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                        pointer: format!("{pointer}/metric"),
+                    });
                 }
             }
             "qualitative_evidence" => {
                 let concepts = goal.get("concepts")?.as_array()?;
                 let predicates = goal.get("predicates")?.as_array()?;
                 if concepts.is_empty() {
-                    return Some(ResearchProposalViolation::QualitativeConceptsMissing);
+                    return Some(ResearchProposalViolation::QualitativeConceptsMissing {
+                        pointer: format!("{pointer}/concepts"),
+                    });
                 }
                 if concepts.len() > 1 && predicates.is_empty() {
-                    return Some(ResearchProposalViolation::QualitativePredicateMissing);
+                    return Some(ResearchProposalViolation::QualitativePredicateMissing {
+                        pointer: format!("{pointer}/predicates"),
+                    });
                 }
             }
-            _ => return Some(ResearchProposalViolation::ShapeInvalid),
+            _ => {
+                return Some(ResearchProposalViolation::ShapeInvalid {
+                    pointer: format!("{pointer}/kind"),
+                });
+            }
         }
     }
     (!has_required_objective).then_some(ResearchProposalViolation::RequiredObjectiveMissing)

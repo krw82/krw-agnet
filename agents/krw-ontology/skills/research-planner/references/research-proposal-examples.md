@@ -296,3 +296,72 @@ required, R&D/operating costs are required for the cost layer, and segment
 breakdown (BusinessActivity + NumericEvidence) is deferred but included so the
 model can attempt product-mix decomposition. Both 10-K and 10-Q document types
 are requested so quarterly and annual data are both available.
+
+## Canonical metric identifiers
+
+The `goal.metric` field in every metric goal (`metric_observation`,
+`metric_time_series`, `metric_change`, `metric_difference`) MUST use one of
+these exact canonical identifiers. Aliases are search terms only — never put
+an alias in the `metric` field.
+
+| Canonical ID | Display Name | Aliases (search terms only, NOT for `metric` field) |
+|---|---|---|
+| `revenue` | Revenue | total_revenue, net_sales, sales |
+| `revenue_growth` | Revenue Growth | revenue_growth_rate, sales_growth, net_sales_growth |
+| `segment_revenue` | Segment Revenue | segment_sales |
+| `gross_margin` | Gross Margin | gross_profit_margin |
+| `gross_profit` | Gross Profit | |
+| `operating_margin` | Operating Margin | |
+| `operating_income` | Operating Income | |
+| `net_income` | Net Income | net_profit |
+| `net_margin` | Net Margin | |
+| `eps` | Earnings Per Share | earnings_per_share |
+| `cost_of_revenue` | Cost of Revenue | cost_of_goods_sold, cogs |
+| `operating_expense` | Operating Expense | total_operating_expenses, sg_and_a |
+| `research_and_development` | Research and Development | rd_expense, research_development_expense |
+| `selling_general_and_admin` | Selling, General and Administrative | sga, selling_general_administrative |
+| `operating_cash_flow` | Operating Cash Flow | cash_from_operations |
+| `capital_expenditures` | Capital Expenditures | capex, pp_and_e |
+| `free_cash_flow` | Free Cash Flow | fcf |
+| `fcf_margin` | FCF Margin | free_cash_flow_margin |
+| `cash_and_equivalents` | Cash and Equivalents | cash, total_cash |
+| `total_assets` | Total Assets | |
+| `total_liabilities` | Total Liabilities | |
+| `total_debt` | Total Debt | debt |
+| `shareholders_equity` | Shareholders' Equity | total_equity, stockholders_equity |
+| `roe` | Return on Equity | return_on_equity |
+| `roa` | Return on Assets | return_on_assets |
+
+### Common mistakes to avoid
+
+The kernel rejects a proposal if ANY objective has a bad metric identifier.
+The recovery feedback will name the offending field and value. Fix it on the
+first retry — do not repeat the same mistake.
+
+❌ **Using an alias as the metric identifier:**
+```json
+"metric": "sales"       // WRONG — "sales" is an alias
+"metric": "net_profit"  // WRONG — "net_profit" is an alias
+"metric": "fcf"         // WRONG — "fcf" is an alias
+"metric": "capex"       // WRONG — "capex" is an alias
+```
+
+✅ **Using the canonical identifier:**
+```json
+"metric": "revenue"             // correct
+"metric": "net_income"          // correct
+"metric": "free_cash_flow"      // correct
+"metric": "capital_expenditures" // correct
+```
+
+❌ **Inventing a metric not in the dictionary:**
+```json
+"metric": "ebitda"              // WRONG — not canonical
+"metric": "enterprise_value"    // WRONG — not canonical
+"metric": "dividend_yield"      // WRONG — not canonical
+```
+
+If the user asks about a metric that is not in the canonical list, use the
+closest canonical metric with `qualitative_evidence` for the rest, or use
+`metric_dimensions` to narrow a canonical metric (e.g. `segment_revenue` with
+dimension `["geographic"]` instead of inventing `geographic_revenue`).

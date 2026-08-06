@@ -26,11 +26,44 @@ user and do not treat it as evidence.
 The exact `reason_code`, `repair_mode`, and `allowed_actions` are authoritative
 for that turn. The envelope contains no new investment fact.
 
+### Diagnostic detail (when present)
+
+For some violations the envelope includes a `detail` object that tells you
+exactly what went wrong and how to fix it:
+
+```json
+{
+  "status": "recovery_required",
+  "reason_code": "proposal_metric_identity_invalid",
+  "repair_mode": "replace",
+  "detail": {
+    "schema_version": 1,
+    "field": "/objectives/2/goal/metric",
+    "offending_value": "net_profit",
+    "valid_alternatives": ["revenue", "net_income", "operating_income", ...],
+    "hint": "Replace the offending metric identifier with one of the valid_alternatives..."
+  }
+}
+```
+
+- **`detail.field`** — JSON pointer to the exact location of the error in your
+  proposal (e.g. `/objectives/2/goal/metric` means the third objective's goal
+  metric field).
+- **`detail.offending_value`** — the value you used that was rejected (e.g.
+  `"net_profit"` — this is an alias, not a canonical identifier).
+- **`detail.valid_alternatives`** — the complete list of canonical identifiers
+  you may use instead. Pick the one that matches your intent.
+- **`detail.hint`** — a short instruction on how to apply the fix.
+
+When you see a `detail`, fix that exact field in your next proposal. Do not
+change anything else — only the field identified by `detail.field`.
+
 ## Correct response patterns
 
 | Feedback | Correct next decision |
 | --- | --- |
 | `proposal_shape_invalid` or `provider_input_envelope_invalid` | Send one complete `{ "proposal": ... }` call with no extra root keys. |
+| `proposal_metric_identity_invalid` (with `detail`) | Replace the offending metric at `detail.field` with one of `detail.valid_alternatives`. Use canonical IDs only, not aliases. |
 | `mixed_metric_and_qualitative_goal` and `repair_mode: split` | Keep the evidence need, but emit separate metric and qualitative objectives. |
 | `proposal_too_broad` and `repair_mode: narrow` | Remove only nonessential/deferred expansion or reduce alternatives; retain answer-critical objectives. |
 | `capability_not_available` | Choose an advertised capability, legal transition, or a qualified answer. Never retry an unavailable function. |
