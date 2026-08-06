@@ -3408,9 +3408,25 @@ fn invoke_skill_load(
     }
     let input: SkillLoadInput = serde_json::from_slice(&call.canonical_arguments)
         .map_err(|_error| EngineError::Invariant("skill.load argument decode"))?;
-    let bytes = image
-        .prompt_blob_arc(&input.skill_id)
-        .map_err(|_| EngineError::Invariant("skill.load body lookup failed"))?;
+    let bytes = image.prompt_blob_arc(&input.skill_id).map_err(|_| {
+        // The model requested a skill that is not present in the immutable
+        // image. Return a recoverable error carrying the available skill ids
+        // so the model can pick a valid name on its next turn instead of
+        // failing the run terminally.
+        let available = image
+            .manifest
+            .body
+            .prompt_blobs
+            .iter()
+            .filter(|blob| !blob.private)
+            .map(|blob| blob.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        EngineError::SkillNotFound {
+            skill_id: input.skill_id.clone(),
+            available,
+        }
+    })?;
     // The image blob stores the raw file including frontmatter; strip it so
     // the model receives only the instructional body.
     let raw = std::str::from_utf8(bytes.as_ref())
@@ -6782,6 +6798,23 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::UnknownCapability(_) => {
             Some(ModelRecoveryDirective::replace("capability_not_available"))
         }
+        EngineError::SkillNotFound {
+            skill_id,
+            available,
+        } => Some(ModelRecoveryDirective::with_detail(
+            "skill_not_found",
+            "replace",
+            RecoveryDetailV1 {
+                schema_version: 1,
+                field: "skill_id".to_string(),
+                offending_value: skill_id.clone(),
+                valid_alternatives: available.split(", ").map(str::to_string).collect(),
+                hint: "The requested skill_id is not available in this image. \
+                       Use one of valid_alternatives. Skill ids are lowercase \
+                       snake_case and must match a catalog entry exactly."
+                    .to_string(),
+            },
+        )),
         EngineError::CapabilityPrerequisiteMissing(_) => Some(ModelRecoveryDirective::replace(
             "capability_prerequisite_pending",
         )),
@@ -8629,6 +8662,11 @@ pub enum EngineError {
     TooManyToolCalls { observed: usize, limit: usize },
     #[error("unknown capability: {0}")]
     UnknownCapability(String),
+    #[error("skill not found: {skill_id}; available skills: {available}")]
+    SkillNotFound {
+        skill_id: String,
+        available: String,
+    },
     #[error("capability is not a canonical-argument read: {0}")]
     UnsafeCapability(String),
     #[error("capability prerequisite has not committed: {0}")]
