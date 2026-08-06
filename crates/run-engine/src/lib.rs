@@ -64,7 +64,7 @@ use krw_agent_persistence::{
     CheckpointEpisodeMutation, FinalCommitMutation, FinalizeActionMutation, ObserveActionMutation,
 };
 use krw_agent_protocol::{
-    BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID,
+    ALLOWED_MODEL_IDS, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash,
     DeploymentBinding, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
     provider_tool_name,
@@ -8333,9 +8333,9 @@ fn validate_input(input: &RunInput<'_>, config: &EngineConfig) -> Result<(), Eng
     if input.image.content_hash != input.snapshot.agent_image_hash {
         return Err(EngineError::InvalidInput("agent image hash mismatch"));
     }
-    if input.request.requested_model != DEEPSEEK_MODEL_ID
-        || input.snapshot.requested_model != DEEPSEEK_MODEL_ID
-        || input.snapshot.resolved_model != DEEPSEEK_MODEL_ID
+    if !ALLOWED_MODEL_IDS.contains(&input.request.requested_model.as_str())
+        || !ALLOWED_MODEL_IDS.contains(&input.snapshot.requested_model.as_str())
+        || !ALLOWED_MODEL_IDS.contains(&input.snapshot.resolved_model.as_str())
         || input.request.requested_model != input.snapshot.requested_model
         || input.snapshot.requested_model != input.snapshot.resolved_model
         || input.request.model_profile != input.snapshot.model_profile
@@ -8463,7 +8463,7 @@ fn validate_bounded_run_request(request: &RunRequest) -> Result<(), EngineError>
         || !bounded_nonempty(&request.run_kind, MAX_KIND_BYTES)
         || !bounded_nonempty(&request.locale, MAX_LOCALE_BYTES)
         || !bounded_nonempty(&request.question, MAX_QUESTION_BYTES)
-        || request.requested_model != DEEPSEEK_MODEL_ID
+        || !ALLOWED_MODEL_IDS.contains(&request.requested_model.as_str())
         || !bounded_nonempty(&request.model_profile, MAX_ID_BYTES)
     {
         return Err(EngineError::InvalidInput(
@@ -8497,7 +8497,7 @@ fn validate_episode(
         requires_thinking_tool_replay
             && provider_wire_capabilities.requires_reasoning_content_replay,
     )?;
-    if model != DEEPSEEK_MODEL_ID
+    if !ALLOWED_MODEL_IDS.contains(&model)
         || episode.schema_version != 1
         || episode.request_hash != *expected_request_hash
         || episode.agent_image_hash != image.content_hash
@@ -9128,7 +9128,7 @@ mod tests {
         Directness, EvidenceGrade, EvidenceScope, EvidenceSource, NormalizedFact, PublicCitation,
     };
     use krw_agent_image::compile_agent_dir;
-    use krw_agent_protocol::{AuthScope, McpToolSessionReuse, TransportKind};
+    use krw_agent_protocol::{AuthScope, DEEPSEEK_MODEL_ID, McpToolSessionReuse, TransportKind};
 
     use super::*;
 
