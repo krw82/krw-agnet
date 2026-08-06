@@ -571,6 +571,7 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                 )),
             },
             Err(EngineError::Dependency { component, failure }) => {
+                tracing::warn!(component, code = %failure.code, retryable = failure.retryable, "dependency_failure");
                 Err(execution_failure_from_dependency(component, &failure))
             }
             Err(EngineError::StaleFence { .. }) => Err(RunExecutionFailure::deferred(
