@@ -311,6 +311,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
         STATE_OPERATION_OUTPUT_V1 => validate_state_operation_output(value),
         STATE_FACTS_V1 => validate_state_facts(value),
+        SKILL_LOAD_V1 => validate_skill_load(value),
+        SKILL_CONTENT_V1 => validate_skill_content(value),
         NORMALIZED_CAPABILITY_RESULT_V1 | ANSWER_IR_V1 => Ok(()),
         FINAL_MARKDOWN_V1 if bounded_string(Some(value), 1, 64_000) => Ok(()),
         FINAL_MARKDOWN_V1 => Err(ContractValueError::Shape(FINAL_MARKDOWN_V1)),
@@ -493,6 +495,28 @@ fn validate_state_facts(value: &Value) -> Result<(), ContractValueError> {
     let facts = object(value, STATE_FACTS_V1)?;
     if facts.len() > 64 {
         return Err(ContractValueError::Limit(STATE_FACTS_V1));
+    }
+    Ok(())
+}
+
+/// Validate a `skill-load/v1` request: `{ "skill_id": "<name>" }`.
+fn validate_skill_load(value: &Value) -> Result<(), ContractValueError> {
+    let body = object(value, SKILL_LOAD_V1)?;
+    exact_keys(body, &["skill_id"], SKILL_LOAD_V1)?;
+    if !bounded_string(body.get("skill_id"), 1, 128) {
+        return Err(ContractValueError::Shape(SKILL_LOAD_V1));
+    }
+    Ok(())
+}
+
+/// Validate a `skill-content/v1` result: `{ "skill_id": "<name>", "content": "<md>" }`.
+fn validate_skill_content(value: &Value) -> Result<(), ContractValueError> {
+    let body = object(value, SKILL_CONTENT_V1)?;
+    exact_keys(body, &["skill_id", "content"], SKILL_CONTENT_V1)?;
+    if !bounded_string(body.get("skill_id"), 1, 128)
+        || !bounded_string(body.get("content"), 1, 256_000)
+    {
+        return Err(ContractValueError::Shape(SKILL_CONTENT_V1));
     }
     Ok(())
 }
