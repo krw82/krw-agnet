@@ -14,6 +14,12 @@ pub const PROTOCOL_VERSION: u16 = 6;
 pub const CLAIM_PAYLOAD_SCHEMA_VERSION: u16 = 6;
 pub const PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION: u16 = 3;
 pub const DEEPSEEK_MODEL_ID: &str = "deepseek-v4-flash";
+pub const GLM_MODEL_ID: &str = "glm-5.2";
+/// Closed set of model ids the protocol admits. Adding a new provider means
+/// extending this slice, never bypassing it: every resolved profile must be
+/// backed by one of these exact ids so that downstream codecs can dispatch on
+/// `model_id` without a hidden fallback.
+pub const ALLOWED_MODEL_IDS: &[&str] = &[DEEPSEEK_MODEL_ID, GLM_MODEL_ID];
 pub const FLASH_HIGH_PROFILE_ID: &str = "flash_high";
 pub const FLASH_MAX_PROFILE_ID: &str = "flash_max";
 pub const FLASH_DIRECT_PROFILE_ID: &str = "flash_direct";
@@ -338,6 +344,30 @@ impl ProviderWireCapabilities {
         }
     }
 
+    /// GLM-5.2 wire facts. Like `DeepSeek` V4 Flash it carries reasoning content
+    /// on the thinking channel, but unlike `DeepSeek` its tool-channel accepts
+    /// `tool_choice` in both thinking and non-thinking modes and keeps the
+    /// same JSON-object support. Used for validation and deterministic test
+    /// fixtures only; YAML must still carry the full matrix.
+    pub const fn glm_5_2() -> Self {
+        Self {
+            thinking: ProviderWireModeCapabilities {
+                supported: true,
+                supports_tools: true,
+                supports_tool_choice: true,
+                supports_json_object: true,
+            },
+            non_thinking: ProviderWireModeCapabilities {
+                supported: true,
+                supports_tools: true,
+                supports_tool_choice: true,
+                supports_json_object: true,
+            },
+            requires_reasoning_content_replay: true,
+            requires_assistant_content_for_tool_calls: true,
+        }
+    }
+
     pub const fn for_thinking(self, thinking: ThinkingMode) -> ProviderWireModeCapabilities {
         match thinking {
             ThinkingMode::Enabled => self.thinking,
@@ -391,7 +421,7 @@ impl ModelRegistry {
         profile_id: &str,
         requested: &str,
     ) -> Result<(&ModelExecutionProfile, &ModelDescriptor), ContractError> {
-        if requested != DEEPSEEK_MODEL_ID {
+        if !ALLOWED_MODEL_IDS.contains(&requested) {
             return Err(ContractError::UnknownModel(requested.to_owned()));
         }
         let profile = self
@@ -399,7 +429,10 @@ impl ModelRegistry {
             .iter()
             .find(|profile| profile.profile_id == profile_id)
             .ok_or_else(|| ContractError::UnknownModelProfile(profile_id.to_owned()))?;
-        if profile.model_id != DEEPSEEK_MODEL_ID {
+        if !ALLOWED_MODEL_IDS
+            .iter()
+            .any(|allowed| *allowed == profile.model_id)
+        {
             return Err(ContractError::UnknownModel(profile.model_id.clone()));
         }
         let model = self
@@ -1146,6 +1179,72 @@ mod tests {
         assert!(matches!(
             non_flash.resolve_profile_exact("flash_high", "deepseek-v4-flash"),
             Err(ContractError::UnknownModel(_))
+        ));
+    }
+
+    #[test]
+    fn model_resolution_admits_glm_alongside_deepseek() {
+        let registry = ModelRegistry {
+            schema_version: 2,
+            registry_id: "fixture".into(),
+            models: vec![
+                ModelDescriptor {
+                    model_id: "deepseek-v4-flash".into(),
+                    api_base: "https://api.deepseek.com".into(),
+                    api_version: "chat-completions-v1".into(),
+                    max_context_tokens: 1_000_000,
+                    max_output_tokens: 384_000,
+                    max_in_flight: 64,
+                    provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+                },
+                ModelDescriptor {
+                    model_id: "glm-5.2".into(),
+                    api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
+                    api_version: "chat-completions-v1".into(),
+                    max_context_tokens: 1_000_000,
+                    max_output_tokens: 384_000,
+                    max_in_flight: 64,
+                    provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+                },
+            ],
+            profiles: vec![
+                ModelExecutionProfile {
+                    profile_id: "flash_high".into(),
+                    model_id: "deepseek-v4-flash".into(),
+                    thinking: ThinkingMode::Enabled,
+                    reasoning_effort: Some(ReasoningEffort::High),
+                },
+                ModelExecutionProfile {
+                    profile_id: "glm_high".into(),
+                    model_id: "glm-5.2".into(),
+                    thinking: ThinkingMode::Enabled,
+                    reasoning_effort: Some(ReasoningEffort::High),
+                },
+            ],
+        };
+
+        let (deepseek_profile, deepseek_model) = registry
+            .resolve_profile_exact("flash_high", "deepseek-v4-flash")
+            .expect("deepseek still resolves");
+        assert_eq!(deepseek_profile.model_id, "deepseek-v4-flash");
+        assert_eq!(deepseek_model.model_id, "deepseek-v4-flash");
+
+        let (glm_profile, glm_model) = registry
+            .resolve_profile_exact("glm_high", "glm-5.2")
+            .expect("glm-5.2 resolves under the generalized allow-list");
+        assert_eq!(glm_profile.model_id, "glm-5.2");
+        assert_eq!(glm_model.model_id, "glm-5.2");
+        assert!(
+            glm_model
+                .provider_wire_capabilities
+                .requires_reasoning_content_replay
+        );
+
+        // A profile that requests GLM through a deepseek-only profile id must
+        // still surface the model mismatch rather than silently substituting.
+        assert!(matches!(
+            registry.resolve_profile_exact("flash_high", "glm-5.2"),
+            Err(ContractError::ModelMismatch { .. })
         ));
     }
 
