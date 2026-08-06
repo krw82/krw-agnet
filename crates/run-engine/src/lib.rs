@@ -284,7 +284,9 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         WireError::IncompleteSseFrame
         | WireError::SseBufferLimit(_)
         | WireError::StreamLimit(_)
-        | WireError::MissingDoneEvent => (true, DeliveryCertainty::MayHaveDispatched),
+        | WireError::MissingDoneEvent
+        | WireError::Json(_)
+        | WireError::Utf8(_) => (true, DeliveryCertainty::MayHaveDispatched),
         _ => (false, DeliveryCertainty::MayHaveDispatched),
     }
 }
@@ -1575,7 +1577,29 @@ where
                     "bounded child provider request retained a transcript",
                 ));
             }
-            let episode = provider_result?;
+            let episode = match provider_result {
+                Ok(episode) => episode,
+                Err(error) => {
+                    let Some(directive) = model_recovery_directive(&error) else {
+                        return Err(error);
+                    };
+                    if recovered
+                        .as_ref()
+                        .is_some_and(|pending| pending.has_action_receipt)
+                    {
+                        return Err(EngineError::RecoveryArtifactMismatch(
+                            "recovered provider failure has an action receipt",
+                        ));
+                    }
+                    if !state.recover_provider_decision(input.image, directive)? {
+                        return Err(error);
+                    }
+                    state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                    self.checkpoint_active_state(&identity, &state, deadline)
+                        .await?;
+                    continue;
+                }
+            };
             self.guard_control(&identity, deadline).await?;
             validate_episode(
                 &episode,
@@ -1640,8 +1664,7 @@ where
                                 "recovered decision rejection has an action receipt",
                             ));
                         }
-                        if child_policy.is_some()
-                            || !state.recover_model_decision(input.image, &episode, directive)?
+                        if !state.recover_model_decision(input.image, &episode, directive)?
                         {
                             return Err(error);
                         }
@@ -1685,8 +1708,7 @@ where
                                     "recovered transition rejection has an action receipt",
                                 ));
                             }
-                            if child_policy.is_some()
-                                || !state.recover_model_decision(
+                            if !state.recover_model_decision(
                                     input.image,
                                     &episode,
                                     directive,
@@ -1715,8 +1737,7 @@ where
                         let Some(directive) = model_recovery_directive(&error) else {
                             return Err(error);
                         };
-                        if child_policy.is_some()
-                            || !state.recover_model_decision(input.image, &episode, directive)?
+                        if !state.recover_model_decision(input.image, &episode, directive)?
                         {
                             return Err(error);
                         }
@@ -1765,8 +1786,7 @@ where
                             "rejected model proposal episode has an action receipt",
                         ));
                     }
-                    if child_policy.is_some()
-                        || !state.recover_model_decision(input.image, &episode, directive)?
+                    if !state.recover_model_decision(input.image, &episode, directive)?
                     {
                         return Err(error);
                     }
@@ -1800,8 +1820,7 @@ where
                             "rejected planner decision has an action receipt",
                         ));
                     }
-                    if child_policy.is_some()
-                        || !state.recover_model_decision(input.image, &episode, directive)?
+                    if !state.recover_model_decision(input.image, &episode, directive)?
                     {
                         return Err(error);
                     }
@@ -1888,8 +1907,7 @@ where
                         "rejected capability route has an action receipt",
                     ));
                 }
-                if child_policy.is_some()
-                    || !state.recover_model_decision(input.image, &episode, directive)?
+                if !state.recover_model_decision(input.image, &episode, directive)?
                 {
                     return Err(error);
                 }
@@ -2296,8 +2314,7 @@ where
                         "recovered decision rejection has an action receipt",
                     ));
                 }
-                if child_policy.is_some()
-                    || !state.recover_model_decision(input.image, &episode, directive)?
+                if !state.recover_model_decision(input.image, &episode, directive)?
                 {
                     return Err(error);
                 }
@@ -2329,8 +2346,7 @@ where
                                 "recovered transition rejection has an action receipt",
                             ));
                         }
-                        if child_policy.is_some()
-                            || !state.recover_model_decision(input.image, &episode, directive)?
+                        if !state.recover_model_decision(input.image, &episode, directive)?
                         {
                             return Err(error);
                         }
@@ -2351,8 +2367,7 @@ where
                     let Some(directive) = model_recovery_directive(&error) else {
                         return Err(error);
                     };
-                    if child_policy.is_some()
-                        || !state.recover_model_decision(input.image, &episode, directive)?
+                    if !state.recover_model_decision(input.image, &episode, directive)?
                     {
                         return Err(error);
                     }
@@ -2398,8 +2413,7 @@ where
                         "rejected model proposal episode has an action receipt",
                     ));
                 }
-                if child_policy.is_some()
-                    || !state.recover_model_decision(input.image, &episode, directive)?
+                if !state.recover_model_decision(input.image, &episode, directive)?
                 {
                     return Err(error);
                 }
@@ -3776,7 +3790,7 @@ struct RecoveryEnvelopeV1 {
     reason_code: &'static str,
     repair_mode: &'static str,
     allowed_actions: Vec<&'static str>,
-    retryable: bool,
+    repairs_remaining: u8,
     contains_evidence: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<RecoveryDetailV1>,
@@ -4726,6 +4740,36 @@ impl ActiveRun {
         Ok(true)
     }
 
+    /// Recovery path for a transient provider dependency failure (e.g. a
+    /// malformed SSE frame from `DeepSeek` under load). Unlike
+    /// [`recover_model_decision`](Self::recover_model_decision), there is no
+    /// episode to acknowledge or replay — the provider call itself failed
+    /// before any model output was produced. We consume the same bounded
+    /// repair budget and inject a fresh user message so the loop re-enters a
+    /// provider turn with the identical request.
+    fn recover_provider_decision(
+        &mut self,
+        image: &AgentImageManifest,
+        directive: ModelRecoveryDirective,
+    ) -> Result<bool, EngineError> {
+        if !matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision { .. }
+        ) || !self.reserve_repair()?
+        {
+            return Ok(false);
+        }
+        let _ = image;
+        let envelope = self.model_recovery_envelope(directive)?;
+        self.messages.push(ProviderMessage::user(format!(
+            "KRW kernel could not obtain a provider response for the preceding turn \
+             (transient dependency failure). Re-emit the same decision. Recovery result: {}",
+            serde_jcs::to_string(&envelope)?
+        )));
+        self.require_model_state()?;
+        Ok(true)
+    }
+
     fn model_recovery_envelope(
         &self,
         directive: ModelRecoveryDirective,
@@ -4746,7 +4790,12 @@ impl ActiveRun {
             reason_code: directive.reason_code,
             repair_mode: directive.repair_mode,
             allowed_actions,
-            retryable: true,
+            // `reserve_repair` has already incremented usage.repairs by 1 at this
+            // point, so the remaining budget is what is left after this turn.
+            repairs_remaining: self
+                .limits
+                .max_repairs
+                .saturating_sub(self.usage.repairs),
             contains_evidence: false,
             detail: directive.detail,
         })?)
@@ -6827,19 +6876,59 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::InvalidWorkflowTransitionShape => {
             Some(ModelRecoveryDirective::replace("transition_shape_invalid"))
         }
-        EngineError::WorkflowResolution {
-            outcome: "state-scoped capability frontier",
-        } => Some(ModelRecoveryDirective::replace("capability_not_available")),
-        EngineError::WorkflowResolution {
-            outcome: "direct capability proposal" | "proposal validation" | "validated capability",
-        } => Some(ModelRecoveryDirective::replace(
+        EngineError::WorkflowResolution { outcome } if matches!(
+            *outcome,
+            "state-scoped capability frontier"
+            | "typed capability frontier"
+            | "typed transition frontier"
+            | "capability model input schema"
+            | "capability model input schema pin"
+            | "capability proposal source"
+        ) => Some(ModelRecoveryDirective::replace("capability_not_available")),
+        EngineError::WorkflowResolution { outcome } if matches!(
+            *outcome,
+            "direct capability proposal"
+            | "proposal validation"
+            | "validated capability"
+            | "model decision state"
+            | "model role"
+            | "model output mode"
+            | "model artifact source"
+            | "validated capability boundary"
+            | "capability completion"
+        ) => Some(ModelRecoveryDirective::replace(
             "decision_not_allowed_in_state",
         )),
+        EngineError::WorkflowResolution { outcome } if matches!(
+            *outcome,
+            "non-research capability decision batch"
+            | "mixed research capability decision batch"
+        ) => Some(ModelRecoveryDirective::replace("decision_batch_size_invalid")),
         EngineError::ResearchPlannerDecisionMismatch => {
             Some(ModelRecoveryDirective::replace("proposal_not_actionable"))
         }
-        EngineError::ResearchPlanner(ResearchPlannerError::IntentGoalDefinitionDrift) => Some(
-            ModelRecoveryDirective::replace("proposal_goal_definition_changed"),
+        EngineError::ResearchPlanner(
+            ResearchPlannerError::IntentGoalDefinitionDrift
+            | ResearchPlannerError::GoalDefinitionDrift,
+        ) => Some(ModelRecoveryDirective::replace(
+            "proposal_goal_definition_changed",
+        )),
+        EngineError::ResearchPlanner(
+            ResearchPlannerError::IntentClauseBindingDrift
+            | ResearchPlannerError::ClauseDefinitionDrift,
+        ) => Some(ModelRecoveryDirective::replace(
+            "proposal_clause_binding_changed",
+        )),
+        EngineError::ResearchPlanner(ResearchPlannerError::IntentGoalProgressDrift) => Some(
+            ModelRecoveryDirective::replace("proposal_goal_progress_regressed"),
+        ),
+        EngineError::ResearchPlanner(ResearchPlannerError::IntentCoverageProvenanceMissing) => {
+            Some(ModelRecoveryDirective::replace(
+                "proposal_coverage_provenance_missing",
+            ))
+        }
+        EngineError::ResearchPlanner(ResearchPlannerError::IntentAnchorMismatch) => Some(
+            ModelRecoveryDirective::replace("proposal_intent_anchor_changed"),
         ),
         EngineError::InvalidProviderEpisode(reason) => match *reason {
             "final episode must finish with stop" | "final episode has no content" => {
@@ -6881,6 +6970,12 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
             failure,
         } if failure.retryable => Some(ModelRecoveryDirective::replace(
             "capability_dependency_retryable",
+        )),
+        EngineError::Dependency {
+            component: "provider",
+            failure,
+        } if failure.retryable => Some(ModelRecoveryDirective::replace(
+            "provider_dependency_retryable",
         )),
         _ => None,
     }
@@ -9801,7 +9896,7 @@ mod tests {
                 DependencyFailure::redacted(
                     "script_exhausted",
                     "script has no provider episode",
-                    true,
+                    false,
                     DeliveryCertainty::NotDispatched,
                 )
             })?;
@@ -9814,7 +9909,7 @@ mod tests {
                     DependencyFailure::redacted(
                         "script_exhausted",
                         "script has no provider usage receipt",
-                        true,
+                        false,
                         DeliveryCertainty::NotDispatched,
                     )
                 })?;
