@@ -7003,6 +7003,9 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::ResearchPlannerDecisionMismatch => {
             Some(ModelRecoveryDirective::replace("proposal_not_actionable"))
         }
+        EngineError::RunScopeViolation(_) => {
+            Some(ModelRecoveryDirective::replace("capability_scope_not_authorized"))
+        }
         EngineError::ResearchPlanner(
             ResearchPlannerError::IntentGoalDefinitionDrift
             | ResearchPlannerError::GoalDefinitionDrift,
