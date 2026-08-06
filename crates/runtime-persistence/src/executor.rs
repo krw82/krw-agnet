@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(catalog.by_model.len(), 2);
         assert!(catalog.exact(DEEPSEEK_MODEL_ID).is_some());
         assert!(catalog.exact(GLM_MODEL_ID).is_some());
-        assert!(catalog.permits_by_model.len() == 2);
+        assert_eq!(catalog.permits_by_model.len(), 2);
         // Two distinct api bases must yield two distinct client arcs.
         let deepseek_client = catalog.exact(DEEPSEEK_MODEL_ID).unwrap();
         let glm_client = catalog.exact(GLM_MODEL_ID).unwrap();

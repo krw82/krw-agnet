@@ -1772,9 +1772,9 @@ mod tests {
     }
 
     /// GLM-5.2 model and profile validation is the per-provider mirror of the
-    /// DeepSeek branch. This test exercises `validate_model` and
+    /// `DeepSeek` branch. This test exercises `validate_model` and
     /// `validate_model_profile` directly so it is independent of the deployment
-    /// inventory check in `prepare_globals` (which still admits only DeepSeek
+    /// inventory check in `prepare_globals` (which still admits only `DeepSeek`
     /// in production YAMLs).
     #[test]
     fn glm_model_and_profile_validation_mirrors_deepseek_shape() {
