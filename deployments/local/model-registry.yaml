@@ -1,5 +1,5 @@
 schema_version: 3
-registry_id: deepseek-production-2026-08
+registry_id: multi-provider-2026-08
 models:
   - model_id: deepseek-v4-flash
     api_base: https://api.deepseek.com
@@ -24,6 +24,25 @@ models:
         supports_json_object: true
       requires_reasoning_content_replay: true
       requires_assistant_content_for_tool_calls: true
+  - model_id: glm-5.2
+    api_base: https://open.bigmodel.cn/api/paas/v4
+    api_version: chat-completions-v1
+    max_context_tokens: 128000
+    max_output_tokens: 16384
+    max_in_flight: 32
+    provider_wire_capabilities:
+      thinking:
+        supported: true
+        supports_tools: true
+        supports_tool_choice: true
+        supports_json_object: true
+      non_thinking:
+        supported: true
+        supports_tools: true
+        supports_tool_choice: true
+        supports_json_object: true
+      requires_reasoning_content_replay: true
+      requires_assistant_content_for_tool_calls: true
 profiles:
   - profile_id: flash_high
     model_id: deepseek-v4-flash
@@ -35,5 +54,13 @@ profiles:
     reasoning_effort: max
   - profile_id: flash_direct
     model_id: deepseek-v4-flash
+    thinking: disabled
+    reasoning_effort: null
+  - profile_id: glm_high
+    model_id: glm-5.2
+    thinking: enabled
+    reasoning_effort: high
+  - profile_id: glm_direct
+    model_id: glm-5.2
     thinking: disabled
     reasoning_effort: null

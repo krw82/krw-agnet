@@ -13,7 +13,7 @@ use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
     ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
 };
-use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DeploymentBinding};
 use krw_agent_run_engine::{
     DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine, RunInput,
     durable_failure_diagnostic, state_artifact_failure_code,
@@ -138,7 +138,16 @@ impl DeepSeekProviderCatalog {
         if seen.is_empty() {
             return Err(ProviderCatalogError::Empty);
         }
-        if seen != BTreeSet::from([DEEPSEEK_MODEL_ID.to_owned()]) {
+        // The catalog admits any non-empty subset of the protocol's allowed
+        // model inventory.  Pre-multi-provider this was a strict equality
+        // check against the single DeepSeek model; relaxing it to a subset
+        // keeps the original single-model deployment behaving identically
+        // while permitting additional provider models (e.g. GLM) to coexist
+        // in one release set.
+        if !seen
+            .iter()
+            .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
+        {
             return Err(ProviderCatalogError::ModelInventory);
         }
         let mut by_model = BTreeMap::new();
@@ -839,7 +848,7 @@ mod tests {
 
     use krw_agent_image::{PromptBlobInterner, compile_agent_dir};
     use krw_agent_persistence::agent_v1::RecoveryReceipt;
-    use krw_agent_protocol::{ContentHash, ModelRegistry, RunRequest};
+    use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID, ModelRegistry, RunRequest};
     use krw_agent_runtime_config::{
         BudgetRegistry, ConfigError, EndpointRegistry, SecretSource, ValidationMode, load_yaml,
         resolve_release_set,
@@ -1247,5 +1256,33 @@ mod tests {
             DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key", 8),
             Err(ProviderCatalogError::ModelInventory)
         ));
+    }
+
+    #[test]
+    fn provider_catalog_accepts_multiple_allowed_models() {
+        use krw_agent_protocol::GLM_MODEL_ID;
+        let root = root();
+        let models: ModelRegistry =
+            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        // Build a second allowed descriptor on a distinct api_base so the
+        // catalog has to materialise two independent DeepSeekClient instances
+        // and two independent permit semaphores.
+        let mut second = models.models[0].clone();
+        second.model_id = GLM_MODEL_ID.to_string();
+        second.api_base = "https://glm-provider.invalid/v1".to_string();
+        let descriptors = [models.models[0].clone(), second];
+        let catalog = DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key", 8)
+            .expect("multi-model catalog compiles when every model is allowed");
+        assert_eq!(catalog.by_model.len(), 2);
+        assert!(catalog.exact(DEEPSEEK_MODEL_ID).is_some());
+        assert!(catalog.exact(GLM_MODEL_ID).is_some());
+        assert_eq!(catalog.permits_by_model.len(), 2);
+        // Two distinct api bases must yield two distinct client arcs.
+        let deepseek_client = catalog.exact(DEEPSEEK_MODEL_ID).unwrap();
+        let glm_client = catalog.exact(GLM_MODEL_ID).unwrap();
+        assert!(
+            !Arc::ptr_eq(&deepseek_client, &glm_client),
+            "models on different api bases must not share a client"
+        );
     }
 }

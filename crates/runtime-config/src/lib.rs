@@ -12,10 +12,10 @@ use krw_agent_image::{
 use krw_agent_protocol::{
     AuthScope, BudgetLimits, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding,
     EntrypointScope, FLASH_DIRECT_PROFILE_ID, FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID,
-    McpToolSessionReuse, ModelDescriptor, ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION,
-    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
-    PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot,
-    RunRequest, ScopeCardinalityKind, ThinkingMode, TransportKind,
+    GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor, ModelExecutionProfile, ModelRegistry,
+    PROTOCOL_VERSION, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract,
+    ProviderWireCapabilities, PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort,
+    ResolvedExecutionSnapshot, RunRequest, ScopeCardinalityKind, ThinkingMode, TransportKind,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -29,6 +29,22 @@ pub const MAX_RELEASE_IMAGES: usize = 64;
 pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 4;
 const TLS_PROFILE_SYSTEM_ROOTS_V1: &str = "system-roots-v1";
 const TLS_PROFILE_SYSTEM_PLUS_PINNED_CA_V1: &str = "system-plus-pinned-ca-v1";
+
+// GLM execution profile ids. Unlike the DeepSeek Flash profile ids, these are
+// not part of the protocol crate's public surface because the deployment
+// inventory still admits exactly one provider at a time; they exist so the
+// per-provider validation branches below can name GLM profiles the same way
+// the DeepSeek branches name the Flash profiles.
+const GLM_HIGH_PROFILE_ID: &str = "glm_high";
+const GLM_MAX_PROFILE_ID: &str = "glm_max";
+const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
+
+// Pinned GLM-5.2 deployment facts. These mirror the DeepSeek constants baked
+// into `validate_model` and keep the GLM branch free of magic numbers.
+const GLM_API_BASE: &str = "https://open.bigmodel.cn/api/paas/v4";
+const GLM_API_VERSION: &str = "chat-completions-v1";
+const GLM_MAX_CONTEXT_TOKENS: u32 = 128_000;
+const GLM_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1072,6 +1088,19 @@ impl ResolvedReleaseSet {
 }
 
 fn validate_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
+    // The model_id is the closed dispatch key: each branch applies one
+    // provider's exact wire contract. Falling through to the catch-all error
+    // preserves the historical "reject anything that is not the single pinned
+    // production provider" behavior for unknown ids while still admitting GLM
+    // alongside DeepSeek.
+    match model.model_id.as_str() {
+        DEEPSEEK_MODEL_ID => validate_deepseek_model(model),
+        GLM_MODEL_ID => validate_glm_model(model),
+        _ => Err(ConfigError::InvalidDeepSeekModel(model.model_id.clone())),
+    }
+}
+
+fn validate_deepseek_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
     if model.api_base != "https://api.deepseek.com"
         || model.api_version != "chat-completions-v1"
         || model.max_context_tokens != 1_000_000
@@ -1086,7 +1115,41 @@ fn validate_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_glm_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
+    // Same shape as the DeepSeek branch, but with the GLM-5.2 wire contract.
+    // `max_in_flight` uses the same 1..=2_500 bound so the GLM codec never has
+    // to reason about a different concurrency envelope than DeepSeek.
+    if model.api_base != GLM_API_BASE
+        || model.api_version != GLM_API_VERSION
+        || model.max_context_tokens > GLM_MAX_CONTEXT_TOKENS
+        || model.max_output_tokens > GLM_MAX_OUTPUT_TOKENS
+        || !(1..=2_500).contains(&model.max_in_flight)
+        || !model.provider_wire_capabilities.is_well_formed()
+        || model.provider_wire_capabilities != ProviderWireCapabilities::glm_5_2()
+        || model.model_id != GLM_MODEL_ID
+    {
+        return Err(ConfigError::InvalidGlmModel(model.model_id.clone()));
+    }
+    Ok(())
+}
+
 fn validate_model_profile(
+    profile: &ModelExecutionProfile,
+    model: &ModelDescriptor,
+) -> Result<(), ConfigError> {
+    // Same provider-dispatch pattern as `validate_model`: the model_id pinned
+    // on the descriptor selects the branch, and each branch keeps the exact
+    // per-profile semantic checks (thinking mode + reasoning effort) that the
+    // deployment contract requires. The historical DeepSeek behavior is
+    // preserved verbatim in its branch.
+    match model.model_id.as_str() {
+        DEEPSEEK_MODEL_ID => validate_deepseek_model_profile(profile, model),
+        GLM_MODEL_ID => validate_glm_model_profile(profile, model),
+        _ => Err(ConfigError::InvalidModelProfile(profile.profile_id.clone())),
+    }
+}
+
+fn validate_deepseek_model_profile(
     profile: &ModelExecutionProfile,
     model: &ModelDescriptor,
 ) -> Result<(), ConfigError> {
@@ -1109,6 +1172,43 @@ fn validate_model_profile(
         _ => false,
     };
     if model.model_id != DEEPSEEK_MODEL_ID
+        || !model
+            .provider_wire_capabilities
+            .for_thinking(profile.thinking)
+            .supported
+        || !exact_profile
+    {
+        return Err(ConfigError::InvalidModelProfile(profile.profile_id.clone()));
+    }
+    Ok(())
+}
+
+fn validate_glm_model_profile(
+    profile: &ModelExecutionProfile,
+    model: &ModelDescriptor,
+) -> Result<(), ConfigError> {
+    // Mirror of the DeepSeek profile contract, but for GLM-5.2. The three
+    // semantic shapes (high/max/direct) are identical to DeepSeek's so that
+    // the runtime can swap providers without redefining reasoning budgets.
+    let exact_profile = match profile.profile_id.as_str() {
+        GLM_HIGH_PROFILE_ID => {
+            profile.model_id == GLM_MODEL_ID
+                && profile.thinking == ThinkingMode::Enabled
+                && profile.reasoning_effort == Some(ReasoningEffort::High)
+        }
+        GLM_MAX_PROFILE_ID => {
+            profile.model_id == GLM_MODEL_ID
+                && profile.thinking == ThinkingMode::Enabled
+                && profile.reasoning_effort == Some(ReasoningEffort::Max)
+        }
+        GLM_DIRECT_PROFILE_ID => {
+            profile.model_id == GLM_MODEL_ID
+                && profile.thinking == ThinkingMode::Disabled
+                && profile.reasoning_effort.is_none()
+        }
+        _ => false,
+    };
+    if model.model_id != GLM_MODEL_ID
         || !model
             .provider_wire_capabilities
             .for_thinking(profile.thinking)
@@ -1289,6 +1389,8 @@ pub enum ConfigError {
     RunBudgetProfileMismatch,
     #[error("model is not an exact supported DeepSeek deployment: {0}")]
     InvalidDeepSeekModel(String),
+    #[error("model is not an exact supported GLM deployment: {0}")]
+    InvalidGlmModel(String),
     #[error("model registry has no model or repeats a model id")]
     DuplicateOrEmptyModel,
     #[error("model registry must contain exactly the single production DeepSeek Flash model")]
@@ -1666,6 +1768,119 @@ mod tests {
                 ValidationMode::Fixture,
             ),
             Err(ConfigError::InvalidModelProfile(profile)) if profile == FLASH_HIGH_PROFILE_ID
+        ));
+    }
+
+    /// GLM-5.2 model and profile validation is the per-provider mirror of the
+    /// `DeepSeek` branch. This test exercises `validate_model` and
+    /// `validate_model_profile` directly so it is independent of the deployment
+    /// inventory check in `prepare_globals` (which still admits only `DeepSeek`
+    /// in production YAMLs).
+    #[test]
+    fn glm_model_and_profile_validation_mirrors_deepseek_shape() {
+        let glm_model = ModelDescriptor {
+            model_id: GLM_MODEL_ID.into(),
+            api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
+            api_version: "chat-completions-v1".into(),
+            max_context_tokens: 128_000,
+            max_output_tokens: 16_384,
+            max_in_flight: 64,
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+        };
+        validate_model(&glm_model).expect("well-formed GLM model validates");
+
+        // Every drifted field surfaces the GLM-specific error variant so the
+        // DeepSeek error path stays a DeepSeek-only signal.
+        let mut bad_base = glm_model.clone();
+        bad_base.api_base = "https://api.deepseek.com".into();
+        assert!(matches!(
+            validate_model(&bad_base),
+            Err(ConfigError::InvalidGlmModel(_))
+        ));
+
+        let mut bad_caps = glm_model.clone();
+        bad_caps.provider_wire_capabilities = ProviderWireCapabilities::deepseek_v4_flash();
+        assert!(matches!(
+            validate_model(&bad_caps),
+            Err(ConfigError::InvalidGlmModel(_))
+        ));
+
+        let mut over_context = glm_model.clone();
+        over_context.max_context_tokens = 200_000;
+        assert!(matches!(
+            validate_model(&over_context),
+            Err(ConfigError::InvalidGlmModel(_))
+        ));
+
+        let mut over_output = glm_model.clone();
+        over_output.max_output_tokens = 40_000;
+        assert!(matches!(
+            validate_model(&over_output),
+            Err(ConfigError::InvalidGlmModel(_))
+        ));
+
+        // The three GLM semantic profiles mirror DeepSeek's high/max/direct.
+        let glm_high = ModelExecutionProfile {
+            profile_id: GLM_HIGH_PROFILE_ID.into(),
+            model_id: GLM_MODEL_ID.into(),
+            thinking: ThinkingMode::Enabled,
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+        validate_model_profile(&glm_high, &glm_model).expect("glm_high validates");
+
+        let glm_max = ModelExecutionProfile {
+            profile_id: GLM_MAX_PROFILE_ID.into(),
+            model_id: GLM_MODEL_ID.into(),
+            thinking: ThinkingMode::Enabled,
+            reasoning_effort: Some(ReasoningEffort::Max),
+        };
+        validate_model_profile(&glm_max, &glm_model).expect("glm_max validates");
+
+        let glm_direct = ModelExecutionProfile {
+            profile_id: GLM_DIRECT_PROFILE_ID.into(),
+            model_id: GLM_MODEL_ID.into(),
+            thinking: ThinkingMode::Disabled,
+            reasoning_effort: None,
+        };
+        validate_model_profile(&glm_direct, &glm_model).expect("glm_direct validates");
+
+        // A GLM profile that does not match one of the three pinned shapes is
+        // rejected, exactly like an unknown DeepSeek profile id.
+        let mut wrong_effort = glm_high.clone();
+        wrong_effort.reasoning_effort = Some(ReasoningEffort::Max);
+        assert!(matches!(
+            validate_model_profile(&wrong_effort, &glm_model),
+            Err(ConfigError::InvalidModelProfile(profile))
+                if profile == GLM_HIGH_PROFILE_ID
+        ));
+
+        // A GLM profile bound to the wrong model_id is rejected.
+        let mut cross_model = glm_high.clone();
+        cross_model.model_id = DEEPSEEK_MODEL_ID.into();
+        assert!(matches!(
+            validate_model_profile(&cross_model, &glm_model),
+            Err(ConfigError::InvalidModelProfile(profile))
+                if profile == GLM_HIGH_PROFILE_ID
+        ));
+    }
+
+    /// Unknown model ids fall through to the historical catch-all error so the
+    /// validator never silently admits an unrecognised provider.
+    #[test]
+    fn unknown_model_id_is_rejected_with_deepseek_error() {
+        let mut unknown = ModelDescriptor {
+            model_id: DEEPSEEK_MODEL_ID.into(),
+            api_base: "https://api.deepseek.com".into(),
+            api_version: "chat-completions-v1".into(),
+            max_context_tokens: 1_000_000,
+            max_output_tokens: 384_000,
+            max_in_flight: 64,
+            provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+        };
+        unknown.model_id = "qwen-3.5".into();
+        assert!(matches!(
+            validate_model(&unknown),
+            Err(ConfigError::InvalidDeepSeekModel(_))
         ));
     }
 
