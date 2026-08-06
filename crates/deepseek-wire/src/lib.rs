@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash};
 pub use krw_agent_protocol::{ReasoningEffort, ThinkingMode};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -632,7 +632,7 @@ pub struct TokenUsage {
 
 impl ProviderEpisodeV1 {
     pub fn verify_model_identity(&self) -> Result<(), WireError> {
-        if self.requested_model != DEEPSEEK_MODEL_ID {
+        if !ALLOWED_MODEL_IDS.contains(&self.requested_model.as_str()) {
             return Err(WireError::UnknownModel(self.requested_model.clone()));
         }
         if self.requested_model != self.observed_model {
@@ -1077,7 +1077,16 @@ impl DeepSeekClient {
         {
             return Err(WireError::InvalidClientLimits);
         }
-        if config.allowed_models.len() != 1 || !config.allowed_models.contains(DEEPSEEK_MODEL_ID) {
+        // The client accepts any non-empty subset of the protocol's closed
+        // model id set. The single-model hardening above used to enforce a
+        // one-model DeepSeek-only invariant; the multi-provider runtime now
+        // routes by `model_id`, so we only reject empty or unknown ids here.
+        if config.allowed_models.is_empty()
+            || !config
+                .allowed_models
+                .iter()
+                .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
+        {
             return Err(WireError::InvalidAllowedModel);
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1114,7 +1123,7 @@ impl DeepSeekClient {
         request: &ChatCompletionRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, WireError> {
-        if request.model != DEEPSEEK_MODEL_ID || !self.allowed_models.contains(&request.model) {
+        if !self.allowed_models.contains(&request.model) {
             return Err(WireError::UnknownModel(request.model.clone()));
         }
         request.validate()?;
@@ -1661,6 +1670,7 @@ pub enum WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krw_agent_protocol::{DEEPSEEK_MODEL_ID, GLM_MODEL_ID};
 
     #[test]
     fn sse_is_independent_of_single_byte_chunk_boundaries() {
@@ -1918,6 +1928,110 @@ mod tests {
             DeepSeekClient::new(config, "not-a-live-key"),
             Err(WireError::InvalidAllowedModel)
         ));
+    }
+
+    #[test]
+    fn client_accepts_any_nonempty_subset_of_protocol_allowed_models() {
+        // Single DeepSeek model still accepted.
+        let deepseek_only = DeepSeekClientConfig::production(
+            "https://api.deepseek.com",
+            [DEEPSEEK_MODEL_ID.to_owned()],
+            8,
+        );
+        assert!(DeepSeekClient::new(deepseek_only, "not-a-live-key").is_ok());
+
+        // Single GLM model now accepted — the client no longer hard-pins to
+        // DeepSeek alone.
+        let glm_only = DeepSeekClientConfig::production(
+            "https://api.deepseek.com",
+            [GLM_MODEL_ID.to_owned()],
+            8,
+        );
+        assert!(DeepSeekClient::new(glm_only, "not-a-live-key").is_ok());
+
+        // The full protocol set is accepted.
+        let both = DeepSeekClientConfig::production(
+            "https://api.deepseek.com",
+            [DEEPSEEK_MODEL_ID.to_owned(), GLM_MODEL_ID.to_owned()],
+            8,
+        );
+        assert!(DeepSeekClient::new(both, "not-a-live-key").is_ok());
+
+        // Empty allowlist remains a configuration error.
+        let empty =
+            DeepSeekClientConfig::production("https://api.deepseek.com", Vec::<String>::new(), 8);
+        assert!(matches!(
+            DeepSeekClient::new(empty, "not-a-live-key"),
+            Err(WireError::InvalidAllowedModel)
+        ));
+    }
+
+    #[test]
+    fn complete_stream_passes_model_gate_for_glm_request() {
+        // Build a client whose allowlist admits GLM and point it at a host
+        // that cannot accept connections. The only assertion that matters is
+        // that the request is *not* rejected at the model gate: it must
+        // proceed past the pre-network identity check and surface a transport
+        // error, never `UnknownModel`.
+        let config =
+            DeepSeekClientConfig::production("https://127.0.0.1:1", [GLM_MODEL_ID.to_owned()], 8);
+        let client = DeepSeekClient::new(config, "not-a-live-key").unwrap();
+        let request = ChatCompletionRequest {
+            model: GLM_MODEL_ID.to_owned(),
+            messages: vec![ProviderMessage::user("question")],
+            tools: Vec::new(),
+            stream: true,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
+            reasoning_effort: None,
+            thinking: ThinkingConfig {
+                kind: ThinkingMode::Disabled,
+            },
+            max_tokens: Some(16),
+            user_id: None,
+            tool_choice: None,
+            response_format: None,
+        };
+        let context = EpisodeContext {
+            tool_schema_hash: ContentHash::sha256("tools"),
+            agent_image_hash: ContentHash::sha256("image"),
+            api_version: "chat-completions-v1".into(),
+        };
+        // Spawn so a rejection surfaces as a join error rather than panicking
+        // the test thread with a tokio "dropped in panicked context" notice.
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(client.complete_stream(&request, &context));
+        assert!(
+            matches!(outcome, Err(WireError::Http(_))),
+            "expected transport error for unreachable host, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn verify_model_identity_accepts_protocol_allowed_models() {
+        let glm_episode = ProviderEpisodeV1 {
+            schema_version: 1,
+            request_hash: ContentHash::sha256("request"),
+            requested_model: GLM_MODEL_ID.into(),
+            observed_model: GLM_MODEL_ID.into(),
+            api_version: "chat-completions-v1".into(),
+            assistant: AssistantMessage {
+                content: Some("answer".into()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+            },
+            tool_results: Vec::new(),
+            tool_schema_hash: ContentHash::sha256("tools"),
+            agent_image_hash: ContentHash::sha256("image"),
+            finish_reason: "stop".into(),
+            usage: TokenUsage::default(),
+            replay_hash: ContentHash::sha256("placeholder"),
+        };
+        assert!(glm_episode.verify_model_identity().is_ok());
     }
 
     fn request_with_thinking(
