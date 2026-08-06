@@ -332,6 +332,7 @@ mod tests {
         fn read_secret(&self, name: &str) -> Result<Zeroizing<String>, ConfigError> {
             match name {
                 "DEEPSEEK_API_KEY" => Ok(Zeroizing::new("fixture-key".into())),
+                "GLM_API_KEY" => Ok(Zeroizing::new("fixture-glm-key".into())),
                 "KRW_ONTOLOGY_MCP_URL" => Ok(Zeroizing::new("https://ontology.invalid/mcp".into())),
                 "KRW_ONTOLOGY_READY_URL" => {
                     Ok(Zeroizing::new("https://ontology.invalid/readyz".into()))

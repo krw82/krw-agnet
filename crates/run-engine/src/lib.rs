@@ -1763,8 +1763,7 @@ where
                                 "recovered decision rejection has an action receipt",
                             ));
                         }
-                        if !state.recover_model_decision(input.image, &episode, directive)?
-                        {
+                        if !state.recover_model_decision(input.image, &episode, directive)? {
                             return Err(error);
                         }
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -1807,12 +1806,7 @@ where
                                     "recovered transition rejection has an action receipt",
                                 ));
                             }
-                            if !state.recover_model_decision(
-                                    input.image,
-                                    &episode,
-                                    directive,
-                                )?
-                            {
+                            if !state.recover_model_decision(input.image, &episode, directive)? {
                                 return Err(error);
                             }
                             state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -1836,8 +1830,7 @@ where
                         let Some(directive) = model_recovery_directive(&error) else {
                             return Err(error);
                         };
-                        if !state.recover_model_decision(input.image, &episode, directive)?
-                        {
+                        if !state.recover_model_decision(input.image, &episode, directive)? {
                             return Err(error);
                         }
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -1885,8 +1878,7 @@ where
                             "rejected model proposal episode has an action receipt",
                         ));
                     }
-                    if !state.recover_model_decision(input.image, &episode, directive)?
-                    {
+                    if !state.recover_model_decision(input.image, &episode, directive)? {
                         return Err(error);
                     }
                     state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -1919,8 +1911,7 @@ where
                             "rejected planner decision has an action receipt",
                         ));
                     }
-                    if !state.recover_model_decision(input.image, &episode, directive)?
-                    {
+                    if !state.recover_model_decision(input.image, &episode, directive)? {
                         return Err(error);
                     }
                     state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -2006,8 +1997,7 @@ where
                         "rejected capability route has an action receipt",
                     ));
                 }
-                if !state.recover_model_decision(input.image, &episode, directive)?
-                {
+                if !state.recover_model_decision(input.image, &episode, directive)? {
                     return Err(error);
                 }
                 state.check_conversation_limit(self.config.max_conversation_bytes)?;
@@ -2413,8 +2403,7 @@ where
                         "recovered decision rejection has an action receipt",
                     ));
                 }
-                if !state.recover_model_decision(input.image, &episode, directive)?
-                {
+                if !state.recover_model_decision(input.image, &episode, directive)? {
                     return Err(error);
                 }
                 return state.check_conversation_limit(self.config.max_conversation_bytes);
@@ -2445,8 +2434,7 @@ where
                                 "recovered transition rejection has an action receipt",
                             ));
                         }
-                        if !state.recover_model_decision(input.image, &episode, directive)?
-                        {
+                        if !state.recover_model_decision(input.image, &episode, directive)? {
                             return Err(error);
                         }
                         return state.check_conversation_limit(self.config.max_conversation_bytes);
@@ -2466,8 +2454,7 @@ where
                     let Some(directive) = model_recovery_directive(&error) else {
                         return Err(error);
                     };
-                    if !state.recover_model_decision(input.image, &episode, directive)?
-                    {
+                    if !state.recover_model_decision(input.image, &episode, directive)? {
                         return Err(error);
                     }
                     return state.check_conversation_limit(self.config.max_conversation_bytes);
@@ -2512,8 +2499,7 @@ where
                         "rejected model proposal episode has an action receipt",
                     ));
                 }
-                if !state.recover_model_decision(input.image, &episode, directive)?
-                {
+                if !state.recover_model_decision(input.image, &episode, directive)? {
                     return Err(error);
                 }
                 return state.check_conversation_limit(self.config.max_conversation_bytes);
@@ -4891,10 +4877,7 @@ impl ActiveRun {
             allowed_actions,
             // `reserve_repair` has already incremented usage.repairs by 1 at this
             // point, so the remaining budget is what is left after this turn.
-            repairs_remaining: self
-                .limits
-                .max_repairs
-                .saturating_sub(self.usage.repairs),
+            repairs_remaining: self.limits.max_repairs.saturating_sub(self.usage.repairs),
             contains_evidence: false,
             detail: directive.detail,
         })?)
@@ -6975,34 +6958,48 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::InvalidWorkflowTransitionShape => {
             Some(ModelRecoveryDirective::replace("transition_shape_invalid"))
         }
-        EngineError::WorkflowResolution { outcome } if matches!(
-            *outcome,
-            "state-scoped capability frontier"
-            | "typed capability frontier"
-            | "typed transition frontier"
-            | "capability model input schema"
-            | "capability model input schema pin"
-            | "capability proposal source"
-        ) => Some(ModelRecoveryDirective::replace("capability_not_available")),
-        EngineError::WorkflowResolution { outcome } if matches!(
-            *outcome,
-            "direct capability proposal"
-            | "proposal validation"
-            | "validated capability"
-            | "model decision state"
-            | "model role"
-            | "model output mode"
-            | "model artifact source"
-            | "validated capability boundary"
-            | "capability completion"
-        ) => Some(ModelRecoveryDirective::replace(
-            "decision_not_allowed_in_state",
-        )),
-        EngineError::WorkflowResolution { outcome } if matches!(
-            *outcome,
-            "non-research capability decision batch"
-            | "mixed research capability decision batch"
-        ) => Some(ModelRecoveryDirective::replace("decision_batch_size_invalid")),
+        EngineError::WorkflowResolution { outcome }
+            if matches!(
+                *outcome,
+                "state-scoped capability frontier"
+                    | "typed capability frontier"
+                    | "typed transition frontier"
+                    | "capability model input schema"
+                    | "capability model input schema pin"
+                    | "capability proposal source"
+            ) =>
+        {
+            Some(ModelRecoveryDirective::replace("capability_not_available"))
+        }
+        EngineError::WorkflowResolution { outcome }
+            if matches!(
+                *outcome,
+                "direct capability proposal"
+                    | "proposal validation"
+                    | "validated capability"
+                    | "model decision state"
+                    | "model role"
+                    | "model output mode"
+                    | "model artifact source"
+                    | "validated capability boundary"
+                    | "capability completion"
+            ) =>
+        {
+            Some(ModelRecoveryDirective::replace(
+                "decision_not_allowed_in_state",
+            ))
+        }
+        EngineError::WorkflowResolution { outcome }
+            if matches!(
+                *outcome,
+                "non-research capability decision batch"
+                    | "mixed research capability decision batch"
+            ) =>
+        {
+            Some(ModelRecoveryDirective::replace(
+                "decision_batch_size_invalid",
+            ))
+        }
         EngineError::ResearchPlannerDecisionMismatch => {
             Some(ModelRecoveryDirective::replace("proposal_not_actionable"))
         }
@@ -8857,10 +8854,7 @@ pub enum EngineError {
     #[error("unknown capability: {0}")]
     UnknownCapability(String),
     #[error("skill not found: {skill_id}; available skills: {available}")]
-    SkillNotFound {
-        skill_id: String,
-        available: String,
-    },
+    SkillNotFound { skill_id: String, available: String },
     #[error("capability is not a canonical-argument read: {0}")]
     UnsafeCapability(String),
     #[error("capability prerequisite has not committed: {0}")]

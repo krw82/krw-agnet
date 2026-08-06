@@ -23,6 +23,20 @@ pub const ALLOWED_MODEL_IDS: &[&str] = &[DEEPSEEK_MODEL_ID, GLM_MODEL_ID];
 pub const FLASH_HIGH_PROFILE_ID: &str = "flash_high";
 pub const FLASH_MAX_PROFILE_ID: &str = "flash_max";
 pub const FLASH_DIRECT_PROFILE_ID: &str = "flash_direct";
+/// GLM-5.2 execution profile ids — the GLM mirror of the `flash_*` set.
+pub const GLM_HIGH_PROFILE_ID: &str = "glm_high";
+pub const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
+/// Complete set of profile ids the runtime is permitted to accept. Pre
+/// multi-provider this was exactly the three `flash_*` ids; GLM profiles are
+/// optional (a deployment may omit GLM entirely) so the inventory check in
+/// `prepare_globals` admits any subset that is contained in this list.
+pub const ALLOWED_PROFILE_IDS: &[&str] = &[
+    FLASH_HIGH_PROFILE_ID,
+    FLASH_MAX_PROFILE_ID,
+    FLASH_DIRECT_PROFILE_ID,
+    GLM_HIGH_PROFILE_ID,
+    GLM_DIRECT_PROFILE_ID,
+];
 pub const MAX_RUN_CONTEXT_TICKERS: usize = 50;
 pub const MAX_SELECTED_FEED_ITEM_IDS: usize = 8;
 pub const MAX_NOTEBOOK_CONVERSATIONS: usize = 64;

@@ -10,12 +10,13 @@ use krw_agent_image::{
     AgentImageManifest, EntrypointSpec, ImageError, LoadedImage, ScopeCardinality,
 };
 use krw_agent_protocol::{
-    AuthScope, BudgetLimits, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding,
-    EntrypointScope, FLASH_DIRECT_PROFILE_ID, FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID,
-    GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor, ModelExecutionProfile, ModelRegistry,
-    PROTOCOL_VERSION, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract,
-    ProviderWireCapabilities, PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort,
-    ResolvedExecutionSnapshot, RunRequest, ScopeCardinalityKind, ThinkingMode, TransportKind,
+    ALLOWED_MODEL_IDS, ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding,
+    ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, FLASH_DIRECT_PROFILE_ID,
+    FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse,
+    ModelDescriptor, ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION,
+    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
+    PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot,
+    RunRequest, ScopeCardinalityKind, ThinkingMode, TransportKind,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -196,6 +197,7 @@ pub struct ResolvedRuntime {
     budget_registry_hash: ContentHash,
     budget_profiles: BTreeMap<String, BudgetProfile>,
     deepseek_api_key: Arc<Zeroizing<String>>,
+    glm_api_key: Arc<Zeroizing<String>>,
     /// Logical `AgentImage` capability id -> shared physical deployment binding.
     pub capabilities: BTreeMap<String, Arc<ResolvedCapability>>,
     /// Logical capability id -> immutable data-release hash.  The broader
@@ -231,6 +233,7 @@ pub struct ResolvedReleaseSet {
     model_registry: Arc<ModelRegistry>,
     model_registry_hash: ContentHash,
     deepseek_api_key: Arc<Zeroizing<String>>,
+    glm_api_key: Arc<Zeroizing<String>>,
 }
 
 impl std::fmt::Debug for ResolvedReleaseSet {
@@ -242,6 +245,7 @@ impl std::fmt::Debug for ResolvedReleaseSet {
             .field("entrypoint_owners", &self.entrypoint_owners)
             .field("model_registry_hash", &self.model_registry_hash)
             .field("deepseek_api_key", &"[REDACTED]")
+            .field("glm_api_key", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
@@ -255,6 +259,7 @@ impl std::fmt::Debug for ResolvedRuntime {
             .field("registry_hash", &self.registry_hash)
             .field("model_registry", &self.model_registry)
             .field("deepseek_api_key", &"[REDACTED]")
+            .field("glm_api_key", &"[REDACTED]")
             .field("capabilities", &self.capabilities)
             .finish_non_exhaustive()
     }
@@ -387,6 +392,7 @@ pub fn resolve_release_set(
         model_registry: Arc::clone(&globals.model_registry),
         model_registry_hash: globals.registry_hash.clone(),
         deepseek_api_key: Arc::clone(&globals.deepseek_api_key),
+        glm_api_key: Arc::clone(&globals.glm_api_key),
     })
 }
 
@@ -396,6 +402,7 @@ struct PreparedGlobals {
     model_registry: Arc<ModelRegistry>,
     registry_hash: ContentHash,
     deepseek_api_key: Arc<Zeroizing<String>>,
+    glm_api_key: Arc<Zeroizing<String>>,
     resolved_bindings: BTreeMap<String, Arc<ResolvedCapability>>,
 }
 
@@ -430,7 +437,12 @@ fn prepare_globals(
     if model_ids.len() != registry.models.len() || registry.models.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModel);
     }
-    if model_ids != BTreeSet::from([DEEPSEEK_MODEL_ID]) {
+    // Admit any non-empty subset of the protocol's allowed model inventory.
+    // Pre-multi-provider this was a strict equality check against the single
+    // DeepSeek model; relaxing it to a subset keeps single-model deployments
+    // behaving identically while permitting additional provider models
+    // (e.g. GLM-5.2) to coexist in one release set.
+    if !model_ids.iter().all(|id| ALLOWED_MODEL_IDS.contains(id)) {
         return Err(ConfigError::ModelInventoryMismatch);
     }
     for model in &registry.models {
@@ -444,12 +456,20 @@ fn prepare_globals(
     if profile_ids.len() != registry.profiles.len() || registry.profiles.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModelProfile);
     }
-    if profile_ids
-        != BTreeSet::from([
-            FLASH_DIRECT_PROFILE_ID,
-            FLASH_HIGH_PROFILE_ID,
-            FLASH_MAX_PROFILE_ID,
-        ])
+    // The three DeepSeek `flash_*` profiles are always required. GLM profiles
+    // are optional: a deployment may omit GLM entirely. Any profile present
+    // must be in the protocol's allowed set.
+    let required_flash = BTreeSet::from([
+        FLASH_DIRECT_PROFILE_ID,
+        FLASH_HIGH_PROFILE_ID,
+        FLASH_MAX_PROFILE_ID,
+    ]);
+    if !profile_ids.is_superset(&required_flash) {
+        return Err(ConfigError::ModelProfileInventoryMismatch);
+    }
+    if !profile_ids
+        .iter()
+        .all(|id| ALLOWED_PROFILE_IDS.contains(id))
     {
         return Err(ConfigError::ModelProfileInventoryMismatch);
     }
@@ -495,6 +515,14 @@ fn prepare_globals(
 
     let mut secret_cache = BTreeMap::<String, Arc<Zeroizing<String>>>::new();
     let deepseek_api_key = read_secret_once(secrets, &mut secret_cache, "DEEPSEEK_API_KEY")?;
+    // GLM_API_KEY is only required when the model registry advertises GLM.
+    // When GLM is absent the secret may be missing; we store an empty
+    // placeholder so downstream code can branch on emptiness uniformly.
+    let glm_api_key = if registry.models.iter().any(|m| m.model_id == GLM_MODEL_ID) {
+        read_secret_once(secrets, &mut secret_cache, "GLM_API_KEY")?
+    } else {
+        Arc::new(Zeroizing::new(String::new()))
+    };
     let mut resolved_bindings = BTreeMap::new();
     for key in required_binding_keys {
         let capability = bindings
@@ -578,6 +606,7 @@ fn prepare_globals(
         model_registry: Arc::new(registry.clone()),
         registry_hash: semantic_model_registry_hash(registry)?,
         deepseek_api_key,
+        glm_api_key,
         resolved_bindings,
     })
 }
@@ -701,6 +730,7 @@ fn resolve_image(
         model_registry: Arc::clone(&globals.model_registry),
         budget_profiles,
         deepseek_api_key: Arc::clone(&globals.deepseek_api_key),
+        glm_api_key: Arc::clone(&globals.glm_api_key),
         capabilities: resolved_capabilities,
         capability_release_hashes: release_hashes,
     };
@@ -875,6 +905,12 @@ impl ResolvedRuntime {
         self.deepseek_api_key.as_str()
     }
 
+    /// Startup-owned GLM API key. Empty when the model registry does not
+    /// advertise GLM-5.2; callers should branch on emptiness before use.
+    pub fn glm_api_key(&self) -> &str {
+        self.glm_api_key.as_str()
+    }
+
     pub fn physical_binding_count(&self) -> usize {
         self.capabilities
             .values()
@@ -1004,6 +1040,11 @@ impl ResolvedReleaseSet {
 
     pub fn deepseek_api_key(&self) -> &str {
         self.deepseek_api_key.as_str()
+    }
+
+    /// Startup-owned GLM API key. Empty when GLM is not in the registry.
+    pub fn glm_api_key(&self) -> &str {
+        self.glm_api_key.as_str()
     }
 
     /// Produce the only host-visible deployment contract from the same
@@ -1495,6 +1536,7 @@ mod tests {
     fn global_secret_values() -> BTreeMap<String, String> {
         BTreeMap::from([
             ("DEEPSEEK_API_KEY".into(), "fixture-deepseek".into()),
+            ("GLM_API_KEY".into(), "fixture-glm".into()),
             (
                 "KRW_ONTOLOGY_MCP_URL".into(),
                 "https://ontology.invalid/mcp".into(),
@@ -1584,6 +1626,7 @@ mod tests {
         .unwrap();
         let secrets = FixtureSecrets(BTreeMap::from([
             ("DEEPSEEK_API_KEY".into(), "fixture-deepseek".into()),
+            ("GLM_API_KEY".into(), "fixture-glm".into()),
             (
                 "KRW_ONTOLOGY_MCP_URL".into(),
                 "https://ontology.invalid/mcp".into(),

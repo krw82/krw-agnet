@@ -72,12 +72,14 @@ pub enum ProviderCatalogError {
     Empty,
     #[error("resolved runtime contains a duplicate or inconsistent model")]
     Duplicate,
-    #[error("resolved runtime must contain exactly the single DeepSeek Flash model")]
+    #[error("resolved runtime must contain only protocol-allowed models")]
     ModelInventory,
     #[error("resolved runtime model API version is unsupported")]
     ApiVersion,
-    #[error("DeepSeek provider client construction failed")]
+    #[error("provider client construction failed")]
     Client,
+    #[error("provider API key is missing for model {0}")]
+    MissingApiKey(String),
 }
 
 /// Machine-wide `DeepSeek` clients grouped by exact HTTPS API base. Models on
@@ -87,9 +89,36 @@ pub struct DeepSeekProviderCatalog {
     permits_by_model: BTreeMap<String, Arc<Semaphore>>,
 }
 
+/// Maps each distinct `api_base` to the API key for the model(s) hosted there.
+/// `DeepSeek` models get the `DeepSeek` key, GLM models get the GLM key. Two models
+/// on the same base must share one key (they share one HTTP pool); if a base
+/// hosts mixed providers that would be a deployment misconfiguration caught
+/// downstream as a `MissingApiKey` error.
+fn build_api_keys_by_base<'a>(
+    models: impl IntoIterator<Item = &'a krw_agent_protocol::ModelDescriptor>,
+    deepseek_api_key: &str,
+    glm_api_key: &str,
+) -> BTreeMap<String, String> {
+    let mut by_base: BTreeMap<String, String> = BTreeMap::new();
+    for model in models {
+        let key = if model.model_id == krw_agent_protocol::GLM_MODEL_ID {
+            glm_api_key.to_owned()
+        } else {
+            deepseek_api_key.to_owned()
+        };
+        by_base.entry(model.api_base.clone()).or_insert(key);
+    }
+    by_base
+}
+
 impl DeepSeekProviderCatalog {
     pub fn compile(runtime: &ResolvedRuntime) -> Result<Arc<Self>, ProviderCatalogError> {
-        Self::compile_from(runtime.models(), runtime.deepseek_api_key(), 8)
+        let api_keys_by_base = build_api_keys_by_base(
+            runtime.models(),
+            runtime.deepseek_api_key(),
+            runtime.glm_api_key(),
+        );
+        Self::compile_from(runtime.models(), &api_keys_by_base, 8)
     }
 
     /// Backwards-compatible default entry point: keeps the pre-existing
@@ -98,7 +127,12 @@ impl DeepSeekProviderCatalog {
     pub fn compile_release_set(
         releases: &ResolvedReleaseSet,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
-        Self::compile_from(releases.models(), releases.deepseek_api_key(), 8)
+        let api_keys_by_base = build_api_keys_by_base(
+            releases.models(),
+            releases.deepseek_api_key(),
+            releases.glm_api_key(),
+        );
+        Self::compile_from(releases.models(), &api_keys_by_base, 8)
     }
 
     /// Same as `compile_release_set` but lets the daemon thread a CLI-supplied
@@ -107,16 +141,17 @@ impl DeepSeekProviderCatalog {
         releases: &ResolvedReleaseSet,
         max_idle_per_host: usize,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
-        Self::compile_from(
+        let api_keys_by_base = build_api_keys_by_base(
             releases.models(),
             releases.deepseek_api_key(),
-            max_idle_per_host,
-        )
+            releases.glm_api_key(),
+        );
+        Self::compile_from(releases.models(), &api_keys_by_base, max_idle_per_host)
     }
 
     fn compile_from<'a>(
         models: impl IntoIterator<Item = &'a krw_agent_protocol::ModelDescriptor>,
-        api_key: &str,
+        api_keys_by_base: &BTreeMap<String, String>,
         max_idle_per_host: usize,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
         let mut by_base = BTreeMap::<String, BTreeSet<String>>::new();
@@ -153,6 +188,16 @@ impl DeepSeekProviderCatalog {
         let mut by_model = BTreeMap::new();
         let mut permits_by_model = BTreeMap::new();
         for (api_base, models) in by_base {
+            let api_key = api_keys_by_base.get(&api_base).ok_or_else(|| {
+                ProviderCatalogError::MissingApiKey(
+                    models.iter().next().cloned().unwrap_or_default(),
+                )
+            })?;
+            if api_key.is_empty() {
+                return Err(ProviderCatalogError::MissingApiKey(
+                    models.iter().next().cloned().unwrap_or_default(),
+                ));
+            }
             let client = Arc::new(
                 DeepSeekClient::new(
                     DeepSeekClientConfig::production(
@@ -953,6 +998,7 @@ mod tests {
         fn read_secret(&self, name: &str) -> Result<Zeroizing<String>, ConfigError> {
             match name {
                 "DEEPSEEK_API_KEY" => Ok(Zeroizing::new("fixture-key".into())),
+                "GLM_API_KEY" => Ok(Zeroizing::new("fixture-glm-key".into())),
                 "KRW_ONTOLOGY_MCP_URL" => Ok(Zeroizing::new(self.ontology_mcp_url.into())),
                 "KRW_ONTOLOGY_READY_URL" => {
                     Ok(Zeroizing::new("https://ontology.invalid/readyz".into()))
@@ -1241,7 +1287,7 @@ mod tests {
                 .values()
                 .all(|release| release.context_planner.state_count() > 0)
         );
-        assert_eq!(providers.by_model.len(), 1);
+        assert_eq!(providers.by_model.len(), 2);
     }
 
     #[test]
@@ -1252,8 +1298,10 @@ mod tests {
         let mut forbidden = models.models[0].clone();
         forbidden.model_id = "forbidden-provider-model".into();
         let descriptors = [models.models[0].clone(), forbidden];
+        let api_keys_by_base =
+            build_api_keys_by_base(descriptors.iter(), "fixture-key", "fixture-key");
         assert!(matches!(
-            DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key", 8),
+            DeepSeekProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8),
             Err(ProviderCatalogError::ModelInventory)
         ));
     }
@@ -1271,8 +1319,14 @@ mod tests {
         second.model_id = GLM_MODEL_ID.to_string();
         second.api_base = "https://glm-provider.invalid/v1".to_string();
         let descriptors = [models.models[0].clone(), second];
-        let catalog = DeepSeekProviderCatalog::compile_from(descriptors.iter(), "fixture-key", 8)
-            .expect("multi-model catalog compiles when every model is allowed");
+        let api_keys_by_base = build_api_keys_by_base(
+            descriptors.iter(),
+            "deepseek-fixture-key",
+            "glm-fixture-key",
+        );
+        let catalog =
+            DeepSeekProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8)
+                .expect("multi-model catalog compiles when every model is allowed");
         assert_eq!(catalog.by_model.len(), 2);
         assert!(catalog.exact(DEEPSEEK_MODEL_ID).is_some());
         assert!(catalog.exact(GLM_MODEL_ID).is_some());

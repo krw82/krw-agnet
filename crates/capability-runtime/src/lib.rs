@@ -1837,6 +1837,7 @@ mod tests {
         };
         let secrets = FixtureSecrets(BTreeMap::from([
             ("DEEPSEEK_API_KEY".into(), "deepseek-secret".into()),
+            ("GLM_API_KEY".into(), "glm-secret".into()),
             (
                 "KRW_TEST_MCP_URL".into(),
                 "https://ontology.test/mcp".into(),
