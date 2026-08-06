@@ -14144,4 +14144,26 @@ mod tests {
             (true, DeliveryCertainty::MayHaveDispatched)
         );
     }
+
+    #[test]
+    fn glm_classifier_mirrors_deepseek_and_uses_glm_prefix() {
+        // GLM shares the OpenAI-compatible wire, so classification must be
+        // identical to DeepSeek for every WireError variant.
+        let samples = [
+            WireError::InvalidEndpoint,
+            WireError::MissingDoneEvent,
+            WireError::IncompleteSseFrame,
+            WireError::Json(serde_json::from_str::<serde_json::Value>("bad").unwrap_err()),
+        ];
+        for error in &samples {
+            assert_eq!(
+                classify_glm_failure(error),
+                classify_deepseek_failure(error),
+                "GLM classifier diverged from DeepSeek for {error:?}"
+            );
+        }
+        // Failure codes must use the glm_ prefix instead of deepseek_.
+        assert!(glm_failure_code(&WireError::MissingDoneEvent).starts_with("glm_"));
+        assert!(deepseek_failure_code(&WireError::MissingDoneEvent).starts_with("deepseek_"));
+    }
 }
