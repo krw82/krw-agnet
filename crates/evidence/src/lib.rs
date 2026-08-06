@@ -239,7 +239,19 @@ impl EvidenceLedger {
             return Ok(AppendOutcome::Deduplicated(existing_id.clone()));
         }
         if self.records.contains_key(&record.evidence_id) {
-            return Err(EvidenceError::DuplicateEvidenceId(record.evidence_id));
+            // The model sometimes reuses an evidence_id for non-identical
+            // content within the same run. Rather than failing the run
+            // terminally, mint a deterministic suffix from the content hash
+            // so the record is still inserted under a unique key.
+            let suffix = record.content_hash.as_str();
+            let suffix_short = &suffix[suffix.len().saturating_sub(12)..];
+            let resolved_id = format!("{}_{}", record.evidence_id, suffix_short);
+            let mut resolved = record;
+            resolved.evidence_id = resolved_id;
+            let evidence_id = resolved.evidence_id.clone();
+            self.records.insert(evidence_id.clone(), resolved);
+            self.identities.insert(identity, evidence_id.clone());
+            return Ok(AppendOutcome::Inserted(evidence_id));
         }
         let evidence_id = record.evidence_id.clone();
         self.records.insert(evidence_id.clone(), record);
