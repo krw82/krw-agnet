@@ -65,7 +65,7 @@ use krw_agent_persistence::{
 };
 use krw_agent_protocol::{
     ALLOWED_MODEL_IDS, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash,
-    DeploymentBinding, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
+    DeploymentBinding, GLM_MODEL_ID, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
     provider_tool_name,
 };
@@ -178,14 +178,19 @@ impl Provider for DeepSeekClient {
         self.complete_stream(request, context)
             .await
             .map_err(|error| {
-                let (retryable, delivery) = classify_deepseek_failure(&error);
+                let is_glm = request.model == GLM_MODEL_ID;
+                let (retryable, delivery) = if is_glm {
+                    classify_glm_failure(&error)
+                } else {
+                    classify_deepseek_failure(&error)
+                };
+                let code = if is_glm {
+                    glm_failure_code(&error)
+                } else {
+                    deepseek_failure_code(&error)
+                };
                 let diagnostic = format!("{error:?}");
-                DependencyFailure::redacted(
-                    deepseek_failure_code(&error),
-                    diagnostic,
-                    retryable,
-                    delivery,
-                )
+                DependencyFailure::redacted(code, diagnostic, retryable, delivery)
             })
     }
 }
@@ -256,6 +261,100 @@ fn deepseek_failure_code(error: &WireError) -> String {
 }
 
 fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
+    match error {
+        WireError::InvalidEndpoint
+        | WireError::InvalidAuthorization
+        | WireError::UnknownModel(_)
+        | WireError::InvalidRequest(_)
+        | WireError::ThinkingToolChoiceUnsupported
+        | WireError::InvalidClientLimits
+        | WireError::InvalidAllowedModel
+        | WireError::InvalidProviderFunctionName
+        | WireError::InvalidJsonSchemaDocument
+        | WireError::CanonicalJsonNotUtf8
+        | WireError::NonCanonicalJsonText
+        | WireError::InvalidToolCallId
+        | WireError::ExpectedUserMessage
+        | WireError::EmptyMessageContent
+        | WireError::UnresolvedToolCalls
+        | WireError::UnexpectedToolResult(_) => (false, DeliveryCertainty::NotDispatched),
+        WireError::Http(error) => (
+            error.is_timeout() || error.is_connect(),
+            DeliveryCertainty::MayHaveDispatched,
+        ),
+        WireError::ApiStatus { status, .. } => (
+            matches!(status, 429 | 500 | 503),
+            DeliveryCertainty::MayHaveDispatched,
+        ),
+        WireError::IncompleteSseFrame
+        | WireError::SseBufferLimit(_)
+        | WireError::StreamLimit(_)
+        | WireError::MissingDoneEvent
+        | WireError::Json(_)
+        | WireError::Utf8(_) => (true, DeliveryCertainty::MayHaveDispatched),
+        _ => (false, DeliveryCertainty::MayHaveDispatched),
+    }
+}
+
+/// Stable, non-secret GLM failure labels.  Mirrors
+/// [`deepseek_failure_code`] but emits `glm_*` prefixes so operators can
+/// distinguish GLM episodes from `DeepSeek` episodes while keeping the wire
+/// error taxonomy identical (both providers are OpenAI-compatible).
+fn glm_failure_code(error: &WireError) -> String {
+    match error {
+        WireError::ApiStatus {
+            status,
+            provider_code,
+            ..
+        } => provider_code.as_ref().map_or_else(
+            || format!("glm_http_{status}"),
+            |code| format!("glm_http_{status}_{code}"),
+        ),
+        WireError::Http(_) => "glm_http_transport".into(),
+        WireError::UnexpectedContentType => "glm_unexpected_content_type".into(),
+        WireError::MissingDoneEvent => "glm_missing_done_event".into(),
+        WireError::IncompleteSseFrame => "glm_incomplete_sse_frame".into(),
+        WireError::SseBufferLimit(_)
+        | WireError::StreamLimit(_)
+        | WireError::EpisodeBufferLimit(_) => "glm_response_too_large".into(),
+        WireError::Json(_) => "glm_response_json_invalid".into(),
+        WireError::InvalidThinkingToolReplay => "glm_thinking_tool_replay_invalid".into(),
+        WireError::ThinkingToolChoiceUnsupported => "unsupported_tool_choice_in_thinking".into(),
+        WireError::MissingObservedModel
+        | WireError::MissingFinishReason
+        | WireError::ModelChangedMidStream { .. }
+        | WireError::ObservedModelMismatch { .. } => "glm_model_stream_invalid".into(),
+        WireError::InvalidEndpoint
+        | WireError::InvalidAuthorization
+        | WireError::UnknownModel(_)
+        | WireError::InvalidRequest(_)
+        | WireError::MissingReasoningEffort
+        | WireError::UnexpectedReasoningEffort
+        | WireError::InvalidClientLimits
+        | WireError::InvalidAllowedModel => "glm_configuration_invalid".into(),
+        WireError::InvalidProviderFunctionName
+        | WireError::InvalidJsonSchemaDocument
+        | WireError::CanonicalJsonNotUtf8
+        | WireError::NonCanonicalJsonText
+        | WireError::InvalidToolCallId
+        | WireError::ExpectedUserMessage
+        | WireError::EmptyMessageContent
+        | WireError::UnresolvedToolCalls
+        | WireError::UnexpectedToolResult(_) => "glm_request_contract_invalid".into(),
+        WireError::DataAfterDone
+        | WireError::UnexpectedChoiceIndex(_)
+        | WireError::IncompleteToolCall(_)
+        | WireError::UnsupportedToolCallType(_)
+        | WireError::TooManyToolCalls(_)
+        | WireError::ConflictingToolCallField(_) => "glm_protocol_invalid".into(),
+        WireError::Utf8(_) => "glm_response_utf8_invalid".into(),
+    }
+}
+
+/// Classify a GLM wire failure for retry/delivery semantics.  Identical
+/// taxonomy to [`classify_deepseek_failure`] since GLM shares the same
+/// OpenAI-compatible wire layer; only the failure-code labels differ.
+fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     match error {
         WireError::InvalidEndpoint
         | WireError::InvalidAuthorization
