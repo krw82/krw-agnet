@@ -3,7 +3,7 @@ use std::fmt;
 use krw_agent_image::LoadedImage;
 use krw_agent_persistence::agent_v1::ClaimReceipt;
 use krw_agent_protocol::{
-    BudgetLimits, CLAIM_PAYLOAD_SCHEMA_VERSION, ContentHash, DEEPSEEK_MODEL_ID, PROTOCOL_VERSION,
+    ALLOWED_MODEL_IDS, BudgetLimits, CLAIM_PAYLOAD_SCHEMA_VERSION, ContentHash, PROTOCOL_VERSION,
     PinnedExecutionContract, ResolvedExecutionSnapshot, RunRequest,
 };
 use krw_agent_runtime_config::{ConfigError, ResolvedRuntime};
@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const MAX_CLAIM_BYTES: usize = 1024 * 1024;
+
+fn is_allowed_model(model_id: &str) -> bool {
+    ALLOWED_MODEL_IDS.contains(&model_id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,9 +104,9 @@ impl ImmutableRunClaimV1 {
         if self.schema_version != CLAIM_PAYLOAD_SCHEMA_VERSION
             || self.resource_profile.schema_version != CLAIM_PAYLOAD_SCHEMA_VERSION
             || self.execution.protocol_version != PROTOCOL_VERSION
-            || self.request.requested_model != DEEPSEEK_MODEL_ID
-            || self.execution.requested_model != DEEPSEEK_MODEL_ID
-            || self.execution.resolved_model != DEEPSEEK_MODEL_ID
+            || !is_allowed_model(&self.request.requested_model)
+            || !is_allowed_model(&self.execution.requested_model)
+            || !is_allowed_model(&self.execution.resolved_model)
             || self.execution.model_profile != self.request.model_profile
             || self.execution.requested_model != self.request.requested_model
             || self.execution.resolved_model != self.request.requested_model
@@ -251,8 +255,8 @@ pub fn validate_claim(
     let total_token_budget = u64::from(payload.request.budget.max_input_tokens)
         .checked_add(u64::from(payload.request.budget.max_output_tokens))
         .ok_or(ClaimValidationError::ModelContextExceeded)?;
-    if model.model_id != DEEPSEEK_MODEL_ID
-        || payload.request.requested_model != DEEPSEEK_MODEL_ID
+    if !is_allowed_model(&model.model_id)
+        || !is_allowed_model(&payload.request.requested_model)
         || model.model_id != payload.request.requested_model
         || payload.request.budget.max_output_tokens > model.max_output_tokens
         || total_token_budget > u64::from(model.max_context_tokens)

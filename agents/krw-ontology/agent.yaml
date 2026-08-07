@@ -14,8 +14,8 @@ entrypoints:
     # This is intentionally the full research envelope while we collect real
     # quality/usage traces. A later release may introduce a compact profile
     # from measured evidence; it must not silently constrain this baseline.
-    required_budget_profile: company_research_full
-    required_model_profile: flash_high
+    required_budget_profile: company_research_glm
+    required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
     # company_research uses the full research skill suite.
@@ -45,7 +45,7 @@ entrypoints:
     locale: ko-KR
     workflow: earnings_deep_dive_v1
     required_budget_profile: earnings_deep_dive
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
     # Tier 2 pinned skills: the earnings 5-stage causal chain framework plus
@@ -74,7 +74,7 @@ entrypoints:
     locale: ko-KR
     workflow: scenario_sensitivity_v1
     required_budget_profile: scenario_sensitivity
-    required_model_profile: flash_max
+    required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
     pinned_skills:
@@ -98,7 +98,7 @@ entrypoints:
     locale: ko-KR
     workflow: idea_generation_v1
     required_budget_profile: idea_generation
-    required_model_profile: flash_max
+    required_model_profile: glm_high
     scope: { allowed_context: covered_universe, cardinality: { kind: max, value: 12 }, ticker_canonicalization: not_applicable }
     constants: {}
     pinned_skills:

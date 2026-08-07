@@ -9,10 +9,13 @@ export const RELEASE_DESCRIPTOR_SCHEMA_VERSION = 3 as const;
 export const SESSION_MEMORY_CARRIER_SCHEMA_VERSION = 3 as const;
 export const DEEPSEEK_PROVIDER_API_VERSION = "chat-completions-v1" as const;
 export const DEEPSEEK_MODEL_ID = "deepseek-v4-flash" as const;
+export const GLM_MODEL_ID = "glm-5.2" as const;
+export const ALLOWED_MODEL_IDS: readonly string[] = [DEEPSEEK_MODEL_ID, GLM_MODEL_ID] as const;
 
 export type ThinkingMode = "enabled" | "disabled";
 export type ReasoningEffort = "high" | "max";
 export type FlashModelProfile = "flash_high" | "flash_max" | "flash_direct";
+export type GlmModelProfile = "glm_high" | "glm_direct";
 
 export interface ProviderWireModeCapabilities extends JsonObject {
   readonly supported: boolean;
@@ -97,8 +100,8 @@ export interface RunRequest extends JsonObject {
   readonly run_kind: string;
   readonly locale: string;
   readonly question: string;
-  readonly requested_model: typeof DEEPSEEK_MODEL_ID;
-  readonly model_profile: FlashModelProfile;
+  readonly requested_model: string;
+  readonly model_profile: string;
   readonly budget: BudgetLimits;
   readonly context: RunContextV1;
   readonly session_memory: SessionMemoryCarrierV3 | null;
@@ -110,9 +113,9 @@ export interface PinnedExecutionContract extends JsonObject {
   readonly deployment_binding_hash: ContentHash;
   readonly model_registry_hash: ContentHash;
   readonly budget_registry_hash: ContentHash;
-  readonly model_profile: FlashModelProfile;
-  readonly requested_model: typeof DEEPSEEK_MODEL_ID;
-  readonly resolved_model: typeof DEEPSEEK_MODEL_ID;
+  readonly model_profile: string;
+  readonly requested_model: string;
+  readonly resolved_model: string;
   readonly provider_api_version: typeof DEEPSEEK_PROVIDER_API_VERSION;
   readonly provider_wire_capabilities: ProviderWireCapabilities;
   readonly thinking: ThinkingMode;
@@ -148,7 +151,7 @@ export interface PublicReleaseEntrypoint extends JsonObject {
   readonly run_kind: string;
   readonly locale: string;
   readonly agent_image_hash: ContentHash;
-  readonly model_profile: FlashModelProfile;
+  readonly model_profile: FlashModelProfile | GlmModelProfile;
   readonly scope: EntrypointScopeV1;
   readonly execution: PinnedExecutionContract;
 }

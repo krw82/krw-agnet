@@ -1,6 +1,6 @@
 import {
+  ALLOWED_MODEL_IDS,
   CLAIM_SCHEMA_VERSION,
-  DEEPSEEK_MODEL_ID,
   DEEPSEEK_PROVIDER_API_VERSION,
   KRW_PROTOCOL_VERSION,
   RELEASE_DESCRIPTOR_SCHEMA_VERSION,
@@ -30,6 +30,11 @@ const FLASH_PROFILE_POLICY = {
   flash_max: { thinking: "enabled", reasoning_effort: "max" },
   flash_direct: { thinking: "disabled", reasoning_effort: null },
 } as const;
+const GLM_PROFILE_POLICY = {
+  glm_high: { thinking: "enabled", reasoning_effort: "high" },
+  glm_direct: { thinking: "disabled", reasoning_effort: null },
+} as const;
+const MODEL_PROFILE_POLICY = { ...FLASH_PROFILE_POLICY, ...GLM_PROFILE_POLICY };
 
 export class ContractViolation extends Error {
   constructor(readonly code: string) {
@@ -253,7 +258,7 @@ function validateReleaseEntrypoint(value: PublicReleaseEntrypoint): void {
   }
   validateBoundedIdentifier(execution.requested_model, "requested_model");
   validateBoundedIdentifier(execution.resolved_model, "resolved_model");
-  if (execution.requested_model !== DEEPSEEK_MODEL_ID) {
+  if (!ALLOWED_MODEL_IDS.includes(execution.requested_model)) {
     throw new ContractViolation("model_not_allowlisted");
   }
   if (execution.requested_model !== execution.resolved_model) {
@@ -274,7 +279,7 @@ function validateReleaseEntrypoint(value: PublicReleaseEntrypoint): void {
   } else {
     throw new ContractViolation("thinking_mode");
   }
-  const profilePolicy = FLASH_PROFILE_POLICY[value.model_profile as keyof typeof FLASH_PROFILE_POLICY];
+  const profilePolicy = MODEL_PROFILE_POLICY[value.model_profile as keyof typeof MODEL_PROFILE_POLICY];
   if (
     profilePolicy === undefined ||
     execution.thinking !== profilePolicy.thinking ||
@@ -341,9 +346,9 @@ export function validateClaimShape(
 ): void {
   if (
     execution.protocol_version !== KRW_PROTOCOL_VERSION ||
-    request.requested_model !== DEEPSEEK_MODEL_ID ||
-    execution.requested_model !== DEEPSEEK_MODEL_ID ||
-    execution.resolved_model !== DEEPSEEK_MODEL_ID ||
+    !ALLOWED_MODEL_IDS.includes(request.requested_model) ||
+    !ALLOWED_MODEL_IDS.includes(execution.requested_model) ||
+    !ALLOWED_MODEL_IDS.includes(execution.resolved_model) ||
     execution.model_profile !== request.model_profile ||
     execution.requested_model !== request.requested_model ||
     execution.resolved_model !== request.requested_model ||
