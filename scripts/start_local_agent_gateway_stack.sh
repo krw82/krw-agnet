@@ -229,6 +229,7 @@ krw_agentd_bin="$krw_root/target/debug/krw-agentd"
     --endpoint-registry "$krw_state/endpoint-registry.yaml" --release-authorization "$krw_release_authorization" \
     --release-trust-registry "$krw_state/release-trust-registry.json" --runtime-version 0.1.0 --worker-id local-agentd \
     --database-url-env KRW_AGENT_DATABASE_URL --database-ca-pem-env KRW_AGENT_DATABASE_CA_PEM \
+    --database-max-connections 32 \
     --artifact-root "$krw_state/artifacts" --artifact-active-key-env KRW_AGENT_ARTIFACT_KEY_V1 \
     >"$krw_state/logs/agentd.log" 2>&1 &
 krw_daemon_pid=$!

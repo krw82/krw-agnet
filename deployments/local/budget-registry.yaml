@@ -20,6 +20,8 @@ profiles:
         ontology.chain: 4
   # GLM-5.2 variant: matches DeepSeek's envelope. GLM-5.2 supports 1M context
   # and 128K output per z.ai docs, so the full research budget applies.
+  # Deadline is extended to 600s because the z.ai coding plan endpoint has
+  # higher latency than DeepSeek's direct API.
   - profile_id: company_research_glm
     limits:
       max_provider_turns: 32
@@ -29,7 +31,7 @@ profiles:
       max_input_tokens: 500000
       max_output_tokens: 32000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 600000
       capability_call_limits:
         ontology.query_context: 6
         ontology.query: 6

@@ -33,7 +33,7 @@ use crate::agent_v1::{
 
 const MAX_IN_FLIGHT_RUNS: usize = 256;
 const MAX_OUTBOX_BATCH: u16 = 100;
-const MAX_RESIDENT_RECOVERY_BYTES: usize = 256 * 1024 * 1024;
+const MAX_RESIDENT_RECOVERY_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_RECOVERY_EPISODES: usize = 256;
 const MAX_RECOVERY_ACTIONS: usize = 512;
 const MAX_RECOVERY_STATE_BYTES: usize = 8 * 1024 * 1024;
