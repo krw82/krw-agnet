@@ -411,11 +411,11 @@ impl EpisodeAssembler {
 /// invariant (`tool_calls` rather than `tool_use`).
 fn map_stop_reason(reason: &str) -> String {
     match reason {
-        "end_turn" => "end_turn".to_string(),
+        // Anthropic's `end_turn` is the run-engine's `stop` — natural completion.
+        "end_turn" | "stop_sequence" => "stop".to_string(),
         // Anthropic uses `tool_use`; run-engine expects `tool_calls`.
         "tool_use" => "tool_calls".to_string(),
         "max_tokens" => "max_tokens".to_string(),
-        "stop_sequence" => "stop_sequence".to_string(),
         other => other.to_string(),
     }
 }

@@ -8773,7 +8773,7 @@ fn validate_input(input: &RunInput<'_>, config: &EngineConfig) -> Result<(), Eng
     {
         return Err(EngineError::InvalidInput("model identity mismatch"));
     }
-    if input.snapshot.provider_api_version != "chat-completions-v1"
+    if input.snapshot.provider_api_version != "anthropic-messages-v1"
         || !matches!(
             (input.snapshot.thinking, input.snapshot.reasoning_effort),
             (ThinkingMode::Enabled, Some(_)) | (ThinkingMode::Disabled, None)

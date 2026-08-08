@@ -158,7 +158,7 @@ impl DeepSeekProviderCatalog {
         let mut seen = BTreeSet::new();
         let mut max_in_flight_by_model = BTreeMap::<String, u16>::new();
         for model in models {
-            if model.api_version != "chat-completions-v1" {
+            if model.api_version != "anthropic-messages-v1" {
                 return Err(ProviderCatalogError::ApiVersion);
             }
             if !seen.insert(model.model_id.clone()) {

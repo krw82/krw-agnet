@@ -7,7 +7,7 @@ export const KRW_PROTOCOL_VERSION = 6 as const;
 export const CLAIM_SCHEMA_VERSION = 6 as const;
 export const RELEASE_DESCRIPTOR_SCHEMA_VERSION = 3 as const;
 export const SESSION_MEMORY_CARRIER_SCHEMA_VERSION = 3 as const;
-export const DEEPSEEK_PROVIDER_API_VERSION = "chat-completions-v1" as const;
+export const DEEPSEEK_PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
 export const DEEPSEEK_MODEL_ID = "deepseek-v4-flash" as const;
 export const GLM_MODEL_ID = "glm-5.2" as const;
 export const ALLOWED_MODEL_IDS: readonly string[] = [DEEPSEEK_MODEL_ID, GLM_MODEL_ID] as const;
@@ -28,7 +28,7 @@ export interface ProviderWireModeCapabilities extends JsonObject {
 export interface ProviderWireCapabilities extends JsonObject {
   readonly thinking: ProviderWireModeCapabilities;
   readonly non_thinking: ProviderWireModeCapabilities;
-  readonly requires_reasoning_content_replay: boolean;
+  readonly requires_thinking_block_replay: boolean;
   readonly requires_assistant_content_for_tool_calls: boolean;
 }
 

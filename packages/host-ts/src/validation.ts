@@ -305,7 +305,7 @@ function validateProviderWireCapabilities(value: unknown): void {
   exactKeys(value, [
     "thinking",
     "non_thinking",
-    "requires_reasoning_content_replay",
+    "requires_thinking_block_replay",
     "requires_assistant_content_for_tool_calls",
   ]);
   const record = value as Record<string, unknown>;
@@ -318,7 +318,7 @@ function validateProviderWireCapabilities(value: unknown): void {
     }
   }
   if (
-    typeof record.requires_reasoning_content_replay !== "boolean" ||
+    typeof record.requires_thinking_block_replay !== "boolean" ||
     typeof record.requires_assistant_content_for_tool_calls !== "boolean"
   ) {
     throw new ContractViolation("provider_wire_capabilities");
