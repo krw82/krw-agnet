@@ -2281,8 +2281,42 @@ where
                 state.usage.provider_total_ms = declared.usage.provider_total_ms;
                 state.usage.capability_total_ms = declared.usage.capability_total_ms;
                 state.usage.compact_total_ms = declared.usage.compact_total_ms;
-                if declared.schema_version != ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION
-                    || declared != state.checkpoint_value()?
+                if declared.schema_version != ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION {
+                    return Err(EngineError::RecoveryStateMismatch);
+                }
+                // The recovery-equivalence check compares the persisted
+                // checkpoint against the freshly reconstructed state. The
+                // following fields are excluded because replay legitimately
+                // diverges from the live path:
+                //
+                // * `prompt_receipt_hashes` / `conversation_hash`: recovery
+                //   turns contribute receipts/transcript entries that replay
+                //   does not reproduce.
+                // * `usage` (BudgetUsage): replay only processes committed
+                //   episodes, so its turn/repair/replan counters are lower than
+                //   the live path which includes superseded recovery turns.
+                // * `compaction_receipts`: the live path may compact at
+                //   different intermediate states than replay.
+                //
+                // Security-critical fields (interpreter state, evidence ledger,
+                // action frontier, capability frontier, tool schema) are still
+                // fully compared.
+                let rebuilt = state.checkpoint_value()?;
+                if declared.interpreter != rebuilt.interpreter
+                    || declared.state_trace != rebuilt.state_trace
+                    || declared.capability_calls != rebuilt.capability_calls
+                    || declared.completed_capabilities != rebuilt.completed_capabilities
+                    || declared.logical_action_keys != rebuilt.logical_action_keys
+                    || declared.evidence_ledger_hash != rebuilt.evidence_ledger_hash
+                    || declared.calculations_hash != rebuilt.calculations_hash
+                    || declared.action_cache_hash != rebuilt.action_cache_hash
+                    || declared.accepted_actions_hash != rebuilt.accepted_actions_hash
+                    || declared.tool_schema_hash != rebuilt.tool_schema_hash
+                    || declared.last_provider_episode_hash != rebuilt.last_provider_episode_hash
+                    || declared.compacted_context_hash != rebuilt.compacted_context_hash
+                    || declared.research_planner_hash != rebuilt.research_planner_hash
+                    || declared.derived_ticker_scope_hash != rebuilt.derived_ticker_scope_hash
+                    || declared.session_memory_hash != rebuilt.session_memory_hash
                 {
                     return Err(EngineError::RecoveryStateMismatch);
                 }

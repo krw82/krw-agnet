@@ -368,6 +368,9 @@ impl ProviderWireCapabilities {
             thinking: ProviderWireModeCapabilities {
                 supported: true,
                 supports_tools: true,
+                // GLM-5.2 accepts tool_choice=required in both modes, and
+                // emitting it improves tool-call reliability for capability
+                // states (the model is less likely to skip a required tool).
                 supports_tool_choice: true,
                 supports_json_object: true,
             },
