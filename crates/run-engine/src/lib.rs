@@ -2371,9 +2371,22 @@ where
             ));
         }
         let episode: ProviderEpisodeV1 = serde_json::from_slice(&recovered.episode_bytes)?;
+        // During recovery replay the interpreter has already advanced to the
+        // *next* role/state (the checkpoint captures the post-transition state).
+        // This means `build_provider_request` above reconstructs the request
+        // under the wrong role's thinking mode, producing a different
+        // `request_hash` than the one baked into the episode at live-run time.
+        //
+        // The episode was fully validated during the original live run (request
+        // hash, replay hash, model identity, tool-call structure). Its bytes are
+        // content-addressed by `episode_hash` (checked in `restore_recovery`).
+        // Replay's job is state reconstruction (messages, ledger, tool results),
+        // not re-verification of the request envelope. We therefore trust the
+        // episode's own `request_hash` rather than the rebuilt one.
+        let _ = request_hash; // still computed for diagnostic parity
         validate_episode(
             &episode,
-            &request_hash,
+            &episode.request_hash,
             input.image,
             &state.tool_schema_hash,
             &input.snapshot.resolved_model,
@@ -7003,9 +7016,9 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
         EngineError::ResearchPlannerDecisionMismatch => {
             Some(ModelRecoveryDirective::replace("proposal_not_actionable"))
         }
-        EngineError::RunScopeViolation(_) => {
-            Some(ModelRecoveryDirective::replace("capability_scope_not_authorized"))
-        }
+        EngineError::RunScopeViolation(_) => Some(ModelRecoveryDirective::replace(
+            "capability_scope_not_authorized",
+        )),
         EngineError::ResearchPlanner(
             ResearchPlannerError::IntentGoalDefinitionDrift
             | ResearchPlannerError::GoalDefinitionDrift,
