@@ -326,7 +326,12 @@ pub struct ProviderWireModeCapabilities {
 pub struct ProviderWireCapabilities {
     pub thinking: ProviderWireModeCapabilities,
     pub non_thinking: ProviderWireModeCapabilities,
-    pub requires_reasoning_content_replay: bool,
+    /// Anthropic Messages API carries reasoning as a `thinking` content block;
+    /// when set, the episode assembler must replay that block during recovery.
+    pub requires_thinking_block_replay: bool,
+    /// OpenAI-vocab legacy flag retained for run-engine `AssistantMessage`
+    /// reconstruction compatibility: the provider may emit assistant content
+    /// alongside tool calls (`DeepSeek` V4 does, GLM-5.2 does not).
     pub requires_assistant_content_for_tool_calls: bool,
 }
 
@@ -353,7 +358,7 @@ impl ProviderWireCapabilities {
                 supports_tool_choice: false,
                 supports_json_object: true,
             },
-            requires_reasoning_content_replay: true,
+            requires_thinking_block_replay: true,
             requires_assistant_content_for_tool_calls: true,
         }
     }
@@ -380,9 +385,9 @@ impl ProviderWireCapabilities {
                 supports_tool_choice: true,
                 supports_json_object: true,
             },
-            // GLM-5.2 emits reasoning_content during thinking but does NOT
-            // emit assistant content alongside tool_calls (unlike DeepSeek V4).
-            requires_reasoning_content_replay: true,
+            // GLM-5.2 emits a thinking block during thinking but does NOT emit
+            // assistant content alongside tool_calls (unlike DeepSeek V4).
+            requires_thinking_block_replay: true,
             requires_assistant_content_for_tool_calls: false,
         }
     }
@@ -1256,7 +1261,7 @@ mod tests {
         assert!(
             glm_model
                 .provider_wire_capabilities
-                .requires_reasoning_content_replay
+                .requires_thinking_block_replay
         );
 
         // A profile that requests GLM through a deepseek-only profile id must

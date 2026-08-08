@@ -336,7 +336,7 @@ pub(super) fn isolate_request(
     }
     let visible_names = filtered
         .iter()
-        .map(|tool| tool.name())
+        .map(krw_agent_provider_wire::ProviderToolDefinition::name)
         .collect::<Vec<_>>();
     let return_count = visible_names
         .iter()

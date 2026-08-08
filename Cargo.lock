@@ -988,23 +988,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "krw-agent-deepseek-wire"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-util",
- "krw-agent-protocol",
- "reqwest",
- "rustls",
- "serde",
- "serde_jcs",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "zeroize",
-]
-
-[[package]]
 name = "krw-agent-evidence"
 version = "0.1.0"
 dependencies = [

@@ -5,8 +5,8 @@ registry_id: deepseek-production-2026-08
 # runtime semaphore (see crates/runtime-config admission).
 models:
   - model_id: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_version: chat-completions-v1
+    api_base: https://api.deepseek.com/anthropic
+    api_version: anthropic-messages-v1
     max_context_tokens: 1000000
     max_output_tokens: 384000
     max_in_flight: 64
@@ -25,7 +25,7 @@ models:
         # semantic requirement through typed recovery, not this wire field.
         supports_tool_choice: false
         supports_json_object: true
-      requires_reasoning_content_replay: true
+      requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: true
 profiles:
   - profile_id: flash_high

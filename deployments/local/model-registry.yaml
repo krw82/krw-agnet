@@ -2,8 +2,8 @@ schema_version: 3
 registry_id: multi-provider-2026-08
 models:
   - model_id: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_version: chat-completions-v1
+    api_base: https://api.deepseek.com/anthropic
+    api_version: anthropic-messages-v1
     max_context_tokens: 1000000
     max_output_tokens: 384000
     max_in_flight: 64
@@ -22,11 +22,11 @@ models:
         # semantic requirement through typed recovery, not this wire field.
         supports_tool_choice: false
         supports_json_object: true
-      requires_reasoning_content_replay: true
+      requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: true
   - model_id: glm-5.2
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_version: chat-completions-v1
+    api_base: https://api.z.ai/api/anthropic
+    api_version: anthropic-messages-v1
     max_context_tokens: 1000000
     max_output_tokens: 128000
     max_in_flight: 32
@@ -44,7 +44,7 @@ models:
       # GLM-5.2 emits reasoning_content during thinking but does NOT emit
       # assistant content alongside tool_calls (unlike DeepSeek V4). Only
       # reasoning_content replay is required.
-      requires_reasoning_content_replay: true
+      requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: false
 profiles:
   - profile_id: flash_high

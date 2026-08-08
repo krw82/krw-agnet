@@ -246,7 +246,7 @@ impl RunEngineMessage {
     }
 
     /// Construct a tool-result turn from a wire `ToolResultMessage`.
-    fn from_tool_result(result: krw_agent_provider_wire::ToolResultMessage) -> Self {
+    fn from_tool_result(result: &krw_agent_provider_wire::ToolResultMessage) -> Self {
         // `ToolResultMessage` implements `Drop` and scrubs its fields, so we
         // clone the bounded tool-call id and the canonical JSON text rather
         // than moving out.
@@ -341,7 +341,7 @@ impl<'de> Deserialize<'de> for RunEngineMessage {
         D: serde::Deserializer<'de>,
     {
         let wire = ProviderMessage::deserialize(deserializer)?;
-        Self::try_from_provider_message(wire).map_err(serde::de::Error::custom)
+        Self::try_from_provider_message(&wire).map_err(serde::de::Error::custom)
     }
 }
 
@@ -352,8 +352,9 @@ impl RunEngineMessage {
     /// serialization/replay path still needs a stable on-the-wire form.
     fn to_provider_message_for_serialization(&self) -> ProviderMessage {
         match self {
-            Self::System { content } => ProviderMessage::user(content.clone()),
-            Self::User { content } => ProviderMessage::user(content.clone()),
+            Self::System { content } | Self::User { content } => {
+                ProviderMessage::user(content.clone())
+            }
             Self::Assistant {
                 content,
                 reasoning_content,
@@ -379,7 +380,7 @@ impl RunEngineMessage {
         }
     }
 
-    fn try_from_provider_message(message: ProviderMessage) -> Result<Self, String> {
+    fn try_from_provider_message(message: &ProviderMessage) -> Result<Self, String> {
         // System/user text blocks collapse to the matching internal variant.
         if message.role == MessageRole::User
             && message.content.len() == 1
@@ -5781,7 +5782,7 @@ impl ActiveRun {
         // `ToolResultMessage` owns the provider's text-only JSON rule. A
         // typed capability object cannot enter the transcript as an object.
         self.messages
-            .push(RunEngineMessage::from_tool_result(ToolResultMessage::from_value(
+            .push(RunEngineMessage::from_tool_result(&ToolResultMessage::from_value(
                 tool_call_id,
                 content,
             )?));
@@ -7830,7 +7831,7 @@ fn available_tool_definitions(
     if definitions.len() != expected_names.len()
         || definitions
             .iter()
-            .map(|definition| definition.name())
+            .map(krw_agent_provider_wire::ProviderToolDefinition::name)
             .map(str::to_owned)
             .collect::<BTreeSet<_>>()
             != expected_names
@@ -8924,7 +8925,7 @@ fn validate_episode(
         requires_thinking_tool_replay
             && provider_wire_capabilities.requires_assistant_content_for_tool_calls,
         requires_thinking_tool_replay
-            && provider_wire_capabilities.requires_reasoning_content_replay,
+            && provider_wire_capabilities.requires_thinking_block_replay,
     )?;
     if !ALLOWED_MODEL_IDS.contains(&model)
         || episode.schema_version != 1

@@ -4,7 +4,6 @@ members = [
   "crates/protocol",
   "crates/agent-image",
   "crates/evidence",
-  "crates/deepseek-wire",
   "crates/provider-wire",
   "crates/agent-kernel",
   "crates/run-engine",
