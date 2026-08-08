@@ -42,7 +42,7 @@ const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
 
 // Pinned GLM-5.2 deployment facts. These mirror the DeepSeek constants baked
 // into `validate_model` and keep the GLM branch free of magic numbers.
-const GLM_API_BASE: &str = "https://open.bigmodel.cn/api/paas/v4";
+const GLM_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4";
 const GLM_API_VERSION: &str = "chat-completions-v1";
 const GLM_MAX_CONTEXT_TOKENS: u32 = 128_000;
 const GLM_MAX_OUTPUT_TOKENS: u32 = 16_384;

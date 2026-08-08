@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DEEPSEEK_MODEL_ID};
 pub use krw_agent_protocol::{ReasoningEffort, ThinkingMode};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -875,10 +875,14 @@ impl ChatCompletionRequest {
             (ThinkingMode::Enabled, Some(_)) | (ThinkingMode::Disabled, None) => {}
         }
         // DeepSeek V4 accepts tools in thinking mode, but rejects the entire
-        // `tool_choice` parameter in that mode. Keep this native wire rule as
-        // a last line of defence even though the runtime resolves the same
-        // fact from its immutable provider capability matrix.
-        if self.thinking.kind == ThinkingMode::Enabled && self.tool_choice.is_some() {
+        // `tool_choice` parameter in that mode. GLM-5.2 permits this combination.
+        // Gate the restriction on the model id so a multi-provider client does
+        // not impose DeepSeek's native wire rule on a different provider.
+        let is_deepseek = self.model == DEEPSEEK_MODEL_ID;
+        if is_deepseek
+            && self.thinking.kind == ThinkingMode::Enabled
+            && self.tool_choice.is_some()
+        {
             return Err(WireError::ThinkingToolChoiceUnsupported);
         }
         if matches!(self.tool_choice, Some(ToolChoice::Required)) && self.tools.is_empty() {

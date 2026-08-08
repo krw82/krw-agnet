@@ -25,7 +25,7 @@ models:
       requires_reasoning_content_replay: true
       requires_assistant_content_for_tool_calls: true
   - model_id: glm-5.2
-    api_base: https://open.bigmodel.cn/api/paas/v4
+    api_base: https://api.z.ai/api/coding/paas/v4
     api_version: chat-completions-v1
     max_context_tokens: 128000
     max_output_tokens: 16384
@@ -41,8 +41,11 @@ models:
         supports_tools: true
         supports_tool_choice: true
         supports_json_object: true
+      # GLM-5.2 emits reasoning_content during thinking but does NOT emit
+      # assistant content alongside tool_calls (unlike DeepSeek V4). Only
+      # reasoning_content replay is required.
       requires_reasoning_content_replay: true
-      requires_assistant_content_for_tool_calls: true
+      requires_assistant_content_for_tool_calls: false
 profiles:
   - profile_id: flash_high
     model_id: deepseek-v4-flash

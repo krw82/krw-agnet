@@ -377,8 +377,10 @@ impl ProviderWireCapabilities {
                 supports_tool_choice: true,
                 supports_json_object: true,
             },
+            // GLM-5.2 emits reasoning_content during thinking but does NOT
+            // emit assistant content alongside tool_calls (unlike DeepSeek V4).
             requires_reasoning_content_replay: true,
-            requires_assistant_content_for_tool_calls: true,
+            requires_assistant_content_for_tool_calls: false,
         }
     }
 
