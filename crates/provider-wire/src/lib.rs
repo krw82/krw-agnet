@@ -955,7 +955,15 @@ pub enum WireError {
     UnexpectedToolResultInAssistant,
     #[error("thinking tool call lacks non-null content or complete non-empty reasoning_content")]
     InvalidThinkingToolReplay,
+    #[error("SSE buffer exceeded {0} bytes")]
+    SseBufferLimit(usize),
+    #[error("incomplete SSE frame at end of stream")]
+    IncompleteSseFrame,
+    #[error("malformed SSE data: {0}")]
+    SseParseError(String),
 }
+
+pub mod sse;
 
 // ---------------------------------------------------------------------------
 // Helpers.
