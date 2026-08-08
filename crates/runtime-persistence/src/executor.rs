@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use krw_agent_capability_runtime::{
     CapabilityCatalog, McpToolTransport, PooledMcpCapabilityRuntime, RunScope,
 };
-use krw_agent_deepseek_wire::{DeepSeekClient, DeepSeekClientConfig};
+use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_image::LoadedImage;
 use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
@@ -85,7 +85,7 @@ pub enum ProviderCatalogError {
 /// Machine-wide `DeepSeek` clients grouped by exact HTTPS API base. Models on
 /// the same base share one HTTP/2 connection pool and authorization header.
 pub struct DeepSeekProviderCatalog {
-    by_model: BTreeMap<String, Arc<DeepSeekClient>>,
+    by_model: BTreeMap<String, Arc<ProviderClient>>,
     permits_by_model: BTreeMap<String, Arc<Semaphore>>,
 }
 
@@ -158,7 +158,7 @@ impl DeepSeekProviderCatalog {
         let mut seen = BTreeSet::new();
         let mut max_in_flight_by_model = BTreeMap::<String, u16>::new();
         for model in models {
-            if model.api_version != "chat-completions-v1" {
+            if model.api_version != "anthropic-messages-v1" {
                 return Err(ProviderCatalogError::ApiVersion);
             }
             if !seen.insert(model.model_id.clone()) {
@@ -199,8 +199,8 @@ impl DeepSeekProviderCatalog {
                 ));
             }
             let client = Arc::new(
-                DeepSeekClient::new(
-                    DeepSeekClientConfig::production(
+                ProviderClient::new(
+                    ProviderClientConfig::production(
                         api_base,
                         models.iter().cloned(),
                         max_idle_per_host,
@@ -230,7 +230,7 @@ impl DeepSeekProviderCatalog {
         }))
     }
 
-    fn exact(&self, model: &str) -> Option<Arc<DeepSeekClient>> {
+    fn exact(&self, model: &str) -> Option<Arc<ProviderClient>> {
         self.by_model.get(model).cloned()
     }
 
@@ -1313,7 +1313,7 @@ mod tests {
         let models: ModelRegistry =
             load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
         // Build a second allowed descriptor on a distinct api_base so the
-        // catalog has to materialise two independent DeepSeekClient instances
+        // catalog has to materialise two independent ProviderClient instances
         // and two independent permit semaphores.
         let mut second = models.models[0].clone();
         second.model_id = GLM_MODEL_ID.to_string();

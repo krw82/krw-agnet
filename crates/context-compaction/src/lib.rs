@@ -10,7 +10,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use krw_agent_deepseek_wire::ProviderMessage;
+use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_evidence::{
     Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger, NormalizedFact,
     PublicCitation,
@@ -894,11 +894,7 @@ mod tests {
         };
         ledger.append_calculation(calculation.clone()).unwrap();
         let calculations = BTreeMap::from([("calc-1".into(), calculation)]);
-        let messages = vec![ProviderMessage::Assistant {
-            content: Some("PRIVATE_REASONING_CANARY".into()),
-            reasoning_content: None,
-            tool_calls: Vec::new(),
-        }];
+        let messages = vec![ProviderMessage::assistant("PRIVATE_REASONING_CANARY")];
         let output = compact(&CompactionInput {
             boundary: &boundary,
             state_artifact: &artifact,
@@ -963,11 +959,7 @@ mod tests {
         let output = compact(&CompactionInput {
             boundary: &boundary,
             state_artifact: &artifact,
-            source_messages: &[ProviderMessage::Assistant {
-                content: Some("settled".into()),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-            }],
+            source_messages: &[ProviderMessage::assistant("settled")],
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
@@ -986,11 +978,7 @@ mod tests {
         let mut output = compact(&CompactionInput {
             boundary: &boundary,
             state_artifact: &artifact,
-            source_messages: &[ProviderMessage::Assistant {
-                content: Some("settled".into()),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-            }],
+            source_messages: &[ProviderMessage::assistant("settled")],
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
@@ -1020,11 +1008,9 @@ mod tests {
                 }],
             ))
             .unwrap();
-        let mut messages = vec![ProviderMessage::Assistant {
-            content: Some("PRIVATE_REASONING_CANARY boundary zero".into()),
-            reasoning_content: None,
-            tool_calls: Vec::new(),
-        }];
+        let mut messages = vec![ProviderMessage::assistant(
+            "PRIVATE_REASONING_CANARY boundary zero",
+        )];
         let mut stable_hash = None;
         for _ in 0..50 {
             let output = compact(&CompactionInput {
@@ -1126,11 +1112,7 @@ mod tests {
         let output = compact(&CompactionInput {
             boundary: &boundary,
             state_artifact: &artifact,
-            source_messages: &[ProviderMessage::Assistant {
-                content: Some("settled".into()),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-            }],
+            source_messages: &[ProviderMessage::assistant("settled")],
             ledger: &ledger,
             calculations: &calculations,
             research_projection: Some(&projection),

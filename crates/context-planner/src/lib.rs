@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use krw_agent_contracts::{contract as canonical_contract, verify_pin};
-use krw_agent_deepseek_wire::{ProviderToolDefinition, WireError};
+use krw_agent_provider_wire::{ProviderToolDefinition, WireError};
 use krw_agent_image::{
     AgentImageManifest, CompiledState, CompiledWorkflow, ImageError, LoadedImage, StateKind,
     provider_input_parameters,
@@ -725,7 +725,7 @@ fn build_frontier_tools(
         if !provider_names.insert(provider_name.clone()) {
             return Err(ContextPlanError::ToolNameCollision);
         }
-        let definition = ProviderToolDefinition::function(
+        let definition = ProviderToolDefinition::new(
             provider_name,
             capability.provider_tool_description(),
             parameters,

@@ -41,9 +41,13 @@ const GLM_MAX_PROFILE_ID: &str = "glm_max";
 const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
 
 // Pinned GLM-5.2 deployment facts. These mirror the DeepSeek constants baked
-// into `validate_model` and keep the GLM branch free of magic numbers.
-const GLM_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4";
-const GLM_API_VERSION: &str = "chat-completions-v1";
+// into `validate_model` and keep the GLM branch free of magic numbers. Both
+// providers speak the Anthropic Messages API: GLM via z.ai's `/api/anthropic`
+// facade and DeepSeek via `api.deepseek.com/anthropic`.
+const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/anthropic";
+const DEEPSEEK_API_VERSION: &str = "anthropic-messages-v1";
+const GLM_API_BASE: &str = "https://api.z.ai/api/anthropic";
+const GLM_API_VERSION: &str = "anthropic-messages-v1";
 const GLM_MAX_CONTEXT_TOKENS: u32 = 1_000_000;
 const GLM_MAX_OUTPUT_TOKENS: u32 = 128_000;
 
@@ -1142,8 +1146,8 @@ fn validate_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
 }
 
 fn validate_deepseek_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
-    if model.api_base != "https://api.deepseek.com"
-        || model.api_version != "chat-completions-v1"
+    if model.api_base != DEEPSEEK_API_BASE
+        || model.api_version != DEEPSEEK_API_VERSION
         || model.max_context_tokens != 1_000_000
         || model.max_output_tokens != 384_000
         || !(1..=2_500).contains(&model.max_in_flight)
@@ -1823,8 +1827,8 @@ mod tests {
     fn glm_model_and_profile_validation_mirrors_deepseek_shape() {
         let glm_model = ModelDescriptor {
             model_id: GLM_MODEL_ID.into(),
-            api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
-            api_version: "chat-completions-v1".into(),
+            api_base: GLM_API_BASE.into(),
+            api_version: GLM_API_VERSION.into(),
             max_context_tokens: 128_000,
             max_output_tokens: 16_384,
             max_in_flight: 64,
@@ -1835,7 +1839,7 @@ mod tests {
         // Every drifted field surfaces the GLM-specific error variant so the
         // DeepSeek error path stays a DeepSeek-only signal.
         let mut bad_base = glm_model.clone();
-        bad_base.api_base = "https://api.deepseek.com".into();
+        bad_base.api_base = DEEPSEEK_API_BASE.into();
         assert!(matches!(
             validate_model(&bad_base),
             Err(ConfigError::InvalidGlmModel(_))
@@ -1913,8 +1917,8 @@ mod tests {
     fn unknown_model_id_is_rejected_with_deepseek_error() {
         let mut unknown = ModelDescriptor {
             model_id: DEEPSEEK_MODEL_ID.into(),
-            api_base: "https://api.deepseek.com".into(),
-            api_version: "chat-completions-v1".into(),
+            api_base: DEEPSEEK_API_BASE.into(),
+            api_version: DEEPSEEK_API_VERSION.into(),
             max_context_tokens: 1_000_000,
             max_output_tokens: 384_000,
             max_in_flight: 64,

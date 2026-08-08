@@ -1,5 +1,5 @@
 [package]
-name = "krw-agent-deepseek-wire"
+name = "krw-agent-provider-wire"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

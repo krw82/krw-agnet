@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use krw_agent_deepseek_wire::{AssistantMessage, ProviderEpisodeV1, TokenUsage};
+use krw_agent_provider_wire::{AssistantMessage, ProviderEpisodeV1, TokenUsage};
 use krw_agent_evidence::{EvidenceLedger, EvidenceScope};
 use krw_agent_image::compile_agent_dir;
 use krw_agent_kernel::{AuthorizedAction, ExecutionEvent, ExecutionState};
@@ -346,7 +346,7 @@ pub enum QuickstartError {
     #[error(transparent)]
     Persistence(#[from] krw_agent_persistence::PersistenceError),
     #[error(transparent)]
-    Wire(#[from] krw_agent_deepseek_wire::WireError),
+    Wire(#[from] krw_agent_provider_wire::WireError),
     #[error(transparent)]
     Evidence(#[from] krw_agent_evidence::EvidenceError),
     #[error(transparent)]

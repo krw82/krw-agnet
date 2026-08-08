@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-provider-wire = { path = "../provider-wire" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-protocol = { path = "../protocol" }
 krw-agent-contracts = { path = "../krw-contracts" }

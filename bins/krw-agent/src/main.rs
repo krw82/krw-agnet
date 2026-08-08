@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use krw_agent_deepseek_wire::{
-    ChatCompletionRequest, DeepSeekClient, DeepSeekClientConfig, EpisodeContext, ProviderMessage,
-    StreamOptions, ThinkingConfig, ThinkingMode,
+use krw_agent_protocol::ThinkingMode;
+use krw_agent_provider_wire::{
+    EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderMessage,
+    ThinkingConfig,
 };
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::{
@@ -593,7 +594,7 @@ async fn probe_deepseek_flash() -> Result<ProviderProbeReport, Box<dyn std::erro
     })
 }
 
-fn deepseek_flash_client() -> Result<DeepSeekClient, Box<dyn std::error::Error>> {
+fn deepseek_flash_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
     let api_key = Zeroizing::new(std::env::var(DEEPSEEK_API_KEY_ENV).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -608,30 +609,27 @@ fn deepseek_flash_client() -> Result<DeepSeekClient, Box<dyn std::error::Error>>
         .into());
     }
 
-    let client = DeepSeekClient::new(
-        DeepSeekClientConfig::production(DEEPSEEK_API_BASE, [DEEPSEEK_MODEL_ID.to_owned()], 8),
+    let client = ProviderClient::new(
+        ProviderClientConfig::production(DEEPSEEK_API_BASE, [DEEPSEEK_MODEL_ID.to_owned()], 8),
         api_key.as_str(),
     )?;
     Ok(client)
 }
 
-fn provider_probe_request() -> ChatCompletionRequest {
-    ChatCompletionRequest {
+fn provider_probe_request() -> MessagesRequest {
+    MessagesRequest {
         model: DEEPSEEK_MODEL_ID.to_owned(),
         messages: vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)],
+        system: "KRW provider probe".into(),
+        max_tokens: PROVIDER_PROBE_MAX_TOKENS,
         tools: Vec::new(),
-        stream: true,
-        stream_options: StreamOptions {
-            include_usage: true,
-        },
-        reasoning_effort: None,
+        tool_choice: None,
         thinking: ThinkingConfig {
             kind: ThinkingMode::Disabled,
+            budget_tokens: None,
         },
-        max_tokens: Some(PROVIDER_PROBE_MAX_TOKENS),
-        user_id: None,
-        tool_choice: None,
-        response_format: None,
+        stream: true,
+        metadata: None,
     }
 }
 
@@ -761,7 +759,8 @@ mod tests {
         DEEPSEEK_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT,
         provider_probe_context, provider_probe_request,
     };
-    use krw_agent_deepseek_wire::{ProviderMessage, ThinkingMode};
+    use krw_agent_provider_wire::ProviderMessage;
+    use krw_agent_protocol::ThinkingMode;
 
     #[test]
     fn provider_probe_is_fixed_flash_only_and_has_no_tools() {
@@ -770,8 +769,7 @@ mod tests {
         assert!(request.stream);
         assert!(request.tools.is_empty());
         assert_eq!(request.thinking.kind, ThinkingMode::Disabled);
-        assert!(request.reasoning_effort.is_none());
-        assert_eq!(request.max_tokens, Some(PROVIDER_PROBE_MAX_TOKENS));
+        assert_eq!(request.max_tokens, PROVIDER_PROBE_MAX_TOKENS);
         assert_eq!(
             request.messages,
             vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)]
