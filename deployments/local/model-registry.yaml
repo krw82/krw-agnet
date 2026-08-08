@@ -27,8 +27,8 @@ models:
   - model_id: glm-5.2
     api_base: https://api.z.ai/api/coding/paas/v4
     api_version: chat-completions-v1
-    max_context_tokens: 128000
-    max_output_tokens: 16384
+    max_context_tokens: 1000000
+    max_output_tokens: 128000
     max_in_flight: 32
     provider_wire_capabilities:
       thinking:

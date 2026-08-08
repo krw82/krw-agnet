@@ -18,16 +18,16 @@ profiles:
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
-  # GLM-5.2 variant: token envelope constrained to 128K context / 16K output.
-  # All other limits identical to company_research_full.
+  # GLM-5.2 variant: matches DeepSeek's envelope. GLM-5.2 supports 1M context
+  # and 128K output per z.ai docs, so the full research budget applies.
   - profile_id: company_research_glm
     limits:
       max_provider_turns: 32
       max_capability_calls: 16
       max_replans: 3
       max_repairs: 3
-      max_input_tokens: 110000
-      max_output_tokens: 16000
+      max_input_tokens: 500000
+      max_output_tokens: 32000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
