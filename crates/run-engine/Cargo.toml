@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 krw-agent-bounded-child = { path = "../bounded-child" }
-krw-agent-deepseek-wire = { path = "../deepseek-wire" }
+krw-agent-provider-wire = { path = "../provider-wire" }
 krw-agent-contracts = { path = "../krw-contracts" }
 krw-agent-evidence = { path = "../evidence" }
 krw-agent-image = { path = "../agent-image" }

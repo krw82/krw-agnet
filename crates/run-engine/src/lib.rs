@@ -41,9 +41,9 @@ use krw_agent_contracts::{
     validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
-use krw_agent_deepseek_wire::{
-    ChatCompletionRequest, DeepSeekClient, EpisodeContext, ProviderEpisodeV1, ProviderMessage,
-    ProviderToolDefinition, ResponseFormat, ResponseFormatKind, StreamOptions, ThinkingConfig,
+use krw_agent_provider_wire::{
+    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, ProviderClient,
+    ProviderEpisodeV1, ProviderMessage, ProviderToolDefinition, RequestMetadata, ThinkingConfig,
     ToolCallKind, ToolChoice, ToolResultMessage, WireError,
 };
 use krw_agent_evidence::{
@@ -163,16 +163,16 @@ pub enum DeliveryCertainty {
 pub trait Provider: fmt::Debug + Send + Sync {
     async fn complete(
         &self,
-        request: &ChatCompletionRequest,
+        request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure>;
 }
 
 #[async_trait]
-impl Provider for DeepSeekClient {
+impl Provider for ProviderClient {
     async fn complete(
         &self,
-        request: &ChatCompletionRequest,
+        request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         self.complete_stream(request, context)
@@ -192,6 +192,215 @@ impl Provider for DeepSeekClient {
                 let diagnostic = format!("{error:?}");
                 DependencyFailure::redacted(code, diagnostic, retryable, delivery)
             })
+    }
+}
+
+/// Internal conversation representation used by the run engine while a run is
+/// in flight. It mirrors the legacy four-variant `ProviderMessage` shape
+/// (`System`/`User`/`Assistant`/`Tool`) that the agent loop, compaction, and
+/// recovery code were built around. The conversion to the Anthropic
+/// `{role, content: Vec<ContentBlock>}` wire shape happens only at the
+/// request-building boundary in [`build_provider_request`].
+#[derive(Clone, PartialEq)]
+enum RunEngineMessage {
+    System {
+        content: String,
+    },
+    User {
+        content: String,
+    },
+    Assistant {
+        content: Option<String>,
+        reasoning_content: Option<String>,
+        tool_calls: Vec<krw_agent_provider_wire::ToolCall>,
+    },
+    Tool {
+        tool_call_id: String,
+        content: krw_agent_provider_wire::CanonicalJsonText,
+    },
+}
+
+impl RunEngineMessage {
+    fn system(content: impl Into<String>) -> Self {
+        Self::System {
+            content: content.into(),
+        }
+    }
+
+    fn user(content: impl Into<String>) -> Self {
+        Self::User {
+            content: content.into(),
+        }
+    }
+
+    /// Construct an assistant turn from a provider episode's assistant message.
+    fn from_assistant(mut assistant: krw_agent_provider_wire::AssistantMessage) -> Self {
+        // `AssistantMessage` implements `Drop`, so its fields cannot be
+        // partially moved out. `std::mem::take` extracts each field and leaves
+        // `Drop` to scrub the now-empty husk.
+        Self::Assistant {
+            content: std::mem::take(&mut assistant.content),
+            reasoning_content: std::mem::take(&mut assistant.reasoning_content),
+            tool_calls: std::mem::take(&mut assistant.tool_calls),
+        }
+    }
+
+    /// Construct a tool-result turn from a wire `ToolResultMessage`.
+    fn from_tool_result(result: krw_agent_provider_wire::ToolResultMessage) -> Self {
+        // `ToolResultMessage` implements `Drop` and scrubs its fields, so we
+        // clone the bounded tool-call id and the canonical JSON text rather
+        // than moving out.
+        Self::Tool {
+            tool_call_id: result.tool_call_id.clone(),
+            content: result.content.clone(),
+        }
+    }
+
+    /// Scrub sensitive material so `Drop`-like hygiene stays consistent with the
+    /// wire message. Currently a no-op placeholder kept for symmetry with the
+    /// previous `ProviderMessage::scrub_sensitive` plumbing.
+    fn scrub_sensitive(&mut self) {
+        match self {
+            Self::System { content } | Self::User { content } => content.zeroize(),
+            Self::Assistant {
+                content,
+                reasoning_content,
+                tool_calls,
+            } => {
+                if let Some(content) = content {
+                    content.zeroize();
+                }
+                if let Some(reasoning) = reasoning_content {
+                    reasoning.zeroize();
+                }
+                for call in tool_calls {
+                    call.id.zeroize();
+                    call.function.arguments.zeroize();
+                }
+            }
+            Self::Tool {
+                tool_call_id,
+                content,
+            } => {
+                tool_call_id.zeroize();
+                content.scrub_sensitive();
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for RunEngineMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System { content } => formatter
+                .debug_struct("RunEngineMessage::System")
+                .field("content_len", &content.len())
+                .finish(),
+            Self::User { content } => formatter
+                .debug_struct("RunEngineMessage::User")
+                .field("content_len", &content.len())
+                .finish(),
+            Self::Assistant {
+                content,
+                reasoning_content,
+                tool_calls,
+            } => formatter
+                .debug_struct("RunEngineMessage::Assistant")
+                .field("content_len", &content.as_ref().map(String::len))
+                .field(
+                    "reasoning_len",
+                    &reasoning_content.as_ref().map(String::len),
+                )
+                .field("tool_calls", tool_calls)
+                .finish(),
+            Self::Tool {
+                tool_call_id,
+                content,
+            } => formatter
+                .debug_struct("RunEngineMessage::Tool")
+                .field("tool_call_id_hash", &ContentHash::sha256(tool_call_id))
+                .field("content", content)
+                .finish(),
+        }
+    }
+}
+
+impl Serialize for RunEngineMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let wire = self.to_provider_message_for_serialization();
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RunEngineMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ProviderMessage::deserialize(deserializer)?;
+        Self::try_from_provider_message(wire).map_err(serde::de::Error::custom)
+    }
+}
+
+impl RunEngineMessage {
+    /// Convert into the Anthropic wire `ProviderMessage` shape. `System` is
+    /// encoded as a `user` text block: the request builder hoists the system
+    /// prompt to the top-level `system` field before dispatch, but the
+    /// serialization/replay path still needs a stable on-the-wire form.
+    fn to_provider_message_for_serialization(&self) -> ProviderMessage {
+        match self {
+            Self::System { content } => ProviderMessage::user(content.clone()),
+            Self::User { content } => ProviderMessage::user(content.clone()),
+            Self::Assistant {
+                content,
+                reasoning_content,
+                tool_calls,
+            } => {
+                let assistant = krw_agent_provider_wire::AssistantMessage {
+                    content: content.clone(),
+                    reasoning_content: reasoning_content.clone(),
+                    tool_calls: tool_calls.clone(),
+                };
+                assistant.into_provider_message()
+            }
+            Self::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let result = krw_agent_provider_wire::ToolResultMessage {
+                    tool_call_id: tool_call_id.clone(),
+                    content: content.clone(),
+                };
+                result.into_provider_message()
+            }
+        }
+    }
+
+    fn try_from_provider_message(message: ProviderMessage) -> Result<Self, String> {
+        // System/user text blocks collapse to the matching internal variant.
+        if message.role == MessageRole::User
+            && message.content.len() == 1
+            && let ContentBlock::Text { text } = &message.content[0]
+        {
+            return Ok(Self::User {
+                content: text.clone(),
+            });
+        }
+        if message.role == MessageRole::Assistant {
+            let assistant = krw_agent_provider_wire::AssistantMessage::from_content_blocks(
+                &message.content,
+            )
+            .map_err(|error| format!("{error:?}"))?;
+            return Ok(Self::from_assistant(assistant));
+        }
+        Err(format!(
+            "unsupported provider message for run-engine replay: role={:?} blocks={}",
+            message.role,
+            message.content.len()
+        ))
     }
 }
 
@@ -221,24 +430,23 @@ fn deepseek_failure_code(error: &WireError) -> String {
         ),
         WireError::Http(_) => "deepseek_http_transport".into(),
         WireError::UnexpectedContentType => "deepseek_unexpected_content_type".into(),
-        WireError::MissingDoneEvent => "deepseek_missing_done_event".into(),
+        WireError::MissingMessageStop => "deepseek_missing_done_event".into(),
+        WireError::MissingStopReason => "deepseek_missing_finish_reason".into(),
         WireError::IncompleteSseFrame => "deepseek_incomplete_sse_frame".into(),
+        WireError::SseParseError(_) => "deepseek_sse_parse_error".into(),
         WireError::SseBufferLimit(_)
         | WireError::StreamLimit(_)
         | WireError::EpisodeBufferLimit(_) => "deepseek_response_too_large".into(),
         WireError::Json(_) => "deepseek_response_json_invalid".into(),
         WireError::InvalidThinkingToolReplay => "deepseek_thinking_tool_replay_invalid".into(),
-        WireError::ThinkingToolChoiceUnsupported => "unsupported_tool_choice_in_thinking".into(),
         WireError::MissingObservedModel
-        | WireError::MissingFinishReason
         | WireError::ModelChangedMidStream { .. }
         | WireError::ObservedModelMismatch { .. } => "deepseek_model_stream_invalid".into(),
         WireError::InvalidEndpoint
         | WireError::InvalidAuthorization
         | WireError::UnknownModel(_)
         | WireError::InvalidRequest(_)
-        | WireError::MissingReasoningEffort
-        | WireError::UnexpectedReasoningEffort
+        | WireError::MissingMaxTokens
         | WireError::InvalidClientLimits
         | WireError::InvalidAllowedModel => "deepseek_configuration_invalid".into(),
         WireError::InvalidProviderFunctionName
@@ -246,17 +454,13 @@ fn deepseek_failure_code(error: &WireError) -> String {
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
-        | WireError::ExpectedUserMessage
         | WireError::EmptyMessageContent
-        | WireError::UnresolvedToolCalls
-        | WireError::UnexpectedToolResult(_) => "deepseek_request_contract_invalid".into(),
+        | WireError::ToolResultInNonUserMessage
+        | WireError::UnexpectedToolResultInAssistant => "deepseek_request_contract_invalid".into(),
         WireError::DataAfterDone
-        | WireError::UnexpectedChoiceIndex(_)
         | WireError::IncompleteToolCall(_)
-        | WireError::UnsupportedToolCallType(_)
-        | WireError::TooManyToolCalls(_)
-        | WireError::ConflictingToolCallField(_) => "deepseek_protocol_invalid".into(),
-        WireError::Utf8(_) => "deepseek_response_utf8_invalid".into(),
+        | WireError::TooManyToolCalls(_) => "deepseek_protocol_invalid".into(),
+        WireError::StreamError { .. } => "deepseek_stream_error".into(),
     }
 }
 
@@ -266,7 +470,7 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::InvalidAuthorization
         | WireError::UnknownModel(_)
         | WireError::InvalidRequest(_)
-        | WireError::ThinkingToolChoiceUnsupported
+        | WireError::MissingMaxTokens
         | WireError::InvalidClientLimits
         | WireError::InvalidAllowedModel
         | WireError::InvalidProviderFunctionName
@@ -274,10 +478,9 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
-        | WireError::ExpectedUserMessage
         | WireError::EmptyMessageContent
-        | WireError::UnresolvedToolCalls
-        | WireError::UnexpectedToolResult(_) => (false, DeliveryCertainty::NotDispatched),
+        | WireError::ToolResultInNonUserMessage
+        | WireError::UnexpectedToolResultInAssistant => (false, DeliveryCertainty::NotDispatched),
         WireError::Http(error) => (
             error.is_timeout() || error.is_connect(),
             DeliveryCertainty::MayHaveDispatched,
@@ -287,11 +490,14 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
             DeliveryCertainty::MayHaveDispatched,
         ),
         WireError::IncompleteSseFrame
+        | WireError::SseParseError(_)
         | WireError::SseBufferLimit(_)
         | WireError::StreamLimit(_)
-        | WireError::MissingDoneEvent
+        | WireError::MissingMessageStop
+        | WireError::MissingStopReason
+        | WireError::MissingObservedModel
         | WireError::Json(_)
-        | WireError::Utf8(_) => (true, DeliveryCertainty::MayHaveDispatched),
+        | WireError::UnexpectedContentType => (true, DeliveryCertainty::MayHaveDispatched),
         _ => (false, DeliveryCertainty::MayHaveDispatched),
     }
 }
@@ -312,24 +518,23 @@ fn glm_failure_code(error: &WireError) -> String {
         ),
         WireError::Http(_) => "glm_http_transport".into(),
         WireError::UnexpectedContentType => "glm_unexpected_content_type".into(),
-        WireError::MissingDoneEvent => "glm_missing_done_event".into(),
+        WireError::MissingMessageStop => "glm_missing_done_event".into(),
+        WireError::MissingStopReason => "glm_missing_finish_reason".into(),
         WireError::IncompleteSseFrame => "glm_incomplete_sse_frame".into(),
+        WireError::SseParseError(_) => "glm_sse_parse_error".into(),
         WireError::SseBufferLimit(_)
         | WireError::StreamLimit(_)
         | WireError::EpisodeBufferLimit(_) => "glm_response_too_large".into(),
         WireError::Json(_) => "glm_response_json_invalid".into(),
         WireError::InvalidThinkingToolReplay => "glm_thinking_tool_replay_invalid".into(),
-        WireError::ThinkingToolChoiceUnsupported => "unsupported_tool_choice_in_thinking".into(),
         WireError::MissingObservedModel
-        | WireError::MissingFinishReason
         | WireError::ModelChangedMidStream { .. }
         | WireError::ObservedModelMismatch { .. } => "glm_model_stream_invalid".into(),
         WireError::InvalidEndpoint
         | WireError::InvalidAuthorization
         | WireError::UnknownModel(_)
         | WireError::InvalidRequest(_)
-        | WireError::MissingReasoningEffort
-        | WireError::UnexpectedReasoningEffort
+        | WireError::MissingMaxTokens
         | WireError::InvalidClientLimits
         | WireError::InvalidAllowedModel => "glm_configuration_invalid".into(),
         WireError::InvalidProviderFunctionName
@@ -337,17 +542,13 @@ fn glm_failure_code(error: &WireError) -> String {
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
-        | WireError::ExpectedUserMessage
         | WireError::EmptyMessageContent
-        | WireError::UnresolvedToolCalls
-        | WireError::UnexpectedToolResult(_) => "glm_request_contract_invalid".into(),
+        | WireError::ToolResultInNonUserMessage
+        | WireError::UnexpectedToolResultInAssistant => "glm_request_contract_invalid".into(),
         WireError::DataAfterDone
-        | WireError::UnexpectedChoiceIndex(_)
         | WireError::IncompleteToolCall(_)
-        | WireError::UnsupportedToolCallType(_)
-        | WireError::TooManyToolCalls(_)
-        | WireError::ConflictingToolCallField(_) => "glm_protocol_invalid".into(),
-        WireError::Utf8(_) => "glm_response_utf8_invalid".into(),
+        | WireError::TooManyToolCalls(_) => "glm_protocol_invalid".into(),
+        WireError::StreamError { .. } => "glm_stream_error".into(),
     }
 }
 
@@ -360,7 +561,7 @@ fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::InvalidAuthorization
         | WireError::UnknownModel(_)
         | WireError::InvalidRequest(_)
-        | WireError::ThinkingToolChoiceUnsupported
+        | WireError::MissingMaxTokens
         | WireError::InvalidClientLimits
         | WireError::InvalidAllowedModel
         | WireError::InvalidProviderFunctionName
@@ -368,10 +569,9 @@ fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
-        | WireError::ExpectedUserMessage
         | WireError::EmptyMessageContent
-        | WireError::UnresolvedToolCalls
-        | WireError::UnexpectedToolResult(_) => (false, DeliveryCertainty::NotDispatched),
+        | WireError::ToolResultInNonUserMessage
+        | WireError::UnexpectedToolResultInAssistant => (false, DeliveryCertainty::NotDispatched),
         WireError::Http(error) => (
             error.is_timeout() || error.is_connect(),
             DeliveryCertainty::MayHaveDispatched,
@@ -381,11 +581,14 @@ fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
             DeliveryCertainty::MayHaveDispatched,
         ),
         WireError::IncompleteSseFrame
+        | WireError::SseParseError(_)
         | WireError::SseBufferLimit(_)
         | WireError::StreamLimit(_)
-        | WireError::MissingDoneEvent
+        | WireError::MissingMessageStop
+        | WireError::MissingStopReason
+        | WireError::MissingObservedModel
         | WireError::Json(_)
-        | WireError::Utf8(_) => (true, DeliveryCertainty::MayHaveDispatched),
+        | WireError::UnexpectedContentType => (true, DeliveryCertainty::MayHaveDispatched),
         _ => (false, DeliveryCertainty::MayHaveDispatched),
     }
 }
@@ -1399,7 +1602,7 @@ pub fn build_tool_definitions(
                 "provider tool-name collision in compiled capability frontier",
             ));
         }
-        definitions.push(ProviderToolDefinition::function(
+        definitions.push(ProviderToolDefinition::new(
             provider_name,
             capability.provider_tool_description(),
             parameters,
@@ -1625,7 +1828,7 @@ where
             })?;
             let _ = turn_span;
             let episode_context = built.episode_context;
-            let mut request = built.request;
+            let request = built.request;
             let request_hash = ContentHash::sha256(serde_jcs::to_vec(&request)?);
             if let (Some(inputs), Some(receipt)) = (&child_inputs, child_receipt.as_ref())
                 && receipt.stage == krw_agent_bounded_child::ChildStage::Reserved
@@ -1666,12 +1869,14 @@ where
                 krw_agent_persistence::metrics::record_provider_turn_duration_seconds(provider_ms);
                 provider_outcome
             };
-            if request.messages.len() < TRUSTED_PREFIX_MESSAGE_COUNT {
+            if request.messages.len() < WIRE_TRUSTED_PREFIX_MESSAGE_COUNT {
                 return Err(EngineError::Invariant("trusted prompt prefix disappeared"));
             }
             if child_policy.is_none() {
-                state.messages = request.messages.split_off(TRUSTED_PREFIX_MESSAGE_COUNT);
-            } else if request.messages.len() != TRUSTED_PREFIX_MESSAGE_COUNT {
+                state.messages = built.transcript;
+            } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..]
+                .is_empty()
+            {
                 return Err(EngineError::Invariant(
                     "bounded child provider request retained a transcript",
                 ));
@@ -2392,14 +2597,16 @@ where
             built.episode_context.tool_schema_hash,
             built.prompt_receipt_hash,
         )?;
-        let mut request = built.request;
+        let request = built.request;
         let request_hash = ContentHash::sha256(serde_jcs::to_vec(&request)?);
-        if request.messages.len() < TRUSTED_PREFIX_MESSAGE_COUNT {
+        if request.messages.len() < WIRE_TRUSTED_PREFIX_MESSAGE_COUNT {
             return Err(EngineError::Invariant("trusted prompt prefix disappeared"));
         }
         if child_policy.is_none() {
-            state.messages = request.messages.split_off(TRUSTED_PREFIX_MESSAGE_COUNT);
-        } else if request.messages.len() != TRUSTED_PREFIX_MESSAGE_COUNT {
+            state.messages = built.transcript;
+        } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..]
+            .is_empty()
+        {
             return Err(EngineError::RecoveryArtifactMismatch(
                 "child request transcript",
             ));
@@ -3832,7 +4039,7 @@ struct AcceptedActionCommitment<'a> {
 }
 
 struct ActiveRun {
-    messages: Vec<ProviderMessage>,
+    messages: Vec<RunEngineMessage>,
     usage: BudgetUsage,
     limits: BudgetLimits,
     capability_calls: BTreeMap<String, u16>,
@@ -4863,7 +5070,7 @@ impl ActiveRun {
                 "KRW kernel did not execute the preceding decision. Continue the current \
                  research using only the currently advertised output mode and tools."
             };
-            self.messages.push(ProviderMessage::user(format!(
+            self.messages.push(RunEngineMessage::user(format!(
                 "{guidance} Recovery result: {}",
                 serde_jcs::to_string(&envelope)?
             )));
@@ -4893,7 +5100,7 @@ impl ActiveRun {
         }
         let _ = image;
         let envelope = self.model_recovery_envelope(directive)?;
-        self.messages.push(ProviderMessage::user(format!(
+        self.messages.push(RunEngineMessage::user(format!(
             "KRW kernel could not obtain a provider response for the preceding turn \
              (transient dependency failure). Re-emit the same decision. Recovery result: {}",
             serde_jcs::to_string(&envelope)?
@@ -4940,7 +5147,7 @@ impl ActiveRun {
                     && self
                         .tool_definitions
                         .iter()
-                        .any(|definition| definition.function_name() == call.function.name.as_str())
+                        .any(|definition| definition.name() == call.function.name.as_str())
             })
     }
 
@@ -4984,7 +5191,7 @@ impl ActiveRun {
     }
 
     fn append_repair_feedback(&mut self, contract_id: &str, code: &'static str) {
-        self.messages.push(ProviderMessage::user(format!(
+        self.messages.push(RunEngineMessage::user(format!(
             "KRW kernel rejected the previous {contract_id} output with code {code}. Repair only that draft; do not add unsupported facts. Return only corrected {contract_id} JSON."
         )));
     }
@@ -5023,6 +5230,13 @@ impl ActiveRun {
     ) -> Result<(), EngineError> {
         let compact_t0 = Instant::now();
         let mut source_messages = std::mem::take(&mut self.messages);
+        // `compact` consumes the Anthropic wire shape. Convert the internal
+        // transcript to `ProviderMessage` for the duration of the call; the
+        // original `RunEngineMessage` vector is restored afterwards.
+        let wire_source_messages = source_messages
+            .iter()
+            .map(RunEngineMessage::to_provider_message_for_serialization)
+            .collect::<Vec<_>>();
         let output = (|| -> Result<_, EngineError> {
             let artifact = self
                 .interpreter
@@ -5047,7 +5261,7 @@ impl ActiveRun {
             Ok(compact(&CompactionInput {
                 boundary: &boundary,
                 state_artifact: artifact,
-                source_messages: &source_messages,
+                source_messages: &wire_source_messages,
                 ledger: &self.ledger,
                 calculations: &self.calculations,
                 research_projection: self.research_planner.projection(),
@@ -5539,7 +5753,7 @@ impl ActiveRun {
 
     fn append_assistant(&mut self, episode: &ProviderEpisodeV1) {
         self.messages
-            .push(episode.assistant.clone().into_provider_message());
+            .push(RunEngineMessage::from_assistant(episode.assistant.clone()));
     }
 
     fn append_workflow_transition_result(
@@ -5567,7 +5781,10 @@ impl ActiveRun {
         // `ToolResultMessage` owns the provider's text-only JSON rule. A
         // typed capability object cannot enter the transcript as an object.
         self.messages
-            .push(ToolResultMessage::from_value(tool_call_id, content)?.into_provider_message());
+            .push(RunEngineMessage::from_tool_result(ToolResultMessage::from_value(
+                tool_call_id,
+                content,
+            )?));
         Ok(())
     }
 
@@ -6604,7 +6821,7 @@ fn prepare_calls(
         if !state
             .tool_definitions
             .iter()
-            .any(|definition| definition.function_name() == call.function.name.as_str())
+            .any(|definition| definition.name() == call.function.name.as_str())
         {
             return Err(EngineError::InvalidProviderEpisode(
                 "provider invoked a capability absent from the advertised dynamic frontier",
@@ -7557,20 +7774,25 @@ fn kernel_workflow_facts(
 }
 
 struct BuiltProviderRequest {
-    request: ChatCompletionRequest,
+    request: MessagesRequest,
     episode_context: EpisodeContext,
     tool_definitions: Vec<ProviderToolDefinition>,
     prompt_receipt_hash: ContentHash,
+    /// The transcript turns (everything after the trusted system+user prefix)
+    /// in their internal `RunEngineMessage` form. The run loop restores this
+    /// onto `ActiveRun.messages` after the provider call so the next turn can
+    /// extend it without round-tripping through the Anthropic wire shape.
+    transcript: Vec<RunEngineMessage>,
 }
 
 /// The provider-specific encoding of an already-compiled semantic decision
 /// contract. It deliberately contains no workflow meaning: whether a state
 /// needs a capability, a transition, or JSON is fixed by `ModelOutputMode` in
-/// the `AgentImage`; this value only records legal `DeepSeek` HTTP fields.
+/// the `AgentImage`; this value only records legal Anthropic Messages API
+/// fields.
 #[derive(Debug, Clone)]
-struct DeepSeekWireOutputEncoding {
+struct ProviderWireOutputEncoding {
     tool_choice: Option<ToolChoice>,
-    response_format: Option<ResponseFormat>,
 }
 
 /// Binds a static context-plan receipt to the run-specific resource frontier
@@ -7602,13 +7824,13 @@ fn available_tool_definitions(
     let definitions = context
         .tool_definitions
         .iter()
-        .filter(|definition| expected_names.contains(definition.function_name()))
+        .filter(|definition| expected_names.contains(definition.name()))
         .cloned()
         .collect::<Vec<_>>();
     if definitions.len() != expected_names.len()
         || definitions
             .iter()
-            .map(ProviderToolDefinition::function_name)
+            .map(|definition| definition.name())
             .map(str::to_owned)
             .collect::<BTreeSet<_>>()
             != expected_names
@@ -7622,14 +7844,14 @@ fn available_tool_definitions(
 
 /// Encode one semantic decision lane through the exact provider features
 /// pinned for this run. In particular, a state that semantically requires a
-/// tool call does *not* imply that the `DeepSeek` request may use
-/// `tool_choice=required`: native V4 Flash permits tools but rejects that
-/// field in both thinking and direct modes.
-fn encode_deepseek_output_channel(
+/// tool call does *not* imply that the Anthropic Messages request may use
+/// `tool_choice=any`: native V4 Flash permits tools but rejects that field in
+/// both thinking and direct modes.
+fn encode_provider_output_channel(
     output_mode: ModelOutputMode,
     provider_wire_capabilities: ProviderWireCapabilities,
     thinking: ThinkingMode,
-) -> Result<DeepSeekWireOutputEncoding, EngineError> {
+) -> Result<ProviderWireOutputEncoding, EngineError> {
     let mode = provider_wire_capabilities.for_thinking(thinking);
     if !mode.supported {
         return Err(EngineError::ProviderWireFeatureUnavailable(
@@ -7643,9 +7865,8 @@ fn encode_deepseek_output_channel(
             if !mode.supports_tools {
                 return Err(EngineError::ProviderWireFeatureUnavailable("tool calls"));
             }
-            Ok(DeepSeekWireOutputEncoding {
-                tool_choice: mode.supports_tool_choice.then_some(ToolChoice::Required),
-                response_format: None,
+            Ok(ProviderWireOutputEncoding {
+                tool_choice: mode.supports_tool_choice.then_some(ToolChoice::Any),
             })
         }
         ModelOutputMode::TypedJson => {
@@ -7654,40 +7875,35 @@ fn encode_deepseek_output_channel(
                     "JSON object output",
                 ));
             }
-            Ok(DeepSeekWireOutputEncoding {
-                tool_choice: None,
-                response_format: Some(ResponseFormat {
-                    kind: ResponseFormatKind::JsonObject,
-                }),
-            })
+            // Anthropic has no `response_format`. The JSON-object contract is
+            // enforced through the pinned `model_output_instruction` system
+            // prompt, not a wire-level field.
+            Ok(ProviderWireOutputEncoding { tool_choice: None })
         }
-        ModelOutputMode::Markdown => Ok(DeepSeekWireOutputEncoding {
-            tool_choice: None,
-            response_format: None,
-        }),
+        ModelOutputMode::Markdown => Ok(ProviderWireOutputEncoding { tool_choice: None }),
     }
 }
 
 /// Normalize historical assistant messages so a thinking-enabled request never
 /// contains a tool-call assistant turn without `reasoning_content`.
 ///
-/// `DeepSeek`'s thinking contract (see api-docs.deepseek.com/guides/thinking_mode)
-/// returns HTTP 400 ("The `reasoning_content` in the thinking mode must be
-/// passed back to the API.") when a replayed assistant turn that issued tool
-/// calls is missing its `reasoning_content`. Turns produced under a role that
-/// ran with thinking disabled legitimately have no `reasoning_content`; when the
-/// active role switches back to thinking enabled, those turns would trigger the
-/// 400 unless normalized. This injects a compact placeholder so the wire
-/// payload satisfies the provider contract without altering the stored episode.
+/// The provider's thinking contract returns an error when a replayed assistant
+/// turn that issued tool calls is missing its `reasoning_content` (and
+/// therefore its Anthropic `thinking` block). Turns produced under a role that
+/// ran with thinking disabled legitimately have no `reasoning_content`; when
+/// the active role switches back to thinking enabled, those turns would trigger
+/// the rejection unless normalized. This injects a compact placeholder so the
+/// wire payload satisfies the provider contract without altering the stored
+/// episode.
 fn normalize_reasoning_content_for_thinking(
-    mut messages: Vec<ProviderMessage>,
+    mut messages: Vec<RunEngineMessage>,
     thinking: ThinkingMode,
-) -> Vec<ProviderMessage> {
+) -> Vec<RunEngineMessage> {
     if thinking != ThinkingMode::Enabled {
         return messages;
     }
     for message in &mut messages {
-        if let ProviderMessage::Assistant {
+        if let RunEngineMessage::Assistant {
             reasoning_content,
             tool_calls,
             ..
@@ -7710,7 +7926,7 @@ fn build_provider_request(
     input: &RunInput<'_>,
     state: &ActiveRun,
     config: &EngineConfig,
-    messages: Vec<ProviderMessage>,
+    messages: Vec<RunEngineMessage>,
 ) -> Result<BuiltProviderRequest, EngineError> {
     let remaining_output = state.remaining_output_tokens()?;
     if remaining_output == 0 {
@@ -7746,7 +7962,7 @@ fn build_provider_request(
         }
         ModelOutputMode::TypedJson | ModelOutputMode::Markdown => {}
     }
-    let wire_output = encode_deepseek_output_channel(
+    let wire_output = encode_provider_output_channel(
         output_mode,
         input.snapshot.provider_wire_capabilities,
         turn_policy.thinking,
@@ -7769,10 +7985,11 @@ fn build_provider_request(
             available_capabilities: &provider_capabilities,
             model_output_mode: output_mode,
         })?);
-    // DeepSeek's thinking contract requires every assistant turn that carries
-    // tool_calls to also carry a non-empty `reasoning_content` when the request
-    // is sent with thinking enabled. Turns produced under a prior role that ran
-    // with thinking disabled legitimately have no reasoning_content. Before
+    // The provider's thinking contract requires every assistant turn that
+    // carries tool calls to also carry a non-empty `reasoning_content` (which
+    // becomes the Anthropic `thinking` block) when the request is sent with
+    // thinking enabled. Turns produced under a prior role that ran with
+    // thinking disabled legitimately have no reasoning_content. Before
     // serializing the request we normalize those historical assistant turns so
     // the provider never sees a thinking-enabled request with a tool-call
     // assistant message missing reasoning_content. This is a wire-only
@@ -7784,22 +8001,35 @@ fn build_provider_request(
         config.max_conversation_bytes,
         "provider_conversation",
     )?;
-    let request = ChatCompletionRequest {
+    // Convert the internal 4-variant transcript into the Anthropic Messages
+    // API wire shape: the system prompt is hoisted to the top-level `system`
+    // field, every remaining `User`/`Assistant`/`Tool` turn becomes a
+    // `ProviderMessage { role, content: Vec<ContentBlock> }`, and the leading
+    // trusted system+user pair is preserved as the first two messages.
+    let (system_prompt, wire_messages, transcript) =
+        split_system_and_convert_messages(messages)?;
+    let max_tokens = turn_policy.max_output_tokens;
+    let request = MessagesRequest {
         model: input.snapshot.resolved_model.clone(),
-        messages,
+        messages: wire_messages,
+        system: system_prompt,
+        max_tokens,
         tools: tool_definitions.clone(),
-        stream: true,
-        stream_options: StreamOptions {
-            include_usage: true,
-        },
-        reasoning_effort: turn_policy.reasoning_effort,
+        tool_choice: wire_output.tool_choice,
         thinking: ThinkingConfig {
             kind: turn_policy.thinking,
+            // Anthropic requires `budget_tokens < max_tokens`. We give thinking
+            // the maximum allowed budget (max_tokens minus one token) so the
+            // remaining completion headroom is reserved for the model's
+            // text/tool-call output. When thinking is disabled the budget is
+            // omitted entirely.
+            budget_tokens: (turn_policy.thinking == ThinkingMode::Enabled)
+                .then(|| max_tokens.saturating_sub(1).max(1)),
         },
-        max_tokens: Some(turn_policy.max_output_tokens),
-        user_id: Some(provider_user_id(input.request)),
-        tool_choice: wire_output.tool_choice,
-        response_format: wire_output.response_format,
+        stream: true,
+        metadata: Some(RequestMetadata {
+            user_id: provider_user_id(input.request),
+        }),
     };
     Ok(BuiltProviderRequest {
         request,
@@ -7810,7 +8040,54 @@ fn build_provider_request(
         },
         tool_definitions,
         prompt_receipt_hash,
+        transcript,
     })
+}
+
+/// Split the trusted prefix off the transcript and produce the Anthropic
+/// `system` prompt, a `Vec<ProviderMessage>` for the wire request, and the
+/// transcript turns in their internal `RunEngineMessage` form (for the run loop
+/// to restore onto `ActiveRun.messages`). The trusted prefix is exactly two
+/// messages: `[System, User]` (see [`TRUSTED_PREFIX_MESSAGE_COUNT`]). The system
+/// message becomes the top-level `system` field; the trusted user payload and
+/// every transcript turn are converted to their Anthropic
+/// `{role, content: Vec<ContentBlock>}` form.
+fn split_system_and_convert_messages(
+    messages: Vec<RunEngineMessage>,
+) -> Result<(String, Vec<ProviderMessage>, Vec<RunEngineMessage>), EngineError> {
+    if messages.len() < TRUSTED_PREFIX_MESSAGE_COUNT {
+        return Err(EngineError::Invariant(
+            "trusted prefix (system+user) is missing from provider messages",
+        ));
+    }
+    let system_prompt = match &messages[0] {
+        RunEngineMessage::System { content } => content.clone(),
+        _ => {
+            return Err(EngineError::Invariant(
+                "first provider message must be the trusted system prompt",
+            ));
+        }
+    };
+    if !matches!(messages[1], RunEngineMessage::User { .. }) {
+        return Err(EngineError::Invariant(
+            "second provider message must be the trusted user payload",
+        ));
+    }
+    // Separate the trusted prefix from the transcript turns.
+    let mut iter = messages.into_iter();
+    let _system = iter.next();
+    let trusted_user = iter.next();
+    let transcript: Vec<RunEngineMessage> = iter.collect();
+    let mut wire_messages = Vec::with_capacity(1 + transcript.len());
+    // The trusted user payload is the first wire message; the system prompt
+    // travels out-of-band as the top-level `system` field.
+    if let Some(user) = trusted_user {
+        wire_messages.push(user.to_provider_message_for_serialization());
+    }
+    for message in &transcript {
+        wire_messages.push(message.to_provider_message_for_serialization());
+    }
+    Ok((system_prompt, wire_messages, transcript))
 }
 
 /// Resolve an image-owned role policy against an immutable deployment
@@ -7901,6 +8178,12 @@ fn model_output_instruction(output_mode: ModelOutputMode) -> &'static str {
 }
 
 const TRUSTED_PREFIX_MESSAGE_COUNT: usize = 2;
+/// Number of trusted prefix messages that survive onto the wire request. The
+/// internal transcript keeps the trusted pair as `[System, User]` (count 2),
+/// but the Anthropic Messages API hoists `System` to the top-level `system`
+/// field, so only the single trusted `User` payload (count 1) appears in
+/// `MessagesRequest.messages`.
+const WIRE_TRUSTED_PREFIX_MESSAGE_COUNT: usize = 1;
 const MAX_WORKFLOW_CONTROL_BYTES: usize = 64 * 1024;
 /// Kernel-owned provider function used only to select one statechart edge.
 /// It is never a deployment capability and cannot reach the network.
@@ -7977,7 +8260,7 @@ fn workflow_transition_tool_definition(
             outcome: "typed transition frontier",
         });
     }
-    ProviderToolDefinition::function(
+    ProviderToolDefinition::new(
         WORKFLOW_TRANSITION_TOOL_NAME,
         "Select exactly one allowed workflow transition. This function is a local kernel control and performs no external action; the kernel derives all state facts from durable evidence and the pinned execution contract.",
         serde_json::json!({
@@ -8076,8 +8359,8 @@ fn build_trusted_messages(
     context: &CompiledStateContext,
     available_capabilities: &BTreeSet<String>,
     outgoing_events: &[String],
-    transcript: Vec<ProviderMessage>,
-) -> Result<(Vec<ProviderMessage>, ContentHash), EngineError> {
+    transcript: Vec<RunEngineMessage>,
+) -> Result<(Vec<RunEngineMessage>, ContentHash), EngineError> {
     let role_id = state.current_role_id()?;
     let current = state.current_state()?;
     if context.role_id != role_id || context.state_id != current.stable_id {
@@ -8177,8 +8460,8 @@ fn build_trusted_messages(
     );
     user.push_str(&user_payload);
     let mut messages = Vec::with_capacity(TRUSTED_PREFIX_MESSAGE_COUNT + transcript.len());
-    messages.push(ProviderMessage::system(system));
-    messages.push(ProviderMessage::user(user));
+    messages.push(RunEngineMessage::system(system));
+    messages.push(RunEngineMessage::user(user));
     messages.extend(transcript);
     let mut dynamic_segments = vec![
         dynamic_context_ref(
@@ -9011,7 +9294,7 @@ pub enum EngineError {
     #[error(transparent)]
     Kernel(#[from] krw_agent_kernel::KernelError),
     #[error(transparent)]
-    Wire(#[from] krw_agent_deepseek_wire::WireError),
+    Wire(#[from] krw_agent_provider_wire::WireError),
     #[error(transparent)]
     Image(#[from] krw_agent_image::ImageError),
     #[error(transparent)]
@@ -9264,7 +9547,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use krw_agent_deepseek_wire::{
+    use krw_agent_provider_wire::{
         AssistantMessage, FunctionCall, ProviderFunctionName, TokenUsage, ToolCall,
     };
     use krw_agent_evidence::{
@@ -9387,19 +9670,27 @@ mod tests {
         );
     }
 
+    /// Extract the first text block from an Anthropic `ProviderMessage`. Tests
+    /// treat the first text block as the canonical "content" of a turn, which
+    /// matches how the run-engine stuffs each user/assistant turn into a single
+    /// `ContentBlock::Text`.
     fn provider_message_content(message: &ProviderMessage) -> &str {
         message
-            .content()
-            .expect("provider message has text content")
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("provider message has at least one text content block")
     }
 
+    /// Extract the JSON payload of the first `ToolResult` block in a message, if any.
     fn provider_tool_result_json(message: &ProviderMessage) -> Option<Value> {
-        match message {
-            ProviderMessage::Tool { content, .. } => serde_json::from_str(content.as_str()).ok(),
-            ProviderMessage::System { .. }
-            | ProviderMessage::User { .. }
-            | ProviderMessage::Assistant { .. } => None,
-        }
+        message.content.iter().find_map(|block| match block {
+            ContentBlock::ToolResult { content, .. } => serde_json::from_str(content).ok(),
+            _ => None,
+        })
     }
 
     fn agent_root() -> PathBuf {
@@ -10000,7 +10291,7 @@ mod tests {
         usage_script: Mutex<VecDeque<TokenUsage>>,
         log: Arc<Mutex<Vec<String>>>,
         calls: AtomicUsize,
-        requests: Mutex<Vec<ChatCompletionRequest>>,
+        requests: Mutex<Vec<MessagesRequest>>,
     }
 
     impl ScriptedProvider {
@@ -10029,7 +10320,7 @@ mod tests {
     impl Provider for ScriptedProvider {
         async fn complete(
             &self,
-            request: &ChatCompletionRequest,
+            request: &MessagesRequest,
             context: &EpisodeContext,
         ) -> Result<ProviderEpisodeV1, DependencyFailure> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -11358,22 +11649,12 @@ mod tests {
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests[0].model, "deepseek-v4-flash");
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(requests[0].reasoning_effort, None);
-        assert_eq!(requests[0].max_tokens, Some(1_024));
+        assert_eq!(requests[0].max_tokens, 1_024);
         assert_eq!(requests[1].model, "deepseek-v4-flash");
         assert_eq!(requests[1].thinking.kind, ThinkingMode::Enabled);
-        assert_eq!(
-            requests[1].reasoning_effort,
-            Some(krw_agent_protocol::ReasoningEffort::High)
-        );
         assert_eq!(requests[2].model, "deepseek-v4-flash");
         assert_eq!(requests[2].thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(requests[2].reasoning_effort, None);
-        assert!(
-            requests[2]
-                .max_tokens
-                .is_some_and(|tokens| (1..=4096).contains(&tokens))
-        );
+        assert!((1..=4096).contains(&requests[2].max_tokens));
         // An external capability result is a settled boundary. The next
         // thinking turn receives only the deterministic evidence projection,
         // never a raw direct-mode tool call that DeepSeek would reject in a
@@ -11499,8 +11780,8 @@ mod tests {
             let tools = request
                 .tools
                 .iter()
-                .map(ProviderToolDefinition::function_name)
-                .collect::<BTreeSet<_>>();
+                .map(|definition| definition.name().to_owned())
+                .collect::<BTreeSet<String>>();
             let mut allowed = [
                 "ontology.query_context",
                 "ontology.query",
@@ -11509,12 +11790,12 @@ mod tests {
             ]
             .into_iter()
             .map(provider_tool_name)
-            .collect::<BTreeSet<_>>();
+            .collect::<BTreeSet<String>>();
             // This kernel-owned control is local-only; it is not a child
             // capability and cannot widen the sealed child authority.
             allowed.insert(WORKFLOW_TRANSITION_TOOL_NAME.into());
             assert!(
-                tools.is_subset(&allowed.iter().map(String::as_str).collect()),
+                tools.is_subset(&allowed),
                 "tools={tools:?} allowed={allowed:?}"
             );
             assert!(!tools.contains(provider_tool_name("guru.query_context").as_str()));
@@ -11659,7 +11940,6 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].model, "deepseek-v4-flash");
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(requests[0].reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -12035,7 +12315,7 @@ mod tests {
             !requests[4]
                 .tools
                 .iter()
-                .any(|tool| tool.function_name() == query_context_name)
+                .any(|tool| tool.name() == query_context_name)
         );
         assert!(requests[5].messages.iter().any(|message| {
             provider_message_content(message).contains("capability_not_available")
@@ -12719,7 +12999,7 @@ mod tests {
             !requests[2]
                 .tools
                 .iter()
-                .any(|tool| tool.function_name() == query_context_name),
+                .any(|tool| tool.name() == query_context_name),
             "the exhausted context action must not be offered back to Flash"
         );
     }
@@ -13102,10 +13382,12 @@ mod tests {
         rig.engine.run(fixture.input()).await.unwrap();
         let requests = rig.provider.requests.lock().unwrap();
         let first = &requests[0];
-        assert_eq!(first.messages[0].role(), "system");
-        assert_eq!(first.messages[1].role(), "user");
-        assert!(!provider_message_content(&first.messages[0]).contains(injection));
-        assert!(provider_message_content(&first.messages[1]).contains(injection));
+        // Under the Anthropic Messages API the trusted system prompt travels
+        // in the top-level `system` field; `messages[0]` is the trusted user
+        // payload.
+        assert_eq!(first.messages[0].role, MessageRole::User);
+        assert!(!first.system.contains(injection));
+        assert!(provider_message_content(&first.messages[0]).contains(injection));
         let planner = ContextPlanner::compile(&fixture.image).unwrap();
         let expected = planner
             .for_request(&fixture.request, "author_plan")
@@ -13139,29 +13421,26 @@ mod tests {
             requests[0].tool_choice, None,
             "DeepSeek Flash must omit tool_choice even for direct planning"
         );
-        assert!(requests[0].response_format.is_none());
         assert!(
             !requests[0]
                 .tools
                 .iter()
-                .any(|tool| tool.function_name() == WORKFLOW_TRANSITION_TOOL_NAME)
+                .any(|tool| tool.name() == WORKFLOW_TRANSITION_TOOL_NAME)
         );
 
         assert_eq!(
             requests[1].tool_choice, None,
             "DeepSeek thinking may advertise typed alternatives but must omit tool_choice"
         );
-        assert!(requests[1].response_format.is_none());
         assert!(
             requests[1]
                 .tools
                 .iter()
-                .any(|tool| tool.function_name() == WORKFLOW_TRANSITION_TOOL_NAME)
+                .any(|tool| tool.name() == WORKFLOW_TRANSITION_TOOL_NAME)
         );
 
         assert!(requests[2].tools.is_empty());
         assert!(requests[2].tool_choice.is_none());
-        assert!(requests[2].response_format.is_none());
     }
 
     #[tokio::test]
@@ -13189,9 +13468,9 @@ mod tests {
         assert_eq!(rig.provider.calls.load(Ordering::SeqCst), 3);
         assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 1);
         let requests = rig.provider.requests.lock().unwrap();
-        assert_eq!(requests[0].max_tokens, Some(1_024));
-        assert_eq!(requests[1].max_tokens, Some(4_880));
-        assert_eq!(requests[2].max_tokens, Some(3_072));
+        assert_eq!(requests[0].max_tokens, 1_024);
+        assert_eq!(requests[1].max_tokens, 4_880);
+        assert_eq!(requests[2].max_tokens, 3_072);
         assert!(
             provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
         );
@@ -13201,37 +13480,32 @@ mod tests {
     fn semantic_decision_and_deepseek_wire_encoding_are_separate() {
         let capabilities = ProviderWireCapabilities::deepseek_v4_flash();
 
-        let thinking_capability = encode_deepseek_output_channel(
+        let thinking_capability = encode_provider_output_channel(
             ModelOutputMode::CapabilityCall,
             capabilities,
             ThinkingMode::Enabled,
         )
         .unwrap();
         assert!(thinking_capability.tool_choice.is_none());
-        assert!(thinking_capability.response_format.is_none());
 
-        let direct_capability = encode_deepseek_output_channel(
+        let direct_capability = encode_provider_output_channel(
             ModelOutputMode::CapabilityCall,
             capabilities,
             ThinkingMode::Disabled,
         )
         .unwrap();
         assert!(direct_capability.tool_choice.is_none());
-        assert!(direct_capability.response_format.is_none());
 
-        let thinking_json = encode_deepseek_output_channel(
+        // Anthropic has no `response_format`; the JSON-object contract for a
+        // TypedJson state is enforced by the system prompt, so the encoding
+        // only carries an absent `tool_choice`.
+        let thinking_json = encode_provider_output_channel(
             ModelOutputMode::TypedJson,
             capabilities,
             ThinkingMode::Enabled,
         )
         .unwrap();
         assert!(thinking_json.tool_choice.is_none());
-        assert!(matches!(
-            thinking_json.response_format,
-            Some(ResponseFormat {
-                kind: ResponseFormatKind::JsonObject,
-            })
-        ));
     }
 
     #[tokio::test]
@@ -13293,7 +13567,7 @@ mod tests {
         assert!(
             provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
         );
-        assert_eq!(requests[2].max_tokens, Some(3_072));
+        assert_eq!(requests[2].max_tokens, 3_072);
     }
 
     #[tokio::test]
@@ -13524,7 +13798,7 @@ mod tests {
             .image
             .resolve_capability_model_input_contract(capability)
             .unwrap();
-        let parameters = bundle.definitions[0].function.parameters.as_value();
+        let parameters = bundle.definitions[0].input_schema.as_value();
         assert_eq!(parameters["required"], serde_json::json!(["proposal"]));
         assert_eq!(parameters["additionalProperties"], false);
         assert_eq!(
@@ -14184,7 +14458,7 @@ mod tests {
             (false, DeliveryCertainty::NotDispatched)
         );
         assert_eq!(
-            classify_deepseek_failure(&WireError::MissingDoneEvent),
+            classify_deepseek_failure(&WireError::MissingMessageStop),
             (true, DeliveryCertainty::MayHaveDispatched)
         );
     }
@@ -14195,7 +14469,7 @@ mod tests {
         // identical to DeepSeek for every WireError variant.
         let samples = [
             WireError::InvalidEndpoint,
-            WireError::MissingDoneEvent,
+            WireError::MissingMessageStop,
             WireError::IncompleteSseFrame,
             WireError::Json(serde_json::from_str::<serde_json::Value>("bad").unwrap_err()),
         ];
@@ -14207,7 +14481,7 @@ mod tests {
             );
         }
         // Failure codes must use the glm_ prefix instead of deepseek_.
-        assert!(glm_failure_code(&WireError::MissingDoneEvent).starts_with("glm_"));
-        assert!(deepseek_failure_code(&WireError::MissingDoneEvent).starts_with("deepseek_"));
+        assert!(glm_failure_code(&WireError::MissingMessageStop).starts_with("glm_"));
+        assert!(deepseek_failure_code(&WireError::MissingMessageStop).starts_with("deepseek_"));
     }
 }

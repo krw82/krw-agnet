@@ -17,10 +17,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 #[cfg(test)]
-use krw_agent_deepseek_wire::ToolResultMessage;
-use krw_agent_deepseek_wire::{
-    AssistantMessage, ChatCompletionRequest, EpisodeContext, ProviderEpisodeV1, ProviderMessage,
-    TokenUsage,
+use krw_agent_provider_wire::ToolResultMessage;
+use krw_agent_provider_wire::{
+    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
+    ProviderMessage, TokenUsage,
 };
 use krw_agent_evidence::{
     Answerability, Directness, EvidenceGrade, EvidenceRecord, EvidenceScope, EvidenceSource,
@@ -1001,7 +1001,7 @@ enum ProviderRequestPhase {
 }
 
 fn provider_request_phase(
-    request: &ChatCompletionRequest,
+    request: &MessagesRequest,
     retained_payload_bytes: usize,
 ) -> Result<ProviderRequestPhase, &'static str> {
     provider_message_phase(&request.messages, retained_payload_bytes)
@@ -1011,11 +1011,11 @@ fn provider_message_phase(
     messages: &[ProviderMessage],
     retained_payload_bytes: usize,
 ) -> Result<ProviderRequestPhase, &'static str> {
-    let mut tool_messages = messages.iter().filter_map(|message| match message {
-        ProviderMessage::Tool { content, .. } => Some(content.as_str()),
-        ProviderMessage::System { .. }
-        | ProviderMessage::User { .. }
-        | ProviderMessage::Assistant { .. } => None,
+    let mut tool_messages = messages.iter().flat_map(|message| {
+        message.content.iter().filter_map(|block| match block {
+            ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
     });
     let Some(tool_message_text) = tool_messages.next() else {
         return Ok(ProviderRequestPhase::FirstProvider);
@@ -1053,7 +1053,7 @@ struct PostToolBlockingProvider {
 impl Provider for PostToolBlockingProvider {
     async fn complete(
         &self,
-        request: &ChatCompletionRequest,
+        request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         match provider_request_phase(request, self.retained_payload_bytes) {
@@ -2349,7 +2349,7 @@ mod tests {
             counters: Arc::clone(&counters),
             release: Arc::new(Semaphore::new(0)),
         };
-        let request = ChatCompletionRequest {
+        let request = MessagesRequest {
             model: "deepseek-v4-flash".into(),
             messages: vec![
                 ToolResultMessage::from_value(
@@ -2359,19 +2359,16 @@ mod tests {
                 .unwrap()
                 .into_provider_message(),
             ],
+            system: "test".into(),
+            max_tokens: 128,
             tools: Vec::new(),
-            stream: true,
-            stream_options: krw_agent_deepseek_wire::StreamOptions {
-                include_usage: true,
-            },
-            reasoning_effort: Some(ReasoningEffort::High),
-            thinking: krw_agent_deepseek_wire::ThinkingConfig {
-                kind: ThinkingMode::Enabled,
-            },
-            max_tokens: Some(128),
-            user_id: None,
             tool_choice: None,
-            response_format: None,
+            thinking: krw_agent_provider_wire::ThinkingConfig {
+                kind: ThinkingMode::Enabled,
+                budget_tokens: Some(64),
+            },
+            stream: true,
+            metadata: None,
         };
         let context = EpisodeContext {
             tool_schema_hash: ContentHash::sha256("tool-schema"),

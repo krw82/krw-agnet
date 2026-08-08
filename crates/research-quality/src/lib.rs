@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use krw_agent_deepseek_wire::{
-    AssistantMessage, ChatCompletionRequest, EpisodeContext, ProviderEpisodeV1, ProviderMessage,
-    ProviderToolDefinition, TokenUsage, ToolCallKind,
+use krw_agent_provider_wire::{
+    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
+    ProviderMessage, ProviderToolDefinition, TokenUsage,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{CapabilityResultIngest, LoadedImage, compile_agent_dir};
@@ -736,7 +736,7 @@ impl RecordedFixtureProvider {
 impl Provider for RecordedFixtureProvider {
     async fn complete(
         &self,
-        request: &ChatCompletionRequest,
+        request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         let assistant = self
@@ -810,7 +810,7 @@ where
 {
     async fn complete(
         &self,
-        request: &ChatCompletionRequest,
+        request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         let request_report = provider_request_report(request)?;
@@ -840,7 +840,7 @@ where
                         request
                             .tools
                             .iter()
-                            .find(|tool| tool.function_name() == call.function.name.as_str())
+                            .find(|tool| tool.name() == call.function.name.as_str())
                             .is_some_and(provider_tool_uses_research_proposal),
                     )
                 })
@@ -855,7 +855,7 @@ where
 }
 
 fn provider_request_report(
-    request: &ChatCompletionRequest,
+    request: &MessagesRequest,
 ) -> Result<ProviderRequestReport, DependencyFailure> {
     let request_hash = ContentHash::sha256(
         serde_jcs::to_vec(request)
@@ -878,53 +878,65 @@ fn provider_request_report(
 }
 
 fn provider_message_shape(message: &ProviderMessage) -> ProviderMessageShapeReport {
-    match message {
-        ProviderMessage::System { .. } => ProviderMessageShapeReport {
-            role: "system".into(),
-            content_kind: "string".into(),
-            has_tool_call_id: false,
-            tool_call_count: 0,
-            has_reasoning_content: false,
-        },
-        ProviderMessage::User { .. } => ProviderMessageShapeReport {
-            role: "user".into(),
-            content_kind: "string".into(),
-            has_tool_call_id: false,
-            tool_call_count: 0,
-            has_reasoning_content: false,
-        },
-        ProviderMessage::Assistant {
-            reasoning_content,
-            tool_calls,
-            ..
-        } => ProviderMessageShapeReport {
-            role: "assistant".into(),
-            content_kind: "string_or_null".into(),
-            has_tool_call_id: false,
-            tool_call_count: tool_calls.len(),
-            has_reasoning_content: reasoning_content
-                .as_deref()
-                .is_some_and(|content| !content.is_empty()),
-        },
-        ProviderMessage::Tool { tool_call_id, .. } => ProviderMessageShapeReport {
-            role: "tool".into(),
-            content_kind: "canonical_json_text".into(),
-            has_tool_call_id: !tool_call_id.is_empty(),
-            tool_call_count: 0,
-            has_reasoning_content: false,
-        },
+    // Under the Anthropic Messages API every turn is `{role, content:
+    // Vec<ContentBlock>}`. We collapse the block list to a single shape report
+    // keyed off the first non-trivial block, which is sufficient for the
+    // provider-shape quality gates this helper feeds.
+    let role = match message.role {
+        krw_agent_provider_wire::MessageRole::User => "user",
+        krw_agent_provider_wire::MessageRole::Assistant => "assistant",
+    };
+    let mut content_kind = "empty".to_string();
+    let mut has_tool_call_id = false;
+    let mut tool_call_count = 0usize;
+    let mut has_reasoning_content = false;
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { .. } => {
+                if content_kind == "empty" {
+                    content_kind = "string".into();
+                }
+            }
+            ContentBlock::ToolUse { .. } => {
+                tool_call_count += 1;
+                if content_kind == "empty" {
+                    content_kind = "tool_use".into();
+                }
+            }
+            ContentBlock::ToolResult { tool_use_id, .. } => {
+                has_tool_call_id = !tool_use_id.is_empty();
+                if content_kind == "empty" {
+                    content_kind = "canonical_json_text".into();
+                }
+            }
+            ContentBlock::Thinking { thinking, .. } => {
+                has_reasoning_content = !thinking.is_empty();
+                if content_kind == "empty" {
+                    content_kind = "thinking".into();
+                }
+            }
+        }
+    }
+    if message.role == krw_agent_provider_wire::MessageRole::Assistant && content_kind == "string" {
+        content_kind = "string_or_null".into();
+    }
+    ProviderMessageShapeReport {
+        role: role.into(),
+        content_kind,
+        has_tool_call_id,
+        tool_call_count,
+        has_reasoning_content,
     }
 }
 
 fn provider_tool_definition_is_well_formed(tool: &ProviderToolDefinition) -> bool {
-    tool.kind == ToolCallKind::Function
-        && !tool.function_name().is_empty()
-        && tool.function_name().len() <= 64
-        && tool
-            .function_name()
+    let name = tool.name();
+    !name.is_empty()
+        && name.len() <= 64
+        && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && tool.function.parameters.as_value().is_object()
+        && tool.input_schema.as_value().is_object()
 }
 
 const RESEARCH_PROPOSAL_KEYS: &[&str] = &[
@@ -945,7 +957,7 @@ const RESEARCH_PROPOSAL_OBJECTIVE_KEYS: &[&str] = &[
 ];
 
 fn provider_tool_uses_research_proposal(tool: &ProviderToolDefinition) -> bool {
-    let parameters = tool.function.parameters.as_value();
+    let parameters = tool.input_schema.as_value();
     let proposal_required = parameters["properties"]["proposal"]["required"].as_array();
     let proposal_has_exact_required_fields = proposal_required.is_some_and(|actual| {
         actual.len() == RESEARCH_PROPOSAL_KEYS.len()

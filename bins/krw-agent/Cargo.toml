@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
-krw-agent-deepseek-wire = { path = "../../crates/deepseek-wire" }
+krw-agent-provider-wire = { path = "../../crates/provider-wire" }
 krw-agent-image = { path = "../../crates/agent-image" }
 krw-agent-protocol = { path = "../../crates/protocol" }
 krw-agent-research-quality = { path = "../../crates/research-quality" }

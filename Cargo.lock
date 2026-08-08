@@ -907,9 +907,9 @@ name = "krw-agent"
 version = "0.1.0"
 dependencies = [
  "clap",
- "krw-agent-deepseek-wire",
  "krw-agent-image",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-release-authorization",
  "krw-agent-research-quality",
  "krw-agent-test-support",
@@ -1048,11 +1048,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-image",
  "krw-agent-persistence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-run-engine",
  "krw-agent-scheduler",
  "krw-agent-test-support",
@@ -1164,11 +1164,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "krw-agent-contracts",
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-image",
  "krw-agent-persistence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-run-engine",
  "krw-ontology-adapter",
  "serde",
@@ -1186,12 +1186,12 @@ dependencies = [
  "async-trait",
  "krw-agent-bounded-child",
  "krw-agent-contracts",
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-image",
  "krw-agent-kernel",
  "krw-agent-persistence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-research-planner",
  "krw-agent-state-artifact",
  "krw-context-compaction",
@@ -1232,11 +1232,11 @@ dependencies = [
  "krw-agent-bounded-child",
  "krw-agent-capability-runtime",
  "krw-agent-contracts",
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-image",
  "krw-agent-persistence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-research-planner",
  "krw-agent-run-engine",
  "krw-agent-runtime-config",
@@ -1277,12 +1277,12 @@ dependencies = [
 name = "krw-agent-test-support"
 version = "0.1.0"
 dependencies = [
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-image",
  "krw-agent-kernel",
  "krw-agent-persistence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-research-planner",
  "krw-ontology-adapter",
  "serde",
@@ -1339,9 +1339,9 @@ dependencies = [
 name = "krw-context-compaction"
 version = "0.1.0"
 dependencies = [
- "krw-agent-deepseek-wire",
  "krw-agent-evidence",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "krw-agent-state-artifact",
  "krw-ontology-adapter",
  "serde",
@@ -1356,9 +1356,9 @@ name = "krw-context-planner"
 version = "0.1.0"
 dependencies = [
  "krw-agent-contracts",
- "krw-agent-deepseek-wire",
  "krw-agent-image",
  "krw-agent-protocol",
+ "krw-agent-provider-wire",
  "serde",
  "serde_jcs",
  "serde_json",
