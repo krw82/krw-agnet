@@ -1,7 +1,7 @@
 ---
 name: commentary_reconciliation
 description: "Use during earnings_deep_dive to verify whether management commentary and reported numbers agree or flag tension."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when reported numbers and management commentary must be checked for agreement or tension"
 ---
 
 # Commentary And Number Reconciliation

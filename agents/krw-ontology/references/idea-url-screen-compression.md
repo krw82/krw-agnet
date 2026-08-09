@@ -1,7 +1,7 @@
 ---
 name: idea_url_screen_compression
 description: "Use during idea_generation when the user provides a URL. Compresses the article/event/source into covered-company research candidates."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when the user provides a URL or article that must be translated into covered-company research candidates"
 ---
 
 # URL Screen Compression

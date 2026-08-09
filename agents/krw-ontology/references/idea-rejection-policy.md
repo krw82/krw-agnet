@@ -1,7 +1,7 @@
 ---
 name: idea_rejection_policy
 description: "Use during idea_generation to classify a candidate as Reject (false positive) based on keyword-only matches, generic risk language, or missing economic linkage."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when deciding whether a candidate is only a keyword match or must be rejected for missing economic linkage"
 ---
 
 # Rejection Policy

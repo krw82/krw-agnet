@@ -918,6 +918,19 @@ pub fn validate_normalized_plan_exchange(
     dispatched: &Value,
     normalized: &Value,
 ) -> Result<(), ResearchPlannerError> {
+    canonicalize_normalized_plan_exchange(dispatched, normalized).map(|_| ())
+}
+
+/// Verify a server-normalized `SearchPlan` and return its canonical form.
+///
+/// The server may omit a field only when the dispatched value is exactly that
+/// field's documented default.  Filling those omissions keeps the persisted
+/// planner state canonical while still rejecting a dropped non-default scope,
+/// proof requirement, or retrieval constraint.
+pub fn canonicalize_normalized_plan_exchange(
+    dispatched: &Value,
+    normalized: &Value,
+) -> Result<Value, ResearchPlannerError> {
     const PLAN_KEYS: &[&str] = &[
         "answer_scope",
         "clauses",
@@ -952,12 +965,51 @@ pub fn validate_normalized_plan_exchange(
             NormalizedPlanMismatchKind::DispatchedPayloadTooLarge,
         ));
     }
-    validate_plan_shape(normalized)
-        .map_err(|_| normalized_plan_mismatch(NormalizedPlanMismatchKind::ObservedPlanShape))?;
-    let sent = dispatched
+    let mut expected = dispatched.clone();
+    let sent = expected
+        .as_object_mut()
+        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::DispatchedPlanShape))?;
+    fill_omitted_plan_defaults(sent);
+    let sent_clauses = sent
+        .get_mut("clauses")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ClauseCount))?;
+    for sent_clause in sent_clauses {
+        let sent_clause = sent_clause.as_object_mut().ok_or_else(|| {
+            normalized_plan_mismatch(NormalizedPlanMismatchKind::DispatchedClauseShape)
+        })?;
+        fill_omitted_clause_defaults(sent_clause);
+    }
+    let sent = expected
         .as_object()
         .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::DispatchedPlanShape))?;
-    let observed = normalized
+    let mut canonical = normalized.clone();
+    let observed = canonical
+        .as_object_mut()
+        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ObservedPlanShape))?;
+    fill_omitted_plan_defaults(observed);
+    let sent_clauses = sent
+        .get("clauses")
+        .and_then(Value::as_array)
+        .filter(|clauses| (1..=MAX_CONTEXT_CLAUSES).contains(&clauses.len()))
+        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ClauseCount))?;
+    let observed_clauses = observed
+        .get_mut("clauses")
+        .and_then(Value::as_array_mut)
+        .filter(|clauses| clauses.len() == sent_clauses.len())
+        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ClauseCount))?;
+    for (sent_clause, observed_clause) in sent_clauses.iter().zip(observed_clauses.iter_mut()) {
+        sent_clause.as_object().ok_or_else(|| {
+            normalized_plan_mismatch(NormalizedPlanMismatchKind::DispatchedClauseShape)
+        })?;
+        let observed_clause = observed_clause.as_object_mut().ok_or_else(|| {
+            normalized_plan_mismatch(NormalizedPlanMismatchKind::ObservedClauseShape)
+        })?;
+        fill_omitted_clause_defaults(observed_clause);
+    }
+    validate_plan_shape(&canonical)
+        .map_err(|_| normalized_plan_mismatch(NormalizedPlanMismatchKind::ObservedPlanShape))?;
+    let observed = canonical
         .as_object()
         .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ObservedPlanShape))?;
     if !keys_are_subset(sent, PLAN_KEYS) {
@@ -1032,11 +1084,6 @@ pub fn validate_normalized_plan_exchange(
         }
     }
 
-    let sent_clauses = sent
-        .get("clauses")
-        .and_then(Value::as_array)
-        .filter(|clauses| (1..=MAX_CONTEXT_CLAUSES).contains(&clauses.len()))
-        .ok_or_else(|| normalized_plan_mismatch(NormalizedPlanMismatchKind::ClauseCount))?;
     let observed_clauses = observed
         .get("clauses")
         .and_then(Value::as_array)
@@ -1114,7 +1161,40 @@ pub fn validate_normalized_plan_exchange(
             }
         }
     }
-    Ok(())
+    Ok(canonical)
+}
+
+fn fill_omitted_plan_defaults(plan: &mut serde_json::Map<String, Value>) {
+    for (key, value) in [
+        ("tickers", serde_json::json!([])),
+        ("document_types", serde_json::json!([])),
+        ("periods", serde_json::json!([])),
+        ("universe", Value::Null),
+        ("comparison_axes", serde_json::json!([])),
+        ("answer_scope", Value::String("direct".into())),
+        ("uncertainty", Value::String("low".into())),
+        ("limit_results", serde_json::json!(12)),
+        ("limit_tickers", serde_json::json!(20)),
+    ] {
+        plan.entry(key).or_insert(value);
+    }
+}
+
+fn fill_omitted_clause_defaults(clause: &mut serde_json::Map<String, Value>) {
+    for (key, value) in [
+        ("required_concepts", serde_json::json!([])),
+        ("required_predicates", serde_json::json!([])),
+        ("required", Value::Bool(true)),
+        ("tickers", serde_json::json!([])),
+        ("directness", Value::String("direct_preferred".into())),
+        ("object_types", serde_json::json!([])),
+        ("metrics", serde_json::json!([])),
+        ("metric_dimensions", serde_json::json!([])),
+        ("metric_scope", Value::String("company_total".into())),
+        ("calculation_window", Value::Null),
+    ] {
+        clause.entry(key).or_insert(value);
+    }
 }
 
 fn keys_are_subset(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool {
@@ -2042,6 +2122,38 @@ mod tests {
         assert!(matches!(
             validate_normalized_plan_exchange(&sparse, &rewritten_clause),
             Err(ResearchPlannerError::NormalizedPlanMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn normalized_plan_restores_only_omitted_server_defaults() {
+        let canonical = fixture().plan;
+        let mut sparse_dispatched = canonical.clone();
+        let clause = sparse_dispatched["clauses"][0].as_object_mut().unwrap();
+        for key in [
+            "object_types",
+            "metrics",
+            "metric_dimensions",
+            "calculation_window",
+        ] {
+            clause.remove(key);
+        }
+        let sparse_observed = sparse_dispatched.clone();
+
+        let restored = canonicalize_normalized_plan_exchange(&sparse_dispatched, &sparse_observed)
+            .expect("server may omit only exact default values");
+        assert_eq!(restored, canonical);
+
+        let mut missing_constraint = sparse_dispatched;
+        missing_constraint["clauses"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("required_concepts");
+        assert!(matches!(
+            canonicalize_normalized_plan_exchange(&canonical, &missing_constraint),
+            Err(ResearchPlannerError::NormalizedPlanMismatch(
+                NormalizedPlanMismatchKind::ClauseField("required_concepts")
+            ))
         ));
     }
 

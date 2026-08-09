@@ -247,6 +247,9 @@ pub struct AssistantMessage {
     pub content: Option<String>,
     pub reasoning_content: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_signature: Option<String>,
+    #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -297,12 +300,13 @@ impl AssistantMessage {
     pub fn into_content_blocks(mut self) -> Vec<ContentBlock> {
         let mut blocks = Vec::new();
         let reasoning = std::mem::take(&mut self.reasoning_content);
+        let signature = std::mem::take(&mut self.reasoning_signature).unwrap_or_default();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
         {
             blocks.push(ContentBlock::Thinking {
                 thinking: reasoning,
-                signature: String::new(),
+                signature,
             });
         }
         let content = std::mem::take(&mut self.content);
@@ -332,15 +336,24 @@ impl AssistantMessage {
     /// appear in `user` messages.
     pub fn from_content_blocks(blocks: &[ContentBlock]) -> Result<Self, WireError> {
         let mut content = None;
-        let mut reasoning_content = None;
+        let mut reasoning_content_parts = Vec::new();
+        let mut reasoning_signature_parts = Vec::new();
         let mut tool_calls = Vec::new();
         for block in blocks {
             match block {
                 ContentBlock::Text { text } => {
                     content = Some(text.clone());
                 }
-                ContentBlock::Thinking { thinking, .. } => {
-                    reasoning_content = Some(thinking.clone());
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    if !thinking.is_empty() {
+                        reasoning_content_parts.push(thinking.clone());
+                    }
+                    if !signature.is_empty() {
+                        reasoning_signature_parts.push(signature.clone());
+                    }
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     let arguments = serde_jcs::to_string(input)?;
@@ -358,9 +371,20 @@ impl AssistantMessage {
                 }
             }
         }
+        let reasoning_content = if reasoning_content_parts.is_empty() {
+            None
+        } else {
+            Some(reasoning_content_parts.concat())
+        };
+        let reasoning_signature = if reasoning_signature_parts.is_empty() {
+            None
+        } else {
+            Some(reasoning_signature_parts.concat())
+        };
         Ok(Self {
             content,
             reasoning_content,
+            reasoning_signature,
             tool_calls,
         })
     }
@@ -384,8 +408,16 @@ impl std::fmt::Debug for AssistantMessage {
                 &self.reasoning_content.as_ref().map(|_| "[REDACTED]"),
             )
             .field(
+                "reasoning_signature",
+                &self.reasoning_signature.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
                 "reasoning_len",
                 &self.reasoning_content.as_ref().map(String::len),
+            )
+            .field(
+                "reasoning_signature_len",
+                &self.reasoning_signature.as_ref().map(String::len),
             )
             .field("tool_calls", &self.tool_calls)
             .finish()
@@ -399,6 +431,9 @@ impl Drop for AssistantMessage {
         }
         if let Some(reasoning) = &mut self.reasoning_content {
             reasoning.zeroize();
+        }
+        if let Some(signature) = &mut self.reasoning_signature {
+            signature.zeroize();
         }
     }
 }
@@ -619,13 +654,17 @@ impl Drop for ProviderMessage {
 
 /// Anthropic tool definition. Unlike `OpenAI`'s `{type:"function",
 /// function:{...}}` wrapper, this is a flat `{name, description,
-/// input_schema}` structure matching the Anthropic Messages API.
+/// input_schema}` structure matching the Anthropic Messages API. `strict` is
+/// omitted unless the exact provider mode has been admitted for strict tool
+/// input.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderToolDefinition {
     pub name: ProviderFunctionName,
     pub description: String,
     pub input_schema: JsonSchemaDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 impl std::fmt::Debug for ProviderToolDefinition {
@@ -635,6 +674,7 @@ impl std::fmt::Debug for ProviderToolDefinition {
             .field("name", &self.name)
             .field("description_len", &self.description.len())
             .field("input_schema", &self.input_schema)
+            .field("strict", &self.strict)
             .finish()
     }
 }
@@ -649,6 +689,7 @@ impl ProviderToolDefinition {
             name: ProviderFunctionName::parse(name)?,
             description: description.into(),
             input_schema: JsonSchemaDocument::from_value(input_schema)?,
+            strict: None,
         })
     }
 
@@ -659,6 +700,11 @@ impl ProviderToolDefinition {
     pub fn replace_description(&mut self, description: impl Into<String>) {
         self.description.zeroize();
         self.description = description.into();
+    }
+
+    pub fn with_strict(mut self) -> Self {
+        self.strict = Some(true);
+        self
     }
 
     pub fn scrub_sensitive(&mut self) {
@@ -704,6 +750,43 @@ pub struct RequestMetadata {
     pub user_id: String,
 }
 
+/// Anthropic structured-output request configuration. The format is required
+/// when this object is present so an invalid `{}` cannot cross the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputConfig {
+    pub format: OutputFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutputFormat {
+    JsonSchema { schema: JsonSchemaDocument },
+}
+
+impl OutputConfig {
+    pub fn json_schema(schema: JsonSchemaDocument) -> Self {
+        Self {
+            format: OutputFormat::JsonSchema { schema },
+        }
+    }
+}
+
+/// Provider-native JSON mode. Z.AI's Anthropic-compatible endpoint accepts
+/// this OpenAI-compatible field for GLM structured output, while it does not
+/// accept Anthropic's newer `output_config.format=json_schema` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResponseFormat {
+    JsonObject,
+}
+
+impl ResponseFormat {
+    pub const fn json_object() -> Self {
+        Self::JsonObject
+    }
+}
+
 /// Anthropic Messages API request. Replaces the `OpenAI` `ChatCompletionRequest`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -716,10 +799,161 @@ pub struct MessagesRequest {
     pub tools: Vec<ProviderToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     pub thinking: ThinkingConfig,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RequestMetadata>,
+}
+
+/// Project a canonical JSON Schema into the subset accepted by the Anthropic
+/// structured-output grammar. The canonical source remains untouched and is
+/// still authoritative for local semantic validation.
+pub fn project_anthropic_json_schema(
+    mut canonical: Value,
+) -> Result<JsonSchemaDocument, WireError> {
+    if !canonical.is_object() {
+        return Err(WireError::UnsupportedStructuredOutputSchema);
+    }
+    project_schema_node(&mut canonical)?;
+    JsonSchemaDocument::from_value(canonical)
+}
+
+fn project_schema_node(value: &mut Value) -> Result<(), WireError> {
+    let object = value
+        .as_object_mut()
+        .ok_or(WireError::UnsupportedStructuredOutputSchema)?;
+
+    for key in [
+        "$schema",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+    ] {
+        object.remove(key);
+    }
+
+    // Canonical schemas may use JSON Schema's compact union form. The
+    // provider grammar is more portable when unions are represented as
+    // explicit `anyOf` branches, so normalize it once at the wire boundary.
+    if let Some(Value::Array(types)) = object.get("type") {
+        if types.is_empty()
+            || types
+                .iter()
+                .any(|kind| !kind.as_str().is_some_and(|kind| !kind.is_empty()))
+            || object.contains_key("anyOf")
+        {
+            return Err(WireError::UnsupportedStructuredOutputSchema);
+        }
+        let types = object
+            .remove("type")
+            .and_then(|value| value.as_array().cloned())
+            .ok_or(WireError::InvalidJsonSchemaDocument)?;
+        object.insert(
+            "anyOf".into(),
+            Value::Array(
+                types
+                    .into_iter()
+                    .map(|kind| {
+                        let mut branch = serde_json::Map::new();
+                        branch.insert("type".into(), kind);
+                        Value::Object(branch)
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
+    if let Some(additional_properties) = object.get("additionalProperties") {
+        match additional_properties {
+            Value::Bool(false) => {}
+            Value::Bool(true) | Value::Object(_) => {
+                return Err(WireError::UnsupportedStructuredOutputSchema);
+            }
+            _ => return Err(WireError::InvalidJsonSchemaDocument),
+        }
+    }
+
+    let has_properties = object.contains_key("properties");
+    if has_properties {
+        {
+            let properties = object
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+                .ok_or(WireError::InvalidJsonSchemaDocument)?;
+            for property_schema in properties.values_mut() {
+                project_schema_node(property_schema)?;
+            }
+        }
+        object
+            .entry("additionalProperties")
+            .or_insert(Value::Bool(false));
+    }
+    if object.get("type").and_then(Value::as_str) == Some("object") {
+        object
+            .entry("additionalProperties")
+            .or_insert(Value::Bool(false));
+    }
+
+    if let Some(definitions) = object.get_mut("$defs") {
+        let definitions = definitions
+            .as_object_mut()
+            .ok_or(WireError::InvalidJsonSchemaDocument)?;
+        for definition in definitions.values_mut() {
+            project_schema_node(definition)?;
+        }
+    }
+
+    for key in ["items", "not", "if", "then", "else"] {
+        if let Some(child) = object.get_mut(key) {
+            project_schema_node(child)?;
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(children) = object.get_mut(key) {
+            let children = children
+                .as_array_mut()
+                .ok_or(WireError::InvalidJsonSchemaDocument)?;
+            for child in children {
+                project_schema_node(child)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRequestFootprint {
+    pub canonical_bytes: usize,
+    /// A deliberately conservative diagnostic upper bound. It is not used as
+    /// an exact provider-token count because provider tokenizers differ.
+    pub input_tokens_upper_bound: u64,
+}
+
+pub fn provider_request_footprint(
+    request: &MessagesRequest,
+) -> Result<ProviderRequestFootprint, WireError> {
+    let bytes = serde_jcs::to_vec(request)?;
+    Ok(ProviderRequestFootprint {
+        canonical_bytes: bytes.len(),
+        input_tokens_upper_bound: u64::try_from(bytes.len())
+            .map_err(|_| WireError::RequestFootprintOverflow)?,
+    })
 }
 
 impl MessagesRequest {
@@ -777,6 +1011,21 @@ impl MessagesRequest {
                 "tool_choice=any requires at least one tool".into(),
             ));
         }
+        if let Some(OutputConfig {
+            format: OutputFormat::JsonSchema { schema },
+        }) = &self.output_config
+        {
+            // Validate the exact provider grammar at the final wire boundary
+            // even for callers outside run-engine. The engine normally stores
+            // a pre-projected schema, but this prevents an accidental direct
+            // client from bypassing the same closed subset.
+            project_anthropic_json_schema(schema.as_value().clone())?;
+        }
+        if self.output_config.is_some() && self.response_format.is_some() {
+            return Err(WireError::InvalidRequest(
+                "output_config and response_format are mutually exclusive".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -793,6 +1042,11 @@ impl std::fmt::Debug for MessagesRequest {
             .field("thinking", &self.thinking.kind)
             .field("stream", &self.stream)
             .field("tool_choice", &self.tool_choice)
+            .field(
+                "output_config",
+                &self.output_config.as_ref().map(|_| "[SCHEMA]"),
+            )
+            .field("response_format", &self.response_format)
             .field("metadata", &self.metadata.as_ref().map(|_| "[REDACTED]"))
             .finish_non_exhaustive()
     }
@@ -807,6 +1061,11 @@ impl Drop for MessagesRequest {
         }
         for tool in &mut self.tools {
             tool.scrub_sensitive();
+        }
+        if let Some(output_config) = &mut self.output_config {
+            match &mut output_config.format {
+                OutputFormat::JsonSchema { schema } => schema.scrub_sensitive(),
+            }
         }
         if let Some(metadata) = &mut self.metadata {
             metadata.user_id.zeroize();
@@ -1104,14 +1363,14 @@ impl ProviderClient {
 
         if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
             eprintln!(
-                "[KRW_DEBUG_PROVIDER] request model={} thinking={:?} tool_choice={:?} stream={} tools={} messages={} request_body={}",
+                "[KRW_DEBUG_PROVIDER] request model={} thinking={:?} tool_choice={:?} stream={} tools={} messages={} request_hash={}",
                 request.model,
                 request.thinking.kind,
                 request.tool_choice,
                 request.stream,
                 request.tools.len(),
                 request.messages.len(),
-                serde_json::to_string(request).unwrap_or_else(|_| "<serialize-failed>".into())
+                request_hash
             );
         }
 
@@ -1123,6 +1382,7 @@ impl ProviderClient {
             let max_attempts = 3u32;
             let mut attempt = 0u32;
             loop {
+                let mut server_retry_after_ms = None;
                 match self
                     .http
                     .post(&self.endpoint)
@@ -1139,6 +1399,7 @@ impl ProviderClient {
                         if attempt + 1 >= max_attempts {
                             break resp;
                         }
+                        server_retry_after_ms = parse_retry_after_ms(resp.headers());
                         drop(resp);
                     }
                     Err(err) => {
@@ -1148,17 +1409,25 @@ impl ProviderClient {
                     }
                 }
                 attempt += 1;
-                let base = 500_u64 * (1_u64 << attempt.min(4));
-                let base = base.min(8_000);
-                let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
-                let delay =
-                    Duration::from_millis((base.saturating_mul(permille) / 1_000).clamp(1, 8_000));
+                let delay = server_retry_after_ms.map_or_else(
+                    || {
+                        let base = 500_u64 * (1_u64 << attempt.min(4));
+                        let base = base.min(8_000);
+                        let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
+                        Duration::from_millis(
+                            (base.saturating_mul(permille) / 1_000).clamp(1, 8_000),
+                        )
+                    },
+                    Duration::from_millis,
+                );
                 tokio::time::sleep(delay).await;
             }
         };
 
         let status = response.status();
         if !status.is_success() {
+            let request_id_hash = safe_request_id_hash(response.headers());
+            let retry_after_ms = parse_retry_after_ms(response.headers());
             let mut bytes = Vec::new();
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
@@ -1171,9 +1440,10 @@ impl ProviderClient {
             }
             if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
                 eprintln!(
-                    "[KRW_DEBUG_PROVIDER] error status={} body={}",
+                    "[KRW_DEBUG_PROVIDER] error status={} body_hash={} provider_code={:?}",
                     status.as_u16(),
-                    String::from_utf8_lossy(&bytes)
+                    ContentHash::sha256(&bytes),
+                    safe_api_error_code(&bytes)
                 );
             }
             let provider_code = safe_api_error_code(&bytes);
@@ -1181,6 +1451,8 @@ impl ProviderClient {
                 status: status.as_u16(),
                 body_prefix_hash: ContentHash::sha256(bytes),
                 provider_code,
+                request_id_hash,
+                retry_after_ms,
             });
         }
 
@@ -1256,6 +1528,42 @@ fn safe_api_error_code(bytes: &[u8]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Accept only a short, printable request identifier. The raw value is never
+/// retained; the hash is sufficient to correlate one provider response across
+/// bounded logs without leaking account or routing data.
+fn safe_request_id_hash(headers: &HeaderMap) -> Option<ContentHash> {
+    for header_name in ["request-id", "x-request-id"] {
+        let Some(value) = headers.get(header_name) else {
+            continue;
+        };
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        if !value.is_empty()
+            && value.len() <= 128
+            && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+        {
+            return Some(ContentHash::sha256(value));
+        }
+    }
+    None
+}
+
+/// Parse only the bounded delta-seconds form of `Retry-After`. HTTP-date is
+/// deliberately ignored: accepting a clock-dependent date would make retry
+/// latency unbounded and would complicate the provider admission contract.
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get("retry-after")?.to_str().ok()?.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let seconds = value.parse::<u64>().ok()?;
+    if !(1..=8).contains(&seconds) {
+        return None;
+    }
+    seconds.checked_mul(1_000)
+}
+
 // ---------------------------------------------------------------------------
 // Error type (adapted from deepseek-wire).
 // ---------------------------------------------------------------------------
@@ -1266,6 +1574,10 @@ pub enum WireError {
     InvalidProviderFunctionName,
     #[error("provider JSON Schema parameters must be an object")]
     InvalidJsonSchemaDocument,
+    #[error("provider structured-output schema uses an unsupported grammar")]
+    UnsupportedStructuredOutputSchema,
+    #[error("provider request footprint cannot be represented safely")]
+    RequestFootprintOverflow,
     #[error("canonical JSON serialization was not UTF-8")]
     CanonicalJsonNotUtf8,
     #[error("provider tool result text is valid JSON but not RFC 8785 canonical JSON")]
@@ -1314,6 +1626,10 @@ pub enum WireError {
         /// A bounded, syntax-checked provider error code if the body exposed
         /// one. Never contains the provider's human-readable message.
         provider_code: Option<String>,
+        /// Hash of a bounded provider request identifier header, if present.
+        request_id_hash: Option<ContentHash>,
+        /// A bounded `Retry-After` delta in milliseconds, if present and safe.
+        retry_after_ms: Option<u64>,
     },
     #[error("provider response was not an SSE stream")]
     UnexpectedContentType,
@@ -1453,6 +1769,8 @@ mod tests {
                 max_tokens: 1024,
                 tools: Vec::new(),
                 tool_choice: None,
+                output_config: None,
+                response_format: None,
                 thinking: ThinkingConfig {
                     kind: ThinkingMode::Disabled,
                     budget_tokens: None,
@@ -1490,6 +1808,8 @@ mod tests {
                 max_tokens,
                 tools: Vec::new(),
                 tool_choice: None,
+                output_config: None,
+                response_format: None,
                 thinking: ThinkingConfig {
                     kind: ThinkingMode::Enabled,
                     budget_tokens: budget,
@@ -1521,6 +1841,8 @@ mod tests {
             max_tokens: 1024,
             tools: Vec::new(),
             tool_choice: None,
+            output_config: None,
+            response_format: None,
             thinking: ThinkingConfig {
                 kind: ThinkingMode::Disabled,
                 budget_tokens: None,
@@ -1539,6 +1861,7 @@ mod tests {
         let original = AssistantMessage {
             content: Some("answer".into()),
             reasoning_content: Some("private reasoning".into()),
+            reasoning_signature: Some("sig-1".into()),
             tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 kind: ToolCallKind::Function,
@@ -1558,6 +1881,10 @@ mod tests {
         let reconstructed = AssistantMessage::from_content_blocks(&blocks).unwrap();
         assert_eq!(reconstructed.content, original.content);
         assert_eq!(reconstructed.reasoning_content, original.reasoning_content);
+        assert_eq!(
+            reconstructed.reasoning_signature,
+            original.reasoning_signature
+        );
         assert_eq!(reconstructed.tool_calls.len(), original.tool_calls.len());
         assert_eq!(
             reconstructed.tool_calls[0].function.name.as_str(),
@@ -1569,6 +1896,39 @@ mod tests {
         let recon_val: Value =
             serde_json::from_str(&reconstructed.tool_calls[0].function.arguments).unwrap();
         assert_eq!(orig_val, recon_val);
+    }
+
+    #[test]
+    fn assistant_message_from_multiple_thinking_blocks_concatenates_reasoning() {
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "first ".into(),
+                signature: "sig-".into(),
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+            ContentBlock::Thinking {
+                thinking: "thought".into(),
+                signature: "plus".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: ProviderFunctionName::parse("krw_query").unwrap(),
+                input: serde_json::json!({"q":"한글"}),
+            },
+        ];
+        let reconstructed = AssistantMessage::from_content_blocks(&blocks).unwrap();
+        assert_eq!(
+            reconstructed.reasoning_content.as_deref(),
+            Some("first thought")
+        );
+        assert_eq!(
+            reconstructed.reasoning_signature.as_deref(),
+            Some("sig-plus")
+        );
+        assert_eq!(reconstructed.content, Some("answer".into()));
+        assert_eq!(reconstructed.tool_calls.len(), 1);
     }
 
     #[test]
@@ -1591,10 +1951,11 @@ mod tests {
             request_hash: ContentHash::sha256("request"),
             requested_model: DEEPSEEK_MODEL_ID.into(),
             observed_model: DEEPSEEK_MODEL_ID.into(),
-            api_version: "messages-v1".into(),
+            api_version: "anthropic-messages-v1".into(),
             assistant: AssistantMessage {
                 content: Some("answer".into()),
                 reasoning_content: Some("private reasoning 한글".into()),
+                reasoning_signature: None,
                 tool_calls: vec![ToolCall {
                     id: "call_1".into(),
                     kind: ToolCallKind::Function,
@@ -1629,10 +1990,11 @@ mod tests {
             request_hash: ContentHash::sha256("request"),
             requested_model: GLM_MODEL_ID.into(),
             observed_model: GLM_MODEL_ID.into(),
-            api_version: "messages-v1".into(),
+            api_version: "anthropic-messages-v1".into(),
             assistant: AssistantMessage {
                 content: Some("answer".into()),
                 reasoning_content: None,
+                reasoning_signature: None,
                 tool_calls: vec![ToolCall {
                     id: "call_1".into(),
                     kind: ToolCallKind::Function,
@@ -1669,10 +2031,11 @@ mod tests {
             request_hash: ContentHash::sha256("request"),
             requested_model: "forbidden-model".into(),
             observed_model: "forbidden-model".into(),
-            api_version: "messages-v1".into(),
+            api_version: "anthropic-messages-v1".into(),
             assistant: AssistantMessage {
                 content: Some("answer".into()),
                 reasoning_content: None,
+                reasoning_signature: None,
                 tool_calls: Vec::new(),
             },
             tool_results: Vec::new(),
@@ -1721,6 +2084,8 @@ mod tests {
             )
             .unwrap()],
                 tool_choice: Some(ToolChoice::Auto),
+                output_config: None,
+                response_format: None,
                 thinking: ThinkingConfig {
                     kind: ThinkingMode::Enabled,
                     budget_tokens: Some(2048),
@@ -1733,5 +2098,170 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let decoded: MessagesRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn structured_output_and_strict_tool_fields_are_optional_and_exact() {
+        let schema = JsonSchemaDocument::from_value(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status"],
+            "properties": {"status": {"type": "string"}}
+        }))
+        .unwrap();
+        let tool = ProviderToolDefinition::new(
+            "krw_agent_transition",
+            "Select one transition",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["event"],
+                "properties": {"event": {"type": "string"}}
+            }),
+        )
+        .unwrap()
+        .with_strict();
+        let request = MessagesRequest {
+            model: GLM_MODEL_ID.into(),
+            messages: vec![ProviderMessage::user("probe")],
+            system: "system".into(),
+            max_tokens: 128,
+            tools: vec![tool],
+            tool_choice: None,
+            output_config: Some(OutputConfig::json_schema(schema)),
+            response_format: None,
+            thinking: ThinkingConfig {
+                kind: ThinkingMode::Disabled,
+                budget_tokens: None,
+            },
+            stream: true,
+            metadata: None,
+        };
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            encoded["output_config"],
+            serde_json::json!({
+                "format": {
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["status"],
+                        "properties": {"status": {"type": "string"}}
+                    }
+                }
+            })
+        );
+        assert_eq!(encoded["tools"][0]["strict"], serde_json::json!(true));
+
+        let mut json_mode = request.clone();
+        json_mode.output_config = None;
+        json_mode.response_format = Some(ResponseFormat::json_object());
+        let encoded_json_mode = serde_json::to_value(&json_mode).unwrap();
+        assert_eq!(
+            encoded_json_mode["response_format"],
+            serde_json::json!({"type": "json_object"})
+        );
+        assert!(json_mode.validate().is_ok());
+
+        let mut conflicting = json_mode.clone();
+        conflicting.output_config = request.output_config.clone();
+        assert!(conflicting.validate().is_err());
+
+        let plain = ProviderToolDefinition::new(
+            "krw_agent_transition",
+            "Select one transition",
+            serde_json::json!({"type": "object"}),
+        )
+        .unwrap();
+        let plain_encoded = serde_json::to_value(&plain).unwrap();
+        assert!(plain_encoded.get("strict").is_none());
+    }
+
+    #[test]
+    fn structured_schema_projection_is_closed_and_recursive() {
+        let projected = project_anthropic_json_schema(serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[a-z]+$",
+                        "minLength": 1
+                    }
+                }
+            },
+            "required": ["items"]
+        }))
+        .unwrap();
+        assert_eq!(
+            projected.as_value(),
+            &serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    }
+                },
+                "required": ["items"]
+            })
+        );
+        assert!(matches!(
+            project_anthropic_json_schema(serde_json::json!({
+                "type": "object",
+                "additionalProperties": true
+            })),
+            Err(WireError::UnsupportedStructuredOutputSchema)
+        ));
+    }
+
+    #[test]
+    fn request_footprint_is_canonical_and_bounded() {
+        let request = MessagesRequest {
+            model: GLM_MODEL_ID.into(),
+            messages: vec![ProviderMessage::user("probe")],
+            system: "system".into(),
+            max_tokens: 128,
+            tools: Vec::new(),
+            tool_choice: None,
+            output_config: None,
+            response_format: None,
+            thinking: ThinkingConfig {
+                kind: ThinkingMode::Disabled,
+                budget_tokens: None,
+            },
+            stream: true,
+            metadata: None,
+        };
+        let footprint = provider_request_footprint(&request).unwrap();
+        assert_eq!(
+            footprint.canonical_bytes,
+            serde_jcs::to_vec(&request).unwrap().len()
+        );
+        assert_eq!(
+            footprint.input_tokens_upper_bound,
+            footprint.canonical_bytes as u64
+        );
+    }
+
+    #[test]
+    fn retry_after_and_request_id_diagnostics_are_bounded_and_hashed() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("2"));
+        headers.insert("request-id", HeaderValue::from_static("req-glm-001"));
+        assert_eq!(parse_retry_after_ms(&headers), Some(2_000));
+        assert_eq!(
+            safe_request_id_hash(&headers),
+            Some(ContentHash::sha256("req-glm-001"))
+        );
+
+        headers.insert("retry-after", HeaderValue::from_static("0"));
+        assert_eq!(parse_retry_after_ms(&headers), None);
+        headers.insert("retry-after", HeaderValue::from_static("9"));
+        assert_eq!(parse_retry_after_ms(&headers), None);
     }
 }

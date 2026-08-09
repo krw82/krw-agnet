@@ -111,7 +111,7 @@ pub const ANSWER_IR_V1: &str = "answer-ir/v1";
 pub const FINAL_MARKDOWN_V1: &str = "final-markdown/v1";
 pub const STATE_OPERATION_OUTPUT_V1: &str = "state-operation-output/v1";
 pub const STATE_FACTS_V1: &str = "state-facts/v1";
-/// Model-authored skill load request: `{ "skill_id": "<name>" }`. The body is
+/// Model-authored skill load request: `{ "skill_id": "<catalog-id>" }`. The body is
 /// resolved locally from the immutable image blob store — no MCP round trip.
 pub const SKILL_LOAD_V1: &str = "skill-load/v1";
 /// Skill body returned by the local `skill.load` capability handler.
@@ -129,7 +129,7 @@ pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
     "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
-    "sha256:5c48e6e7a5b850c8b8586f6a56da8049b9b257406ba091a11367965751488289";
+    "sha256:4b19a78d66ff14ef967f10bd30789569eba0c7ceef34f6c280274042baf7de00";
 pub const SKILL_CONTENT_V1_SCHEMA_SHA256: &str =
     "sha256:29e76200a214632bb215b6427f1308438f11adc6437cbad1ed466818f23ab55e";
 
@@ -499,7 +499,7 @@ fn validate_state_facts(value: &Value) -> Result<(), ContractValueError> {
     Ok(())
 }
 
-/// Validate a `skill-load/v1` request: `{ "skill_id": "<name>" }`.
+/// Validate a `skill-load/v1` request: `{ "skill_id": "<catalog-id>" }`.
 fn validate_skill_load(value: &Value) -> Result<(), ContractValueError> {
     let body = object(value, SKILL_LOAD_V1)?;
     exact_keys(body, &["skill_id"], SKILL_LOAD_V1)?;
@@ -509,7 +509,7 @@ fn validate_skill_load(value: &Value) -> Result<(), ContractValueError> {
     Ok(())
 }
 
-/// Validate a `skill-content/v1` result: `{ "skill_id": "<name>", "content": "<md>" }`.
+/// Validate a `skill-content/v1` result: `{ "skill_id": "<catalog-id>", "content": "<md>" }`.
 fn validate_skill_content(value: &Value) -> Result<(), ContractValueError> {
     let body = object(value, SKILL_CONTENT_V1)?;
     exact_keys(body, &["skill_id", "content"], SKILL_CONTENT_V1)?;
@@ -1007,15 +1007,8 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
         "periods",
         "uncertainty",
     ];
-    // Check for extra/unknown top-level keys (e.g. double-wrapped proposal).
-    for key in proposal.keys() {
-        if !allowed_top.contains(&key.as_str()) {
-            return Some(ResearchProposalViolation::ShapeInvalid {
-                pointer: format!("/{key}"),
-                offending: Some(key.clone()),
-                allowed: allowed_top.iter().map(|s| (*s).to_string()).collect(),
-            });
-        }
+    if let Some(violation) = exact_shape_keys(proposal, allowed_top, "/") {
+        return Some(violation);
     }
     // Check enum fields at the top level.
     for (field, allowed_vals) in [
@@ -1032,11 +1025,27 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
             });
         }
     }
-    // Check each objective's enum fields.
+    // Check every nested object boundary as well. The generic canonical
+    // validator intentionally erases this location, but a one-shot provider
+    // repair needs to know whether the problem is its objective, alternative,
+    // or tagged goal shape. These paths contain only schema positions.
     let objectives = proposal.get("objectives")?.as_array()?;
     for (idx, objective) in objectives.iter().enumerate() {
         let obj = objective.as_object()?;
         let base = format!("/objectives/{idx}");
+        if let Some(violation) = exact_shape_keys(
+            obj,
+            &[
+                "alternatives",
+                "directness",
+                "goal",
+                "object_types",
+                "priority",
+            ],
+            &base,
+        ) {
+            return Some(violation);
+        }
         for (field, allowed_vals) in [
             ("priority", vec!["required", "deferred"]),
             (
@@ -1052,6 +1061,17 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
                     offending: Some(actual.to_string()),
                     allowed: allowed_vals.iter().map(|s| (*s).to_string()).collect(),
                 });
+            }
+        }
+        let alternatives = obj.get("alternatives")?.as_array()?;
+        for (alternative_index, alternative) in alternatives.iter().enumerate() {
+            let alternative = alternative.as_object()?;
+            if let Some(violation) = exact_shape_keys(
+                alternative,
+                &["terms"],
+                &format!("{base}/alternatives/{alternative_index}"),
+            ) {
+                return Some(violation);
             }
         }
         // Check goal.kind and goal enums.
@@ -1071,6 +1091,19 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
                     offending: Some(kind.to_string()),
                     allowed: known_kinds.iter().map(|s| (*s).to_string()).collect(),
                 });
+            }
+            let allowed_goal_keys: &[&str] = match kind {
+                "metric_observation" | "metric_time_series" | "metric_difference" => {
+                    &["kind", "metric", "metric_dimensions"]
+                }
+                "metric_change" => &["change", "kind", "metric", "metric_dimensions", "window"],
+                "qualitative_evidence" => &["concepts", "kind", "predicates"],
+                _ => unreachable!("unknown goal kind returned above"),
+            };
+            if let Some(violation) =
+                exact_shape_keys(goal, allowed_goal_keys, &format!("{base}/goal"))
+            {
+                return Some(violation);
             }
             // Check metric_change enums.
             if kind == "metric_change" {
@@ -1104,6 +1137,21 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
         pointer: "/".to_string(),
         offending: None,
         allowed: allowed_top.iter().map(|s| (*s).to_string()).collect(),
+    })
+}
+
+fn exact_shape_keys(
+    object: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    pointer: &str,
+) -> Option<ResearchProposalViolation> {
+    (object.len() != allowed.len()
+        || allowed.iter().any(|key| !object.contains_key(*key))
+        || object.keys().any(|key| !allowed.contains(&key.as_str())))
+    .then(|| ResearchProposalViolation::ShapeInvalid {
+        pointer: pointer.to_string(),
+        offending: None,
+        allowed: allowed.iter().map(|value| (*value).to_string()).collect(),
     })
 }
 

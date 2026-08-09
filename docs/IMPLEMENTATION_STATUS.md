@@ -15,7 +15,7 @@ simulation, test, DX 문서는 판단 근거로 보존하지만 구현 권한은
 ## 1. 한 문장 설계
 
 **직접 작성한 8개 KRW AgentSpec을 변경 시점에만 immutable AgentImage로 만들고, 한 개의
-machine-wide Rust daemon이 정적 release set으로 모두 적재해 DeepSeek native API와 새 shared
+machine-wide Rust daemon이 정적 release set으로 모두 적재해 Anthropic-compatible provider API와 새 shared
 Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 실행한다.**
 
 ## 2. 확정 결정
@@ -45,9 +45,9 @@ Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 �
 ### Runtime and provider
 
 - production target은 service-account/OS-user 범위의 machine-wide Rust daemon이다.
-- provider는 DeepSeek native Chat Completions만 사용한다.
-- 물리 model descriptor는 `deepseek-v4-flash` 하나뿐이며 `flash_high`, `flash_max`,
-  `flash_direct`의 정확한 실행 profile 외에는 startup에서 거절한다.
+- provider wire는 Anthropic Messages 계약을 사용한다. 현재 live provider 검증과 quality run은
+  GLM-5.2만 사용하고, DeepSeek은 정적 compatibility fixture/replay 범위로 제한한다.
+- 물리 model/profile은 immutable registry에서 exact-match로 검증하며 alias와 silent fallback은 startup에서 거절한다.
 - model ID는 deployment registry에서 정확히 allowlist하며 alias, silent fallback과 provider 자동 매핑을
   허용하지 않는다.
 - thinking + tool turn의 `reasoning_content`와 tool-call lineage는 provider 계약 그대로 checkpoint하고
@@ -106,7 +106,7 @@ Static AgentImage release set + global DeploymentBinding/Budget/Model registries
 ClaimReceipt.agent_image_hash + RunRequest
   └─ ResolvedExecutionSnapshot
        └─ Rust Agent Kernel
-            ├─ DeepSeek direct HTTPS/SSE
+            ├─ GLM-5.2 direct HTTPS/SSE (live)
             ├─ bounded scheduler and budgets
             ├─ durable provider/action receipts
             └─ pooled MCP
@@ -125,7 +125,7 @@ ClaimReceipt.agent_image_hash + RunRequest
 | AgentSpec | workflow, role, evidence/period/output policy, prompt, bounded validator | endpoint, secret, 사용자·세션 |
 | AgentImage | 위 의미의 검증된 immutable 실행 표현과 hash | source parsing, 환경별 주소 |
 | DeploymentBinding | MCP transport, endpoint/credential ref, server schema bundle/build/data pin | 도구 input/output contract, 투자 판단 규칙 |
-| Model Registry | 정확한 DeepSeek model/API allowlist | prompt와 도메인 workflow |
+| Model Registry | 정확한 GLM/DeepSeek model/API allowlist | prompt와 도메인 workflow |
 | Rust Kernel | provider loop, state, budget, authz, retry/cancel/fence, EvidenceLedger/final-output receipt | Python ontology 검색 의미 |
 | Python `krw-capabilityd` | root SearchPlan/ResearchState의 canonical 의미와 실제 ontology·Guru 조회 | 전체 agent 판단과 final 저장 |
 | Host/DB | user/session ownership, queue, billing, SSE, atomic outcome/outbox | model 내부 tool loop |
@@ -150,8 +150,11 @@ ClaimReceipt.agent_image_hash + RunRequest
 
 ### Provider, capability, Guru
 
-- DeepSeek native Chat Completions HTTP/SSE client, fragmented delta decoder, exact request/observed
-  `deepseek-v4-flash` 검증, thinking/tool `reasoning_content` replay, bounded response handling이 있다.
+- provider-native HTTP/SSE client, fragmented delta decoder, exact request/observed model 검증,
+  thinking/tool `reasoning_content` replay, bounded response handling이 있다. GLM TypedJson 상태는
+  Z.AI가 실제 지원하는 `response_format.type=json_object`를 전면 사용하고, canonical schema는
+  trusted prompt + kernel local validation으로 계속 검증한다. Anthropic `output_config.json_schema`
+  및 strict tool-input은 문서화·admission 근거가 부족해 비활성으로 유지한다.
   Claude Agent SDK, subprocess, compatibility API는 runtime dependency가 아니다.
 - pooled Streamable HTTP MCP는 `run-scoped` 또는 readiness+initialize가 증명한
   `attested-stateless-v1` 세션만 사용한다. pool key는 principal/release/fingerprint를 분리하고,
@@ -215,8 +218,25 @@ ClaimReceipt.agent_image_hash + RunRequest
 
 ### 로컬에서 실행한 검증
 
+2026-08-09 현재 구현 검증은 `cargo check --workspace --all-targets --locked`와 rustfmt 검사까지
+통과했다. GLM-5.2 live admission probe에서 baseline, JSON mode, strict transition-tool input이
+모두 수락됐다. TypedJson의 GLM JSON mode는 활성화했고, JSON Schema output은 provider contract
+미지원으로 계속 비활성이다. DeepSeek live 호출은 하지 않았다.
+
+- quality suite manifest의 stale vertical-slice run-request hash를 현재 fixture 바이트와 정합화했다.
+- 세 deterministic `quality replay` 케이스는 모두 score 100으로 통과했다.
+- quality fixture는 이제 objective/clause 개수를 단일 값으로 고정하지 않고 최대 12개까지 허용하며,
+  각 dispatched clause를 의미가 맞는 fixture evidence에 연결한다. 연결되지 않는 objective는
+  근거 부족으로 남긴다.
+- 세 deterministic replay는 모두 score 100이다. GLM live quality도 provider identity/wire와
+  fixture plan gate까지 통과했지만, 현재 GLM proposal이 다중 objective를 만든 뒤 kernel의
+  canonical research-plan contract에서 거절되어 live gate는 아직 green이 아니다. 이는
+  Structured Outputs wire 실패나 clause 개수 고정 문제가 아니라, GLM proposal 품질/계약 적합성
+  문제로 기록한다.
+
 - `cargo test --workspace --no-fail-fast`, strict workspace clippy, rustfmt
-- `krw-agent quality replay`는 credential/network 없이 recorded DeepSeek turn을 full kernel로 재생한다.
+- `krw-agent quality replay`는 credential/network 없이 recorded provider turn을 GLM-5.2 snapshot으로
+  full kernel에 재생한다. DeepSeek endpoint/credential은 읽지 않는다.
   현재 단일 주장, 두 독립 주장, 그리고 partial ResearchState → trace → 동일 목표의 selective replan
   case가 있다. 마지막 case는 관련 없는 모델 제안을 dispatch 전에 거절하고, 새 근거로 실제 coverage를
   높일 수 있는 append만 실행하는지를 검증한다. 이 gate는 typed provider replay,
@@ -308,9 +328,9 @@ AgentSpec과 prompt source 수정으로 끝나야 한다.
 
 ## 9. 현재 안전 차단
 
-노출 가능성이 있는 기존 DeepSeek credential을 폐기·교체하고 redacted scan을 남기기 전에는 live
-provider call을 실행하지 않는다. 새 key는 secret manager 또는 process environment를 통해서만 주입하고
-source, image, fixture, log와 debug bundle에는 저장하지 않는다.
+DeepSeek live provider path는 비활성이고, 이 단계의 live 검증은 GLM-5.2 고정 probe만 허용한다.
+새 key는 secret manager 또는 process environment를 통해서만 주입하고 source, image, fixture, log와
+debug bundle에는 저장하지 않는다.
 
 ## 10. 과거 문서의 사용법
 

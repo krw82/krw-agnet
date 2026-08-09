@@ -7,11 +7,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::Zeroize;
 
-// v6 separates a per-capability immutable data-release pin from the
+// v7 adds explicit constrained-output facts and pins provider context
+// capacity into the execution contract. v6 separated a per-capability
+// immutable data-release pin from the
 // deployment-wide resolved binding fingerprint.  They are both hashes, but
 // they prove different facts and must never be compared as one domain.
-pub const PROTOCOL_VERSION: u16 = 6;
-pub const CLAIM_PAYLOAD_SCHEMA_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
+pub const CLAIM_PAYLOAD_SCHEMA_VERSION: u16 = 7;
 pub const PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION: u16 = 3;
 pub const DEEPSEEK_MODEL_ID: &str = "deepseek-v4-flash";
 pub const GLM_MODEL_ID: &str = "glm-5.2";
@@ -308,7 +310,7 @@ pub struct ModelDescriptor {
 /// Features supported by one exact provider mode. `supported` is separate
 /// from the output-channel flags because a model may support a mode while not
 /// supporting tools or JSON output in that mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ProviderWireModeCapabilities {
@@ -316,12 +318,18 @@ pub struct ProviderWireModeCapabilities {
     pub supports_tools: bool,
     pub supports_tool_choice: bool,
     pub supports_json_object: bool,
+    /// Exact JSON Schema output through the active provider wire protocol.
+    #[serde(default)]
+    pub supports_json_schema_output: bool,
+    /// Provider-enforced input schema for an individual advertised tool.
+    #[serde(default)]
+    pub supports_strict_tool_input: bool,
 }
 
 /// Immutable, provider-facing feature facts for one exact model. The kernel
 /// pins this matrix into every execution snapshot and asks the provider codec
 /// to encode a semantic decision only through a legal wire channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderWireCapabilities {
     pub thinking: ProviderWireModeCapabilities,
@@ -348,6 +356,8 @@ impl ProviderWireCapabilities {
                 // DeepSeek V4 thinking rejects the `tool_choice` parameter.
                 supports_tool_choice: false,
                 supports_json_object: true,
+                supports_json_schema_output: false,
+                supports_strict_tool_input: false,
             },
             non_thinking: ProviderWireModeCapabilities {
                 supported: true,
@@ -357,6 +367,8 @@ impl ProviderWireCapabilities {
                 // kernel contract, not to an assumed provider wire feature.
                 supports_tool_choice: false,
                 supports_json_object: true,
+                supports_json_schema_output: false,
+                supports_strict_tool_input: false,
             },
             requires_thinking_block_replay: true,
             requires_assistant_content_for_tool_calls: true,
@@ -378,12 +390,16 @@ impl ProviderWireCapabilities {
                 // states (the model is less likely to skip a required tool).
                 supports_tool_choice: true,
                 supports_json_object: true,
+                supports_json_schema_output: false,
+                supports_strict_tool_input: false,
             },
             non_thinking: ProviderWireModeCapabilities {
                 supported: true,
                 supports_tools: true,
                 supports_tool_choice: true,
                 supports_json_object: true,
+                supports_json_schema_output: false,
+                supports_strict_tool_input: false,
             },
             // GLM-5.2 emits a thinking block during thinking but does NOT emit
             // assistant content alongside tool_calls (unlike DeepSeek V4).
@@ -404,6 +420,8 @@ impl ProviderWireCapabilities {
     pub const fn is_well_formed(self) -> bool {
         (!self.thinking.supports_tool_choice || self.thinking.supports_tools)
             && (!self.non_thinking.supports_tool_choice || self.non_thinking.supports_tools)
+            && (!self.thinking.supports_strict_tool_input || self.thinking.supports_tools)
+            && (!self.non_thinking.supports_strict_tool_input || self.non_thinking.supports_tools)
     }
 }
 
@@ -1023,6 +1041,7 @@ pub struct ResolvedExecutionSnapshot {
     pub requested_model: String,
     pub resolved_model: String,
     pub provider_api_version: String,
+    pub provider_max_context_tokens: u32,
     pub provider_wire_capabilities: ProviderWireCapabilities,
     pub thinking: ThinkingMode,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -1049,6 +1068,7 @@ pub struct PinnedExecutionContract {
     pub requested_model: String,
     pub resolved_model: String,
     pub provider_api_version: String,
+    pub provider_max_context_tokens: u32,
     pub provider_wire_capabilities: ProviderWireCapabilities,
     pub thinking: ThinkingMode,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -1068,6 +1088,7 @@ impl From<&ResolvedExecutionSnapshot> for PinnedExecutionContract {
             requested_model: snapshot.requested_model.clone(),
             resolved_model: snapshot.resolved_model.clone(),
             provider_api_version: snapshot.provider_api_version.clone(),
+            provider_max_context_tokens: snapshot.provider_max_context_tokens,
             provider_wire_capabilities: snapshot.provider_wire_capabilities,
             thinking: snapshot.thinking,
             reasoning_effort: snapshot.reasoning_effort,
@@ -1166,6 +1187,37 @@ mod tests {
     }
 
     #[test]
+    fn missing_constrained_output_fields_default_to_false() {
+        let mode: ProviderWireModeCapabilities = serde_json::from_value(serde_json::json!({
+            "supported": true,
+            "supports_tools": true,
+            "supports_tool_choice": false,
+            "supports_json_object": true
+        }))
+        .unwrap();
+        assert!(!mode.supports_json_schema_output);
+        assert!(!mode.supports_strict_tool_input);
+    }
+
+    #[test]
+    fn strict_tool_input_requires_tools() {
+        let capabilities = ProviderWireCapabilities {
+            thinking: ProviderWireModeCapabilities {
+                supported: true,
+                supports_tools: false,
+                supports_tool_choice: false,
+                supports_json_object: true,
+                supports_json_schema_output: false,
+                supports_strict_tool_input: true,
+            },
+            non_thinking: ProviderWireModeCapabilities::default(),
+            requires_thinking_block_replay: false,
+            requires_assistant_content_for_tool_calls: false,
+        };
+        assert!(!capabilities.is_well_formed());
+    }
+
+    #[test]
     fn model_resolution_forbids_aliases_and_fallbacks() {
         let registry = ModelRegistry {
             schema_version: 2,
@@ -1173,7 +1225,7 @@ mod tests {
             models: vec![ModelDescriptor {
                 model_id: "deepseek-v4-flash".into(),
                 api_base: "https://api.deepseek.com".into(),
-                api_version: "chat-completions-v1".into(),
+                api_version: "anthropic-messages-v1".into(),
                 max_context_tokens: 1_000_000,
                 max_output_tokens: 384_000,
                 max_in_flight: 64,
@@ -1215,7 +1267,7 @@ mod tests {
                 ModelDescriptor {
                     model_id: "deepseek-v4-flash".into(),
                     api_base: "https://api.deepseek.com".into(),
-                    api_version: "chat-completions-v1".into(),
+                    api_version: "anthropic-messages-v1".into(),
                     max_context_tokens: 1_000_000,
                     max_output_tokens: 384_000,
                     max_in_flight: 64,
@@ -1223,8 +1275,8 @@ mod tests {
                 },
                 ModelDescriptor {
                     model_id: "glm-5.2".into(),
-                    api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
-                    api_version: "chat-completions-v1".into(),
+                    api_base: "https://api.z.ai/api/anthropic".into(),
+                    api_version: "anthropic-messages-v1".into(),
                     max_context_tokens: 128_000,
                     max_output_tokens: 16_384,
                     max_in_flight: 32,

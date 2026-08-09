@@ -24,7 +24,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const CONFIG_SCHEMA_VERSION: u16 = 1;
 const DEPLOYMENT_BINDING_SCHEMA_VERSION: u16 = 3;
-const MODEL_REGISTRY_SCHEMA_VERSION: u16 = 3;
+const MODEL_REGISTRY_SCHEMA_VERSION: u16 = 4;
 const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 pub const MAX_RELEASE_IMAGES: usize = 64;
 pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 4;
@@ -847,7 +847,7 @@ fn semantic_model_registry_hash(registry: &ModelRegistry) -> Result<ContentHash,
     profiles.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
     Ok(ContentHash::sha256(serde_jcs::to_vec(
         &SemanticModelRegistryHashEnvelope {
-            format: "krw.agent/semantic-model-registry-v3",
+            format: "krw.agent/semantic-model-registry-v4",
             schema_version: registry.schema_version,
             models: &models,
             profiles: &profiles,
@@ -979,6 +979,7 @@ impl ResolvedRuntime {
             requested_model: request.requested_model.clone(),
             resolved_model: model.model_id.clone(),
             provider_api_version: model.api_version.clone(),
+            provider_max_context_tokens: model.max_context_tokens,
             provider_wire_capabilities: model.provider_wire_capabilities,
             thinking: profile.thinking,
             reasoning_effort: profile.reasoning_effort,
@@ -1099,6 +1100,7 @@ impl ResolvedReleaseSet {
                     requested_model: model.model_id.clone(),
                     resolved_model: model.model_id.clone(),
                     provider_api_version: model.api_version.clone(),
+                    provider_max_context_tokens: model.max_context_tokens,
                     provider_wire_capabilities: model.provider_wire_capabilities,
                     thinking: profile.thinking,
                     reasoning_effort: profile.reasoning_effort,
@@ -1166,8 +1168,8 @@ fn validate_glm_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
     // to reason about a different concurrency envelope than DeepSeek.
     if model.api_base != GLM_API_BASE
         || model.api_version != GLM_API_VERSION
-        || model.max_context_tokens > GLM_MAX_CONTEXT_TOKENS
-        || model.max_output_tokens > GLM_MAX_OUTPUT_TOKENS
+        || !(1..=GLM_MAX_CONTEXT_TOKENS).contains(&model.max_context_tokens)
+        || !(1..=GLM_MAX_OUTPUT_TOKENS).contains(&model.max_output_tokens)
         || !(1..=2_500).contains(&model.max_in_flight)
         || !model.provider_wire_capabilities.is_well_formed()
         || model.provider_wire_capabilities != ProviderWireCapabilities::glm_5_2()

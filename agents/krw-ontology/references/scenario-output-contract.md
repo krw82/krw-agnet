@@ -1,7 +1,7 @@
 ---
 name: scenario_output_contract
 description: "Use when composing the scenario_sensitivity final Korean answer. Defines the scenario judgment, baseline, interpretation table, and break conditions."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when composing the final scenario-sensitivity answer"
 ---
 
 # Output Contract

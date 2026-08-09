@@ -13,6 +13,7 @@
 //! internal flat [`AssistantMessage`] shape on [`EpisodeAssembler::finish`]:
 //!
 //! - `thinking` blocks  -> `reasoning_content` (concatenated in index order)
+//! - `signature` parts from thinking blocks -> `reasoning_signature`
 //! - `text` blocks      -> `content`           (concatenated in index order)
 //! - `tool_use` blocks  -> `tool_calls[i]`     with `input` parsed as canonical JSON
 //!
@@ -219,9 +220,13 @@ impl EpisodeAssembler {
         };
 
         let mut reasoning_parts: Vec<String> = Vec::new();
+        let mut signature_parts: Vec<String> = Vec::new();
         for thinking in self.thinking_blocks.into_values() {
             if !thinking.thinking.is_empty() {
                 reasoning_parts.push(thinking.thinking);
+            }
+            if !thinking.signature.is_empty() {
+                signature_parts.push(thinking.signature);
             }
         }
         let reasoning_content = if reasoning_parts.is_empty() {
@@ -233,6 +238,11 @@ impl EpisodeAssembler {
             } else {
                 Some(joined)
             }
+        };
+        let reasoning_signature = if signature_parts.is_empty() {
+            None
+        } else {
+            Some(signature_parts.concat())
         };
 
         // Build tool calls. Each tool_use block's accumulated `input_json` is
@@ -281,6 +291,7 @@ impl EpisodeAssembler {
         let assistant = AssistantMessage {
             content,
             reasoning_content,
+            reasoning_signature,
             tool_calls,
         };
 
@@ -438,7 +449,7 @@ mod tests {
         EpisodeContext {
             tool_schema_hash: ContentHash::sha256("tools"),
             agent_image_hash: ContentHash::sha256("image"),
-            api_version: "messages-v1".to_string(),
+            api_version: "anthropic-messages-v1".to_string(),
         }
     }
 

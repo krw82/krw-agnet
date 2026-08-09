@@ -1,7 +1,7 @@
 ---
 name: scenario_event_liquidity_policy
 description: "Use during scenario_sensitivity for event-path scenarios (contracts, projects, M&A, litigation, regulation) and capital/liquidity downside stress."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when a scenario depends on an event path, liquidity pressure, financing, dilution, or capital access"
 ---
 
 # Event And Liquidity Policy

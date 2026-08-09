@@ -1,7 +1,7 @@
 ---
 name: scenario_sensitivity_policy
 description: "Use during scenario_sensitivity to select 1-3 binding variables and apply qualitative versus quantitative sensitivity rules."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when selecting the one to three variables that actually drive a scenario or sensitivity conclusion"
 ---
 
 # Sensitivity Policy

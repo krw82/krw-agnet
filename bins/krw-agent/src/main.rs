@@ -8,12 +8,12 @@ use clap::{Parser, Subcommand};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
-    ContentHash, DEEPSEEK_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
+    ContentHash, DEEPSEEK_MODEL_ID, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
     PublicReleaseDescriptor,
 };
 use krw_agent_provider_wire::{
-    EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderMessage,
-    ThinkingConfig,
+    EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderFunctionName,
+    ProviderMessage, ProviderToolDefinition, ResponseFormat, ThinkingConfig, ToolChoice, WireError,
 };
 use krw_agent_release_authorization::{
     RELEASE_AUTHORIZATION_SCHEMA_VERSION, ReleaseAuthorizationPayloadV1, VerificationContext,
@@ -21,7 +21,9 @@ use krw_agent_release_authorization::{
     parse_canonical_trust_registry, public_descriptor_hash, public_key_hex_from_private_key, sign,
     verify_for_descriptor,
 };
-use krw_agent_research_quality::{load_suite, run_fixture_case, run_recorded_fixture_case};
+use krw_agent_research_quality::{
+    load_suite, run_fixture_case_with_model, run_recorded_fixture_case,
+};
 use zeroize::Zeroizing;
 
 mod gateway;
@@ -30,8 +32,8 @@ use gateway::{AgentGatewayClient, GatewayRunState};
 
 const MAX_DESCRIPTOR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
-const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
-const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com";
+const GLM_API_KEY_ENV: &str = "GLM_API_KEY";
+const GLM_API_BASE: &str = "https://api.z.ai/api/anthropic";
 const PROVIDER_PROBE_PROMPT: &str = "Reply with only: OK";
 const PROVIDER_PROBE_MAX_TOKENS: u32 = 16;
 
@@ -61,12 +63,12 @@ enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
-    /// Read-only, fixed-prompt `DeepSeek` Flash provider readiness check.
+    /// Read-only, fixed-prompt GLM-5.2 provider readiness check.
     Provider {
         #[command(subcommand)]
         command: ProviderCommand,
     },
-    /// Fixture-backed research-quality acceptance tests using `DeepSeek` Flash.
+    /// Fixture-backed research-quality acceptance tests using GLM-5.2.
     Quality {
         #[command(subcommand)]
         command: QualityCommand,
@@ -182,8 +184,12 @@ enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 enum ProviderCommand {
-    /// Send one fixed, no-tool request and print only redacted wire metadata.
+    /// Send one fixed, no-tool request and print only redacted GLM wire metadata.
     Probe,
+    /// Send separate GLM admission probes for JSON mode and strict
+    /// transition-tool input. This command is the only live structured-output
+    /// check; DeepSeek has no live test path.
+    StructuredProbe,
 }
 
 #[derive(Debug, Subcommand)]
@@ -245,6 +251,29 @@ struct ProviderProbeReport {
     elapsed_ms: u64,
     request_hash: ContentHash,
     replay_hash: ContentHash,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderStructuredAdmissionReport {
+    schema_version: u16,
+    model_id: String,
+    baseline: ProviderAdmissionResult,
+    json_object_output: ProviderAdmissionResult,
+    strict_tool_input: ProviderAdmissionResult,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderAdmissionResult {
+    accepted: bool,
+    observed_model: Option<String>,
+    finish_reason: Option<String>,
+    tool_call_count: usize,
+    elapsed_ms: u64,
+    error_kind: Option<String>,
+    request_id_hash: Option<ContentHash>,
+    retry_after_ms: Option<u64>,
 }
 
 #[tokio::main]
@@ -355,7 +384,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Provider {
             command: ProviderCommand::Probe,
         } => {
-            let report = probe_deepseek_flash().await?;
+            let report = probe_glm_52().await?;
+            println!("{}", serde_json::to_string(&report)?);
+        }
+        Command::Provider {
+            command: ProviderCommand::StructuredProbe,
+        } => {
+            let report = probe_glm_structured_admission().await?;
             println!("{}", serde_json::to_string(&report)?);
         }
         Command::Quality {
@@ -384,12 +419,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
         } => {
             let loaded = load_suite(&root, &suite)?;
-            let run = run_fixture_case(
+            let run = run_fixture_case_with_model(
                 &root,
                 &loaded,
                 &case,
-                Arc::new(deepseek_flash_client()?),
+                Arc::new(glm_52_client()?),
                 answer_out.is_some(),
+                GLM_MODEL_ID,
+                "glm_high",
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&run.report)?);
@@ -563,8 +600,8 @@ async fn run_through_gateway(
     }
 }
 
-async fn probe_deepseek_flash() -> Result<ProviderProbeReport, Box<dyn std::error::Error>> {
-    let client = deepseek_flash_client()?;
+async fn probe_glm_52() -> Result<ProviderProbeReport, Box<dyn std::error::Error>> {
+    let client = glm_52_client()?;
     let request = provider_probe_request();
     let started = Instant::now();
     let episode = client
@@ -581,7 +618,7 @@ async fn probe_deepseek_flash() -> Result<ProviderProbeReport, Box<dyn std::erro
 
     Ok(ProviderProbeReport {
         schema_version: 1,
-        model_id: DEEPSEEK_MODEL_ID.to_owned(),
+        model_id: GLM_MODEL_ID.to_owned(),
         observed_model: episode.observed_model,
         finish_reason: episode.finish_reason,
         tool_call_count: episode.assistant.tool_calls.len(),
@@ -594,23 +631,226 @@ async fn probe_deepseek_flash() -> Result<ProviderProbeReport, Box<dyn std::erro
     })
 }
 
-fn deepseek_flash_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
-    let api_key = Zeroizing::new(std::env::var(DEEPSEEK_API_KEY_ENV).map_err(|_| {
+async fn probe_glm_structured_admission()
+-> Result<ProviderStructuredAdmissionReport, Box<dyn std::error::Error>> {
+    let client = glm_52_client()?;
+    let baseline = probe_glm_admission_case(
+        &client,
+        provider_probe_request(),
+        ProviderAdmissionExpectation::NoTools,
+    )
+    .await;
+    let json_object_output = probe_glm_admission_case(
+        &client,
+        provider_json_object_probe_request(),
+        ProviderAdmissionExpectation::JsonStatus,
+    )
+    .await;
+    let strict_tool_input = probe_glm_admission_case(
+        &client,
+        provider_strict_tool_probe_request()?,
+        ProviderAdmissionExpectation::StrictTransition,
+    )
+    .await;
+    Ok(ProviderStructuredAdmissionReport {
+        schema_version: 1,
+        model_id: GLM_MODEL_ID.to_owned(),
+        baseline,
+        json_object_output,
+        strict_tool_input,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProviderAdmissionExpectation {
+    NoTools,
+    JsonStatus,
+    StrictTransition,
+}
+
+async fn probe_glm_admission_case(
+    client: &ProviderClient,
+    request: MessagesRequest,
+    expectation: ProviderAdmissionExpectation,
+) -> ProviderAdmissionResult {
+    let started = Instant::now();
+    match client
+        .complete_stream(&request, &provider_probe_context())
+        .await
+    {
+        Ok(episode) => {
+            let identity_ok = episode.verify_model_identity().is_ok();
+            let accepted = identity_ok
+                && match expectation {
+                    ProviderAdmissionExpectation::NoTools => {
+                        episode.finish_reason == "stop" && episode.assistant.tool_calls.is_empty()
+                    }
+                    ProviderAdmissionExpectation::JsonStatus => {
+                        episode.finish_reason == "stop"
+                            && episode.assistant.tool_calls.is_empty()
+                            && episode
+                                .assistant
+                                .content
+                                .as_deref()
+                                .and_then(|content| {
+                                    serde_json::from_str::<serde_json::Value>(content).ok()
+                                })
+                                .and_then(|value| {
+                                    value
+                                        .get("status")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(|status| status == "ok")
+                                })
+                                .unwrap_or(false)
+                    }
+                    ProviderAdmissionExpectation::StrictTransition => {
+                        let [call] = episode.assistant.tool_calls.as_slice() else {
+                            return ProviderAdmissionResult {
+                                accepted: false,
+                                observed_model: Some(episode.observed_model),
+                                finish_reason: Some(episode.finish_reason),
+                                tool_call_count: episode.assistant.tool_calls.len(),
+                                elapsed_ms: u64::try_from(started.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX),
+                                error_kind: Some("strict_tool_shape".into()),
+                                request_id_hash: None,
+                                retry_after_ms: None,
+                            };
+                        };
+                        episode.finish_reason == "tool_calls"
+                            && call.function.name.as_str() == "krw_agent_transition"
+                            && serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                                .ok()
+                                .and_then(|value| {
+                                    value
+                                        .get("event")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(|event| event == "probe_ok")
+                                })
+                                .unwrap_or(false)
+                    }
+                };
+            ProviderAdmissionResult {
+                accepted,
+                observed_model: Some(episode.observed_model),
+                finish_reason: Some(episode.finish_reason),
+                tool_call_count: episode.assistant.tool_calls.len(),
+                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                error_kind: (!accepted).then_some("provider_contract_rejected".into()),
+                request_id_hash: None,
+                retry_after_ms: None,
+            }
+        }
+        Err(error) => {
+            let (request_id_hash, retry_after_ms) = match &error {
+                WireError::ApiStatus {
+                    request_id_hash,
+                    retry_after_ms,
+                    ..
+                } => (request_id_hash.clone(), *retry_after_ms),
+                _ => (None, None),
+            };
+            ProviderAdmissionResult {
+                accepted: false,
+                observed_model: None,
+                finish_reason: None,
+                tool_call_count: 0,
+                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                error_kind: Some(provider_probe_error_kind(&error).into()),
+                request_id_hash,
+                retry_after_ms,
+            }
+        }
+    }
+}
+
+fn provider_json_object_probe_request() -> MessagesRequest {
+    MessagesRequest {
+        model: GLM_MODEL_ID.to_owned(),
+        messages: vec![ProviderMessage::user(
+            "Return exactly {\"status\":\"ok\"} as raw JSON. Do not use Markdown fences.",
+        )],
+        system: "Return exactly one raw JSON object and nothing else. Do not use Markdown fences, prose, or code blocks.".into(),
+        max_tokens: 64,
+        tools: Vec::new(),
+        tool_choice: None,
+        output_config: None,
+        response_format: Some(ResponseFormat::json_object()),
+        thinking: ThinkingConfig {
+            kind: ThinkingMode::Disabled,
+            budget_tokens: None,
+        },
+        stream: true,
+        metadata: None,
+    }
+}
+
+fn provider_strict_tool_probe_request() -> Result<MessagesRequest, Box<dyn std::error::Error>> {
+    let tool_name = ProviderFunctionName::parse("krw_agent_transition")?;
+    let tool = ProviderToolDefinition::new(
+        tool_name.as_str(),
+        "Select the requested local transition.",
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event"],
+            "properties": {"event": {"type": "string", "enum": ["probe_ok"]}}
+        }),
+    )?
+    .with_strict();
+    Ok(MessagesRequest {
+        model: GLM_MODEL_ID.to_owned(),
+        messages: vec![ProviderMessage::user(
+            "Call krw_agent_transition exactly once with event probe_ok.",
+        )],
+        system: "KRW GLM strict tool-input admission probe".into(),
+        max_tokens: 128,
+        tools: vec![tool],
+        tool_choice: Some(ToolChoice::Tool { name: tool_name }),
+        output_config: None,
+        response_format: None,
+        thinking: ThinkingConfig {
+            kind: ThinkingMode::Disabled,
+            budget_tokens: None,
+        },
+        stream: true,
+        metadata: None,
+    })
+}
+
+fn provider_probe_error_kind(error: &WireError) -> &'static str {
+    match error {
+        WireError::ApiStatus { status, .. } => match status {
+            400 | 422 => "provider_contract_rejected",
+            401 | 403 => "provider_auth_rejected",
+            429 => "provider_rate_limited",
+            500 | 503 => "provider_unavailable",
+            _ => "provider_http_error",
+        },
+        WireError::InvalidEndpoint => "invalid_endpoint",
+        WireError::InvalidAuthorization => "invalid_authorization",
+        WireError::UnknownModel(_) => "unknown_model",
+        WireError::UnexpectedContentType => "unexpected_content_type",
+        WireError::MissingMessageStop | WireError::MissingStopReason => "incomplete_stream",
+        _ => "provider_wire_error",
+    }
+}
+
+fn glm_52_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
+    let api_key = Zeroizing::new(std::env::var(GLM_API_KEY_ENV).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "DEEPSEEK_API_KEY is not present; inject it through the process environment",
+            "GLM_API_KEY is not present; inject it through the process environment",
         )
     })?);
     if api_key.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "DEEPSEEK_API_KEY is empty",
-        )
-        .into());
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "GLM_API_KEY is empty").into(),
+        );
     }
 
     let client = ProviderClient::new(
-        ProviderClientConfig::production(DEEPSEEK_API_BASE, [DEEPSEEK_MODEL_ID.to_owned()], 8),
+        ProviderClientConfig::production(GLM_API_BASE, [GLM_MODEL_ID.to_owned()], 8),
         api_key.as_str(),
     )?;
     Ok(client)
@@ -618,12 +858,14 @@ fn deepseek_flash_client() -> Result<ProviderClient, Box<dyn std::error::Error>>
 
 fn provider_probe_request() -> MessagesRequest {
     MessagesRequest {
-        model: DEEPSEEK_MODEL_ID.to_owned(),
+        model: GLM_MODEL_ID.to_owned(),
         messages: vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)],
         system: "KRW provider probe".into(),
         max_tokens: PROVIDER_PROBE_MAX_TOKENS,
         tools: Vec::new(),
         tool_choice: None,
+        output_config: None,
+        response_format: None,
         thinking: ThinkingConfig {
             kind: ThinkingMode::Disabled,
             budget_tokens: None,
@@ -637,7 +879,7 @@ fn provider_probe_context() -> EpisodeContext {
     EpisodeContext {
         tool_schema_hash: ContentHash::sha256("krw-agent-provider-probe-tool-schema/v1"),
         agent_image_hash: ContentHash::sha256("krw-agent-provider-probe-image/v1"),
-        api_version: "chat-completions-v1".into(),
+        api_version: "anthropic-messages-v1".into(),
     }
 }
 
@@ -756,16 +998,16 @@ fn write_new_file(path: &Path, bytes: &[u8], private: bool) -> Result<(), std::i
 #[cfg(test)]
 mod tests {
     use super::{
-        DEEPSEEK_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT,
-        provider_probe_context, provider_probe_request,
+        GLM_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT, provider_probe_context,
+        provider_probe_request,
     };
     use krw_agent_protocol::ThinkingMode;
     use krw_agent_provider_wire::ProviderMessage;
 
     #[test]
-    fn provider_probe_is_fixed_flash_only_and_has_no_tools() {
+    fn provider_probe_is_fixed_glm_only_and_has_no_tools() {
         let request = provider_probe_request();
-        assert_eq!(request.model, DEEPSEEK_MODEL_ID);
+        assert_eq!(request.model, GLM_MODEL_ID);
         assert!(request.stream);
         assert!(request.tools.is_empty());
         assert_eq!(request.thinking.kind, ThinkingMode::Disabled);

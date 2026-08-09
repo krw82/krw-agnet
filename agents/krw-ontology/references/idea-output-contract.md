@@ -1,7 +1,7 @@
 ---
 name: idea_output_contract
 description: "Use when composing the idea_generation final Korean answer. Defines the priority conclusion, candidate funnel table, and next-research prompts."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when composing the final idea-generation answer with priority, evidence, and next-research prompts"
 ---
 
 # Output Contract

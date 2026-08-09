@@ -143,7 +143,7 @@ pub fn run_vertical_slice(
         request_hash: ContentHash::sha256("fixture-provider-request"),
         requested_model: request.requested_model.clone(),
         observed_model: "deepseek-v4-flash".into(),
-        api_version: "chat-completions-v1".into(),
+        api_version: "anthropic-messages-v1".into(),
         assistant,
         tool_results: Vec::new(),
         tool_schema_hash: ContentHash::sha256("fixture-tool-schema"),

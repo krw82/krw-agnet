@@ -1152,6 +1152,7 @@ dependencies = [
  "krw-agent-persistence",
  "krw-agent-protocol",
  "krw-agent-provider-wire",
+ "krw-agent-research-planner",
  "krw-agent-run-engine",
  "krw-ontology-adapter",
  "serde",

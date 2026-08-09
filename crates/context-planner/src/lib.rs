@@ -12,15 +12,17 @@ use std::sync::Arc;
 
 use krw_agent_contracts::{contract as canonical_contract, verify_pin};
 use krw_agent_image::{
-    AgentImageManifest, CompiledState, CompiledWorkflow, ImageError, LoadedImage, StateKind,
-    provider_input_parameters,
+    AgentImageManifest, CompiledState, CompiledWorkflow, ImageError, LoadedImage, ModelOutputMode,
+    StateKind, StateOperation, provider_input_parameters,
 };
 use krw_agent_protocol::{ContentHash, RunRequest, provider_tool_name};
-use krw_agent_provider_wire::{ProviderToolDefinition, WireError};
+use krw_agent_provider_wire::{
+    JsonSchemaDocument, ProviderToolDefinition, WireError, project_anthropic_json_schema,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const PROMPT_ASSEMBLY_RECEIPT_SCHEMA_VERSION: u16 = 1;
+pub const PROMPT_ASSEMBLY_RECEIPT_SCHEMA_VERSION: u16 = 2;
 
 const MAX_DYNAMIC_SEGMENTS: usize = 32;
 const MAX_STATIC_SEGMENTS: usize = 64;
@@ -125,6 +127,15 @@ pub struct CapabilitySchemaRef {
     pub load_reason: LoadReason,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderOutputSchemaRef {
+    pub output_contract_id: String,
+    pub canonical_schema_hash: ContentHash,
+    pub projected_schema_hash: ContentHash,
+    pub projected_schema: JsonSchemaDocument,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompiledStateContext {
     pub run_kind: String,
@@ -136,6 +147,7 @@ pub struct CompiledStateContext {
     pub omitted_segments: Arc<[OmittedPromptSegmentRef]>,
     pub capability_schemas: Arc<[CapabilitySchemaRef]>,
     pub tool_definitions: Arc<[ProviderToolDefinition]>,
+    pub provider_output_schema: Option<ProviderOutputSchemaRef>,
     pub tool_schema_hash: ContentHash,
     pub stable_prefix_hash: ContentHash,
     pub plan_hash: ContentHash,
@@ -193,6 +205,10 @@ impl CompiledStateContext {
             dynamic_segments,
             omitted_segments: self.omitted_segments.iter().cloned().collect(),
             capability_schemas: self.capability_schemas.iter().cloned().collect(),
+            provider_output_schema_hash: self
+                .provider_output_schema
+                .as_ref()
+                .map(|schema| schema.projected_schema_hash.clone()),
             total_bytes,
             estimated_tokens_upper_bound: total_bytes,
             stable_prefix_hash: self.stable_prefix_hash.clone(),
@@ -221,6 +237,11 @@ impl CompiledStateContext {
             || receipt.static_segments.as_slice() != self.static_segments.as_ref()
             || receipt.omitted_segments.as_slice() != self.omitted_segments.as_ref()
             || receipt.capability_schemas.as_slice() != self.capability_schemas.as_ref()
+            || receipt.provider_output_schema_hash
+                != self
+                    .provider_output_schema
+                    .as_ref()
+                    .map(|schema| schema.projected_schema_hash.clone())
             || receipt.stable_prefix_hash != self.stable_prefix_hash
             || receipt.tool_schema_hash != self.tool_schema_hash
             || receipt.plan_hash != self.plan_hash
@@ -251,6 +272,7 @@ struct PlanHashInput<'a> {
     static_segments: &'a [StaticPromptSegmentRef],
     omitted_segments: &'a [OmittedPromptSegmentRef],
     capability_schemas: &'a [CapabilitySchemaRef],
+    provider_output_schema_hash: Option<&'a ContentHash>,
     tool_schema_hash: &'a ContentHash,
     stable_prefix_hash: &'a ContentHash,
 }
@@ -271,6 +293,7 @@ pub struct PromptAssemblyReceipt {
     pub dynamic_segments: Vec<DynamicContextSegmentRef>,
     pub omitted_segments: Vec<OmittedPromptSegmentRef>,
     pub capability_schemas: Vec<CapabilitySchemaRef>,
+    pub provider_output_schema_hash: Option<ContentHash>,
     pub total_bytes: u64,
     pub estimated_tokens_upper_bound: u64,
     pub stable_prefix_hash: ContentHash,
@@ -386,6 +409,7 @@ impl PromptAssemblyReceipt {
             static_segments: &self.static_segments,
             omitted_segments: &self.omitted_segments,
             capability_schemas: &self.capability_schemas,
+            provider_output_schema_hash: self.provider_output_schema_hash.as_ref(),
             tool_schema_hash: &self.tool_schema_hash,
             stable_prefix_hash: &self.stable_prefix_hash,
         })?);
@@ -580,7 +604,24 @@ fn compile_state_context(
         .collect::<Vec<_>>();
 
     let frontier = capability_frontier(workflow, state)?;
-    let (tool_definitions, capability_schemas) = build_frontier_tools(image, &frontier)?;
+    // Progressive disclosure is opt-in per role: advertising skill.load
+    // without also supplying the compact catalog gives the model an opaque
+    // extra tool. Roles retain their primary skills as static context, while
+    // the catalog lets them add one or more distinct relevant skills during
+    // the same run.
+    let include_skill_load = role
+        .prompt_segments
+        .iter()
+        .any(|segment_id| segment_id == "skill_catalog");
+    let (tool_definitions, capability_schemas) =
+        build_frontier_tools(image, &frontier, include_skill_load)?;
+    let provider_output_schema = match &state.operation {
+        StateOperation::ModelDecision {
+            output_mode: ModelOutputMode::TypedJson,
+            ..
+        } => Some(build_provider_output_schema(&state.operation)?),
+        _ => None,
+    };
     let tool_schema_hash = ContentHash::sha256(serde_jcs::to_vec(&tool_definitions)?);
     let shared_tools = tool_interner
         .entry(tool_schema_hash.clone())
@@ -608,6 +649,9 @@ fn compile_state_context(
         static_segments: &static_segments,
         omitted_segments: &omitted_segments,
         capability_schemas: shared_schemas.as_ref(),
+        provider_output_schema_hash: provider_output_schema
+            .as_ref()
+            .map(|schema| &schema.projected_schema_hash),
         tool_schema_hash: &tool_schema_hash,
         stable_prefix_hash: &stable_prefix_hash,
     })?);
@@ -622,10 +666,57 @@ fn compile_state_context(
         omitted_segments: Arc::from(omitted_segments),
         capability_schemas: shared_schemas,
         tool_definitions: shared_tools,
+        provider_output_schema,
         tool_schema_hash,
         stable_prefix_hash,
         plan_hash,
         static_bytes,
+    })
+}
+
+fn build_provider_output_schema(
+    operation: &StateOperation,
+) -> Result<ProviderOutputSchemaRef, ContextPlanError> {
+    let StateOperation::ModelDecision {
+        output_mode: ModelOutputMode::TypedJson,
+        output_contracts,
+        ..
+    } = operation
+    else {
+        return Err(ContextPlanError::CanonicalContract(
+            "provider output schema requested for a non-TypedJson state".into(),
+        ));
+    };
+    let [output_contract] = output_contracts.as_slice() else {
+        return Err(ContextPlanError::CanonicalContract(
+            "typed JSON state must declare exactly one output contract".into(),
+        ));
+    };
+    verify_pin(&output_contract.id, &output_contract.content_hash)
+        .map_err(|error| ContextPlanError::CanonicalContract(format!("{error:?}")))?;
+    let descriptor = canonical_contract(&output_contract.id).ok_or_else(|| {
+        ContextPlanError::CanonicalContract(format!(
+            "unknown typed JSON output contract {}",
+            output_contract.id
+        ))
+    })?;
+    let canonical_schema = descriptor
+        .canonical_schema()
+        .map_err(|error| ContextPlanError::CanonicalContract(format!("{error:?}")))?;
+    if ContentHash::sha256(&canonical_schema) != output_contract.content_hash {
+        return Err(ContextPlanError::CanonicalContract(format!(
+            "schema pin mismatch for {}",
+            output_contract.id
+        )));
+    }
+    let canonical_value: serde_json::Value = serde_json::from_slice(&canonical_schema)?;
+    let projected_schema = project_anthropic_json_schema(canonical_value)?;
+    let projected_schema_hash = ContentHash::sha256(serde_jcs::to_vec(&projected_schema)?);
+    Ok(ProviderOutputSchemaRef {
+        output_contract_id: output_contract.id.clone(),
+        canonical_schema_hash: output_contract.content_hash.clone(),
+        projected_schema_hash,
+        projected_schema,
     })
 }
 
@@ -683,13 +774,19 @@ fn capability_frontier(
 fn build_frontier_tools(
     image: &AgentImageManifest,
     frontier: &BTreeSet<String>,
+    include_skill_load: bool,
 ) -> Result<(Vec<ProviderToolDefinition>, Vec<CapabilitySchemaRef>), ContextPlanError> {
-    // The local skill-load capability is ambient: available from every
-    // model-driven state so the agent can pull a skill body on demand
-    // (progressive disclosure). Only inject when the image declares it, so
-    // agents without skill.load (e.g. guru-advisor) are unaffected.
+    // `skill.load` is an ambient, image-local capability only for roles that
+    // include a skill catalog. It never requires a workflow-state detour or
+    // an MCP round trip.
     let mut frontier = frontier.clone();
-    if image.body.capabilities.iter().any(|c| c.id == "skill.load") {
+    if include_skill_load
+        && image
+            .body
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "skill.load")
+    {
         frontier.insert("skill.load".to_string());
     }
     let mut definitions = Vec::with_capacity(frontier.len());
@@ -760,7 +857,7 @@ fn validate_segment_id(value: &str) -> Result<(), ContextPlanError> {
 
 #[derive(Debug, Error)]
 pub enum ContextPlanError {
-    #[error("DeepSeek wire contract failed: {0}")]
+    #[error("provider wire contract failed: {0}")]
     Wire(#[from] WireError),
     #[error("AgentImage validation failed: {0}")]
     Image(#[from] ImageError),
@@ -886,8 +983,6 @@ mod tests {
         let (image, request) = fixture();
         let planner = ContextPlanner::compile(&image).unwrap();
         let plan = planner.for_request(&request, "author_plan").unwrap();
-        // skill.load is ambient (available from every model state) plus the
-        // reachable ontology.query_context.
         assert_eq!(plan.capability_schemas.len(), 2);
         let plan_ids = plan
             .capability_schemas
@@ -912,8 +1007,8 @@ mod tests {
             ])
         );
 
-        // compose has no reachable evidence capabilities, but skill.load is
-        // still ambient.
+        // Composer keeps its primary writing skills in role context and can
+        // add a distinct relevant skill when its `use when` hint applies.
         let compose = planner.for_request(&request, "compose_ir").unwrap();
         assert_eq!(compose.capability_schemas.len(), 1);
         assert_eq!(compose.capability_schemas[0].capability_id, "skill.load");
@@ -959,11 +1054,16 @@ mod tests {
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
         assert!(loaded.contains("security_boundary"));
-        // Skill bodies (retrieval_planner, earnings_analysis, etc.) are no
-        // longer pinned in the system prompt; they are loaded on demand via
-        // skill.load. The compact skill_catalog replaces them.
         assert!(loaded.contains("skill_catalog"));
+        assert!(loaded.contains("research_planner_skill"));
+        // The planner skill owns the proposal contract, examples, and repair
+        // procedure. Do not duplicate those bodies in every planning turn.
+        assert!(!loaded.contains("provider_proposal_contract"));
+        assert!(!loaded.contains("research_proposal_examples"));
+        assert!(!loaded.contains("research_recovery_loop"));
+        assert!(!loaded.contains("research_analysis"));
         assert!(!loaded.contains("retrieval_planner"));
+        assert!(!loaded.contains("earnings_analysis"));
         assert!(!loaded.contains("guru_answer"));
         assert!(
             plan.omitted_segments
@@ -973,36 +1073,42 @@ mod tests {
     }
 
     #[test]
-    fn pinned_skills_force_load_for_specialized_run_kind() {
+    fn specialized_roles_keep_core_skills_and_offer_related_skill_loading() {
         let (image, mut request) = fixture();
-        // Switch to earnings_deep_dive: its entrypoint declares pinned_skills
-        // that must be force-loaded into every model state.
         request.run_kind = "earnings_deep_dive".into();
         let planner = ContextPlanner::compile(&image).unwrap();
         let plan = planner.for_request(&request, "author_plan").unwrap();
-        let loaded = plan
+        let planner_segments = plan
             .static_segments
             .iter()
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
-        // Tier 1 (role-level) skills are present.
-        assert!(loaded.contains("security_boundary"));
-        assert!(loaded.contains("kernel_runtime"));
-        assert!(loaded.contains("skill_catalog"));
-        // Tier 2 (pinned) skills declared by the earnings_deep_dive entrypoint
-        // are force-loaded — including the 5-stage causal chain framework.
-        assert!(loaded.contains("earnings_analysis"));
-        assert!(loaded.contains("research_planner_skill"));
-        assert!(loaded.contains("evidence_analyst"));
-        assert!(loaded.contains("research_synthesis"));
-        // Pinned skill segments carry the PinnedSkill load reason.
-        assert!(plan.static_segments.iter().any(|segment| {
-            segment.segment_id == "earnings_analysis"
-                && segment.load_reason == LoadReason::PinnedSkill
-        }));
-        // Skills not pinned by this run_kind remain omitted (Tier 3).
-        assert!(!loaded.contains("scenario_analysis"));
-        assert!(!loaded.contains("idea_screen"));
+        assert!(planner_segments.contains("skill_catalog"));
+        assert!(planner_segments.contains("research_planner_skill"));
+        assert!(!planner_segments.contains("earnings_analysis"));
+
+        let assess = planner
+            .for_request(&request, "reconcile_periods_and_commentary")
+            .unwrap();
+        let analyst_segments = assess
+            .static_segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(analyst_segments.contains("skill_catalog"));
+        assert!(analyst_segments.contains("evidence_analyst"));
+        assert!(analyst_segments.contains("earnings_analysis"));
+        assert!(!analyst_segments.contains("thesis_change_policy"));
+
+        let compose = planner.for_request(&request, "compose_ir").unwrap();
+        let composer_segments = compose
+            .static_segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(composer_segments.contains("earnings_output_contract"));
+        assert!(composer_segments.contains("skill_catalog"));
+        assert!(!composer_segments.contains("scenario_output_contract"));
     }
 
     #[test]

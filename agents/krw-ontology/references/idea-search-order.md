@@ -1,7 +1,7 @@
 ---
 name: idea_search_order
 description: "Use during idea_generation to author ResearchProposal v4 for the 3-phase workflow (screen definition, candidate discovery, candidate validation)."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when planning the three-phase idea-screen workflow: define the screen, discover candidates, then validate candidates"
 ---
 
 # Idea Generation Search Order

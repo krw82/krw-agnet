@@ -13,15 +13,16 @@ use krw_agent_bounded_child::ChildBudgetLimits;
 use krw_agent_contracts::{FINAL_MARKDOWN_V1, verify_pin};
 use krw_agent_protocol::{ContentHash, RunContextKind, RunContextV1};
 use krw_agent_state_artifact::{
-    ArtifactGuard, ArtifactTransition, BuiltinHandler, ContractPin, ModelOutputMode, StateNode,
-    StateOperation, StateProgram, TerminalDisposition as OperationTerminalDisposition,
+    ArtifactGuard, ArtifactTransition, BuiltinHandler, ContractPin, StateNode, StateProgram,
+    TerminalDisposition as OperationTerminalDisposition,
 };
+pub use krw_agent_state_artifact::{ModelOutputMode, StateOperation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 pub const AGENT_SPEC_API_VERSION: &str = "krw.agent/spec-v3";
-pub const AGENT_IMAGE_FORMAT_VERSION: u16 = 13;
+pub const AGENT_IMAGE_FORMAT_VERSION: u16 = 14;
 pub const RULE_ISA_VERSION: u16 = 1;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -295,27 +296,32 @@ pub struct PromptSegmentSource {
     pub path: Option<String>,
     #[serde(default)]
     pub ontology_schema: Option<OntologySchemaSource>,
-    /// Auto-generate a compact skill catalog by scanning Markdown files under
-    /// `skills_dir` for YAML frontmatter (`name`, `description`). The rendered
-    /// blob replaces the full skill bodies in the system prompt so the model
-    /// can discover skills by description and load bodies on demand via the
-    /// `skill.load` capability (progressive disclosure).
+    /// Auto-generate a compact skill catalog from explicitly registered,
+    /// loadable Markdown prompt segments. The rendered blob replaces optional
+    /// full skill bodies in the system prompt so the model can discover them
+    /// by description and load one on demand via `skill.load`.
     #[serde(default)]
     pub skill_catalog: Option<SkillCatalogSource>,
     pub stable_prefix: bool,
     pub private: bool,
+    /// Whether this immutable prompt body is an explicitly registered skill
+    /// that the model may retrieve through `skill.load`. Internal policy
+    /// segments remain unavailable even when they are present in the image.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loadable: bool,
 }
 
-/// Declares that a prompt segment is generated at build time by scanning
-/// skill Markdown files for YAML frontmatter. Each file contributes one
-/// catalog entry (`name`, `description`). The catalog is a compact discovery
-/// index; the full skill body is fetched on demand via `skill.load`.
+/// Declares that a prompt segment is generated at build time from explicitly
+/// registered, `loadable: true` prompt segments under these directories. Each
+/// registered skill contributes its immutable segment ID and frontmatter
+/// description. The catalog is a compact discovery index; the full skill body
+/// is fetched on demand via `skill.load`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillCatalogSource {
-    /// One or more directories under the agent root to scan for `*.md` skill
-    /// files. Typically `["skills", "prompts", "references"]`. Each file with
-    /// valid YAML frontmatter (`name` + `description`) contributes one entry.
+    /// One or more directories under the agent root containing registered
+    /// skill files. Typically `["skills", "prompts", "references"]`. Only
+    /// declared prompt segments marked `loadable: true` are included.
     pub skills_dirs: Vec<String>,
 }
 
@@ -1306,6 +1312,11 @@ pub struct PromptBlob {
     pub byte_len: u64,
     pub stable_prefix: bool,
     pub private: bool,
+    /// Explicit local-skill allowlist bit. This is separate from `private`:
+    /// a skill body may be private to the end user while still being safe for
+    /// the model to load during a run.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loadable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1716,6 +1727,7 @@ pub fn parse_spec(bytes: &[u8]) -> Result<AgentSpec, ImageError> {
 fn load_prompt_segment_bytes(
     root: &Path,
     segment: &PromptSegmentSource,
+    all_segments: &[PromptSegmentSource],
 ) -> Result<Vec<u8>, ImageError> {
     let source_count = [
         segment.path.is_some(),
@@ -1738,7 +1750,7 @@ fn load_prompt_segment_bytes(
         let markdown = render_ontology_catalog(source, &segment.id)?;
         Ok(markdown.into_bytes())
     } else if let Some(source) = &segment.skill_catalog {
-        let markdown = render_skill_catalog(source, root, &segment.id)?;
+        let markdown = render_skill_catalog(source, root, &segment.id, all_segments)?;
         Ok(markdown.into_bytes())
     } else {
         unreachable!("source_count == 1 guard guarantees one branch is taken")
@@ -1802,74 +1814,51 @@ fn render_ontology_catalog(
     Ok(out)
 }
 
-/// Render a compact skill catalog Markdown blob by scanning Markdown files
-/// under `skills_dir` for YAML frontmatter. Each file with valid frontmatter
-/// contributes one entry: `name`, `description`, optional `when_to_use`.
-///
-/// The catalog replaces full skill bodies in the system prompt (progressive
-/// disclosure): the model discovers skills by description and loads the body
-/// on demand via the `skill.load` capability. Files without frontmatter or
-/// without a `name`/`description` are skipped silently.
+/// Render a compact skill catalog from the explicit image-level skill
+/// allowlist. The catalog and `skill.load` therefore share the same canonical
+/// IDs: a model can never be shown a frontmatter name that the local loader
+/// cannot resolve, nor request an internal policy segment by guessing its ID.
 fn render_skill_catalog(
     source: &SkillCatalogSource,
     root: &Path,
     segment_id: &str,
+    all_segments: &[PromptSegmentSource],
 ) -> Result<String, ImageError> {
-    if source.skills_dirs.is_empty() {
-        return Err(ImageError::InvalidSpec(format!(
-            "skill_catalog segment `{segment_id}` declares an empty skills_dirs list"
-        )));
-    }
-    // Recursively collect .md files across all declared directories (sorted
-    // for deterministic output).
-    let mut md_files: Vec<PathBuf> = Vec::new();
-    for dir in &source.skills_dirs {
-        let skills_dir = safe_source_path(root, dir)?;
-        if !skills_dir.is_dir() {
-            return Err(ImageError::InvalidSpec(format!(
-                "skill_catalog segment `{segment_id}`: {} is not a directory",
-                skills_dir.display()
-            )));
-        }
-        collect_markdown_files(&skills_dir, &mut md_files);
-    }
-    md_files.sort();
-    md_files.dedup();
-
+    let catalog_dirs = resolve_skill_catalog_dirs(source, root, segment_id)?;
     let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
-    for file_path in &md_files {
-        let Ok(content) = fs::read_to_string(file_path) else {
+    for candidate in all_segments.iter().filter(|candidate| candidate.loadable) {
+        let path = candidate.path.as_deref().ok_or_else(|| {
+            ImageError::InvalidSpec(format!(
+                "loadable skill {} must use a static path source",
+                candidate.id
+            ))
+        })?;
+        let file_path = safe_source_path(root, path)?;
+        if !catalog_dirs.iter().any(|dir| file_path.starts_with(dir)) {
             continue;
-        };
-        let Some(frontmatter) = parse_frontmatter(&content) else {
-            continue;
-        };
-        let Some(name) = frontmatter.get("name").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(description) = frontmatter.get("description").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let when_to_use = frontmatter
-            .get("when_to_use")
-            .and_then(|v| v.as_str())
-            .map(std::string::ToString::to_string);
-        entries.push((name.to_string(), description.to_string(), when_to_use));
+        }
+        let content = fs::read_to_string(&file_path)?;
+        let (description, when_to_use) = skill_frontmatter_metadata(&content, &candidate.id)?;
+        entries.push((candidate.id.clone(), description, when_to_use));
     }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut out = String::new();
     out.push_str("<!-- AUTO-GENERATED skill catalog. Do not edit by hand.\n");
-    out.push_str("     Source: skills_dir scan for YAML frontmatter. -->\n\n");
+    out.push_str("     Source: explicitly registered loadable prompt segments. -->\n\n");
     out.push_str("# Skill catalog\n\n");
     out.push_str(
         "Each skill below is available on demand. To use one, call the \
-         `skill.load` function with `{ \"skill_id\": \"<name>\" }`. The function \
+         `skill.load` function with `{ \"skill_id\": \"<catalog-id>\" }`. The function \
          returns the full skill body; read it and follow it. Do not guess skill \
          contents — load the body first when a skill is relevant to the current \
-         question.\n\n",
+         question. Compare the active question and role with each description and \
+         `use when` hint. You may load more than one distinct relevant skill, one \
+         `skill.load` call at a time, when each adds guidance not already supplied \
+         by the active role. Do not reload a skill or load unrelated skills.\n\n",
     );
     if entries.is_empty() {
-        out.push_str("(No skills with valid frontmatter found.)\n");
+        out.push_str("(No registered skills are available in this catalog.)\n");
     } else {
         for (name, description, when_to_use) in &entries {
             out.push_str(&format!("- **{name}**: {description}"));
@@ -1882,25 +1871,115 @@ fn render_skill_catalog(
     Ok(out)
 }
 
-/// Recursively collect `.md` file paths under `dir` into `out`.
-fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_markdown_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            // Skip README-like catalog files that are not skills.
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && stem.eq_ignore_ascii_case("README")
-            {
-                continue;
-            }
-            out.push(path);
-        }
+fn resolve_skill_catalog_dirs(
+    source: &SkillCatalogSource,
+    root: &Path,
+    segment_id: &str,
+) -> Result<Vec<PathBuf>, ImageError> {
+    if source.skills_dirs.is_empty() {
+        return Err(ImageError::InvalidSpec(format!(
+            "skill_catalog segment `{segment_id}` declares an empty skills_dirs list"
+        )));
     }
+    source
+        .skills_dirs
+        .iter()
+        .map(|dir| {
+            let resolved = safe_source_path(root, dir)?;
+            if !resolved.is_dir() {
+                return Err(ImageError::InvalidSpec(format!(
+                    "skill_catalog segment `{segment_id}`: {} is not a directory",
+                    resolved.display()
+                )));
+            }
+            Ok(resolved)
+        })
+        .collect()
+}
+
+fn skill_frontmatter_metadata(
+    content: &str,
+    segment_id: &str,
+) -> Result<(String, Option<String>), ImageError> {
+    let frontmatter = parse_frontmatter(content).ok_or_else(|| {
+        ImageError::InvalidSpec(format!(
+            "loadable skill {segment_id} must declare YAML frontmatter"
+        ))
+    })?;
+    let name = frontmatter
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ImageError::InvalidSpec(format!(
+                "loadable skill {segment_id} frontmatter must include a name"
+            ))
+        })?;
+    let description = frontmatter
+        .get("description")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ImageError::InvalidSpec(format!(
+                "loadable skill {segment_id} frontmatter must include a description"
+            ))
+        })?;
+    let when_to_use = frontmatter
+        .get("when_to_use")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned);
+    // Frontmatter names are human labels. The immutable prompt-segment ID is
+    // the actual callable skill_id, so punctuation mismatches in Markdown
+    // cannot break the provider tool contract.
+    let _ = name;
+    Ok((description.to_owned(), when_to_use))
+}
+
+fn validate_loadable_skill_sources(
+    root: &Path,
+    segments: &[PromptSegmentSource],
+) -> Result<(), ImageError> {
+    let mut catalog_dirs = Vec::new();
+    for catalog in segments
+        .iter()
+        .filter_map(|segment| segment.skill_catalog.as_ref())
+    {
+        catalog_dirs.extend(resolve_skill_catalog_dirs(catalog, root, "registered")?);
+    }
+    for segment in segments.iter().filter(|segment| segment.loadable) {
+        if !is_valid_skill_id(&segment.id) {
+            return Err(ImageError::InvalidSpec(format!(
+                "loadable skill id {} must be lowercase snake_case",
+                segment.id
+            )));
+        }
+        let path = segment.path.as_deref().ok_or_else(|| {
+            ImageError::InvalidSpec(format!(
+                "loadable skill {} must use a static path source",
+                segment.id
+            ))
+        })?;
+        let resolved = safe_source_path(root, path)?;
+        if !catalog_dirs.iter().any(|dir| resolved.starts_with(dir)) {
+            return Err(ImageError::InvalidSpec(format!(
+                "loadable skill {} is absent from every skill catalog directory",
+                segment.id
+            )));
+        }
+        let content = fs::read_to_string(resolved)?;
+        let _ = skill_frontmatter_metadata(&content, &segment.id)?;
+    }
+    Ok(())
+}
+
+fn is_valid_skill_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
+        && value.len() <= 128
+        && chars.all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
 }
 
 /// Parse a YAML frontmatter block delimited by `---` lines at the start of
@@ -2060,12 +2139,13 @@ pub fn compile_agent_dir(root: impl AsRef<Path>) -> Result<CompiledImage, ImageE
     }
     let spec = parse_spec(&source_bytes)?;
     validate_spec(&spec)?;
+    validate_loadable_skill_sources(&root, &spec.prompt_segments)?;
 
     let mut blobs = BTreeMap::new();
     let mut prompt_blobs = Vec::with_capacity(spec.prompt_segments.len());
     let mut total_prompt_bytes = 0_usize;
     for segment in &spec.prompt_segments {
-        let bytes = load_prompt_segment_bytes(&root, segment)?;
+        let bytes = load_prompt_segment_bytes(&root, segment, &spec.prompt_segments)?;
         if bytes.len() > MAX_PROMPT_BLOB_BYTES {
             return Err(ImageError::Limit("prompt blob bytes"));
         }
@@ -2088,6 +2168,7 @@ pub fn compile_agent_dir(root: impl AsRef<Path>) -> Result<CompiledImage, ImageE
                 .map_err(|_| ImageError::Limit("prompt byte length"))?,
             stable_prefix: segment.stable_prefix,
             private: segment.private,
+            loadable: segment.loadable,
         });
         blobs.entry(hash).or_insert(bytes);
     }
@@ -4053,6 +4134,41 @@ mod tests {
     }
 
     #[test]
+    fn skill_catalog_exposes_only_registered_loadable_ids() {
+        let image = compile_agent_dir(agent_root())
+            .unwrap()
+            .into_loaded()
+            .unwrap();
+        let catalog = image.prompt("skill_catalog").unwrap();
+        assert!(catalog.contains("**research_planner_skill**"));
+        assert!(catalog.contains("**research_analysis**"));
+        assert!(catalog.contains("**earnings_quality_policy**"));
+        assert!(catalog.contains("**scenario_construction**"));
+        assert!(catalog.contains("You may load more than one distinct relevant skill"));
+        assert!(
+            catalog.contains("when EPS, net income, margin, or free cash flow may be distorted")
+        );
+        assert!(!catalog.contains("**security_boundary**"));
+        // A frontmatter label with hyphens must never become a callable ID.
+        assert!(!catalog.contains("**research-structured-handoff-contract**"));
+
+        let planner = image
+            .body
+            .prompt_blobs
+            .iter()
+            .find(|blob| blob.id == "research_planner_skill")
+            .unwrap();
+        let security = image
+            .body
+            .prompt_blobs
+            .iter()
+            .find(|blob| blob.id == "security_boundary")
+            .unwrap();
+        assert!(planner.loadable);
+        assert!(!security.loadable);
+    }
+
+    #[test]
     fn compiler_closes_each_model_state_to_one_typed_output_lane() {
         let image = compile_agent_dir(agent_root()).unwrap().manifest;
         let workflow = image
@@ -4084,7 +4200,7 @@ mod tests {
             .find(|role| role.id == "composer")
             .unwrap();
         assert_eq!(composer.execution.reasoning, RoleReasoningMode::Direct);
-        assert_eq!(composer.execution.max_output_tokens, Some(4096));
+        assert_eq!(composer.execution.max_output_tokens, Some(3072));
         let planner = image
             .body
             .roles
@@ -4092,7 +4208,7 @@ mod tests {
             .find(|role| role.id == "planner")
             .unwrap();
         assert_eq!(planner.execution.reasoning, RoleReasoningMode::Direct);
-        assert_eq!(planner.execution.max_output_tokens, Some(2048));
+        assert_eq!(planner.execution.max_output_tokens, Some(1024));
         assert_eq!(
             image.body.answer_policy.max_research_turn_tokens,
             Some(16384)

@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 registry_id: multi-provider-2026-08
 models:
   - model_id: deepseek-v4-flash
@@ -13,6 +13,8 @@ models:
         supports_tools: true
         supports_tool_choice: false
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       non_thinking:
         supported: true
         supports_tools: true
@@ -22,6 +24,8 @@ models:
         # semantic requirement through typed recovery, not this wire field.
         supports_tool_choice: false
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: true
   - model_id: glm-5.2
@@ -36,11 +40,15 @@ models:
         supports_tools: true
         supports_tool_choice: true
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       non_thinking:
         supported: true
         supports_tools: true
         supports_tool_choice: true
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       # GLM-5.2 emits reasoning_content during thinking but does NOT emit
       # assistant content alongside tool_calls (unlike DeepSeek V4). Only
       # reasoning_content replay is required.

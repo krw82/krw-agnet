@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 registry_id: deepseek-production-2026-08
 # PRODUCTION TEMPLATE. Model definitions mirror deployments/local/model-registry.yaml.
 # max_in_flight: 64 is the per-model concurrency ceiling and is enforced by the
@@ -16,6 +16,8 @@ models:
         supports_tools: true
         supports_tool_choice: false
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       non_thinking:
         supported: true
         supports_tools: true
@@ -25,6 +27,8 @@ models:
         # semantic requirement through typed recovery, not this wire field.
         supports_tool_choice: false
         supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
       requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: true
 profiles:

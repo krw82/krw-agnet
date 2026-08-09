@@ -35,7 +35,7 @@ use krw_agent_contracts::{
     NOTEBOOK_TRANSFORM_V2, NotebookTransformInputV1, NotebookTransformV2,
     QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2,
     ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
-    ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, STATE_FACTS_V1,
+    ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1,
     build_company_brief_input, build_company_research_context, build_evidence_review_input,
     contract as canonical_contract, research_proposal_v4_repair_directive,
     validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
@@ -65,15 +65,16 @@ use krw_agent_protocol::{
     provider_tool_name,
 };
 use krw_agent_provider_wire::{
-    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, ProviderClient, ProviderEpisodeV1,
-    ProviderMessage, ProviderToolDefinition, RequestMetadata, ThinkingConfig, ToolCallKind,
-    ToolChoice, ToolResultMessage, WireError,
+    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, OutputConfig, ProviderClient,
+    ProviderEpisodeV1, ProviderMessage, ProviderToolDefinition, RequestMetadata, ResponseFormat,
+    ThinkingConfig, ToolCallKind, ToolChoice, ToolResultMessage, WireError,
+    provider_request_footprint,
 };
 use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
     InitialPlanError, InitialPlanScope, NoPositiveReason, PlannerDecision, ResearchActionKind,
     ResearchIntentReceipt, ResearchPlanner, ResearchPlannerError, ScoringWeights, SelectionReason,
-    compile_research_proposal, validate_normalized_plan_exchange,
+    canonicalize_normalized_plan_exchange, compile_research_proposal,
 };
 use krw_agent_state_artifact::{
     ArtifactError, ArtifactLineageRef, ArtifactProducer, ArtifactValidator, BuiltinHandler,
@@ -88,6 +89,7 @@ use krw_context_compaction::{
 };
 use krw_context_planner::{
     CompiledStateContext, ContextPlanner, ContextSegmentKind, DynamicContextSegmentRef, LoadReason,
+    ProviderOutputSchemaRef,
 };
 use krw_ontology_adapter::parse_research_state;
 use krw_policy_runtime::{
@@ -212,6 +214,7 @@ enum RunEngineMessage {
     Assistant {
         content: Option<String>,
         reasoning_content: Option<String>,
+        reasoning_signature: Option<String>,
         tool_calls: Vec<krw_agent_provider_wire::ToolCall>,
     },
     Tool {
@@ -241,6 +244,7 @@ impl RunEngineMessage {
         Self::Assistant {
             content: std::mem::take(&mut assistant.content),
             reasoning_content: std::mem::take(&mut assistant.reasoning_content),
+            reasoning_signature: std::mem::take(&mut assistant.reasoning_signature),
             tool_calls: std::mem::take(&mut assistant.tool_calls),
         }
     }
@@ -265,6 +269,7 @@ impl RunEngineMessage {
             Self::Assistant {
                 content,
                 reasoning_content,
+                reasoning_signature,
                 tool_calls,
             } => {
                 if let Some(content) = content {
@@ -272,6 +277,9 @@ impl RunEngineMessage {
                 }
                 if let Some(reasoning) = reasoning_content {
                     reasoning.zeroize();
+                }
+                if let Some(signature) = reasoning_signature {
+                    signature.zeroize();
                 }
                 for call in tool_calls {
                     call.id.zeroize();
@@ -303,6 +311,7 @@ impl std::fmt::Debug for RunEngineMessage {
             Self::Assistant {
                 content,
                 reasoning_content,
+                reasoning_signature,
                 tool_calls,
             } => formatter
                 .debug_struct("RunEngineMessage::Assistant")
@@ -310,6 +319,10 @@ impl std::fmt::Debug for RunEngineMessage {
                 .field(
                     "reasoning_len",
                     &reasoning_content.as_ref().map(String::len),
+                )
+                .field(
+                    "reasoning_signature_len",
+                    &reasoning_signature.as_ref().map(String::len),
                 )
                 .field("tool_calls", tool_calls)
                 .finish(),
@@ -358,11 +371,13 @@ impl RunEngineMessage {
             Self::Assistant {
                 content,
                 reasoning_content,
+                reasoning_signature,
                 tool_calls,
             } => {
                 let assistant = krw_agent_provider_wire::AssistantMessage {
                     content: content.clone(),
                     reasoning_content: reasoning_content.clone(),
+                    reasoning_signature: reasoning_signature.clone(),
                     tool_calls: tool_calls.clone(),
                 };
                 assistant.into_provider_message()
@@ -451,6 +466,8 @@ fn deepseek_failure_code(error: &WireError) -> String {
         | WireError::InvalidAllowedModel => "deepseek_configuration_invalid".into(),
         WireError::InvalidProviderFunctionName
         | WireError::InvalidJsonSchemaDocument
+        | WireError::UnsupportedStructuredOutputSchema
+        | WireError::RequestFootprintOverflow
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
@@ -505,7 +522,8 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
 /// Stable, non-secret GLM failure labels.  Mirrors
 /// [`deepseek_failure_code`] but emits `glm_*` prefixes so operators can
 /// distinguish GLM episodes from `DeepSeek` episodes while keeping the wire
-/// error taxonomy identical (both providers are OpenAI-compatible).
+/// error taxonomy identical (both providers use the Anthropic-compatible
+/// Messages contract here).
 fn glm_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -539,6 +557,8 @@ fn glm_failure_code(error: &WireError) -> String {
         | WireError::InvalidAllowedModel => "glm_configuration_invalid".into(),
         WireError::InvalidProviderFunctionName
         | WireError::InvalidJsonSchemaDocument
+        | WireError::UnsupportedStructuredOutputSchema
+        | WireError::RequestFootprintOverflow
         | WireError::CanonicalJsonNotUtf8
         | WireError::NonCanonicalJsonText
         | WireError::InvalidToolCallId
@@ -554,7 +574,7 @@ fn glm_failure_code(error: &WireError) -> String {
 
 /// Classify a GLM wire failure for retry/delivery semantics.  Identical
 /// taxonomy to [`classify_deepseek_failure`] since GLM shares the same
-/// OpenAI-compatible wire layer; only the failure-code labels differ.
+/// Anthropic-compatible wire layer; only the failure-code labels differ.
 fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     match error {
         WireError::InvalidEndpoint
@@ -1827,6 +1847,7 @@ where
                 Ok(built)
             })?;
             let _ = turn_span;
+            let constraint_mode = built.constraint_mode;
             let episode_context = built.episode_context;
             let request = built.request;
             let request_hash = ContentHash::sha256(serde_jcs::to_vec(&request)?);
@@ -1980,7 +2001,15 @@ where
                 ProviderOutputDisposition::TypedJson | ProviderOutputDisposition::Markdown => {
                     execution = execution.transition(ExecutionEvent::BeginVerification)?;
                     let outcome = self
-                        .finish(&input, &identity, &episode, &mut state, execution, deadline)
+                        .finish(
+                            &input,
+                            &identity,
+                            &episode,
+                            &mut state,
+                            execution,
+                            constraint_mode,
+                            deadline,
+                        )
                         .await?;
                     if let Some(outcome) = outcome {
                         return Ok(outcome);
@@ -2059,6 +2088,30 @@ where
                     continue;
                 }
                 ProviderOutputDisposition::Capability => {}
+            }
+
+            match resolve_local_skill_load(&episode, &state.tool_definitions, input.image) {
+                Ok(Some((tool_call_id, result))) => {
+                    state.append_assistant(&episode);
+                    state.append_tool_result(&tool_call_id, &result.provider_content)?;
+                    state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                    self.checkpoint_active_state(&identity, &state, deadline)
+                        .await?;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let Some(directive) = model_recovery_directive(&error) else {
+                        return Err(error);
+                    };
+                    if !state.recover_model_decision(input.image, &episode, directive)? {
+                        return Err(error);
+                    }
+                    state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                    self.checkpoint_active_state(&identity, &state, deadline)
+                        .await?;
+                    continue;
+                }
             }
 
             let prepared = match prepare_calls(
@@ -3031,7 +3084,9 @@ where
                 // trip. Falls through to the normal MCP path for any other
                 // capability id.
                 let result = if call.capability.id == "skill.load" {
-                    invoke_skill_load(context.image, call)?
+                    let arguments: Value = serde_json::from_slice(&call.canonical_arguments)
+                        .map_err(|_| EngineError::Invariant("skill.load canonical arguments"))?;
+                    invoke_skill_load(context.image, &arguments)?
                 } else {
                     let invocation = capability_invocation(&identity.run_id, call);
                     let cap_span = tracing::info_span!("capability", id = %identity.run_id);
@@ -3352,9 +3407,15 @@ where
         episode: &ProviderEpisodeV1,
         state: &mut ActiveRun,
         execution: ExecutionState,
+        constraint_mode: ProviderConstraintMode,
         deadline: Instant,
     ) -> Result<Option<RunOutcome>, EngineError> {
         if episode.finish_reason != "stop" {
+            if constraint_mode == ProviderConstraintMode::JsonSchema {
+                return Err(EngineError::ProviderConstrainedOutputIncomplete(
+                    "finish reason",
+                ));
+            }
             if episode.finish_reason == "length" && state.reserve_repair()? {
                 // A truncated final answer is neither evidence nor a useful
                 // replay turn. Keep it out of the next context, retain only
@@ -3377,6 +3438,11 @@ where
         }
         let content = match episode.assistant.content.as_deref() {
             Some(content) if !content.trim().is_empty() => content,
+            _ if constraint_mode == ProviderConstraintMode::JsonSchema => {
+                return Err(EngineError::ProviderConstrainedOutputIncomplete(
+                    "final content",
+                ));
+            }
             _ if state.reserve_repair()? => {
                 let output_contract =
                     ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
@@ -3409,7 +3475,10 @@ where
             ModelOutputMode::TypedJson => {
                 let output: Value = match serde_json::from_str(content) {
                     Ok(output) => output,
-                    Err(error) if state.reserve_repair()? => {
+                    Err(error)
+                        if constraint_mode != ProviderConstraintMode::JsonSchema
+                            && state.reserve_repair()? =>
+                    {
                         state.append_assistant(episode);
                         state.append_repair_feedback(
                             &output_contract.id,
@@ -3418,9 +3487,19 @@ where
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
+                    Err(_error) if constraint_mode == ProviderConstraintMode::JsonSchema => {
+                        return Err(EngineError::ProviderConstrainedOutputViolation(
+                            "invalid JSON",
+                        ));
+                    }
                     Err(error) => return Err(EngineError::Json(error)),
                 };
                 if let Err(error) = validate_canonical_value(&output_contract.id, &output) {
+                    if constraint_mode == ProviderConstraintMode::JsonSchema {
+                        return Err(EngineError::ProviderConstrainedOutputViolation(
+                            "canonical schema",
+                        ));
+                    }
                     if state.reserve_repair()? {
                         state.append_assistant(episode);
                         state.append_repair_feedback(
@@ -3748,40 +3827,84 @@ where
     }
 }
 
-/// Resolve a `skill.load` capability call locally from the immutable image
-/// blob store (progressive disclosure). The skill body is returned verbatim
-/// as provider-visible content; no evidence ledger entries are produced. This
-/// avoids an MCP round trip for a static prompt artifact already pinned inside
-/// the image.
+/// Resolve a locally executed `skill.load` call directly from the immutable
+/// image blob store. It is deliberately outside the workflow statechart and
+/// external-action ledger: loading an already pinned instruction changes no
+/// research state and performs no network or MCP operation.
+fn resolve_local_skill_load(
+    episode: &ProviderEpisodeV1,
+    advertised_tools: &[ProviderToolDefinition],
+    image: &LoadedImage,
+) -> Result<Option<(String, CapabilityResult)>, EngineError> {
+    if episode.assistant.tool_calls.len() != 1 {
+        return Ok(None);
+    }
+    let call = &episode.assistant.tool_calls[0];
+    if call.kind != ToolCallKind::Function
+        || call.function.name.as_str() != provider_tool_name("skill.load")
+    {
+        return Ok(None);
+    }
+    if call.id.is_empty()
+        || !advertised_tools
+            .iter()
+            .any(|definition| definition.name() == call.function.name.as_str())
+    {
+        return Err(EngineError::InvalidToolCallId);
+    }
+    let arguments: Value = serde_json::from_str(&call.function.arguments).map_err(|_| {
+        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+            "skill_load_arguments_invalid",
+        ))
+    })?;
+    validate_canonical_value(SKILL_LOAD_V1, &arguments).map_err(|_| {
+        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+            "skill_load_arguments_invalid",
+        ))
+    })?;
+    Ok(Some((
+        call.id.clone(),
+        invoke_skill_load(image, &arguments)?,
+    )))
+}
+
+/// Resolve a `skill.load` input locally from the immutable image blob store.
+/// The body is returned as provider-visible content; no evidence ledger entry
+/// is produced and no MCP round trip occurs.
 fn invoke_skill_load(
     image: &LoadedImage,
-    call: &PreparedCall,
+    arguments: &Value,
 ) -> Result<CapabilityResult, EngineError> {
     #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct SkillLoadInput {
         skill_id: String,
     }
-    let input: SkillLoadInput = serde_json::from_slice(&call.canonical_arguments)
+    let input: SkillLoadInput = serde_json::from_value(arguments.clone())
         .map_err(|_error| EngineError::Invariant("skill.load argument decode"))?;
-    let bytes = image.prompt_blob_arc(&input.skill_id).map_err(|_| {
-        // The model requested a skill that is not present in the immutable
-        // image. Return a recoverable error carrying the available skill ids
-        // so the model can pick a valid name on its next turn instead of
-        // failing the run terminally.
-        let available = image
-            .manifest
-            .body
-            .prompt_blobs
-            .iter()
-            .filter(|blob| !blob.private)
-            .map(|blob| blob.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        EngineError::SkillNotFound {
+    // A prompt blob is not automatically a public skill.  Only the explicit
+    // image-level allowlist is callable, which keeps kernel/security policy
+    // segments out of the provider-visible skill surface.
+    let available_skill_ids = image
+        .manifest
+        .body
+        .prompt_blobs
+        .iter()
+        .filter(|blob| blob.loadable)
+        .map(|blob| blob.id.as_str())
+        .collect::<Vec<_>>();
+    if !available_skill_ids
+        .iter()
+        .any(|skill_id| *skill_id == input.skill_id)
+    {
+        return Err(EngineError::SkillNotFound {
             skill_id: input.skill_id.clone(),
-            available,
-        }
-    })?;
+            available: available_skill_ids.join(", "),
+        });
+    }
+    let bytes = image
+        .prompt_blob_arc(&input.skill_id)
+        .map_err(|_| EngineError::Invariant("loadable skill prompt blob missing"))?;
     // The image blob stores the raw file including frontmatter; strip it so
     // the model receives only the instructional body.
     let raw = std::str::from_utf8(bytes.as_ref())
@@ -4383,24 +4506,50 @@ impl ActiveRun {
         self.state_has_remaining_visit(state)
     }
 
+    fn capability_has_remaining_budget(&self, capability_id: &str) -> bool {
+        if self.usage.capability_calls >= self.limits.max_capability_calls {
+            return false;
+        }
+        self.limits
+            .capability_call_limits
+            .get(capability_id)
+            .is_none_or(|limit| {
+                self.capability_calls
+                    .get(capability_id)
+                    .copied()
+                    .unwrap_or(0)
+                    < *limit
+            })
+    }
+
     /// Filter the statically compiled capability frontier by the exact
-    /// remaining statechart capacity for this run. `ContextPlanner` owns the
-    /// immutable image frontier; this per-run overlay owns only dynamic
-    /// resource availability and is reproduced from the checkpoint on resume.
+    /// remaining statechart capacity and deployment bindings for this run.
+    /// `ContextPlanner` owns the immutable image frontier; this per-run
+    /// overlay owns only dynamic resource availability and is reproduced from
+    /// the checkpoint on resume. A model must never be offered an external
+    /// capability that the resolved deployment cannot execute.
     fn available_capability_ids(
         &self,
         context: &CompiledStateContext,
+        image: &AgentImageManifest,
+        deployment: &DeploymentBinding,
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut ids = BTreeSet::new();
         for schema in context.capability_schemas.iter() {
-            // Ambient capabilities such as `skill.load` are injected into the
-            // compiled frontier for every model state but have no corresponding
+            // Role-scoped local capabilities such as `skill.load` have no
             // workflow statechart node — they are short-circuited at dispatch
-            // and never consume a state visit. Treat the absence of a workflow
-            // state as "always available" rather than a mapping failure.
+            // and never consume a state visit. When a role's compiled context
+            // advertises one, treat the absent state node as always available.
             match self.capability_has_remaining_visit(&schema.capability_id) {
                 Ok(remaining) => {
-                    if remaining {
+                    if remaining
+                        && self.capability_has_remaining_budget(&schema.capability_id)
+                        && capability_has_deployment_binding(
+                            image,
+                            deployment,
+                            &schema.capability_id,
+                        )?
+                    {
                         ids.insert(schema.capability_id.clone());
                     }
                 }
@@ -5511,9 +5660,12 @@ impl ActiveRun {
                 } else {
                     let bytes =
                         zeroize::Zeroizing::new(serde_jcs::to_vec(&result.provider_content)?);
-                    let research_state = parse_research_state(bytes.as_slice())
+                    let mut research_state = parse_research_state(bytes.as_slice())
                         .map_err(ResearchPlannerError::from)?;
-                    validate_normalized_plan_exchange(&call.arguments, &research_state.plan)?;
+                    research_state.plan = canonicalize_normalized_plan_exchange(
+                        &call.arguments,
+                        &research_state.plan,
+                    )?;
                     if next.projection().is_none() {
                         next.record_initial_context(fingerprint)?;
                     } else {
@@ -6087,10 +6239,7 @@ fn validate_typed_output(
 ) -> Result<Option<AnswerIr>, EngineError> {
     verify_pin(&contract.id, &contract.content_hash)
         .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
-    validate_canonical_value(&contract.id, output)
-        .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
     validate_fixed_guru_author_payload(selected_entrypoint(input.image, input.request)?, output)?;
-    validate_product_output_linkage(input.request, contract, output)?;
 
     let answer_ir = if contract.id == ANSWER_IR_V1 {
         let answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
@@ -7777,6 +7926,7 @@ struct BuiltProviderRequest {
     request: MessagesRequest,
     episode_context: EpisodeContext,
     tool_definitions: Vec<ProviderToolDefinition>,
+    constraint_mode: ProviderConstraintMode,
     prompt_receipt_hash: ContentHash,
     /// The transcript turns (everything after the trusted system+user prefix)
     /// in their internal `RunEngineMessage` form. The run loop restores this
@@ -7793,12 +7943,26 @@ struct BuiltProviderRequest {
 #[derive(Debug, Clone)]
 struct ProviderWireOutputEncoding {
     tool_choice: Option<ToolChoice>,
+    output_config: Option<OutputConfig>,
+    response_format: Option<ResponseFormat>,
+    constraint_mode: ProviderConstraintMode,
+    strict_transition_tool: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProviderConstraintMode {
+    None,
+    JsonObject,
+    JsonSchema,
 }
 
 /// Binds a static context-plan receipt to the run-specific resource frontier
 /// actually exposed to the provider. This prevents a recovered run from
 /// treating the same prompts with a different set of available tools as the
 /// same prompt assembly.
+const DYNAMIC_PROVIDER_PROMPT_RECEIPT_SCHEMA_VERSION: u8 = 3;
+
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct DynamicProviderPromptReceipt<'a> {
@@ -7807,6 +7971,25 @@ struct DynamicProviderPromptReceipt<'a> {
     dynamic_tool_schema_hash: &'a ContentHash,
     available_capabilities: &'a BTreeSet<String>,
     model_output_mode: ModelOutputMode,
+    provider_constraint_mode: ProviderConstraintMode,
+    provider_output_schema_hash: Option<&'a ContentHash>,
+}
+
+fn capability_has_deployment_binding(
+    image: &AgentImageManifest,
+    deployment: &DeploymentBinding,
+    capability_id: &str,
+) -> Result<bool, EngineError> {
+    let capability = image
+        .body
+        .capabilities
+        .iter()
+        .find(|capability| capability.id == capability_id)
+        .ok_or(EngineError::InvalidStateProgram)?;
+    Ok(deployment
+        .capabilities
+        .iter()
+        .any(|binding| binding.binding_key == capability.binding_key))
 }
 
 /// Materialize the per-run, capacity-aware subset of a statically compiled
@@ -7851,6 +8034,7 @@ fn encode_provider_output_channel(
     output_mode: ModelOutputMode,
     provider_wire_capabilities: ProviderWireCapabilities,
     thinking: ThinkingMode,
+    output_schema: Option<&ProviderOutputSchemaRef>,
 ) -> Result<ProviderWireOutputEncoding, EngineError> {
     let mode = provider_wire_capabilities.for_thinking(thinking);
     if !mode.supported {
@@ -7867,20 +8051,49 @@ fn encode_provider_output_channel(
             }
             Ok(ProviderWireOutputEncoding {
                 tool_choice: mode.supports_tool_choice.then_some(ToolChoice::Any),
+                output_config: None,
+                response_format: None,
+                constraint_mode: ProviderConstraintMode::None,
+                strict_transition_tool: matches!(
+                    output_mode,
+                    ModelOutputMode::WorkflowTransition
+                        | ModelOutputMode::CapabilityOrWorkflowTransition
+                ) && mode.supports_strict_tool_input,
             })
         }
         ModelOutputMode::TypedJson => {
-            if !mode.supports_json_object {
+            if mode.supports_json_schema_output {
+                let schema = output_schema.ok_or(EngineError::Invariant(
+                    "typed JSON context lacks a precompiled provider schema",
+                ))?;
+                Ok(ProviderWireOutputEncoding {
+                    tool_choice: None,
+                    output_config: Some(OutputConfig::json_schema(schema.projected_schema.clone())),
+                    response_format: None,
+                    constraint_mode: ProviderConstraintMode::JsonSchema,
+                    strict_transition_tool: false,
+                })
+            } else if mode.supports_json_object {
+                Ok(ProviderWireOutputEncoding {
+                    tool_choice: None,
+                    output_config: None,
+                    response_format: Some(ResponseFormat::json_object()),
+                    constraint_mode: ProviderConstraintMode::JsonObject,
+                    strict_transition_tool: false,
+                })
+            } else {
                 return Err(EngineError::ProviderWireFeatureUnavailable(
                     "JSON object output",
                 ));
             }
-            // Anthropic has no `response_format`. The JSON-object contract is
-            // enforced through the pinned `model_output_instruction` system
-            // prompt, not a wire-level field.
-            Ok(ProviderWireOutputEncoding { tool_choice: None })
         }
-        ModelOutputMode::Markdown => Ok(ProviderWireOutputEncoding { tool_choice: None }),
+        ModelOutputMode::Markdown => Ok(ProviderWireOutputEncoding {
+            tool_choice: None,
+            output_config: None,
+            response_format: None,
+            constraint_mode: ProviderConstraintMode::None,
+            strict_transition_tool: false,
+        }),
     }
 }
 
@@ -7937,7 +8150,8 @@ fn build_provider_request(
         .context_planner
         .for_request(input.request, state.interpreter.current_state())?;
     let output_mode = state.current_model_output_mode()?;
-    let available_capabilities = state.available_capability_ids(&context)?;
+    let available_capabilities =
+        state.available_capability_ids(&context, &input.image.manifest, input.deployment)?;
     let outgoing_events =
         state.available_outgoing_events(state.current_state()?, &available_capabilities)?;
     let provider_capabilities = match output_mode {
@@ -7948,6 +8162,12 @@ fn build_provider_request(
         | ModelOutputMode::TypedJson
         | ModelOutputMode::Markdown => BTreeSet::new(),
     };
+    let wire_output = encode_provider_output_channel(
+        output_mode,
+        input.snapshot.provider_wire_capabilities,
+        turn_policy.thinking,
+        context.provider_output_schema.as_ref(),
+    )?;
     let mut tool_definitions = available_tool_definitions(&context, &provider_capabilities)?;
     match output_mode {
         ModelOutputMode::CapabilityCall => {
@@ -7958,15 +8178,13 @@ fn build_provider_request(
             }
         }
         ModelOutputMode::WorkflowTransition | ModelOutputMode::CapabilityOrWorkflowTransition => {
-            tool_definitions.push(workflow_transition_tool_definition(&outgoing_events)?);
+            tool_definitions.push(workflow_transition_tool_definition(
+                &outgoing_events,
+                wire_output.strict_transition_tool,
+            )?);
         }
         ModelOutputMode::TypedJson | ModelOutputMode::Markdown => {}
     }
-    let wire_output = encode_provider_output_channel(
-        output_mode,
-        input.snapshot.provider_wire_capabilities,
-        turn_policy.thinking,
-    )?;
     let tool_schema_hash = ContentHash::sha256(serde_jcs::to_vec(&tool_definitions)?);
     let (messages, static_prompt_receipt_hash) = build_trusted_messages(
         input.image,
@@ -7979,11 +8197,16 @@ fn build_provider_request(
     )?;
     let prompt_receipt_hash =
         ContentHash::sha256(serde_jcs::to_vec(&DynamicProviderPromptReceipt {
-            schema_version: 1,
+            schema_version: DYNAMIC_PROVIDER_PROMPT_RECEIPT_SCHEMA_VERSION,
             static_context_receipt_hash: &static_prompt_receipt_hash,
             dynamic_tool_schema_hash: &tool_schema_hash,
             available_capabilities: &provider_capabilities,
             model_output_mode: output_mode,
+            provider_constraint_mode: wire_output.constraint_mode,
+            provider_output_schema_hash: context
+                .provider_output_schema
+                .as_ref()
+                .map(|schema| &schema.projected_schema_hash),
         })?);
     // The provider's thinking contract requires every assistant turn that
     // carries tool calls to also carry a non-empty `reasoning_content` (which
@@ -7996,11 +8219,6 @@ fn build_provider_request(
     // normalization; the episode artifact still stores the original assistant
     // message and the image/prompt receipts are computed before this step.
     let messages = normalize_reasoning_content_for_thinking(messages, turn_policy.thinking);
-    ensure_size(
-        serde_jcs::to_vec(&messages)?.len(),
-        config.max_conversation_bytes,
-        "provider_conversation",
-    )?;
     // Convert the internal 4-variant transcript into the Anthropic Messages
     // API wire shape: the system prompt is hoisted to the top-level `system`
     // field, every remaining `User`/`Assistant`/`Tool` turn becomes a
@@ -8008,6 +8226,24 @@ fn build_provider_request(
     // trusted system+user pair is preserved as the first two messages.
     let (system_prompt, wire_messages, transcript) = split_system_and_convert_messages(messages)?;
     let max_tokens = turn_policy.max_output_tokens;
+    let thinking_budget_tokens = if turn_policy.thinking == ThinkingMode::Enabled {
+        let budget = max_tokens
+            .checked_sub(1)
+            .ok_or(EngineError::InvalidInput("thinking budget underflow"))?;
+        if budget < 1024 {
+            return Err(EngineError::InvalidInput(
+                "thinking turns require at least 1025 max_tokens",
+            ));
+        }
+        Some(budget)
+    } else {
+        None
+    };
+    if max_tokens > input.snapshot.provider_max_context_tokens {
+        return Err(EngineError::InvalidInput(
+            "provider max_tokens exceeds pinned context capacity",
+        ));
+    }
     let request = MessagesRequest {
         model: input.snapshot.resolved_model.clone(),
         messages: wire_messages,
@@ -8015,21 +8251,34 @@ fn build_provider_request(
         max_tokens,
         tools: tool_definitions.clone(),
         tool_choice: wire_output.tool_choice,
+        output_config: wire_output.output_config,
+        response_format: wire_output.response_format,
         thinking: ThinkingConfig {
             kind: turn_policy.thinking,
-            // Anthropic requires `budget_tokens < max_tokens`. We give thinking
-            // the maximum allowed budget (max_tokens minus one token) so the
-            // remaining completion headroom is reserved for the model's
-            // text/tool-call output. When thinking is disabled the budget is
-            // omitted entirely.
-            budget_tokens: (turn_policy.thinking == ThinkingMode::Enabled)
-                .then(|| max_tokens.saturating_sub(1).max(1)),
+            // Anthropic requires `budget_tokens < max_tokens` and enforces a
+            // minimum of 1024 tokens. Reserve all tokens except one for the
+            // model output channel so we preserve headroom while honoring the
+            // minimum threshold.
+            budget_tokens: thinking_budget_tokens,
         },
         stream: true,
         metadata: Some(RequestMetadata {
             user_id: provider_user_id(input.request),
         }),
     };
+    let footprint = provider_request_footprint(&request)?;
+    ensure_size(
+        footprint.canonical_bytes,
+        config.max_conversation_bytes,
+        "provider_request",
+    )?;
+    tracing::debug!(
+        request_bytes = footprint.canonical_bytes,
+        input_tokens_upper_bound = footprint.input_tokens_upper_bound,
+        provider_context_tokens = input.snapshot.provider_max_context_tokens,
+        max_tokens,
+        "provider request footprint"
+    );
     Ok(BuiltProviderRequest {
         request,
         episode_context: EpisodeContext {
@@ -8038,6 +8287,7 @@ fn build_provider_request(
             api_version: input.snapshot.provider_api_version.clone(),
         },
         tool_definitions,
+        constraint_mode: wire_output.constraint_mode,
         prompt_receipt_hash,
         transcript,
     })
@@ -8253,13 +8503,14 @@ fn episode_requests_workflow_transition(episode: &ProviderEpisodeV1) -> bool {
 
 fn workflow_transition_tool_definition(
     allowed_events: &[String],
+    strict: bool,
 ) -> Result<ProviderToolDefinition, EngineError> {
     if allowed_events.is_empty() {
         return Err(EngineError::WorkflowResolution {
             outcome: "typed transition frontier",
         });
     }
-    ProviderToolDefinition::new(
+    let mut definition = ProviderToolDefinition::new(
         WORKFLOW_TRANSITION_TOOL_NAME,
         "Select exactly one allowed workflow transition. This function is a local kernel control and performs no external action; the kernel derives all state facts from durable evidence and the pinned execution contract.",
         serde_json::json!({
@@ -8271,7 +8522,11 @@ fn workflow_transition_tool_definition(
             }
         }),
     )
-    .map_err(EngineError::from)
+    .map_err(EngineError::from)?;
+    if strict {
+        definition = definition.with_strict();
+    }
+    Ok(definition)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9178,6 +9433,10 @@ pub enum EngineError {
     },
     #[error("provider episode is invalid: {0}")]
     InvalidProviderEpisode(&'static str),
+    #[error("provider-constrained output violated its admitted schema: {0}")]
+    ProviderConstrainedOutputViolation(&'static str),
+    #[error("provider-constrained output was incomplete: {0}")]
+    ProviderConstrainedOutputIncomplete(&'static str),
     #[error("invalid tool call id")]
     InvalidToolCallId,
     #[error("provider emitted {observed} tool calls; limit is {limit}")]
@@ -9343,6 +9602,20 @@ pub fn durable_failure_diagnostic(error: &EngineError) -> Option<EngineFailureDi
             Some(EngineFailureDiagnosticV1 {
                 kind,
                 identifier_hash: ContentHash::sha256(kind.as_bytes()),
+            })
+        }
+        EngineError::ProviderConstrainedOutputViolation(reason) => {
+            let kind = "provider_constrained_output_violation";
+            Some(EngineFailureDiagnosticV1 {
+                kind,
+                identifier_hash: ContentHash::sha256(reason.as_bytes()),
+            })
+        }
+        EngineError::ProviderConstrainedOutputIncomplete(reason) => {
+            let kind = "provider_constrained_output_incomplete";
+            Some(EngineFailureDiagnosticV1 {
+                kind,
+                identifier_hash: ContentHash::sha256(reason.as_bytes()),
             })
         }
         EngineError::InvalidWorkflowTransitionShape => {
@@ -9578,6 +9851,61 @@ mod tests {
             transition.identifier_hash,
             ContentHash::sha256("invalid_transition_shape")
         );
+    }
+
+    #[test]
+    fn skill_load_is_limited_to_registered_catalog_entries() {
+        let image = compile_agent_dir(agent_root())
+            .unwrap()
+            .into_loaded()
+            .unwrap();
+
+        let loaded = invoke_skill_load(
+            &image,
+            &serde_json::json!({"skill_id": "research_planner_skill"}),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.provider_content["skill_id"],
+            "research_planner_skill"
+        );
+        assert!(
+            loaded.provider_content["content"]
+                .as_str()
+                .unwrap()
+                .contains("# KRW Research Planner")
+        );
+
+        let additional = invoke_skill_load(
+            &image,
+            &serde_json::json!({"skill_id": "earnings_quality_policy"}),
+        )
+        .unwrap();
+        assert_eq!(
+            additional.provider_content["skill_id"],
+            "earnings_quality_policy"
+        );
+        assert!(
+            additional.provider_content["content"]
+                .as_str()
+                .unwrap()
+                .contains("# Earnings Quality Policy")
+        );
+
+        match invoke_skill_load(
+            &image,
+            &serde_json::json!({"skill_id": "security_boundary"}),
+        ) {
+            Err(EngineError::SkillNotFound {
+                skill_id,
+                available,
+            }) => {
+                assert_eq!(skill_id, "security_boundary");
+                assert!(available.contains("research_planner_skill"));
+                assert!(!available.contains("security_boundary"));
+            }
+            other => panic!("internal policy must not be loadable: {other:?}"),
+        }
     }
 
     #[test]
@@ -9945,6 +10273,7 @@ mod tests {
             AssistantMessage {
                 content: Some(final_markdown()),
                 reasoning_content: None,
+                reasoning_signature: None,
                 tool_calls: Vec::new(),
             },
         ])
@@ -10043,6 +10372,7 @@ mod tests {
         AssistantMessage {
             content: Some(String::new()),
             reasoning_content: Some(format!("complete reasoning for {id}")),
+            reasoning_signature: None,
             tool_calls: vec![ToolCall {
                 id: id.into(),
                 kind: ToolCallKind::Function,
@@ -10058,6 +10388,7 @@ mod tests {
         AssistantMessage {
             content: Some(String::new()),
             reasoning_content: Some("complete reasoning for candidate alternatives".into()),
+            reasoning_signature: None,
             tool_calls: calls
                 .into_iter()
                 .map(|(id, name, arguments)| {
@@ -10257,6 +10588,7 @@ mod tests {
         AssistantMessage {
             content: Some(final_markdown()),
             reasoning_content: None,
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         }
     }
@@ -10269,6 +10601,7 @@ mod tests {
         AssistantMessage {
             content: Some(answer.to_string()),
             reasoning_content: Some("complete Guru final reasoning".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         }
     }
@@ -10978,6 +11311,7 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
+            provider_max_context_tokens: 1_000_000,
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
@@ -11043,6 +11377,7 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
+            provider_max_context_tokens: 1_000_000,
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Disabled,
             reasoning_effort: None,
@@ -11112,6 +11447,7 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
+            provider_max_context_tokens: 1_000_000,
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking,
             reasoning_effort: (thinking == ThinkingMode::Enabled)
@@ -11330,6 +11666,7 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
+            provider_max_context_tokens: 1_000_000,
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
@@ -11389,6 +11726,7 @@ mod tests {
         AssistantMessage {
             content: Some(String::new()),
             reasoning_content: Some(format!("bounded reasoning for {event}")),
+            reasoning_signature: None,
             tool_calls: vec![ToolCall {
                 id: id.into(),
                 kind: ToolCallKind::Function,
@@ -11669,7 +12007,10 @@ mod tests {
         assert!(!second_wire.contains("PRIVATE_REASONING_CANARY"));
         let third_wire =
             String::from_utf8(serde_jcs::to_vec(&requests[2].messages).unwrap()).unwrap();
-        assert_eq!(requests[2].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(
+            requests[2].messages.len(),
+            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
+        );
         assert!(third_wire.contains("verified-compacted-context"));
         assert!(third_wire.contains("services_growth_driver"));
         assert!(third_wire.contains("FY2025"));
@@ -11807,7 +12148,10 @@ mod tests {
             !provider_message_content(&requests[5].messages[0])
                 .starts_with("KRW_BOUNDED_CHILD_INPUT_V1")
         );
-        assert_eq!(requests[5].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(
+            requests[5].messages.len(),
+            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
+        );
         let resumed_parent_wire =
             String::from_utf8(serde_jcs::to_vec(&requests[5].messages).unwrap()).unwrap();
         assert!(resumed_parent_wire.contains("verified-compacted-context"));
@@ -11918,6 +12262,7 @@ mod tests {
         let script = VecDeque::from([AssistantMessage {
             content: Some(decision.to_string()),
             reasoning_content: Some("PRIVATE_ROUTER_REASONING".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         }]);
         let rig = engine_with_script_and_results(script, VecDeque::new(), false, None, false);
@@ -11975,6 +12320,7 @@ mod tests {
         let script = VecDeque::from([AssistantMessage {
             content: Some(output.to_string()),
             reasoning_content: Some("PRIVATE_NOTEBOOK_REASONING".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         }]);
         let rig = engine_with_script_and_results(script, VecDeque::new(), false, None, false);
@@ -12028,6 +12374,7 @@ mod tests {
         let script = VecDeque::from([AssistantMessage {
             content: Some(output.to_string()),
             reasoning_content: Some("PRIVATE_DISPLAY_REASONING".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         }]);
         let rig = engine_with_script_and_results(script, VecDeque::new(), false, None, false);
@@ -12128,7 +12475,10 @@ mod tests {
         assert_eq!(outcome.answer_bundle.usage.replans, 2);
 
         let requests = rig.provider.requests.lock().unwrap();
-        assert_eq!(requests[2].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(
+            requests[2].messages.len(),
+            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
+        );
         assert!(
             provider_message_content(&requests[2].messages[0])
                 .contains("verified-compacted-context")
@@ -12236,7 +12586,10 @@ mod tests {
         assert_eq!(first.persistence.state.lock().unwrap().actions.len(), 3);
         assert_eq!(outcome.answer_bundle.usage.replans, 2);
         let resumed_request = &provider.requests.lock().unwrap()[0];
-        assert_eq!(resumed_request.messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(
+            resumed_request.messages.len(),
+            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
+        );
         assert!(
             provider_message_content(&resumed_request.messages[0])
                 .contains("verified-compacted-context")
@@ -12299,7 +12652,10 @@ mod tests {
                 content.get("reason_code").and_then(Value::as_str) == Some("proposal_rejected")
             })
         }));
-        assert_eq!(requests[3].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(
+            requests[3].messages.len(),
+            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
+        );
         assert!(
             provider_message_content(&requests[3].messages[0])
                 .contains("verified-compacted-context")
@@ -12913,6 +13269,7 @@ mod tests {
                 AssistantMessage {
                     content: Some(final_markdown()),
                     reasoning_content: None,
+                    reasoning_signature: None,
                     tool_calls: Vec::new(),
                 },
             ]),
@@ -13393,8 +13750,8 @@ mod tests {
         assert_eq!(first.tools.as_slice(), expected.tool_definitions.as_ref());
         assert_eq!(
             first.tools.len(),
-            2,
-            "query_context plus the ambient skill.load are reachable"
+            1,
+            "planner receives only query_context; its primary skill is role-pinned"
         );
         assert!(
             build_tool_definitions(&fixture.image, &fixture.request)
@@ -13475,35 +13832,48 @@ mod tests {
     }
 
     #[test]
-    fn semantic_decision_and_deepseek_wire_encoding_are_separate() {
-        let capabilities = ProviderWireCapabilities::deepseek_v4_flash();
+    fn semantic_decision_and_glm_wire_encoding_are_separate() {
+        let capabilities = ProviderWireCapabilities::glm_5_2();
 
         let thinking_capability = encode_provider_output_channel(
             ModelOutputMode::CapabilityCall,
             capabilities,
             ThinkingMode::Enabled,
+            None,
         )
         .unwrap();
-        assert!(thinking_capability.tool_choice.is_none());
+        assert_eq!(thinking_capability.tool_choice, Some(ToolChoice::Any));
 
         let direct_capability = encode_provider_output_channel(
             ModelOutputMode::CapabilityCall,
             capabilities,
             ThinkingMode::Disabled,
+            None,
         )
         .unwrap();
-        assert!(direct_capability.tool_choice.is_none());
+        assert_eq!(direct_capability.tool_choice, Some(ToolChoice::Any));
 
-        // Anthropic has no `response_format`; the JSON-object contract for a
-        // TypedJson state is enforced by the system prompt, so the encoding
-        // only carries an absent `tool_choice`.
+        // GLM's admitted structured-output channel is provider-native JSON
+        // mode. The canonical schema remains in the prompt and is validated
+        // locally because the GLM Anthropic endpoint does not expose the
+        // newer `output_config.json_schema` contract.
         let thinking_json = encode_provider_output_channel(
             ModelOutputMode::TypedJson,
             capabilities,
             ThinkingMode::Enabled,
+            None,
         )
         .unwrap();
         assert!(thinking_json.tool_choice.is_none());
+        assert!(thinking_json.output_config.is_none());
+        assert_eq!(
+            thinking_json.response_format,
+            Some(ResponseFormat::JsonObject)
+        );
+        assert_eq!(
+            thinking_json.constraint_mode,
+            ProviderConstraintMode::JsonObject
+        );
     }
 
     #[tokio::test]
@@ -13514,6 +13884,7 @@ mod tests {
             AssistantMessage {
                 content: Some("The evidence is sufficient; move to composition.".into()),
                 reasoning_content: Some("wrong output lane".into()),
+                reasoning_signature: None,
                 tool_calls: Vec::new(),
             },
             evidence_sufficient_message(),
@@ -13535,6 +13906,7 @@ mod tests {
         let invalid_assessment = AssistantMessage {
             content: Some("I need more time to decide.".into()),
             reasoning_content: Some("incomplete assessment decision".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         };
         let rig = engine_with_script_results_and_usage(
@@ -13577,6 +13949,7 @@ mod tests {
         let free_text = || AssistantMessage {
             content: Some("The evidence is sufficient; move to composition.".into()),
             reasoning_content: Some("wrong output lane".into()),
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         };
         let rig = engine_with_script(
@@ -13605,6 +13978,7 @@ mod tests {
                 AssistantMessage {
                     content: Some("The evidence is sufficient; move to composition.".into()),
                     reasoning_content: Some("wrong output lane".into()),
+                    reasoning_signature: None,
                     tool_calls: Vec::new(),
                 },
             ]),
@@ -13720,6 +14094,7 @@ mod tests {
         script.push_back(AssistantMessage {
             content: Some(final_markdown()),
             reasoning_content: None,
+            reasoning_signature: None,
             tool_calls: Vec::new(),
         });
         let rig = engine_with_script(script, None, false);
@@ -14463,7 +14838,7 @@ mod tests {
 
     #[test]
     fn glm_classifier_mirrors_deepseek_and_uses_glm_prefix() {
-        // GLM shares the OpenAI-compatible wire, so classification must be
+        // GLM shares the Anthropic-compatible wire, so classification must be
         // identical to DeepSeek for every WireError variant.
         let samples = [
             WireError::InvalidEndpoint,

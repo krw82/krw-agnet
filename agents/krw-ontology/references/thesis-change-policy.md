@@ -1,7 +1,7 @@
 ---
 name: thesis_change_policy
 description: "Use during earnings_deep_dive to classify the thesis effect (strengthened/intact/mixed/weakened/re-underwriting) and state the required explanation."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "after quarterly evidence is gathered and the investment thesis must be classified as strengthened, intact, mixed, weakened, or needing re-underwriting"
 ---
 
 # Thesis Change Policy

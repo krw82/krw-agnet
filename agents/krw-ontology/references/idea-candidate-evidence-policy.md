@@ -1,7 +1,7 @@
 ---
 name: idea_candidate_evidence_policy
 description: "Use during idea_generation to validate candidates on exposure, financial pathway, recent change, burden, and first-rejection axes."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when validating whether an idea candidate has a real company-specific exposure, financial pathway, and disqualifying evidence"
 ---
 
 # Candidate Evidence Policy

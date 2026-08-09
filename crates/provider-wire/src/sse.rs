@@ -391,64 +391,63 @@ fn parse_frame(frame: &[u8]) -> Result<Option<AnthropicSseEvent>, WireError> {
         },
     };
 
-    let event = parse_event(discriminator, &data)?;
-    Ok(Some(event))
+    parse_event(discriminator, &data)
 }
 
-fn parse_event(discriminator: &str, data: &str) -> Result<AnthropicSseEvent, WireError> {
+fn parse_event(discriminator: &str, data: &str) -> Result<Option<AnthropicSseEvent>, WireError> {
     match discriminator {
         "message_start" => {
             let envelope: MessageStartEnvelope = serde_json::from_str(data).map_err(|err| {
                 WireError::SseParseError(format!("message_start body invalid: {err}"))
             })?;
-            Ok(AnthropicSseEvent::MessageStart {
+            Ok(Some(AnthropicSseEvent::MessageStart {
                 model: envelope.message.model,
                 input_tokens: envelope.message.usage.input_tokens,
-            })
+            }))
         }
         "content_block_start" => {
             let envelope: ContentBlockStartEnvelope =
                 serde_json::from_str(data).map_err(|err| {
                     WireError::SseParseError(format!("content_block_start body invalid: {err}"))
                 })?;
-            Ok(AnthropicSseEvent::ContentBlockStart {
+            Ok(Some(AnthropicSseEvent::ContentBlockStart {
                 index: envelope.index,
                 block: envelope.content_block,
-            })
+            }))
         }
         "content_block_delta" => {
             let envelope: ContentBlockDeltaEnvelope =
                 serde_json::from_str(data).map_err(|err| {
                     WireError::SseParseError(format!("content_block_delta body invalid: {err}"))
                 })?;
-            Ok(AnthropicSseEvent::ContentBlockDelta {
+            Ok(Some(AnthropicSseEvent::ContentBlockDelta {
                 index: envelope.index,
                 delta: envelope.delta,
-            })
+            }))
         }
         "content_block_stop" => {
             let envelope: ContentBlockStopEnvelope = serde_json::from_str(data).map_err(|err| {
                 WireError::SseParseError(format!("content_block_stop body invalid: {err}"))
             })?;
-            Ok(AnthropicSseEvent::ContentBlockStop {
+            Ok(Some(AnthropicSseEvent::ContentBlockStop {
                 index: envelope.index,
-            })
+            }))
         }
         "message_delta" => {
             let envelope: MessageDeltaEnvelope = serde_json::from_str(data).map_err(|err| {
                 WireError::SseParseError(format!("message_delta body invalid: {err}"))
             })?;
-            Ok(AnthropicSseEvent::MessageDelta {
+            Ok(Some(AnthropicSseEvent::MessageDelta {
                 stop_reason: envelope.delta.stop_reason,
                 output_tokens: envelope.usage.output_tokens,
-            })
+            }))
         }
         "message_stop" => {
             // Body should be `{"type":"message_stop"}` but we do not require
             // any fields; just consume and ignore.
-            Ok(AnthropicSseEvent::MessageStop)
+            Ok(Some(AnthropicSseEvent::MessageStop))
         }
-        "ping" => Ok(AnthropicSseEvent::Ping),
+        "ping" => Ok(Some(AnthropicSseEvent::Ping)),
         "error" => {
             let value: Value = serde_json::from_str(data)
                 .map_err(|err| WireError::SseParseError(format!("error body invalid: {err}")))?;
@@ -480,34 +479,20 @@ fn parse_event(discriminator: &str, data: &str) -> Result<AnthropicSseEvent, Wir
                         .to_string();
                     (t, m)
                 };
-            Ok(AnthropicSseEvent::Error {
+            Ok(Some(AnthropicSseEvent::Error {
                 error_type,
                 message,
-            })
+            }))
         }
         // Unknown event types are ignored rather than erroring, so forward
         // compatibility with new Anthropic events does not require a release.
         _ => {
-            // Return None-equivalent by emitting a sentinel? We must return
-            // an event or an error; emit the cheapest correct behaviour: drop
-            // the frame silently. The caller asked for parsed events; an
-            // unknown event is not an error in Anthropic's spec.
-            //
-            // Reaching here means the `data` is valid JSON we don't recognise;
-            // parse it once just to validate, then bail with Ok on a synthetic
-            // no-op by returning an early None via the caller. Instead, we
-            // re-dispatch by raising through parse_frame using None.
-            //
-            // Simplest correct path: ignore unknown events here.
+            // Unknown event types are tolerated when their payload is valid
+            // JSON, so we validate and ignore the frame.
             let _ = serde_json::from_str::<Value>(data).map_err(|err| {
                 WireError::SseParseError(format!("unknown event body invalid: {err}"))
             })?;
-            // Signal "drop this frame" via a dedicated marker; since we cannot
-            // return None from this fn signature, callers handle unknown types
-            // by inspecting the discriminator before calling parse_event.
-            Err(WireError::SseParseError(format!(
-                "unrecognised Anthropic event type: {discriminator}"
-            )))
+            Ok(None)
         }
     }
 }
@@ -860,11 +845,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_event_type_is_an_error() {
-        // Unknown discriminants surface as SseParseError so callers can decide
-        // whether to retry or abort; silently dropping would lose data.
+    fn unknown_event_type_is_ignored() {
         let frame = b"event: future_event\ndata: {\"type\":\"future_event\"}\n\n";
-        let err = decode_chunks(&[frame.as_slice()], 64 * 1024).expect_err("must fail");
-        assert!(matches!(err, WireError::SseParseError(_)));
+        let (events, _) = decode_chunks(&[frame.as_slice()], 64 * 1024).expect("decode ok");
+        assert!(events.is_empty());
     }
 }

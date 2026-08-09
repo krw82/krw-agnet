@@ -1,7 +1,7 @@
 ---
 name: earnings_period_map
 description: "Use during earnings_deep_dive to set comparison periods (current quarter, prior quarter, year-ago quarter, annual baseline) with CY labels and comparability checks."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when comparing the latest quarter with the prior quarter, year-ago quarter, and annual baseline"
 ---
 
 # Earnings Period Map

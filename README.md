@@ -1,21 +1,22 @@
 # KRW Agent Runtime
 
-DeepSeek 전용 KRW 리서치 에이전트 런타임입니다. 실행마다 Claude Code나 별도 플러그인
+현재 GLM-5.2를 live 검증 대상으로 사용하는 KRW 리서치 에이전트 런타임입니다. DeepSeek 호환
+계약은 정적 fixture/replay 범위에만 남겨 두고, 실행마다 Claude Code나 별도 플러그인
 프로세스를 띄우지 않고, 하나의 Rust daemon이 많은 세션을 제한된 메모리 안에서 처리하도록
 만들고 있습니다.
 
 ## 아주 쉽게 설명하면
 
-이 시스템은 **DeepSeek 분석가 + Rust 팀장 + Python 자료실 + PostgreSQL 업무일지**로 동작합니다.
+이 시스템은 **GLM-5.2 분석가 + Rust 팀장 + Python 자료실 + PostgreSQL 업무일지**로 동작합니다.
 
-- DeepSeek은 질문을 이해하고 조사 순서와 최종 설명을 만듭니다.
+- GLM-5.2는 질문을 이해하고 조사 순서와 최종 설명을 만듭니다.
 - Rust는 모델이 마음대로 건너뛰지 못하도록 근거, 도구 순서, 호출 횟수, 시간과 메모리를
   강제합니다.
 - 기존 Python `krw-ontology`는 공시와 온톨로지에서 실제 근거를 찾아 줍니다.
 - PostgreSQL은 매 단계의 영수증을 기록해, 서버가 중간에 죽어도 같은 일을 중복하지 않고
   안전하게 이어가게 합니다.
 
-여기서 DeepSeek이 "분석한다"는 말은 첫 계획과 최종 문장만 만든다는 뜻이 아닙니다. DeepSeek은
+여기서 GLM-5.2가 "분석한다"는 말은 첫 계획과 최종 문장만 만든다는 뜻이 아닙니다. 모델은
 도구 결과를 받을 때마다 새 근거의 의미, 남은 의문, 결론을 바꿀 가능성을 다시 판단하고 다음 조회나
 중단을 제안합니다. Rust는 그 제안이 실제 서버가 보고한 근거 공백과 일치하는지, 중복인지, 비용 대비
 가치가 양수인지 확인한 뒤 실행합니다. 즉 조사 방향은 결과에 따라 동적으로 바뀌지만, 네트워크·DB·예산
@@ -29,20 +30,20 @@ DeepSeek 전용 KRW 리서치 에이전트 런타임입니다. 실행마다 Clau
 
 ```text
 질문
- → DeepSeek이 조사 계획 작성
+ → GLM-5.2가 조사 계획 작성
  → Rust가 계획·권한·예산 검사
  → Python 온톨로지에서 근거 수집
- → DeepSeek이 새 근거를 해석하고 후속 조사 후보 제안
+ → GLM-5.2가 새 근거를 해석하고 후속 조사 후보 제안
  → Rust가 실제 근거 공백·중복·비용을 평가해 필요한 조회만 실행
  → 근거가 달라질 때마다 위 판단을 반복
- → DeepSeek이 실제 근거를 바탕으로 일반 한국어 Markdown 답변 작성
+ → GLM-5.2가 실제 근거를 바탕으로 일반 한국어 Markdown 답변 작성
  → Rust가 수집된 EvidenceLedger를 답변과 함께 고정하고 출력 경계·예산을 검증
  → 답변·과금·알림 상태를 한 번에 저장
 ```
 
 대기 중인 세션은 무거운 프로세스나 Tokio task로 만들지 않고 DB의 작은 행으로만 유지합니다.
 실제로 실행 중인 제한된 세션만 메모리에 올라오며, 8개 AgentImage의 정적 release catalog,
-content-interned prompt, DeepSeek HTTP client와 MCP 연결 pool은 컴퓨터 전체에서 공유합니다.
+content-interned prompt, provider HTTP client와 MCP 연결 pool은 컴퓨터 전체에서 공유합니다.
 
 현행 구현 기준과 완료 범위는
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)입니다. 과거 설계 문서와
@@ -62,12 +63,12 @@ CLI·미래 웹 호스트가 하나의 queue/session 실행 경로를 공유하�
 immutable AgentImage release set (1..=64)
         │ 시작 시 한 번 검증·부분집합 resolve·catalog precompile
         ├── DeploymentBinding ── MCP 주소·인증·데이터 버전
-        ├── Model Registry ───── 정확한 DeepSeek 모델
+        ├── Model Registry ───── 정확한 provider/model
         └── RunRequest ───────── 사용자·세션·질문·예산
                     │
                     ▼
               Rust Agent Kernel
-                 ├── DeepSeek native API
+                 ├── Anthropic-compatible provider API (현재 live는 GLM-5.2)
                  └── pooled MCP ── 기존 Python krw-ontology
                     │
                     ▼
@@ -82,9 +83,11 @@ immutable AgentImage release set (1..=64)
 
 ## 확정된 경계
 
-- provider는 DeepSeek native Chat Completions만 사용합니다.
-- production/runtime/eval/fixture의 물리 모델은 정확히 `deepseek-v4-flash` 하나뿐입니다.
-  실행 차이는 `flash_high`, `flash_max`, `flash_direct` 세 개의 고정 profile로만 표현합니다.
+- provider wire는 Anthropic Messages 계약을 사용합니다. GLM TypedJson은 Z.AI JSON mode
+  (`response_format.type=json_object`)를 사용하고 canonical schema를 kernel에서 검증합니다.
+  현재 provider-network 검증은 GLM-5.2만 허용하며, DeepSeek은 live credential/endpoint를 사용하지
+  않는 정적 호환 fixture로만 유지합니다.
+- 물리 모델과 profile은 immutable registry에서 exact-match로 고정하며 alias/fallback을 허용하지 않습니다.
 - production 실행기는 machine-wide Rust daemon 하나입니다.
 - daemon은 모든 direct-authored 이미지를 한 정적 release set으로 서비스하며 receipt image hash 외의
   선택/fallback 경로를 허용하지 않습니다.
@@ -114,13 +117,13 @@ immutable AgentImage release set (1..=64)
 - EvidenceLedger, strong-claim/숫자 lineage 검증, direct Markdown final-output receipt
 - 실행 fence, provider episode/action receipt, cancel/final 단일화의 in-memory 계약 모델
 - 다중 세션용 bounded scheduler 기반
-- DeepSeek native wire/SSE/reasoning replay 기반
+- provider-native wire/SSE/reasoning replay 기반 (현재 live admission은 GLM-5.2)
 - 기존 `ResearchState v2`를 EvidenceLedger로 옮기는 KRW adapter
 - TLS PostgreSQL `agent_v1` claim/lease/fencing supervisor
 - standalone release의 Ed25519 authorization, key validity/revoke, expiry, sequence downgrade 차단
 - standalone bundle manifest의 file/hash/size/symlink/extra-file offline verifier
 - tenant/principal/run 범위로 암호화된 versioned-key recovery CAS
-- immutable claim → direct DeepSeek → pooled MCP → atomic final의 live daemon 연결
+- immutable claim → direct GLM-5.2 → pooled MCP → atomic final의 live daemon 연결
 - API key가 필요 없는 vertical-slice fixture
 
 아직 production-ready가 아님:
@@ -165,13 +168,13 @@ python3 scripts/collect_release_evidence.py --profile ci
 ```
 
 `quickstart`는 고정 fixture로 compiler → provider episode → action receipt → evidence ingest →
-direct Markdown output boundary → EvidenceLedger receipt → final commit 계약을 확인합니다. live DeepSeek나 production MCP 품질을 주장하는
+direct Markdown output boundary → EvidenceLedger receipt → final commit 계약을 확인합니다. live GLM 품질이나 production MCP 품질을 주장하는
 명령은 아닙니다.
 
 Production daemon의 설정 검증과 실제 실행 인자는
 [`docs/POSTGRES_RUNTIME.md`](docs/POSTGRES_RUNTIME.md)에 정리되어 있습니다.
 
-개발 중 DeepSeek Flash wire만 확인할 때의 로컬 secret 주입과 fixed-prompt probe는
+개발 중 GLM-5.2 wire와 구조화 출력 admission만 확인할 때의 로컬 secret 주입과 probe는
 [`docs/LOCAL_SECRETS.md`](docs/LOCAL_SECRETS.md)를 따릅니다.
 
 ## 소스 위치
@@ -182,7 +185,7 @@ Production daemon의 설정 검증과 실제 실행 인자는
 - immutable image와 compiler: [`crates/agent-image`](crates/agent-image)
 - kernel/state machine: [`crates/agent-kernel`](crates/agent-kernel)
 - evidence와 typed product contracts: [`crates/evidence`](crates/evidence)
-- DeepSeek native wire: [`crates/deepseek-wire`](crates/deepseek-wire)
+- provider wire/SSE and structured-output projection: [`crates/provider-wire`](crates/provider-wire)
 - MCP transport/pool: [`crates/tool-mcp`](crates/tool-mcp)
 - Python ontology output adapter: [`crates/krw-ontology-adapter`](crates/krw-ontology-adapter)
 - persistence/scheduler: [`crates/persistence`](crates/persistence),
@@ -190,7 +193,7 @@ Production daemon의 설정 검증과 실제 실행 인자는
 
 ## 자격 증명 주의
 
-DeepSeek credential은 로컬 환경 변수에서만 읽습니다. secret 값이나 그 일부를 repository, test fixture,
+GLM credential은 로컬 환경 변수에서만 읽습니다. secret 값이나 그 일부를 repository, test fixture,
 log, AgentImage에 넣지 않습니다. production release 전에는 별도 credential rotation과 redacted scan을
 수행합니다.
 

@@ -47,12 +47,12 @@ while IFS= read -r krw_env_line || [[ -n "$krw_env_line" ]]; do
     krw_env_glm_seen=true
     continue
   fi
-  printf 'local secret file may contain only DEEPSEEK_API_KEY=<non-whitespace-value> or GLM_API_KEY=<non-whitespace-value>\n' >&2
+  printf 'local secret file may contain only GLM_API_KEY=<non-whitespace-value> or optional DEEPSEEK_API_KEY=<non-whitespace-value>\n' >&2
   exit 2
 done < "$krw_env_file"
 
-if [[ "$krw_env_seen" != true || -z "$krw_env_key" ]]; then
-  printf 'local secret file has no usable DEEPSEEK_API_KEY\n' >&2
+if [[ "$krw_env_glm_seen" != true || -z "$krw_env_glm_key" ]]; then
+  printf 'local secret file has no usable GLM_API_KEY\n' >&2
   exit 2
 fi
 
@@ -74,7 +74,9 @@ if [[ "$1" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
   unset krw_env_cargo krw_env_cargo_dir krw_env_candidate
 fi
 
-export DEEPSEEK_API_KEY="$krw_env_key"
+if [[ "$krw_env_seen" == true && -n "$krw_env_key" ]]; then
+  export DEEPSEEK_API_KEY="$krw_env_key"
+fi
 if [[ "$krw_env_glm_seen" == true && -n "$krw_env_glm_key" ]]; then
   export GLM_API_KEY="$krw_env_glm_key"
 fi

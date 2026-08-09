@@ -1632,7 +1632,8 @@ fn active_snapshot(
         model_profile: request.model_profile.clone(),
         requested_model: request.requested_model.clone(),
         resolved_model: request.requested_model.clone(),
-        provider_api_version: "chat-completions-v1".into(),
+        provider_api_version: "anthropic-messages-v1".into(),
+        provider_max_context_tokens: 1_000_000,
         provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
@@ -2363,6 +2364,8 @@ mod tests {
             max_tokens: 128,
             tools: Vec::new(),
             tool_choice: None,
+            output_config: None,
+            response_format: None,
             thinking: krw_agent_provider_wire::ThinkingConfig {
                 kind: ThinkingMode::Enabled,
                 budget_tokens: Some(64),
@@ -2373,7 +2376,7 @@ mod tests {
         let context = EpisodeContext {
             tool_schema_hash: ContentHash::sha256("tool-schema"),
             agent_image_hash: ContentHash::sha256("image"),
-            api_version: "chat-completions-v1".into(),
+            api_version: "anthropic-messages-v1".into(),
         };
 
         assert!(provider.complete(&request, &context).await.is_err());

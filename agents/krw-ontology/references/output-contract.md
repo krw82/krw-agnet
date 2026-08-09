@@ -1,7 +1,7 @@
 ---
 name: earnings_output_contract
 description: "Use when composing the earnings_deep_dive final Korean answer. Defines the fixed heading structure and interpretation table format."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when composing the final earnings deep-dive answer"
 ---
 
 # Output Contract

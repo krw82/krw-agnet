@@ -1,7 +1,7 @@
 ---
 name: scenario_construction
 description: "Use during scenario_sensitivity to build base/upside/downside cases from the same load-bearing variables. Different states of one assumption, not unrelated narratives."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when building evidence-grounded base, upside, and downside cases from the same business assumptions"
 ---
 
 # Scenario Construction

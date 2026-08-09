@@ -1,7 +1,7 @@
 ---
 name: earnings_quality_policy
 description: "Use during earnings_deep_dive to verify whether headline EPS/net income/FCF represents recurring operating performance versus accounting effects or timing."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when EPS, net income, margin, or free cash flow may be distorted by timing, accounting effects, or one-off items"
 ---
 
 # Earnings Quality Policy

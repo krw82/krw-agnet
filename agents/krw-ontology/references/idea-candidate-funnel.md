@@ -1,7 +1,7 @@
 ---
 name: idea_candidate_funnel
 description: "Use during idea_generation to operate the candidate funnel from discovery to A/B/C/Reject classification."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when candidates must be progressed from discovery into A, B, C, or Reject research priority"
 ---
 
 # Candidate Funnel

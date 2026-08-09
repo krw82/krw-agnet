@@ -375,6 +375,20 @@ pub(super) fn isolate_request(
         return Err(krw_agent_bounded_child::ChildExecutionError::ChildBudgetExceeded.into());
     }
     built.request.max_tokens = built.request.max_tokens.min(remaining_output);
+    if let Some(budget_tokens) = built.request.thinking.budget_tokens.as_mut() {
+        if built.request.thinking.kind == krw_agent_protocol::ThinkingMode::Enabled {
+            *budget_tokens = built
+                .request
+                .max_tokens
+                .saturating_sub(1)
+                .min(*budget_tokens);
+            if *budget_tokens < 1024 {
+                return Err(
+                    krw_agent_bounded_child::ChildExecutionError::ChildBudgetExceeded.into(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 

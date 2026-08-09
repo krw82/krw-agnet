@@ -1,7 +1,7 @@
 //! Fixture-backed, live-provider research-quality acceptance tests.
 //!
 //! This crate deliberately exercises the production `AgentImage`, canonical
-//! contract guard, state interpreter, `DeepSeek` wire, evidence mapper,
+//! contract guard, state interpreter, provider wire, evidence mapper,
 //! direct-Markdown output boundary, immutable evidence-ledger receipt, and
 //! final-commit boundary together. Only the retrieval endpoint
 //! is replaced with a pinned fixture.  That keeps a model-quality regression
@@ -24,18 +24,21 @@ use krw_agent_persistence::{
 };
 use krw_agent_protocol::{
     AuthScope, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID,
-    DeploymentBinding, McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities,
-    ReasoningEffort, ResolvedExecutionSnapshot, RunRequest, ThinkingMode, TransportKind,
+    DeploymentBinding, GLM_MODEL_ID, McpToolSessionReuse, PROTOCOL_VERSION,
+    ProviderWireCapabilities, ReasoningEffort, ResolvedExecutionSnapshot, RunRequest, ThinkingMode,
+    TransportKind,
 };
 use krw_agent_provider_wire::{
     AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
     ProviderMessage, ProviderToolDefinition, TokenUsage,
 };
+use krw_agent_research_planner::canonicalize_normalized_plan_exchange;
 use krw_agent_run_engine::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
     DependencyFailure, DurableActionObservation, DurableEpisode, DurableFinal, DurableRunState,
     EngineConfig, EngineError, FinalStatus, MarkActionAmbiguous, Persistence, Provider,
     RecoverySnapshot, RunControl, RunEngine, RunIdentity, RunInput, RunOutcome,
+    durable_failure_diagnostic,
 };
 use krw_ontology_adapter::{
     MappingContext, map_research_state, map_targeted_query, map_trace, parse_research_state,
@@ -156,7 +159,7 @@ pub struct QualityAssertion {
 }
 
 /// Redacted provider metadata.  It never retains the prompt, answer, tool
-/// arguments, retrieved payload, or private `DeepSeek` reasoning.
+/// arguments, retrieved payload, or private provider reasoning.
 #[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderTurnReport {
@@ -173,7 +176,7 @@ pub struct ProviderTurnReport {
 }
 
 /// Structural report recorded before each provider request. It is safe to
-/// retain even when `DeepSeek` rejects the request: it contains no message text,
+/// retain even when a provider rejects the request: it contains no message text,
 /// tool arguments, model output, or private reasoning.
 #[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -183,6 +186,13 @@ pub struct ProviderRequestReport {
     pub tool_definition_count: usize,
     pub all_tool_definitions_well_formed: bool,
     pub messages: Vec<ProviderMessageShapeReport>,
+    /// Closed kernel recovery codes supplied after a model decision was
+    /// rejected. These are static identifiers only; no prompt, tool argument,
+    /// evidence, or model text is retained.
+    pub recovery_reason_codes: Vec<String>,
+    /// Safe JSON-pointer locations supplied by the kernel for model repairs.
+    /// Only fixed ResearchProposal schema paths are retained.
+    pub recovery_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -233,6 +243,9 @@ pub struct CapabilityCallReport {
     /// contains only booleans/counts against this public synthetic case, never
     /// model-authored strings, plan values, or retrieved content.
     pub plan_quality: Option<FixturePlanQualityReport>,
+    /// Structural comparison of the fixture response plan with the dispatched
+    /// plan. It exposes only fixed `SearchPlan` field counts, never plan text.
+    pub response_plan_shape: Option<FixtureResponsePlanShapeReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,8 +259,24 @@ pub struct FixturePlanQualityReport {
     pub clause_count_within_limit: bool,
     pub has_required_clause: bool,
     pub clause_tickers_within_scope: bool,
+    /// Every semantic term required by the fixture appears in the dispatched
+    /// plan. This is intentionally an all-terms check so a multi-objective
+    /// plan cannot satisfy a dual-claim case with only one side covered.
     pub relevant_term_present: bool,
     pub required_clauses_have_dispatch_fields: bool,
+}
+
+/// Content-free structural information about the server-normalized plan echoed
+/// by a research-state fixture. This makes a protocol drift debuggable without
+/// retaining model terms, the question, or evidence payloads.
+#[derive(Debug, Clone, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureResponsePlanShapeReport {
+    pub raw_plan_matches_dispatched: bool,
+    pub top_level_key_count: Option<usize>,
+    pub clause_key_counts: Vec<usize>,
+    pub missing_canonical_clause_key_counts: Vec<usize>,
+    pub unknown_clause_key_counts: Vec<usize>,
 }
 
 /// Machine-readable acceptance result.  The rendered answer is intentionally
@@ -404,6 +433,33 @@ pub async fn run_fixture_case<P>(
 where
     P: Provider + 'static,
 {
+    run_fixture_case_with_model(
+        root,
+        suite,
+        case_id,
+        provider,
+        retain_answer,
+        DEEPSEEK_MODEL_ID,
+        "flash_high",
+    )
+    .await
+}
+
+/// Execute the same fixture flow against one explicitly selected model. The
+/// CLI uses this GLM-only entrypoint for live quality checks; the legacy
+/// wrapper above remains available for hermetic historical fixtures.
+pub async fn run_fixture_case_with_model<P>(
+    root: &Path,
+    suite: &ResearchQualitySuite,
+    case_id: &str,
+    provider: Arc<P>,
+    retain_answer: bool,
+    model_id: &str,
+    model_profile: &str,
+) -> Result<ResearchQualityRun, QualityError>
+where
+    P: Provider + 'static,
+{
     let case = suite
         .cases
         .iter()
@@ -417,10 +473,17 @@ where
         MAX_FIXTURE_BYTES,
     )?)?;
     validate_request_for_case(&request, case)?;
+    if model_id != DEEPSEEK_MODEL_ID && model_id != GLM_MODEL_ID {
+        return Err(QualityError::Fixture(
+            "quality case model must be one of the pinned provider ids".into(),
+        ));
+    }
+    request.requested_model = model_id.into();
+    request.model_profile = model_profile.into();
     request.budget = case.budget.clone();
     let capability = Arc::new(load_fixture_capability(root, &image, case)?);
     let deployment = fixture_deployment(case, &image, &capability)?;
-    let snapshot = fixture_snapshot(&request, &image, &deployment);
+    let snapshot = fixture_snapshot(&request, &image, &deployment, model_id);
     let recording_provider = Arc::new(RecordingProvider::new(provider));
     let persistence = Arc::new(FixturePersistence::default());
     let config = EngineConfig::production(&image.manifest)
@@ -455,6 +518,7 @@ where
         provider_turns,
         capability_calls,
         retain_answer,
+        model_id,
     );
     run.report.assertions.push(assertion(
         "fixture_capability_script_consumed",
@@ -466,7 +530,7 @@ where
 
 /// Run a recorded, pinned provider script through the same production kernel
 /// path used by a live quality case. This is the hermetic regression gate: it
-/// verifies the typed `DeepSeek` wire, `ResearchProposal → SearchPlan` lowering,
+/// verifies the typed provider wire, `ResearchProposal → SearchPlan` lowering,
 /// direct-root capability call, evidence ingestion, the Markdown output
 /// boundary, `EvidenceLedger` receipt binding, and final commit without a
 /// credential or a network request.
@@ -493,8 +557,16 @@ pub async fn run_recorded_fixture_case(
         })
         .collect::<Result<Vec<AssistantMessage>, QualityError>>()?;
     let provider = Arc::new(RecordedFixtureProvider::new(script));
-    let mut run =
-        run_fixture_case(root, suite, case_id, Arc::clone(&provider), retain_answer).await?;
+    let mut run = run_fixture_case_with_model(
+        root,
+        suite,
+        case_id,
+        Arc::clone(&provider),
+        retain_answer,
+        GLM_MODEL_ID,
+        "glm_high",
+    )
+    .await?;
     run.report.assertions.push(assertion(
         "recorded_provider_script_consumed",
         provider.is_exhausted(),
@@ -579,9 +651,11 @@ fn validate_request_for_case(
     request: &RunRequest,
     case: &ResearchQualityCase,
 ) -> Result<(), QualityError> {
-    if request.requested_model != DEEPSEEK_MODEL_ID || request.question.is_empty() {
+    if (request.requested_model != DEEPSEEK_MODEL_ID && request.requested_model != GLM_MODEL_ID)
+        || request.question.is_empty()
+    {
         return Err(QualityError::Fixture(
-            "quality case must use deepseek-v4-flash and a non-empty question".into(),
+            "quality case must use a pinned provider model and a non-empty question".into(),
         ));
     }
     let expected_ticker = &case.expected.plan.ticker;
@@ -666,6 +740,7 @@ fn fixture_snapshot(
     request: &RunRequest,
     image: &LoadedImage,
     deployment: &DeploymentBinding,
+    model_id: &str,
 ) -> ResolvedExecutionSnapshot {
     let release_hashes = image
         .manifest
@@ -692,10 +767,15 @@ fn fixture_snapshot(
         model_registry_hash: ContentHash::sha256("quality-fixture-flash-registry-v1"),
         budget_registry_hash: ContentHash::sha256("quality-fixture-budget-registry-v1"),
         model_profile: request.model_profile.clone(),
-        requested_model: DEEPSEEK_MODEL_ID.into(),
-        resolved_model: DEEPSEEK_MODEL_ID.into(),
-        provider_api_version: "chat-completions-v1".into(),
-        provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+        requested_model: model_id.into(),
+        resolved_model: model_id.into(),
+        provider_api_version: "anthropic-messages-v1".into(),
+        provider_max_context_tokens: 1_000_000,
+        provider_wire_capabilities: if model_id == GLM_MODEL_ID {
+            ProviderWireCapabilities::glm_5_2()
+        } else {
+            ProviderWireCapabilities::deepseek_v4_flash()
+        },
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
         capability_release_hashes: release_hashes,
@@ -874,7 +954,90 @@ fn provider_request_report(
             .iter()
             .map(provider_message_shape)
             .collect(),
+        recovery_reason_codes: request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { content, .. } => recovery_reason_code(content),
+                ContentBlock::Text { .. }
+                | ContentBlock::ToolUse { .. }
+                | ContentBlock::Thinking { .. } => None,
+            })
+            .collect(),
+        recovery_fields: request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { content, .. } => recovery_field(content),
+                ContentBlock::Text { .. }
+                | ContentBlock::ToolUse { .. }
+                | ContentBlock::Thinking { .. } => None,
+            })
+            .collect(),
     })
+}
+
+fn recovery_reason_code(content: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(content).ok()?;
+    let object = payload.as_object()?;
+    if object.get("status").and_then(Value::as_str) != Some("recovery_required")
+        || object.get("class").and_then(Value::as_str) != Some("model_correctable")
+    {
+        return None;
+    }
+    let reason_code = object.get("reason_code").and_then(Value::as_str)?;
+    (reason_code.len() <= 96
+        && reason_code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then(|| reason_code.to_owned())
+}
+
+fn recovery_field(content: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(content).ok()?;
+    let object = payload.as_object()?;
+    if object.get("status").and_then(Value::as_str) != Some("recovery_required")
+        || object.get("class").and_then(Value::as_str) != Some("model_correctable")
+    {
+        return None;
+    }
+    let field = object
+        .get("detail")
+        .and_then(Value::as_object)?
+        .get("field")
+        .and_then(Value::as_str)?;
+    safe_research_proposal_field(field).then(|| field.to_owned())
+}
+
+fn safe_research_proposal_field(field: &str) -> bool {
+    if matches!(
+        field,
+        "/" | "/answer_scope" | "/uncertainty" | "/objectives"
+    ) {
+        return true;
+    }
+    let Some(rest) = field.strip_prefix("/objectives/") else {
+        return false;
+    };
+    let Some((index, suffix)) = rest.split_once('/') else {
+        return false;
+    };
+    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    matches!(
+        suffix,
+        "priority"
+            | "directness"
+            | "goal/kind"
+            | "goal/metric"
+            | "goal/change"
+            | "goal/window"
+            | "goal/concepts"
+            | "goal/predicates"
+    )
 }
 
 fn provider_message_shape(message: &ProviderMessage) -> ProviderMessageShapeReport {
@@ -1244,6 +1407,7 @@ impl FixtureCapabilityRuntime {
         invocation: &CapabilityInvocation,
         fixture_plan_accepted: bool,
         plan_quality: Option<FixturePlanQualityReport>,
+        response_plan_shape: Option<FixtureResponsePlanShapeReport>,
     ) -> Result<(), DependencyFailure> {
         self.calls
             .lock()
@@ -1257,6 +1421,7 @@ impl FixtureCapabilityRuntime {
                 ),
                 fixture_plan_accepted,
                 plan_quality,
+                response_plan_shape,
             });
         Ok(())
     }
@@ -1355,7 +1520,7 @@ impl CapabilityRuntime for FixtureCapabilityRuntime {
             .pop_front()
             .ok_or_else(|| fixture_dependency("quality_fixture_capability_script_exhausted"))?;
         if response.capability_id != invocation.capability_id {
-            self.record_call(invocation, false, None)?;
+            self.record_call(invocation, false, None, None)?;
             return Err(fixture_dependency(
                 "quality_fixture_capability_sequence_mismatch",
             ));
@@ -1366,7 +1531,13 @@ impl CapabilityRuntime for FixtureCapabilityRuntime {
                 let quality = assess_fixture_plan(&invocation.arguments, &self.expected);
                 let valid = quality.accepted();
                 let payload = valid
-                    .then(|| materialize_research_state(&response.payload, &invocation.arguments))
+                    .then(|| {
+                        materialize_research_state(
+                            &response.payload,
+                            &invocation.arguments,
+                            &self.expected,
+                        )
+                    })
                     .transpose()?;
                 (
                     payload.unwrap_or_else(|| response.payload.clone()),
@@ -1375,7 +1546,8 @@ impl CapabilityRuntime for FixtureCapabilityRuntime {
                 )
             }
         };
-        self.record_call(invocation, plan_valid, plan_quality)?;
+        let response_plan_shape = fixture_response_plan_shape(&payload, &invocation.arguments);
+        self.record_call(invocation, plan_valid, plan_quality, response_plan_shape)?;
         if !plan_valid {
             return Err(fixture_dependency("quality_fixture_plan_rejected"));
         }
@@ -1461,7 +1633,7 @@ fn assess_fixture_plan(plan: &Value, expected: &QualityExpectations) -> FixtureP
         .plan
         .relevant_terms
         .iter()
-        .any(|term| haystack.contains(&term.to_lowercase()));
+        .all(|term| haystack.contains(&term.to_lowercase()));
     FixturePlanQualityReport {
         plan_is_object: true,
         ticker_scope_matches,
@@ -1473,6 +1645,60 @@ fn assess_fixture_plan(plan: &Value, expected: &QualityExpectations) -> FixtureP
         relevant_term_present,
         required_clauses_have_dispatch_fields,
     }
+}
+
+fn fixture_response_plan_shape(
+    payload: &Value,
+    dispatched_plan: &Value,
+) -> Option<FixtureResponsePlanShapeReport> {
+    const CLAUSE_KEYS: &[&str] = &[
+        "calculation_window",
+        "clause_id",
+        "directness",
+        "metric_dimensions",
+        "metric_scope",
+        "metrics",
+        "object_types",
+        "required",
+        "required_concepts",
+        "required_predicates",
+        "retrieval_query",
+        "tickers",
+    ];
+    let plan = payload.get("plan")?;
+    let object = plan.as_object()?;
+    let clauses = object.get("clauses")?.as_array()?;
+    let mut clause_key_counts = Vec::with_capacity(clauses.len());
+    let mut missing_canonical_clause_key_counts = Vec::with_capacity(clauses.len());
+    let mut unknown_clause_key_counts = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        let Some(clause) = clause.as_object() else {
+            clause_key_counts.push(0);
+            missing_canonical_clause_key_counts.push(CLAUSE_KEYS.len());
+            unknown_clause_key_counts.push(0);
+            continue;
+        };
+        clause_key_counts.push(clause.len());
+        missing_canonical_clause_key_counts.push(
+            CLAUSE_KEYS
+                .iter()
+                .filter(|key| !clause.contains_key(**key))
+                .count(),
+        );
+        unknown_clause_key_counts.push(
+            clause
+                .keys()
+                .filter(|key| !CLAUSE_KEYS.contains(&key.as_str()))
+                .count(),
+        );
+    }
+    Some(FixtureResponsePlanShapeReport {
+        raw_plan_matches_dispatched: plan == dispatched_plan,
+        top_level_key_count: Some(object.len()),
+        clause_key_counts,
+        missing_canonical_clause_key_counts,
+        unknown_clause_key_counts,
+    })
 }
 
 #[cfg(test)]
@@ -1519,19 +1745,27 @@ struct FixtureClauseEvidence {
     strong_claim_ready: bool,
 }
 
-fn materialize_research_state(template: &Value, plan: &Value) -> Result<Value, DependencyFailure> {
+fn materialize_research_state(
+    template: &Value,
+    plan: &Value,
+    expected: &QualityExpectations,
+) -> Result<Value, DependencyFailure> {
+    // The real ontology server parses `SearchPlan` through Pydantic and
+    // serializes its documented defaults in the returned `ResearchState`.
+    // Mirror that boundary here: the fixture must exercise the same response
+    // shape as production, while the engine still independently verifies the
+    // normalized plan exchange.
+    let canonical_plan = canonicalize_normalized_plan_exchange(plan, plan)
+        .map_err(|_| fixture_dependency("quality_fixture_plan_normalization"))?;
     let mut payload = template.clone();
-    // Fixture evidence is authored against a readable semantic template
-    // clause name. Production `query_context` instead returns the exact
-    // kernel-generated clause IDs it received. Pair the immutable template
-    // and dispatched plans by bounded order, then rewrite only exact clause
-    // references before computing coverage. This keeps quality fixtures
-    // independent from provider-visible ID construction.
-    let replacements = fixture_clause_id_replacements(&payload, plan)?;
-    if !replacements.is_empty() {
-        replace_fixture_clause_references(&mut payload, &replacements);
-    }
-    let required = plan
+    // Fixture evidence is authored against readable semantic template clauses,
+    // while the provider may expand one user question into several clauses.
+    // Align every dispatched clause with a semantically related template
+    // clause, then copy the fixture evidence linkage to that dispatched ID.
+    // Unrelated extra clauses receive no linkage and therefore remain
+    // uncovered instead of being silently accepted.
+    align_fixture_clause_references(&mut payload, &canonical_plan, expected)?;
+    let required = canonical_plan
         .get("clauses")
         .and_then(Value::as_array)
         .ok_or_else(|| fixture_dependency("quality_fixture_plan_shape"))?
@@ -1579,7 +1813,7 @@ fn materialize_research_state(template: &Value, plan: &Value) -> Result<Value, D
     let all_required_strong = clause_evidence
         .iter()
         .all(|(_, _, evidence)| evidence.strong_claim_ready);
-    object.insert("plan".into(), plan.clone());
+    object.insert("plan".into(), canonical_plan);
     object.insert(
         "answerability".into(),
         serde_json::json!({
@@ -1624,35 +1858,104 @@ fn materialize_research_state(template: &Value, plan: &Value) -> Result<Value, D
     Ok(payload)
 }
 
-fn fixture_clause_id_replacements(
-    template: &Value,
+fn align_fixture_clause_references(
+    payload: &mut Value,
     plan: &Value,
-) -> Result<BTreeMap<String, String>, DependencyFailure> {
-    let template_ids = template
+    expected: &QualityExpectations,
+) -> Result<(), DependencyFailure> {
+    let template_clauses = payload
         .get("plan")
         .and_then(|value| value.get("clauses"))
         .and_then(Value::as_array)
         .ok_or_else(|| fixture_dependency("quality_fixture_template_plan_shape"))?
-        .iter()
-        .filter_map(|clause| clause.get("clause_id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let dispatched_ids = plan
+        .clone();
+    let dispatched_clauses = plan
         .get("clauses")
         .and_then(Value::as_array)
-        .ok_or_else(|| fixture_dependency("quality_fixture_plan_shape"))?
-        .iter()
-        .filter_map(|clause| clause.get("clause_id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if template_ids.len() != dispatched_ids.len() {
+        .ok_or_else(|| fixture_dependency("quality_fixture_plan_shape"))?;
+    if template_clauses.is_empty() || dispatched_clauses.is_empty() {
         return Err(fixture_dependency("quality_fixture_clause_cardinality"));
     }
-    Ok(template_ids
-        .into_iter()
-        .zip(dispatched_ids)
-        .filter(|(source, target)| source != target)
-        .collect())
+
+    let mut aligned = BTreeMap::<String, Vec<String>>::new();
+    for dispatched in dispatched_clauses {
+        let Some(dispatched_id) = dispatched.get("clause_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some((template_id, _score)) = template_clauses
+            .iter()
+            .filter_map(|template| {
+                let template_id = template.get("clause_id").and_then(Value::as_str)?;
+                let score = fixture_clause_similarity(template, dispatched, expected);
+                (score > 0).then_some((template_id, score))
+            })
+            .max_by_key(|(_, score)| *score)
+        else {
+            continue;
+        };
+        aligned
+            .entry(template_id.to_owned())
+            .or_default()
+            .push(dispatched_id.to_owned());
+    }
+
+    let primary_replacements = aligned
+        .iter()
+        .filter_map(|(source, targets)| {
+            targets
+                .first()
+                .map(|target| (source.clone(), target.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    replace_fixture_clause_references(payload, &primary_replacements);
+
+    let evidence_units = payload
+        .get_mut("evidence_units")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| fixture_dependency("quality_fixture_evidence_shape"))?;
+    for unit in evidence_units {
+        let supports = unit
+            .get("supports_clause_ids")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut aligned_supports = Vec::new();
+        for source in supports.iter().filter_map(Value::as_str) {
+            if let Some(targets) = aligned
+                .values()
+                .find(|targets| targets.iter().any(|target| target == source))
+            {
+                aligned_supports.extend(targets.iter().cloned().map(Value::String));
+            }
+        }
+        deduplicate_json_strings(&mut aligned_supports);
+        unit["supports_clause_ids"] = Value::Array(aligned_supports);
+
+        let matches = unit
+            .get("clause_matches")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut aligned_matches = Vec::new();
+        for entry in matches {
+            let Some(source) = entry.get("clause_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(targets) = aligned
+                .values()
+                .find(|targets| targets.iter().any(|target| target == source))
+            else {
+                continue;
+            };
+            for target in targets {
+                let mut copy = entry.clone();
+                copy["clause_id"] = Value::String(target.clone());
+                aligned_matches.push(copy);
+            }
+        }
+        unit["clause_matches"] = Value::Array(aligned_matches);
+    }
+    Ok(())
 }
 
 fn replace_fixture_clause_references(value: &mut Value, replacements: &BTreeMap<String, String>) {
@@ -1670,6 +1973,43 @@ fn replace_fixture_clause_references(value: &mut Value, replacements: &BTreeMap<
             .for_each(|value| replace_fixture_clause_references(value, replacements)),
         _ => {}
     }
+}
+
+fn fixture_clause_similarity(
+    template: &Value,
+    dispatched: &Value,
+    expected: &QualityExpectations,
+) -> u8 {
+    let template_text = fixture_value_text(template).to_lowercase();
+    let dispatched_text = fixture_value_text(dispatched).to_lowercase();
+    let relevant_overlap = expected
+        .plan
+        .relevant_terms
+        .iter()
+        .filter(|term| {
+            let term = term.to_lowercase();
+            template_text.contains(&term) && dispatched_text.contains(&term)
+        })
+        .count();
+    if relevant_overlap > 0 {
+        return 2;
+    }
+    0
+}
+
+fn fixture_value_text(value: &Value) -> String {
+    let mut values = Vec::new();
+    collect_plan_strings(value, &mut values);
+    values.join(" ")
+}
+
+fn deduplicate_json_strings(values: &mut Vec<Value>) {
+    let mut seen = BTreeSet::new();
+    values.retain(|value| {
+        value
+            .as_str()
+            .is_some_and(|text| seen.insert(text.to_owned()))
+    });
 }
 
 fn fixture_evidence_for_clause(
@@ -1969,6 +2309,7 @@ fn report_from_outcome(
     provider_turns: Vec<ProviderTurnReport>,
     capability_calls: Vec<CapabilityCallReport>,
     retain_answer: bool,
+    model_id: &str,
 ) -> ResearchQualityRun {
     let mut assertions = Vec::new();
     let mut usage = None;
@@ -2053,12 +2394,11 @@ fn report_from_outcome(
     }
 
     assertions.push(assertion(
-        "exact_flash_identity",
+        "exact_provider_identity",
         !provider_turns.is_empty()
-            && provider_turns.iter().all(|turn| {
-                turn.requested_model == DEEPSEEK_MODEL_ID
-                    && turn.observed_model == DEEPSEEK_MODEL_ID
-            }),
+            && provider_turns
+                .iter()
+                .all(|turn| turn.requested_model == model_id && turn.observed_model == model_id),
     ));
     assertions.push(assertion("model_research_proposal_shape", {
         let proposal_shapes = provider_turns
@@ -2095,7 +2435,7 @@ fn report_from_outcome(
     ));
 
     let mut report = ResearchQualityReport {
-        schema_version: 5,
+        schema_version: 7,
         harness: "fixture_backed_real_provider_v4".into(),
         suite_id: suite.suite_id.clone(),
         suite_version: suite.suite_version.clone(),
@@ -2165,12 +2505,21 @@ fn safe_engine_error_code(error: &EngineError) -> String {
         EngineError::InvalidWorkflowControl => "invalid_workflow_control".into(),
         EngineError::InvalidWorkflowTransitionShape => "invalid_transition_shape".into(),
         EngineError::ModelProposalRejected(code) => format!("model_proposal_rejected:{code}"),
-        EngineError::ResearchPlanner(_) => "research_plan_rejected".into(),
+        // A planner failure is internally classified into a closed,
+        // content-free diagnostic. Keeping that subtype in the quality
+        // report makes a live-model failure actionable without recording the
+        // model proposal, question, or retrieval payload.
+        EngineError::ResearchPlanner(_) => durable_failure_diagnostic(error)
+            .map(|diagnostic| diagnostic.kind.into())
+            .unwrap_or_else(|| "research_plan_rejected".into()),
         EngineError::WorkflowResolution { .. } => "workflow_resolution".into(),
         EngineError::DeadlineExceeded(_) => "deadline_exceeded".into(),
         EngineError::NoRemainingOutputBudget => "output_budget_exhausted".into(),
         EngineError::CapabilityPrerequisiteMissing(_) => "capability_prerequisite_missing".into(),
         EngineError::CapabilityBudgetExceeded { .. } => "capability_budget_exceeded".into(),
+        EngineError::ActionRejected(_) => "capability_action_rejected".into(),
+        EngineError::InvalidCapabilityResult(_) => "capability_result_invalid".into(),
+        EngineError::Invariant(_) => "engine_invariant".into(),
         EngineError::InvalidProviderEpisode(_) => "invalid_provider_episode".into(),
         EngineError::PhaseRuleViolations { .. } => "phase_policy".into(),
         EngineError::Contract(_) => "contract".into(),

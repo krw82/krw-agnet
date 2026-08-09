@@ -1,7 +1,7 @@
 ---
 name: scenario_action_threshold_policy
 description: "Use during scenario_sensitivity to translate tested assumptions into observable evidence conditions (strengthen/maintain/weaken/break)."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when translating a scenario into observable evidence that would strengthen, maintain, weaken, or break the thesis"
 ---
 
 # Action Threshold Policy

@@ -55,10 +55,9 @@
           "ticker": "VG",
           "required_document_type": "10-K",
           "min_clauses": 1,
-          "max_clauses": 2,
+          "max_clauses": 12,
           "relevant_terms": [
-            "cash",
-            "현금"
+            "cash"
           ]
         }
       }
@@ -118,13 +117,11 @@
         "plan": {
           "ticker": "VG",
           "required_document_type": "10-K",
-          "min_clauses": 2,
-          "max_clauses": 2,
+          "min_clauses": 1,
+          "max_clauses": 12,
           "relevant_terms": [
             "cash",
-            "debt",
-            "현금",
-            "부채"
+            "debt"
           ]
         }
       }
@@ -201,10 +198,9 @@
           "ticker": "VG",
           "required_document_type": "10-K",
           "min_clauses": 1,
-          "max_clauses": 2,
+          "max_clauses": 12,
           "relevant_terms": [
-            "cash",
-            "현금"
+            "cash"
           ]
         }
       }
