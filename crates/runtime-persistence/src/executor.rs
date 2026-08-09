@@ -55,6 +55,7 @@ fn claim_failure_code(error: &ClaimValidationError) -> &'static str {
             "model_profile" => "claim_execution_model_profile_mismatch",
             "requested_model" | "resolved_model" => "claim_execution_model_mismatch",
             "provider_api_version" => "claim_execution_provider_api_mismatch",
+            "provider_max_context_tokens" => "claim_execution_provider_context_mismatch",
             "provider_wire_capabilities" => "claim_execution_provider_wire_mismatch",
             "thinking" | "reasoning_effort" => "claim_execution_thinking_profile_mismatch",
             "capability_release_hashes" => "claim_execution_capability_release_mismatch",
@@ -681,15 +682,16 @@ fn execution_failure_from_dependency(
 }
 
 /// Provider failures already enter the engine through a closed, redacted
-/// vocabulary (`deepseek_*`). Retaining that bounded category makes a live
-/// compatibility drift diagnosable without retaining the provider body,
+/// vocabulary (`glm_*` in the active release, plus the retained compatibility
+/// `deepseek_*` vocabulary). Retaining only those bounded categories makes a
+/// live compatibility drift diagnosable without retaining the provider body,
 /// request, prompt, tool arguments, or account material. Other dependency
 /// origins remain hash-only because their codes may be authored by arbitrary
 /// adapters.
 fn retained_provider_dependency_code<'a>(origin: &str, code: &'a str) -> Option<&'a str> {
     (origin == "provider").then_some(code).filter(|code| {
         (1..=128).contains(&code.len())
-            && code.starts_with("deepseek_")
+            && (code.starts_with("glm_") || code.starts_with("deepseek_"))
             && code
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
@@ -893,7 +895,9 @@ mod tests {
 
     use krw_agent_image::{PromptBlobInterner, compile_agent_dir};
     use krw_agent_persistence::agent_v1::RecoveryReceipt;
-    use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID, ModelRegistry, RunRequest};
+    use krw_agent_protocol::{
+        ContentHash, DEEPSEEK_MODEL_ID, GLM_MODEL_ID, ModelRegistry, RunRequest,
+    };
     use krw_agent_runtime_config::{
         BudgetRegistry, ConfigError, EndpointRegistry, SecretSource, ValidationMode, load_yaml,
         resolve_release_set,
@@ -970,6 +974,24 @@ mod tests {
         assert_eq!(
             failure.release["provider_code"],
             json!("deepseek_http_400_invalid_param")
+        );
+        let serialized = serde_json::to_string(&failure.release).unwrap();
+        assert!(!serialized.contains("provider body"));
+    }
+
+    #[test]
+    fn provider_dependency_failure_retains_the_active_glm_code() {
+        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+            "glm_http_400_invalid_param",
+            "provider body that must remain private",
+            false,
+            DeliveryCertainty::MayHaveDispatched,
+        );
+
+        let failure = execution_failure_from_dependency("provider", &dependency);
+        assert_eq!(
+            failure.release["provider_code"],
+            json!("glm_http_400_invalid_param")
         );
         let serialized = serde_json::to_string(&failure.release).unwrap();
         assert!(!serialized.contains("provider body"));
@@ -1161,7 +1183,7 @@ mod tests {
         assert_eq!(en_claim.request().run_kind, "company_research_en");
         assert_eq!(catalog.len(), 2);
         assert_eq!(providers.by_model.len(), 1);
-        assert!(providers.exact(DEEPSEEK_MODEL_ID).is_some());
+        assert!(providers.exact(GLM_MODEL_ID).is_some());
     }
 
     #[test]
@@ -1287,11 +1309,11 @@ mod tests {
                 .values()
                 .all(|release| release.context_planner.state_count() > 0)
         );
-        assert_eq!(providers.by_model.len(), 2);
+        assert_eq!(providers.by_model.len(), 1);
     }
 
     #[test]
-    fn provider_catalog_rejects_any_non_flash_inventory() {
+    fn provider_catalog_rejects_any_unpinned_inventory() {
         let root = root();
         let models: ModelRegistry =
             load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
@@ -1308,7 +1330,6 @@ mod tests {
 
     #[test]
     fn provider_catalog_accepts_multiple_allowed_models() {
-        use krw_agent_protocol::GLM_MODEL_ID;
         let root = root();
         let models: ModelRegistry =
             load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
@@ -1316,8 +1337,8 @@ mod tests {
         // catalog has to materialise two independent ProviderClient instances
         // and two independent permit semaphores.
         let mut second = models.models[0].clone();
-        second.model_id = GLM_MODEL_ID.to_string();
-        second.api_base = "https://glm-provider.invalid/v1".to_string();
+        second.model_id = DEEPSEEK_MODEL_ID.to_string();
+        second.api_base = "https://deepseek-provider.invalid/anthropic".to_string();
         let descriptors = [models.models[0].clone(), second];
         let api_keys_by_base = build_api_keys_by_base(
             descriptors.iter(),

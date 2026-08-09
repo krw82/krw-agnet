@@ -29,7 +29,7 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
             "schema_version": SCHEMA_VERSION,
             "git_commit": "a" * 40,
             "git_tree": "b" * 40,
-            "physical_models": ["deepseek-v4-flash"],
+            "physical_models": ["glm-5.2"],
             "files": files,
         }
         manifest["manifest_hash"] = content_hash(canonical_bytes(manifest))
@@ -56,7 +56,7 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
                     "--git-tree",
                     "b" * 40,
                     "--model",
-                    "deepseek-v4-flash",
+                    "glm-5.2",
                 ],
                 check=False,
                 capture_output=True,

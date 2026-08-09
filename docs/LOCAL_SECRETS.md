@@ -30,8 +30,8 @@ cd ~/krw-agnet
 `provider probe`는 GLM-5.2에 고정된 16-token, no-tool, non-thinking 요청 한 번만 보낸다.
 `provider structured-probe`는 같은 GLM endpoint에 baseline, Z.AI JSON mode
 (`response_format.type=json_object`), strict transition tool input을 각각 보내고 수락 여부만
-redacted JSON으로 출력한다. 이 두 CLI 명령은 DeepSeek
-credential/endpoint를 읽거나 호출하지 않는다.
+redacted JSON으로 출력한다. 이 두 CLI 명령은 GLM credential과 endpoint만
+읽고 호출한다.
 터미널 `PATH`에 `cargo`가 없어도 macOS Homebrew Rust 또는 표준 `CARGO_HOME` 설치를 자동으로 찾는다.
 실제 daemon은 `.env.local`을 읽지 않으며 OS keychain 또는 배포 secret manager가
 `GLM_API_KEY`를 process environment로 주입해야 한다.

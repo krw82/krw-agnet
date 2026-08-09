@@ -21,7 +21,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "krw-standalone-release/v1"
-MODEL_ID = "deepseek-v4-flash"
+MODEL_ID = "glm-5.2"
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
 

@@ -142,7 +142,7 @@ pub fn run_vertical_slice(
         schema_version: 1,
         request_hash: ContentHash::sha256("fixture-provider-request"),
         requested_model: request.requested_model.clone(),
-        observed_model: "deepseek-v4-flash".into(),
+        observed_model: request.requested_model.clone(),
         api_version: "anthropic-messages-v1".into(),
         assistant,
         tool_results: Vec::new(),

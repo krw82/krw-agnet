@@ -1,38 +1,11 @@
 schema_version: 4
-registry_id: multi-provider-2026-08
+registry_id: glm-only-local-2026-08
 models:
-  - model_id: deepseek-v4-flash
-    api_base: https://api.deepseek.com/anthropic
-    api_version: anthropic-messages-v1
-    max_context_tokens: 1000000
-    max_output_tokens: 384000
-    max_in_flight: 64
-    provider_wire_capabilities:
-      thinking:
-        supported: true
-        supports_tools: true
-        supports_tool_choice: false
-        supports_json_object: true
-        supports_json_schema_output: false
-        supports_strict_tool_input: false
-      non_thinking:
-        supported: true
-        supports_tools: true
-        # Verified against the native DeepSeek V4 Flash endpoint: a semantic
-        # capability decision may use tools, but this deployment must omit
-        # `tool_choice` in both thinking modes. The kernel enforces the
-        # semantic requirement through typed recovery, not this wire field.
-        supports_tool_choice: false
-        supports_json_object: true
-        supports_json_schema_output: false
-        supports_strict_tool_input: false
-      requires_thinking_block_replay: true
-      requires_assistant_content_for_tool_calls: true
   - model_id: glm-5.2
     api_base: https://api.z.ai/api/anthropic
     api_version: anthropic-messages-v1
-    max_context_tokens: 1000000
-    max_output_tokens: 128000
+    max_context_tokens: 204800
+    max_output_tokens: 131072
     max_in_flight: 32
     provider_wire_capabilities:
       thinking:
@@ -49,28 +22,17 @@ models:
         supports_json_object: true
         supports_json_schema_output: false
         supports_strict_tool_input: false
-      # GLM-5.2 emits reasoning_content during thinking but does NOT emit
-      # assistant content alongside tool_calls (unlike DeepSeek V4). Only
-      # reasoning_content replay is required.
       requires_thinking_block_replay: true
       requires_assistant_content_for_tool_calls: false
 profiles:
-  - profile_id: flash_high
-    model_id: deepseek-v4-flash
-    thinking: enabled
-    reasoning_effort: high
-  - profile_id: flash_max
-    model_id: deepseek-v4-flash
-    thinking: enabled
-    reasoning_effort: max
-  - profile_id: flash_direct
-    model_id: deepseek-v4-flash
-    thinking: disabled
-    reasoning_effort: null
   - profile_id: glm_high
     model_id: glm-5.2
     thinking: enabled
     reasoning_effort: high
+  - profile_id: glm_max
+    model_id: glm-5.2
+    thinking: enabled
+    reasoning_effort: max
   - profile_id: glm_direct
     model_id: glm-5.2
     thinking: disabled

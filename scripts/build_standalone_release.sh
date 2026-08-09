@@ -83,7 +83,7 @@ python3 scripts/write_release_manifest.py \
   --root "$krw_release_staging" \
   --git-commit "$krw_release_commit" \
   --git-tree "$krw_release_tree" \
-  --model deepseek-v4-flash
+  --model glm-5.2
 python3 scripts/verify_standalone_release.py --root "$krw_release_staging"
 
 chmod -R a-w "$krw_release_staging/images" "$krw_release_staging/migrations"

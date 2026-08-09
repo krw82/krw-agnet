@@ -131,10 +131,10 @@ struct Args {
     /// doesn't pin the provider/MCP pools to the historical hard-coded 2.
     #[arg(long, default_value_t = default_worker_threads())]
     worker_threads: usize,
-    /// Per-host idle connection limit handed to the `DeepSeek` HTTP pool. Tune
+    /// Per-host idle connection limit handed to the provider HTTP pool. Tune
     /// together with `--max-active-runs` and the model `max_in_flight`.
-    #[arg(long, default_value_t = 8, alias = "deepseek_max_idle_per_host")]
-    deepseek_max_idle_per_host: usize,
+    #[arg(long, default_value_t = 8, alias = "deepseek-max-idle-per-host")]
+    provider_max_idle_per_host: usize,
 }
 
 /// Default tokio worker thread count: cap at 8 so very large hosts don't
@@ -232,7 +232,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let providers = DeepSeekProviderCatalog::compile_release_set_with_idle(
         &releases,
-        args.deepseek_max_idle_per_host,
+        args.provider_max_idle_per_host,
     )?;
     let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
@@ -875,9 +875,7 @@ async fn read_http_request_line(socket: &mut tokio::net::TcpStream) -> std::io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use krw_agent_protocol::{
-        ContentHash, DEEPSEEK_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
-    };
+    use krw_agent_protocol::{ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION};
     use krw_agent_release_authorization::{
         RELEASE_AUTHORIZATION_SCHEMA_VERSION, RELEASE_TRUST_REGISTRY_SCHEMA_VERSION,
         ReleaseAuthorizationPayloadV1, ReleaseTrustKeyV1, ReleaseTrustRegistryV1,
@@ -1024,7 +1022,7 @@ mod tests {
                 release_set_hash: descriptor.release_set_hash.clone(),
                 runtime_version: args.runtime_version.clone(),
                 kernel_version: env!("CARGO_PKG_VERSION").into(),
-                model_id: DEEPSEEK_MODEL_ID.into(),
+                model_id: GLM_MODEL_ID.into(),
             },
             &private_key,
         )

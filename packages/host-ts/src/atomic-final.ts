@@ -1,5 +1,5 @@
 import {
-  DEEPSEEK_MODEL_ID,
+  GLM_MODEL_ID,
   type OutboxReceipt,
 } from "./contracts.js";
 import type { HostAgentClient } from "./client.js";
@@ -168,7 +168,7 @@ export interface AnswerPresentationProjectionV1 extends ProjectionCommandBaseV1 
 
 export interface AnswerBillingProjectionV1 extends ProjectionCommandBaseV1 {
   readonly kind: "answer_billing";
-  readonly model_id: typeof DEEPSEEK_MODEL_ID;
+  readonly model_id: typeof GLM_MODEL_ID;
   readonly billing: AnswerBillingMetadataV1;
 }
 
@@ -258,7 +258,7 @@ export function createProductProjectionHandlers(
       const command: AnswerBillingProjectionV1 = {
         ...commandBase(event, claim),
         kind: "answer_billing",
-        model_id: DEEPSEEK_MODEL_ID,
+        model_id: GLM_MODEL_ID,
         billing,
       };
       validateApplyReceipt(await consumers.applyAnswerBilling(command), command);

@@ -7,14 +7,9 @@ gateway="http://127.0.0.1:4318"
 questions_file="$krw_root/.local/test-questions-50.json"
 gt_file="$krw_root/evals/numeric-accuracy/ground_truth.json"
 
-# Inherit daemon env if not set
-if [[ -z "${KRW_AGENT_GATEWAY_TOKEN:-}" ]]; then
-  DAEMON_PID=$(pgrep -f "krw-agentd.*local-agentd" | head -1)
-  if [[ -n "$DAEMON_PID" ]]; then
-    eval "$(ps eww "$DAEMON_PID" 2>/dev/null | tr ' ' '\n' | grep -E '^(DEEPSEEK_API_KEY|KRW_AGENT_DATABASE_URL|KRW_AGENT_GATEWAY_TOKEN)=' | sed 's/^/export /')"
-  fi
-fi
-token="${KRW_AGENT_GATEWAY_TOKEN:?no token}"
+# The gateway token is the only credential this client needs. Provider keys
+# remain confined to the daemon process and are never recovered via `ps`.
+token="${KRW_AGENT_GATEWAY_TOKEN:?KRW_AGENT_GATEWAY_TOKEN must be set}"
 
 outdir="$krw_root/.local/test50-$(date +%s)"
 mkdir -p "$outdir"

@@ -9822,7 +9822,7 @@ mod tests {
         Directness, EvidenceGrade, EvidenceScope, EvidenceSource, NormalizedFact, PublicCitation,
     };
     use krw_agent_image::compile_agent_dir;
-    use krw_agent_protocol::{AuthScope, DEEPSEEK_MODEL_ID, McpToolSessionReuse, TransportKind};
+    use krw_agent_protocol::{AuthScope, GLM_MODEL_ID, McpToolSessionReuse, TransportKind};
     use krw_agent_provider_wire::{
         AssistantMessage, FunctionCall, ProviderFunctionName, TokenUsage, ToolCall,
     };
@@ -11288,8 +11288,8 @@ mod tests {
             run_kind: "company_research".into(),
             locale: "ko-KR".into(),
             question: "Does VG generate cash according to its filing?".into(),
-            requested_model: "deepseek-v4-flash".into(),
-            model_profile: "flash_high".into(),
+            requested_model: GLM_MODEL_ID.into(),
+            model_profile: "glm_high".into(),
             budget: budget.clone(),
             session_memory: None,
             context: RunContextV1::CompanyTickerSet {
@@ -11311,8 +11311,8 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
-            provider_max_context_tokens: 1_000_000,
-            provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+            provider_max_context_tokens: 204_800,
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
             capability_release_hashes: BTreeMap::from([("ontology.query_context".into(), release)]),
@@ -11356,8 +11356,8 @@ mod tests {
             run_kind: "route".into(),
             locale: "ko-KR".into(),
             question: "애플 사업을 분석해줘".into(),
-            requested_model: "deepseek-v4-flash".into(),
-            model_profile: "flash_direct".into(),
+            requested_model: GLM_MODEL_ID.into(),
+            model_profile: "glm_direct".into(),
             budget: budget.clone(),
             session_memory: None,
             context: routing_context("애플 사업을 분석해줘"),
@@ -11377,8 +11377,8 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
-            provider_max_context_tokens: 1_000_000,
-            provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+            provider_max_context_tokens: 204_800,
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
             thinking: ThinkingMode::Disabled,
             reasoning_effort: None,
             capability_release_hashes: BTreeMap::new(),
@@ -11426,7 +11426,7 @@ mod tests {
             run_kind: run_kind.into(),
             locale: "ko-KR".into(),
             question: question.into(),
-            requested_model: "deepseek-v4-flash".into(),
+            requested_model: GLM_MODEL_ID.into(),
             model_profile: model_profile.into(),
             budget: budget.clone(),
             session_memory: None,
@@ -11447,8 +11447,8 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
-            provider_max_context_tokens: 1_000_000,
-            provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+            provider_max_context_tokens: 204_800,
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
             thinking,
             reasoning_effort: (thinking == ThinkingMode::Enabled)
                 .then_some(krw_agent_protocol::ReasoningEffort::High),
@@ -11614,8 +11614,8 @@ mod tests {
             run_kind: "guru_buffett".into(),
             locale: "ko-KR".into(),
             question: "애플 서비스 사업의 수익 지속성을 버핏 관점에서 점검해줘".into(),
-            requested_model: DEEPSEEK_MODEL_ID.into(),
-            model_profile: "flash_max".into(),
+            requested_model: GLM_MODEL_ID.into(),
+            model_profile: "glm_max".into(),
             budget: budget.clone(),
             session_memory: None,
             context: RunContextV1::CompanyTickerSet {
@@ -11666,10 +11666,10 @@ mod tests {
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
-            provider_max_context_tokens: 1_000_000,
-            provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+            provider_max_context_tokens: 204_800,
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
             thinking: ThinkingMode::Enabled,
-            reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
+            reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::Max),
             capability_release_hashes: release_hashes,
             budget,
         };
@@ -11983,12 +11983,12 @@ mod tests {
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
         assert_eq!(outcome.answer_bundle.evidence_ids, vec!["evidence-1"]);
         let requests = rig.provider.requests.lock().unwrap();
-        assert_eq!(requests[0].model, "deepseek-v4-flash");
+        assert_eq!(requests[0].model, GLM_MODEL_ID);
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
         assert_eq!(requests[0].max_tokens, 1_024);
-        assert_eq!(requests[1].model, "deepseek-v4-flash");
+        assert_eq!(requests[1].model, GLM_MODEL_ID);
         assert_eq!(requests[1].thinking.kind, ThinkingMode::Enabled);
-        assert_eq!(requests[2].model, "deepseek-v4-flash");
+        assert_eq!(requests[2].model, GLM_MODEL_ID);
         assert_eq!(requests[2].thinking.kind, ThinkingMode::Disabled);
         assert!((1..=4096).contains(&requests[2].max_tokens));
         // An external capability result is a settled boundary. The next
@@ -12281,7 +12281,7 @@ mod tests {
         assert_eq!(outcome.final_status, FinalStatus::Committed);
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].model, "deepseek-v4-flash");
+        assert_eq!(requests[0].model, GLM_MODEL_ID);
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
     }
 
@@ -12291,7 +12291,7 @@ mod tests {
             notebook_root(),
             "research_notebook",
             "노트에 반영해줘",
-            "flash_high",
+            "glm_high",
             ThinkingMode::Enabled,
             notebook_context("검증된 대화 내용"),
         );
@@ -12341,7 +12341,7 @@ mod tests {
             display_root(),
             "answer_composition",
             "표시 구성을 만들어줘",
-            "flash_direct",
+            "glm_direct",
             ThinkingMode::Disabled,
             display_context(),
         );
@@ -14654,8 +14654,8 @@ mod tests {
             run_kind: "guru_ackman".into(),
             locale: "ko-KR".into(),
             question: "Analyze AAPL".into(),
-            requested_model: "deepseek-v4-flash".into(),
-            model_profile: "flash_max".into(),
+            requested_model: GLM_MODEL_ID.into(),
+            model_profile: "glm_max".into(),
             budget: fixture().request.budget.clone(),
             session_memory: None,
             context: RunContextV1::CompanyTickerSet {
@@ -14728,7 +14728,7 @@ mod tests {
             display_root(),
             "answer_composition",
             "표시 구성을 만들어줘",
-            "flash_direct",
+            "glm_direct",
             ThinkingMode::Disabled,
             display_context(),
         );
@@ -14769,7 +14769,7 @@ mod tests {
             notebook_root(),
             "research_notebook",
             "노트에 반영해줘",
-            "flash_high",
+            "glm_high",
             ThinkingMode::Enabled,
             notebook_context("검증된 대화"),
         );
@@ -14794,7 +14794,7 @@ mod tests {
             display_root(),
             "answer_composition",
             "표시 구성을 만들어줘",
-            "flash_direct",
+            "glm_direct",
             ThinkingMode::Disabled,
             display_context(),
         );

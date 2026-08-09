@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use krw_agent_protocol::{
-    BudgetLimits, ContentHash, DEEPSEEK_MODEL_ID, EntrypointScope, PROTOCOL_VERSION,
+    BudgetLimits, ContentHash, EntrypointScope, GLM_MODEL_ID, PROTOCOL_VERSION,
     PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
     PublicReleaseDescriptor, PublicReleaseEntrypoint, RunContextKind, ScopeCardinalityKind,
     ThinkingMode,
@@ -88,7 +88,7 @@ fn descriptor() -> PublicReleaseDescriptor {
             run_kind: "route".into(),
             locale: "ko-KR".into(),
             agent_image_hash: hash("image"),
-            model_profile: "flash_direct".into(),
+            model_profile: "glm_direct".into(),
             scope: EntrypointScope {
                 context_kind: RunContextKind::RoutingRequest,
                 cardinality: ScopeCardinalityKind::Exact,
@@ -100,12 +100,12 @@ fn descriptor() -> PublicReleaseDescriptor {
                 deployment_binding_hash: hash("binding"),
                 model_registry_hash: hash("models"),
                 budget_registry_hash: hash("budget"),
-                model_profile: "flash_direct".into(),
-                requested_model: DEEPSEEK_MODEL_ID.into(),
-                resolved_model: DEEPSEEK_MODEL_ID.into(),
+                model_profile: "glm_direct".into(),
+                requested_model: GLM_MODEL_ID.into(),
+                resolved_model: GLM_MODEL_ID.into(),
                 provider_api_version: "anthropic-messages-v1".into(),
-                provider_max_context_tokens: 1_000_000,
-                provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+                provider_max_context_tokens: 204_800,
+                provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
                 thinking: ThinkingMode::Disabled,
                 reasoning_effort: None,
                 capability_release_hashes: BTreeMap::new(),

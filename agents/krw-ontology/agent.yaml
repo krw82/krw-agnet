@@ -222,7 +222,7 @@ prompt_segments:
   - { id: research_trace_chain_policy, path: references/research-trace-chain-policy.md, stable_prefix: false, private: true }
   - { id: research_web_chat_runtime, path: references/research-web-chat-runtime.md, stable_prefix: false, private: true }
   - id: ontology_catalog
-    ontology_schema: { root_env: KRW_ONTOLOGY_ROOT, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
+    ontology_schema: { bundled_runtime_schema: true, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
     stable_prefix: true
     private: true
   - id: skill_catalog

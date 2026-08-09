@@ -17,9 +17,9 @@ The public path is intentionally narrow:
   an authoritative database fence, and requires hash-bound idempotency receipts
   from product projection consumers before ACK.
 
-Pinned compatibility is strict: protocol v5, claim schema v5, public release
-descriptor v2, session-memory carrier v3, and the sole physical model
-`deepseek-v4-flash`. There is no carrier-v1 or model-alias fallback.
+Pinned compatibility is strict: protocol v7, claim schema v7, public release
+descriptor v3, session-memory carrier v3, and the sole physical model
+`glm-5.2`. There is no carrier-v1 or model-alias fallback.
 
 The package contains no provider loop, prompt builder, MCP client, workflow
 policy, scheduler, pricing engine, credential, endpoint, or application route.

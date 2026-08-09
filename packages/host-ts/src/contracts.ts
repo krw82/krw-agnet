@@ -2,26 +2,27 @@ import type { ContentHash, JsonObject, JsonValue } from "./json.js";
 
 export const AGENT_V1_ABI_VERSION = 1 as const;
 /** Must match Rust `krw_protocol::PROTOCOL_VERSION`; release entrypoints pin it. */
-export const KRW_PROTOCOL_VERSION = 6 as const;
+export const KRW_PROTOCOL_VERSION = 7 as const;
 /** Must match Rust `krw_protocol::CLAIM_PAYLOAD_SCHEMA_VERSION`. */
-export const CLAIM_SCHEMA_VERSION = 6 as const;
+export const CLAIM_SCHEMA_VERSION = 7 as const;
 export const RELEASE_DESCRIPTOR_SCHEMA_VERSION = 3 as const;
 export const SESSION_MEMORY_CARRIER_SCHEMA_VERSION = 3 as const;
-export const DEEPSEEK_PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
-export const DEEPSEEK_MODEL_ID = "deepseek-v4-flash" as const;
+export const GLM_PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
 export const GLM_MODEL_ID = "glm-5.2" as const;
-export const ALLOWED_MODEL_IDS: readonly string[] = [DEEPSEEK_MODEL_ID, GLM_MODEL_ID] as const;
+export const GLM_MAX_CONTEXT_TOKENS = 204_800 as const;
+export const ALLOWED_MODEL_IDS: readonly string[] = [GLM_MODEL_ID] as const;
 
 export type ThinkingMode = "enabled" | "disabled";
 export type ReasoningEffort = "high" | "max";
-export type FlashModelProfile = "flash_high" | "flash_max" | "flash_direct";
-export type GlmModelProfile = "glm_high" | "glm_direct";
+export type GlmModelProfile = "glm_high" | "glm_max" | "glm_direct";
 
 export interface ProviderWireModeCapabilities extends JsonObject {
   readonly supported: boolean;
   readonly supports_tools: boolean;
   readonly supports_tool_choice: boolean;
   readonly supports_json_object: boolean;
+  readonly supports_json_schema_output: boolean;
+  readonly supports_strict_tool_input: boolean;
 }
 
 /** Pinned wire matrix; the host copies it but never chooses provider behavior. */
@@ -116,7 +117,8 @@ export interface PinnedExecutionContract extends JsonObject {
   readonly model_profile: string;
   readonly requested_model: string;
   readonly resolved_model: string;
-  readonly provider_api_version: typeof DEEPSEEK_PROVIDER_API_VERSION;
+  readonly provider_api_version: typeof GLM_PROVIDER_API_VERSION;
+  readonly provider_max_context_tokens: typeof GLM_MAX_CONTEXT_TOKENS;
   readonly provider_wire_capabilities: ProviderWireCapabilities;
   readonly thinking: ThinkingMode;
   readonly reasoning_effort: ReasoningEffort | null;
@@ -151,7 +153,7 @@ export interface PublicReleaseEntrypoint extends JsonObject {
   readonly run_kind: string;
   readonly locale: string;
   readonly agent_image_hash: ContentHash;
-  readonly model_profile: FlashModelProfile | GlmModelProfile;
+  readonly model_profile: GlmModelProfile;
   readonly scope: EntrypointScopeV1;
   readonly execution: PinnedExecutionContract;
 }

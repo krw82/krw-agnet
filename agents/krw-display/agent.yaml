@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: display_plan_v2
     required_budget_profile: display_plan_minimal
-    required_model_profile: flash_direct
+    required_model_profile: glm_direct
     scope: { allowed_context: existing_answer, cardinality: { kind: max, value: 32 }, ticker_canonicalization: not_applicable }
     constants: {}
 

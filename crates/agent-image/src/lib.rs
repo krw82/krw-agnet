@@ -327,14 +327,22 @@ pub struct SkillCatalogSource {
 
 /// Declares that a prompt segment is generated at build time from ontology
 /// schema YAML files, rather than read from a static Markdown file. The
-/// builder reads the ontology root from `root_env`, loads each named schema,
-/// and renders an AI-facing catalog Markdown blob.
+/// source is either an explicitly supplied ontology root or the immutable
+/// runtime schema snapshot bundled with this workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OntologySchemaSource {
-    /// Environment variable holding the absolute ontology root path
-    /// (e.g. `"KRW_ONTOLOGY_ROOT"`).
-    pub root_env: String,
+    /// Optional environment variable holding the absolute ontology root path
+    /// (e.g. `"KRW_ONTOLOGY_ROOT"`). This is retained for standalone image
+    /// builds, but must not be combined with `bundled_runtime_schema`.
+    #[serde(default)]
+    pub root_env: Option<String>,
+    /// Resolve the schema from the checked-in runtime snapshot under
+    /// `services/krw-ontology-runtime`. This makes the image and the runtime
+    /// validate against the same immutable schema without ambient filesystem
+    /// state.
+    #[serde(default)]
+    pub bundled_runtime_schema: bool,
     /// Schema file basenames under `ontology/schema/` to include, without the
     /// `.yaml` extension (e.g. `["metric_dictionary", "quote_types"]`).
     pub schemas: Vec<String>,
@@ -1747,7 +1755,7 @@ fn load_prompt_segment_bytes(
         let resolved = safe_source_path(root, path)?;
         Ok(fs::read(resolved)?)
     } else if let Some(source) = &segment.ontology_schema {
-        let markdown = render_ontology_catalog(source, &segment.id)?;
+        let markdown = render_ontology_catalog(root, source, &segment.id)?;
         Ok(markdown.into_bytes())
     } else if let Some(source) = &segment.skill_catalog {
         let markdown = render_skill_catalog(source, root, &segment.id, all_segments)?;
@@ -1758,26 +1766,19 @@ fn load_prompt_segment_bytes(
 }
 
 /// Render an AI-facing ontology catalog Markdown blob from the declared schema
-/// YAML files. The ontology root is read from `source.root_env`. Each schema
-/// contributes a section: metrics, quote-type search hints, claim types, risk
-/// categories, and searchable object types.
+/// YAML files. Each schema contributes a section: metrics, quote-type search
+/// hints, claim types, risk categories, and searchable object types.
 fn render_ontology_catalog(
+    root: &Path,
     source: &OntologySchemaSource,
     segment_id: &str,
 ) -> Result<String, ImageError> {
-    let root_str = env::var(&source.root_env).map_err(|_| {
-        ImageError::InvalidSpec(format!(
-            "ontology_schema segment `{segment_id}` requires env `{}` to be set",
-            source.root_env
-        ))
-    })?;
-    let ontology_root = PathBuf::from(&root_str);
-    let schema_dir = ontology_root.join("ontology/schema");
+    let (schema_dir, source_label) = resolve_ontology_schema_dir(root, source, segment_id)?;
     let mut out = String::new();
     out.push_str("<!-- AUTO-GENERATED from ontology schema YAML. Do not edit by hand.\n");
-    out.push_str("     Source: $");
-    out.push_str(&source.root_env);
-    out.push_str("/ontology/schema/*.yaml -->\n\n");
+    out.push_str("     Source: ");
+    out.push_str(&source_label);
+    out.push_str(" -->\n\n");
     out.push_str("# Ontology catalog\n\n");
     out.push_str(
         "This catalog is generated at image build time from the immutable ontology \
@@ -1812,6 +1813,51 @@ fn render_ontology_catalog(
         }
     }
     Ok(out)
+}
+
+fn resolve_ontology_schema_dir(
+    root: &Path,
+    source: &OntologySchemaSource,
+    segment_id: &str,
+) -> Result<(PathBuf, String), ImageError> {
+    match (source.root_env.as_deref(), source.bundled_runtime_schema) {
+        (Some(root_env), false) => {
+            let ontology_root = env::var(root_env).map_err(|_| {
+                ImageError::InvalidSpec(format!(
+                    "ontology_schema segment `{segment_id}` requires env `{root_env}` to be set"
+                ))
+            })?;
+            Ok((
+                PathBuf::from(ontology_root).join("ontology/schema"),
+                format!("${root_env}/ontology/schema/*.yaml"),
+            ))
+        }
+        (None, true) => {
+            let workspace_root = root.parent().and_then(Path::parent).ok_or_else(|| {
+                ImageError::InvalidSpec(format!(
+                    "ontology_schema segment `{segment_id}` cannot locate workspace root"
+                ))
+            })?;
+            let workspace_root = fs::canonicalize(workspace_root)?;
+            let schema_dir = fs::canonicalize(workspace_root.join(
+                "services/krw-ontology-runtime/src/krw_capability_runtime/resources/ontology/schema",
+            ))
+            .map_err(|_| {
+                ImageError::InvalidSpec(format!(
+                    "ontology_schema segment `{segment_id}` cannot read bundled runtime schema"
+                ))
+            })?;
+            if !schema_dir.starts_with(&workspace_root) {
+                return Err(ImageError::InvalidSpec(format!(
+                    "ontology_schema segment `{segment_id}` bundled schema escapes workspace"
+                )));
+            }
+            Ok((schema_dir, "bundled runtime ontology schema".into()))
+        }
+        _ => Err(ImageError::InvalidSpec(format!(
+            "ontology_schema segment `{segment_id}` must declare exactly one of root_env or bundled_runtime_schema"
+        ))),
+    }
 }
 
 /// Render a compact skill catalog from the explicit image-level skill

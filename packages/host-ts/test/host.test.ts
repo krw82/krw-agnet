@@ -54,37 +54,42 @@ function descriptor(): PublicReleaseDescriptor {
         run_kind: "company_research",
         locale: "ko-KR",
         agent_image_hash: hash("1"),
-        model_profile: "flash_high",
+        model_profile: "glm_high",
         scope: {
           context_kind: "company_ticker_set",
           cardinality: "exact",
           value: 1,
         },
         execution: {
-          protocol_version: 6,
+          protocol_version: 7,
           agent_image_hash: hash("1"),
           deployment_binding_hash: hash("2"),
           model_registry_hash: hash("3"),
           budget_registry_hash: hash("4"),
-          model_profile: "flash_high",
-          requested_model: "deepseek-v4-flash",
-          resolved_model: "deepseek-v4-flash",
-          provider_api_version: "chat-completions-v1",
+          model_profile: "glm_high",
+          requested_model: "glm-5.2",
+          resolved_model: "glm-5.2",
+          provider_api_version: "anthropic-messages-v1",
+          provider_max_context_tokens: 204_800,
           provider_wire_capabilities: {
             thinking: {
               supported: true,
               supports_tools: true,
-              supports_tool_choice: false,
+              supports_tool_choice: true,
               supports_json_object: true,
+              supports_json_schema_output: false,
+              supports_strict_tool_input: false,
             },
             non_thinking: {
               supported: true,
               supports_tools: true,
-              supports_tool_choice: false,
+              supports_tool_choice: true,
               supports_json_object: true,
+              supports_json_schema_output: false,
+              supports_strict_tool_input: false,
             },
-            requires_reasoning_content_replay: true,
-            requires_assistant_content_for_tool_calls: true,
+            requires_thinking_block_replay: true,
+            requires_assistant_content_for_tool_calls: false,
           },
           thinking: "enabled",
           reasoning_effort: "high",
@@ -127,9 +132,9 @@ test("enqueue claim is exact, hash-bound and contains no provider injection surf
   const built = buildEnqueueRunRequest(descriptor(), input());
   assert.equal(built.agent_image_hash, hash("1"));
   assert.equal(built.priority, 0);
-  assert.equal(built.immutable_snapshot.request.requested_model, "deepseek-v4-flash");
-  assert.equal(built.immutable_snapshot.request.model_profile, "flash_high");
-  assert.equal(built.immutable_snapshot.execution.provider_api_version, "chat-completions-v1");
+  assert.equal(built.immutable_snapshot.request.requested_model, "glm-5.2");
+  assert.equal(built.immutable_snapshot.request.model_profile, "glm_high");
+  assert.equal(built.immutable_snapshot.execution.provider_api_version, "anthropic-messages-v1");
   assert.equal(built.immutable_snapshot.execution.thinking, "enabled");
   assert.equal(built.immutable_snapshot.execution.reasoning_effort, "high");
   assert.equal(built.immutable_snapshot.request.budget, budget);
@@ -141,7 +146,7 @@ test("enqueue claim is exact, hash-bound and contains no provider injection surf
     /api_base|api_key|credential|endpoint|initial_messages|system_prompt|"tools"\s*:/,
   );
   assert.deepEqual(built.resource_profile, {
-    schema_version: 6,
+    schema_version: 7,
     workload_class: "read_only_interactive",
   });
 });
@@ -163,7 +168,7 @@ test("model and profile tampering are rejected", () => {
 
   const profileMismatch = {
     ...aliased,
-    entries: [{ ...entry, model_profile: "flash_max" }],
+    entries: [{ ...entry, model_profile: "glm_max" }],
   } as unknown as PublicReleaseDescriptor;
   assert.throws(
     () => buildEnqueueRunRequest(profileMismatch, input()),
@@ -177,8 +182,8 @@ test("model and profile tampering are rejected", () => {
         ...entry,
         execution: {
           ...entry.execution,
-          requested_model: "deepseek-v4-flash-injected",
-          resolved_model: "deepseek-v4-flash-injected",
+          requested_model: "glm-5.2-injected",
+          resolved_model: "glm-5.2-injected",
         },
       },
     ],
@@ -358,7 +363,7 @@ test("Gateway company-research request cannot inject a route, ownership, or memo
   });
   assert.equal(immutable.request.session_memory, null);
   assert.equal(Object.hasOwn(immutable.request, "requested_model"), true);
-  assert.equal(immutable.request.requested_model, "deepseek-v4-flash");
+  assert.equal(immutable.request.requested_model, "glm-5.2");
 });
 
 test("mutation envelope is deterministic and reserves ABI fields", () => {

@@ -1581,8 +1581,8 @@ fn active_request(index: usize) -> RunRequest {
         // ResearchIntent, so substituting a semantically similar question
         // would correctly fail the production anchor validator.
         question: "VG의 현금창출력이 공시 근거로 확인되는지 설명해줘".into(),
-        requested_model: "deepseek-v4-flash".into(),
-        model_profile: "flash_high".into(),
+        requested_model: "glm-5.2".into(),
+        model_profile: "glm_high".into(),
         budget: BudgetLimits {
             max_provider_turns: 3,
             max_capability_calls: 2,
@@ -1633,8 +1633,8 @@ fn active_snapshot(
         requested_model: request.requested_model.clone(),
         resolved_model: request.requested_model.clone(),
         provider_api_version: "anthropic-messages-v1".into(),
-        provider_max_context_tokens: 1_000_000,
-        provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
+        provider_max_context_tokens: 204_800,
+        provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
         capability_release_hashes: BTreeMap::from([(
@@ -2351,7 +2351,7 @@ mod tests {
             release: Arc::new(Semaphore::new(0)),
         };
         let request = MessagesRequest {
-            model: "deepseek-v4-flash".into(),
+            model: "glm-5.2".into(),
             messages: vec![
                 ToolResultMessage::from_value(
                     "call-rejected",

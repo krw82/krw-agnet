@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: guru_company_advisor_v1
     required_budget_profile: guru_company_advisor
-    required_model_profile: flash_max
+    required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: ackman }
   guru_buffett:
@@ -20,7 +20,7 @@ entrypoints:
     locale: ko-KR
     workflow: guru_company_advisor_v1
     required_budget_profile: guru_company_advisor
-    required_model_profile: flash_max
+    required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: buffett }
   guru_flatt:
@@ -28,7 +28,7 @@ entrypoints:
     locale: ko-KR
     workflow: guru_company_advisor_v1
     required_budget_profile: guru_company_advisor
-    required_model_profile: flash_max
+    required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: flatt }
   guru_marks:
@@ -36,7 +36,7 @@ entrypoints:
     locale: ko-KR
     workflow: guru_company_advisor_v1
     required_budget_profile: guru_company_advisor
-    required_model_profile: flash_max
+    required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: marks }
   guru_terry_smith:
@@ -44,7 +44,7 @@ entrypoints:
     locale: ko-KR
     workflow: guru_company_advisor_v1
     required_budget_profile: guru_company_advisor
-    required_model_profile: flash_max
+    required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: terry_smith }
 

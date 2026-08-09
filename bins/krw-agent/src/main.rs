@@ -8,8 +8,7 @@ use clap::{Parser, Subcommand};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
-    ContentHash, DEEPSEEK_MODEL_ID, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
-    PublicReleaseDescriptor,
+    ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PublicReleaseDescriptor,
 };
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderFunctionName,
@@ -345,7 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     release_set_hash: descriptor.release_set_hash.clone(),
                     runtime_version,
                     kernel_version,
-                    model_id: DEEPSEEK_MODEL_ID.to_owned(),
+                    model_id: GLM_MODEL_ID.to_owned(),
                 },
                 &private_key,
             )?;

@@ -29,8 +29,8 @@ def main() -> None:
     root = args.root.resolve()
     if not root.is_dir() or root == pathlib.Path("/") or root.is_symlink():
         raise SystemExit("bundle root must be a real non-root directory")
-    if args.model != "deepseek-v4-flash":
-        raise SystemExit("standalone bundle supports only deepseek-v4-flash")
+    if args.model != "glm-5.2":
+        raise SystemExit("standalone bundle supports only glm-5.2")
     files = []
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         if not path.is_file() or path.is_symlink() or path.name == "release-manifest.json":

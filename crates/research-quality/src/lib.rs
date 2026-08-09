@@ -23,10 +23,9 @@ use krw_agent_persistence::{
     FinalizeActionMutation,
 };
 use krw_agent_protocol::{
-    AuthScope, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID,
-    DeploymentBinding, GLM_MODEL_ID, McpToolSessionReuse, PROTOCOL_VERSION,
-    ProviderWireCapabilities, ReasoningEffort, ResolvedExecutionSnapshot, RunRequest, ThinkingMode,
-    TransportKind,
+    AuthScope, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DeploymentBinding,
+    GLM_MODEL_ID, McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
+    ResolvedExecutionSnapshot, RunRequest, ThinkingMode, TransportKind,
 };
 use krw_agent_provider_wire::{
     AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
@@ -439,15 +438,15 @@ where
         case_id,
         provider,
         retain_answer,
-        DEEPSEEK_MODEL_ID,
-        "flash_high",
+        GLM_MODEL_ID,
+        "glm_high",
     )
     .await
 }
 
-/// Execute the same fixture flow against one explicitly selected model. The
-/// CLI uses this GLM-only entrypoint for live quality checks; the legacy
-/// wrapper above remains available for hermetic historical fixtures.
+/// Execute the same fixture flow against the configured GLM provider. Keeping
+/// the model fixed makes the recorded quality suite exercise the same wire
+/// contract as local and production releases.
 pub async fn run_fixture_case_with_model<P>(
     root: &Path,
     suite: &ResearchQualitySuite,
@@ -473,9 +472,9 @@ where
         MAX_FIXTURE_BYTES,
     )?)?;
     validate_request_for_case(&request, case)?;
-    if model_id != DEEPSEEK_MODEL_ID && model_id != GLM_MODEL_ID {
+    if model_id != GLM_MODEL_ID {
         return Err(QualityError::Fixture(
-            "quality case model must be one of the pinned provider ids".into(),
+            "quality case model must be the configured GLM provider".into(),
         ));
     }
     request.requested_model = model_id.into();
@@ -651,11 +650,9 @@ fn validate_request_for_case(
     request: &RunRequest,
     case: &ResearchQualityCase,
 ) -> Result<(), QualityError> {
-    if (request.requested_model != DEEPSEEK_MODEL_ID && request.requested_model != GLM_MODEL_ID)
-        || request.question.is_empty()
-    {
+    if request.requested_model != GLM_MODEL_ID || request.question.is_empty() {
         return Err(QualityError::Fixture(
-            "quality case must use a pinned provider model and a non-empty question".into(),
+            "quality case must use GLM and a non-empty question".into(),
         ));
     }
     let expected_ticker = &case.expected.plan.ticker;
@@ -764,18 +761,14 @@ fn fixture_snapshot(
         deployment_binding_hash: ContentHash::sha256(
             serde_jcs::to_vec(deployment).expect("fixture deployment is serializable"),
         ),
-        model_registry_hash: ContentHash::sha256("quality-fixture-flash-registry-v1"),
+        model_registry_hash: ContentHash::sha256("quality-fixture-glm-registry-v1"),
         budget_registry_hash: ContentHash::sha256("quality-fixture-budget-registry-v1"),
         model_profile: request.model_profile.clone(),
         requested_model: model_id.into(),
         resolved_model: model_id.into(),
         provider_api_version: "anthropic-messages-v1".into(),
-        provider_max_context_tokens: 1_000_000,
-        provider_wire_capabilities: if model_id == GLM_MODEL_ID {
-            ProviderWireCapabilities::glm_5_2()
-        } else {
-            ProviderWireCapabilities::deepseek_v4_flash()
-        },
+        provider_max_context_tokens: 204_800,
+        provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
         capability_release_hashes: release_hashes,

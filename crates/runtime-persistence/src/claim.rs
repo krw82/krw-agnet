@@ -335,7 +335,6 @@ mod tests {
     impl SecretSource for FixtureSecrets {
         fn read_secret(&self, name: &str) -> Result<Zeroizing<String>, ConfigError> {
             match name {
-                "DEEPSEEK_API_KEY" => Ok(Zeroizing::new("fixture-key".into())),
                 "GLM_API_KEY" => Ok(Zeroizing::new("fixture-glm-key".into())),
                 "KRW_ONTOLOGY_MCP_URL" => Ok(Zeroizing::new("https://ontology.invalid/mcp".into())),
                 "KRW_ONTOLOGY_READY_URL" => {
@@ -365,7 +364,7 @@ mod tests {
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         budget
             .profiles
-            .retain(|profile| profile.profile_id == "company_research_full");
+            .retain(|profile| profile.profile_id == "company_research_glm");
         let endpoints = EndpointRegistry {
             schema_version: 1,
             registry_id: "fixture".into(),
@@ -446,7 +445,7 @@ mod tests {
         let validated = validate_claim(&receipt, &image, &runtime, "runtime-test").unwrap();
         assert_eq!(validated.request().run_id, request.run_id);
         assert_eq!(validated.snapshot().fencing_token, 7);
-        assert_eq!(validated.snapshot().resolved_model, "deepseek-v4-flash");
+        assert_eq!(validated.snapshot().resolved_model, "glm-5.2");
         assert!(!format!("{validated:?}").contains(&request.question));
     }
 
@@ -530,10 +529,9 @@ mod tests {
         ));
 
         let mut wrong_profile = receipt(&image, &runtime, &request);
-        wrong_profile.immutable_snapshot["request"]["model_profile"] =
-            serde_json::json!("flash_max");
+        wrong_profile.immutable_snapshot["request"]["model_profile"] = serde_json::json!("glm_max");
         wrong_profile.immutable_snapshot["execution"]["model_profile"] =
-            serde_json::json!("flash_max");
+            serde_json::json!("glm_max");
         wrong_profile.immutable_snapshot_hash =
             ContentHash::sha256(serde_jcs::to_vec(&wrong_profile.immutable_snapshot).unwrap());
         assert!(matches!(

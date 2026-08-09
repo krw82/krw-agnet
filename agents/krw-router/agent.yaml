@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: route_v2
     required_budget_profile: router_minimal
-    required_model_profile: flash_direct
+    required_model_profile: glm_direct
     scope: { allowed_context: routing_request, cardinality: { kind: exact, value: 0 }, ticker_canonicalization: not_applicable }
     constants: {}
 

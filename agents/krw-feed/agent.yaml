@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: news_discovery_v1
     required_budget_profile: feed_discovery
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
   news_research:
@@ -20,7 +20,7 @@ entrypoints:
     locale: ko-KR
     workflow: news_research_v1
     required_budget_profile: news_research
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: selected_feed_items, cardinality: { kind: max, value: 8 }, ticker_canonicalization: not_applicable }
     constants: {}
   market_move_research:
@@ -28,7 +28,7 @@ entrypoints:
     locale: ko-KR
     workflow: market_move_research_v1
     required_budget_profile: market_move_research
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
   news_filing_correlation:
@@ -36,7 +36,7 @@ entrypoints:
     locale: ko-KR
     workflow: news_filing_correlation_v1
     required_budget_profile: news_filing_correlation
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: selected_feed_items, cardinality: { kind: max, value: 8 }, ticker_canonicalization: not_applicable }
     constants: {}
 

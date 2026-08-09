@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: source_filing_followup_v1
     required_budget_profile: source_filing_followup
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: source_filing, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: not_applicable }
     constants: {}
 

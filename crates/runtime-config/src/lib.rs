@@ -12,11 +12,12 @@ use krw_agent_image::{
 use krw_agent_protocol::{
     ALLOWED_MODEL_IDS, ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding,
     ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, FLASH_DIRECT_PROFILE_ID,
-    FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse,
-    ModelDescriptor, ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION,
-    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
-    PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot,
-    RunRequest, ScopeCardinalityKind, ThinkingMode, TransportKind,
+    FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID, GLM_DIRECT_PROFILE_ID, GLM_HIGH_PROFILE_ID,
+    GLM_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor, ModelExecutionProfile,
+    ModelRegistry, PROTOCOL_VERSION, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
+    PinnedExecutionContract, ProviderWireCapabilities, PublicReleaseDescriptor,
+    PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot, RunRequest,
+    ScopeCardinalityKind, ThinkingMode, TransportKind,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -31,15 +32,6 @@ pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 4;
 const TLS_PROFILE_SYSTEM_ROOTS_V1: &str = "system-roots-v1";
 const TLS_PROFILE_SYSTEM_PLUS_PINNED_CA_V1: &str = "system-plus-pinned-ca-v1";
 
-// GLM execution profile ids. Unlike the DeepSeek Flash profile ids, these are
-// not part of the protocol crate's public surface because the deployment
-// inventory still admits exactly one provider at a time; they exist so the
-// per-provider validation branches below can name GLM profiles the same way
-// the DeepSeek branches name the Flash profiles.
-const GLM_HIGH_PROFILE_ID: &str = "glm_high";
-const GLM_MAX_PROFILE_ID: &str = "glm_max";
-const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
-
 // Pinned GLM-5.2 deployment facts. These mirror the DeepSeek constants baked
 // into `validate_model` and keep the GLM branch free of magic numbers. Both
 // providers speak the Anthropic Messages API: GLM via z.ai's `/api/anthropic`
@@ -48,8 +40,8 @@ const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/anthropic";
 const DEEPSEEK_API_VERSION: &str = "anthropic-messages-v1";
 const GLM_API_BASE: &str = "https://api.z.ai/api/anthropic";
 const GLM_API_VERSION: &str = "anthropic-messages-v1";
-const GLM_MAX_CONTEXT_TOKENS: u32 = 1_000_000;
-const GLM_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const GLM_MAX_CONTEXT_TOKENS: u32 = 204_800;
+const GLM_MAX_OUTPUT_TOKENS: u32 = 131_072;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,15 +452,25 @@ fn prepare_globals(
     if profile_ids.len() != registry.profiles.len() || registry.profiles.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModelProfile);
     }
-    // The three DeepSeek `flash_*` profiles are always required. GLM profiles
-    // are optional: a deployment may omit GLM entirely. Any profile present
-    // must be in the protocol's allowed set.
-    let required_flash = BTreeSet::from([
-        FLASH_DIRECT_PROFILE_ID,
-        FLASH_HIGH_PROFILE_ID,
-        FLASH_MAX_PROFILE_ID,
-    ]);
-    if !profile_ids.is_superset(&required_flash) {
+    // Each provider admitted by this release must carry its complete
+    // high/max/direct profile triad. This permits a GLM-only deployment while
+    // retaining a fail-closed contract for every model that is present.
+    let mut required_profiles = BTreeSet::new();
+    if model_ids.contains(DEEPSEEK_MODEL_ID) {
+        required_profiles.extend([
+            FLASH_DIRECT_PROFILE_ID,
+            FLASH_HIGH_PROFILE_ID,
+            FLASH_MAX_PROFILE_ID,
+        ]);
+    }
+    if model_ids.contains(GLM_MODEL_ID) {
+        required_profiles.extend([
+            GLM_DIRECT_PROFILE_ID,
+            GLM_HIGH_PROFILE_ID,
+            GLM_MAX_PROFILE_ID,
+        ]);
+    }
+    if !profile_ids.is_superset(&required_profiles) {
         return Err(ConfigError::ModelProfileInventoryMismatch);
     }
     if !profile_ids
@@ -518,10 +520,19 @@ fn prepare_globals(
     }
 
     let mut secret_cache = BTreeMap::<String, Arc<Zeroizing<String>>>::new();
-    let deepseek_api_key = read_secret_once(secrets, &mut secret_cache, "DEEPSEEK_API_KEY")?;
-    // GLM_API_KEY is only required when the model registry advertises GLM.
-    // When GLM is absent the secret may be missing; we store an empty
-    // placeholder so downstream code can branch on emptiness uniformly.
+    // A registry only requires credentials for providers it actually
+    // advertises. Empty placeholders are intentionally startup-local and are
+    // never exposed to a run; this lets a GLM-only deployment operate without
+    // carrying a dormant DeepSeek credential.
+    let deepseek_api_key = if registry
+        .models
+        .iter()
+        .any(|model| model.model_id == DEEPSEEK_MODEL_ID)
+    {
+        read_secret_once(secrets, &mut secret_cache, "DEEPSEEK_API_KEY")?
+    } else {
+        Arc::new(Zeroizing::new(String::new()))
+    };
     let glm_api_key = if registry.models.iter().any(|m| m.model_id == GLM_MODEL_ID) {
         read_secret_once(secrets, &mut secret_cache, "GLM_API_KEY")?
     } else {
@@ -1168,8 +1179,8 @@ fn validate_glm_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
     // to reason about a different concurrency envelope than DeepSeek.
     if model.api_base != GLM_API_BASE
         || model.api_version != GLM_API_VERSION
-        || !(1..=GLM_MAX_CONTEXT_TOKENS).contains(&model.max_context_tokens)
-        || !(1..=GLM_MAX_OUTPUT_TOKENS).contains(&model.max_output_tokens)
+        || model.max_context_tokens != GLM_MAX_CONTEXT_TOKENS
+        || model.max_output_tokens != GLM_MAX_OUTPUT_TOKENS
         || !(1..=2_500).contains(&model.max_in_flight)
         || !model.provider_wire_capabilities.is_well_formed()
         || model.provider_wire_capabilities != ProviderWireCapabilities::glm_5_2()
@@ -1440,11 +1451,11 @@ pub enum ConfigError {
     InvalidGlmModel(String),
     #[error("model registry has no model or repeats a model id")]
     DuplicateOrEmptyModel,
-    #[error("model registry must contain exactly the single production DeepSeek Flash model")]
+    #[error("model registry contains a model outside the pinned provider set")]
     ModelInventoryMismatch,
     #[error("model registry has no execution profile or repeats a profile id")]
     DuplicateOrEmptyModelProfile,
-    #[error("model registry must contain exactly the three pinned Flash execution profiles")]
+    #[error("model registry is missing or contains an invalid provider execution profile")]
     ModelProfileInventoryMismatch,
     #[error("model execution profile references an unknown model: {0}")]
     UnknownProfileModel(String),
@@ -1534,8 +1545,8 @@ mod tests {
 
         fn assert_read_once(&self) {
             let reads = self.reads.lock().unwrap();
-            assert_eq!(reads.len(), self.values.len());
             assert!(reads.values().all(|count| *count == 1));
+            assert!(reads.keys().all(|name| self.values.contains_key(name)));
         }
     }
 
@@ -1728,8 +1739,8 @@ mod tests {
         let snapshot = runtime
             .resolve_run(&image.content_hash, &request, 9, 0)
             .unwrap();
-        assert_eq!(snapshot.requested_model, "deepseek-v4-flash");
-        assert_eq!(snapshot.resolved_model, "deepseek-v4-flash");
+        assert_eq!(snapshot.requested_model, GLM_MODEL_ID);
+        assert_eq!(snapshot.resolved_model, GLM_MODEL_ID);
         assert_eq!(snapshot.fencing_token, 9);
         assert_eq!(runtime.capabilities.len(), image.body.capabilities.len());
         assert_eq!(runtime.physical_binding_count(), 3);
@@ -1740,12 +1751,12 @@ mod tests {
                 .get("ontology.query_context_universe")
                 .unwrap(),
         ));
-        assert!(!format!("{runtime:?}").contains("fixture-deepseek"));
+        assert!(!format!("{runtime:?}").contains("fixture-glm"));
         assert!(!format!("{runtime:?}").contains("ontology.invalid"));
     }
 
     #[test]
-    fn startup_accepts_only_the_single_flash_model_and_exact_profile_set() {
+    fn startup_accepts_the_glm_profile_triad_and_no_aliases() {
         let (image, binding, registry, budget, endpoints, _request, secrets) = fixture();
 
         let mut extra_model = registry.clone();
@@ -1785,7 +1796,7 @@ mod tests {
         let mut missing_profile = registry.clone();
         missing_profile
             .profiles
-            .retain(|profile| profile.profile_id != FLASH_DIRECT_PROFILE_ID);
+            .retain(|profile| profile.profile_id != GLM_DIRECT_PROFILE_ID);
         assert!(matches!(
             resolve_runtime(
                 &image,
@@ -1803,7 +1814,7 @@ mod tests {
         semantic_alias
             .profiles
             .iter_mut()
-            .find(|profile| profile.profile_id == FLASH_HIGH_PROFILE_ID)
+            .find(|profile| profile.profile_id == GLM_HIGH_PROFILE_ID)
             .unwrap()
             .reasoning_effort = Some(ReasoningEffort::Max);
         assert!(matches!(
@@ -1816,23 +1827,22 @@ mod tests {
                 &secrets,
                 ValidationMode::Fixture,
             ),
-            Err(ConfigError::InvalidModelProfile(profile)) if profile == FLASH_HIGH_PROFILE_ID
+            Err(ConfigError::InvalidModelProfile(profile)) if profile == GLM_HIGH_PROFILE_ID
         ));
     }
 
     /// GLM-5.2 model and profile validation is the per-provider mirror of the
     /// `DeepSeek` branch. This test exercises `validate_model` and
-    /// `validate_model_profile` directly so it is independent of the deployment
-    /// inventory check in `prepare_globals` (which still admits only `DeepSeek`
-    /// in production YAMLs).
+    /// `validate_model_profile` directly, including the exact published GLM
+    /// context and output limits.
     #[test]
     fn glm_model_and_profile_validation_mirrors_deepseek_shape() {
         let glm_model = ModelDescriptor {
             model_id: GLM_MODEL_ID.into(),
             api_base: GLM_API_BASE.into(),
             api_version: GLM_API_VERSION.into(),
-            max_context_tokens: 128_000,
-            max_output_tokens: 16_384,
+            max_context_tokens: GLM_MAX_CONTEXT_TOKENS,
+            max_output_tokens: GLM_MAX_OUTPUT_TOKENS,
             max_in_flight: 64,
             provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
         };
@@ -1855,14 +1865,14 @@ mod tests {
         ));
 
         let mut over_context = glm_model.clone();
-        over_context.max_context_tokens = 200_000;
+        over_context.max_context_tokens = GLM_MAX_CONTEXT_TOKENS - 1;
         assert!(matches!(
             validate_model(&over_context),
             Err(ConfigError::InvalidGlmModel(_))
         ));
 
         let mut over_output = glm_model.clone();
-        over_output.max_output_tokens = 40_000;
+        over_output.max_output_tokens = GLM_MAX_OUTPUT_TOKENS - 1;
         assert!(matches!(
             validate_model(&over_output),
             Err(ConfigError::InvalidGlmModel(_))
@@ -1995,7 +2005,7 @@ mod tests {
         ));
 
         let (_, _, _, _, _, mut request, _) = fixture();
-        request.model_profile = "flash_max".into();
+        request.model_profile = "glm_max".into();
         assert!(matches!(
             runtime.resolve_run(&image.content_hash, &request, 9, 0),
             Err(ConfigError::EntrypointModelProfileMismatch { .. })
@@ -2107,16 +2117,16 @@ mod tests {
             .iter()
             .find(|entry| entry.run_kind == "company_research")
             .unwrap();
-        assert_eq!(company.model_profile, "flash_high");
-        assert_eq!(company.execution.requested_model, "deepseek-v4-flash");
+        assert_eq!(company.model_profile, "glm_high");
+        assert_eq!(company.execution.requested_model, GLM_MODEL_ID);
         assert_eq!(company.execution.thinking, ThinkingMode::Enabled);
         let route = descriptor
             .entries
             .iter()
             .find(|entry| entry.run_kind == "route")
             .unwrap();
-        assert_eq!(route.model_profile, "flash_direct");
-        assert_eq!(route.execution.requested_model, "deepseek-v4-flash");
+        assert_eq!(route.model_profile, "glm_direct");
+        assert_eq!(route.execution.requested_model, GLM_MODEL_ID);
         assert_eq!(route.execution.thinking, ThinkingMode::Disabled);
         assert_eq!(route.execution.reasoning_effort, None);
 

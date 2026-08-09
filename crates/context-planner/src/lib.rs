@@ -928,8 +928,8 @@ mod tests {
             run_kind: "company_research".into(),
             locale: "ko-KR".into(),
             question: "회사를 분석해줘".into(),
-            requested_model: "deepseek-v4-flash".into(),
-            model_profile: "flash_high".into(),
+            requested_model: "glm-5.2".into(),
+            model_profile: "glm_high".into(),
             budget: BudgetLimits {
                 max_provider_turns: 8,
                 max_capability_calls: 5,
@@ -1022,7 +1022,7 @@ mod tests {
             .unwrap();
         let (_, mut request) = fixture();
         request.run_kind = "guru_buffett".into();
-        request.model_profile = "flash_max".into();
+        request.model_profile = "glm_max".into();
         let planner = ContextPlanner::compile(&image).unwrap();
 
         let brief = planner

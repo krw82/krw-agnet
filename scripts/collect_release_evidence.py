@@ -24,7 +24,7 @@ from typing import Any
 SCHEMA_VERSION = "krw-release-evidence/v1"
 LIVE_SCHEMA_VERSION = "krw-live-acceptance/v1"
 ROTATION_SCHEMA_VERSION = "krw-credential-rotation/v1"
-MODEL_ID = "deepseek-v4-flash"
+MODEL_ID = "glm-5.2"
 MAX_RECEIPT_BYTES = 1024 * 1024
 MAX_LOCAL_ARTIFACT_BYTES = 64 * 1024 * 1024
 SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml")

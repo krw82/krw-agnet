@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use krw_agent_protocol::{ContentHash, DEEPSEEK_MODEL_ID, PublicReleaseDescriptor};
+use krw_agent_protocol::{ContentHash, GLM_MODEL_ID, PublicReleaseDescriptor};
 use ring::rand::SystemRandom;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
@@ -254,7 +254,7 @@ fn validate_payload(
         .map_err(|_| ReleaseAuthorizationError::InvalidContentHash)?;
     validate_version(&payload.runtime_version, "runtime version")?;
     validate_version(&payload.kernel_version, "kernel version")?;
-    if payload.model_id != DEEPSEEK_MODEL_ID {
+    if payload.model_id != GLM_MODEL_ID {
         return Err(ReleaseAuthorizationError::ModelMismatch);
     }
     Ok(())
@@ -427,7 +427,7 @@ mod tests {
             release_set_hash: descriptor.release_set_hash.clone(),
             runtime_version: "0.1.0".into(),
             kernel_version: "0.1.0".into(),
-            model_id: DEEPSEEK_MODEL_ID.into(),
+            model_id: GLM_MODEL_ID.into(),
         };
         (private, hex::decode(public).unwrap(), descriptor, payload)
     }

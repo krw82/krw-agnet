@@ -21,6 +21,21 @@ profiles:
         ontology.query: 2
         ontology.trace: 1
         ontology.chain: 1
+  - profile_id: company_research_glm
+    limits:
+      max_provider_turns: 12
+      max_capability_calls: 5
+      max_replans: 3
+      max_repairs: 3
+      max_input_tokens: 200000
+      max_output_tokens: 24000
+      max_evidence_bytes: 8388608
+      deadline_ms: 600000
+      capability_call_limits:
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+        ontology.chain: 1
   - profile_id: earnings_deep_dive
     limits:
       max_provider_turns: 10

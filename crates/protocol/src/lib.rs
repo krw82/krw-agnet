@@ -27,6 +27,7 @@ pub const FLASH_MAX_PROFILE_ID: &str = "flash_max";
 pub const FLASH_DIRECT_PROFILE_ID: &str = "flash_direct";
 /// GLM-5.2 execution profile ids — the GLM mirror of the `flash_*` set.
 pub const GLM_HIGH_PROFILE_ID: &str = "glm_high";
+pub const GLM_MAX_PROFILE_ID: &str = "glm_max";
 pub const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
 /// Complete set of profile ids the runtime is permitted to accept. Pre
 /// multi-provider this was exactly the three `flash_*` ids; GLM profiles are
@@ -37,6 +38,7 @@ pub const ALLOWED_PROFILE_IDS: &[&str] = &[
     FLASH_MAX_PROFILE_ID,
     FLASH_DIRECT_PROFILE_ID,
     GLM_HIGH_PROFILE_ID,
+    GLM_MAX_PROFILE_ID,
     GLM_DIRECT_PROFILE_ID,
 ];
 pub const MAX_RUN_CONTEXT_TICKERS: usize = 50;
@@ -344,10 +346,10 @@ pub struct ProviderWireCapabilities {
 }
 
 impl ProviderWireCapabilities {
-    /// The only production model is intentionally represented by explicit
-    /// facts rather than scattered provider-specific conditionals. YAML must
-    /// still carry this full matrix; this constant is used for validation and
-    /// deterministic test fixtures only.
+    /// DeepSeek's compatibility profile is represented by explicit facts
+    /// rather than scattered provider-specific conditionals. YAML must still
+    /// carry this full matrix; this constant is used for validation and
+    /// deterministic compatibility fixtures only.
     pub const fn deepseek_v4_flash() -> Self {
         Self {
             thinking: ProviderWireModeCapabilities {

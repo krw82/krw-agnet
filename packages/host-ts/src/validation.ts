@@ -1,7 +1,8 @@
 import {
   ALLOWED_MODEL_IDS,
   CLAIM_SCHEMA_VERSION,
-  DEEPSEEK_PROVIDER_API_VERSION,
+  GLM_MAX_CONTEXT_TOKENS,
+  GLM_PROVIDER_API_VERSION,
   KRW_PROTOCOL_VERSION,
   RELEASE_DESCRIPTOR_SCHEMA_VERSION,
   SESSION_MEMORY_CARRIER_SCHEMA_VERSION,
@@ -25,16 +26,12 @@ import {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TICKER_PATTERN = /^[A-Z0-9][A-Z0-9.-]{0,31}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-const FLASH_PROFILE_POLICY = {
-  flash_high: { thinking: "enabled", reasoning_effort: "high" },
-  flash_max: { thinking: "enabled", reasoning_effort: "max" },
-  flash_direct: { thinking: "disabled", reasoning_effort: null },
-} as const;
 const GLM_PROFILE_POLICY = {
   glm_high: { thinking: "enabled", reasoning_effort: "high" },
+  glm_max: { thinking: "enabled", reasoning_effort: "max" },
   glm_direct: { thinking: "disabled", reasoning_effort: null },
 } as const;
-const MODEL_PROFILE_POLICY = { ...FLASH_PROFILE_POLICY, ...GLM_PROFILE_POLICY };
+const MODEL_PROFILE_POLICY = GLM_PROFILE_POLICY;
 
 export class ContractViolation extends Error {
   constructor(readonly code: string) {
@@ -232,6 +229,7 @@ function validateReleaseEntrypoint(value: PublicReleaseEntrypoint): void {
     "requested_model",
     "resolved_model",
     "provider_api_version",
+    "provider_max_context_tokens",
     "provider_wire_capabilities",
     "thinking",
     "reasoning_effort",
@@ -264,8 +262,11 @@ function validateReleaseEntrypoint(value: PublicReleaseEntrypoint): void {
   if (execution.requested_model !== execution.resolved_model) {
     throw new ContractViolation("silent_model_alias");
   }
-  if (execution.provider_api_version !== DEEPSEEK_PROVIDER_API_VERSION) {
+  if (execution.provider_api_version !== GLM_PROVIDER_API_VERSION) {
     throw new ContractViolation("provider_api_version");
+  }
+  if (execution.provider_max_context_tokens !== GLM_MAX_CONTEXT_TOKENS) {
+    throw new ContractViolation("provider_context_capacity");
   }
   validateProviderWireCapabilities(execution.provider_wire_capabilities);
   if (execution.thinking === "enabled") {
@@ -310,8 +311,22 @@ function validateProviderWireCapabilities(value: unknown): void {
   ]);
   const record = value as Record<string, unknown>;
   for (const mode of [record.thinking, record.non_thinking]) {
-    exactKeys(mode, ["supported", "supports_tools", "supports_tool_choice", "supports_json_object"]);
-    for (const field of ["supported", "supports_tools", "supports_tool_choice", "supports_json_object"] as const) {
+    exactKeys(mode, [
+      "supported",
+      "supports_tools",
+      "supports_tool_choice",
+      "supports_json_object",
+      "supports_json_schema_output",
+      "supports_strict_tool_input",
+    ]);
+    for (const field of [
+      "supported",
+      "supports_tools",
+      "supports_tool_choice",
+      "supports_json_object",
+      "supports_json_schema_output",
+      "supports_strict_tool_input",
+    ] as const) {
       if (typeof (mode as Record<string, unknown>)[field] !== "boolean") {
         throw new ContractViolation("provider_wire_capabilities");
       }

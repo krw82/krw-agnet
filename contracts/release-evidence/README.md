@@ -6,9 +6,9 @@
 
 전체 authoritative 판정에는 local 검사 외에 다음 세 개의 bounded JSON이 필요하다.
 
-1. daemon이 `schema_version: 2`로 출력한 public release descriptor
+1. daemon이 `schema_version: 3`로 출력한 public release descriptor
 2. 운영자가 secret 값을 넣지 않고 서명·보관한 `krw-credential-rotation/v1` receipt
-3. 별도 credentialed 환경이 exact `deepseek-v4-flash`와 production MCP/PostgreSQL/품질 검사를
+3. 별도 credentialed 환경이 exact `glm-5.2`와 production MCP/PostgreSQL/품질 검사를
    통과한 뒤 출력한 `krw-live-acceptance/v1` redacted receipt
 
 필수 rotation 필드:
@@ -33,8 +33,8 @@
   "schema_version": "krw-live-acceptance/v1",
   "status": "pass",
   "redacted": true,
-  "requested_model": "deepseek-v4-flash",
-  "observed_model": "deepseek-v4-flash",
+  "requested_model": "glm-5.2",
+  "observed_model": "glm-5.2",
   "release_set_hash": "sha256:...",
   "data_release_hash": "sha256:...",
   "provider_contract_hash": "sha256:...",

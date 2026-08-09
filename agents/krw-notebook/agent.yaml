@@ -12,7 +12,7 @@ entrypoints:
     locale: ko-KR
     workflow: research_notebook_v2
     required_budget_profile: notebook_transform
-    required_model_profile: flash_high
+    required_model_profile: glm_high
     scope: { allowed_context: research_notebook, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}
 

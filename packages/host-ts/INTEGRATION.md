@@ -42,7 +42,7 @@ const release = await loadPinnedReleaseArtifact({
 The loader rejects symlinks, non-regular or group/world-writable files,
 non-canonical JSON, secrets/endpoints, artifact drift, duplicate routes,
 protocol/profile mismatches, and anything except the exact physical model
-`deepseek-v4-flash`. Rotate the descriptor by replacing the deployment artifact
+`glm-5.2`. Rotate the descriptor by replacing the deployment artifact
 and restarting the host; never reread it per request.
 
 Protocol compatibility is fail-closed:
@@ -50,13 +50,13 @@ Protocol compatibility is fail-closed:
 | Contract | Required value |
 | --- | --- |
 | Postgres ABI | `agent_v1`, ABI `1` |
-| Agent protocol | `5` |
-| Immutable claim | `5` |
-| Release descriptor | `2` |
+| Agent protocol | `7` |
+| Immutable claim | `7` |
+| Release descriptor | `3` |
 | Session-memory carrier | `3` only |
-| Provider model | `deepseek-v4-flash` only |
-| Provider API | `chat-completions-v1` |
-| Profiles | `flash_high`, `flash_max`, `flash_direct` |
+| Provider model | `glm-5.2` only |
+| Provider API | `anthropic-messages-v1` |
+| Profiles | `glm_high`, `glm_max`, `glm_direct` |
 
 ## 2. Ownership and browser input
 
