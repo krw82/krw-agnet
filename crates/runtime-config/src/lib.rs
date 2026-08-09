@@ -1764,8 +1764,8 @@ mod tests {
         assert_eq!(runtime.capabilities.len(), image.body.capabilities.len());
         assert_eq!(
             runtime.physical_binding_count(),
-            6,
-            "universe aliases share the query bindings; company context, chain, and local skill loading are separate bindings"
+            7,
+            "universe aliases share the query bindings; company context, market snapshot, chain, and local skill loading are separate bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),

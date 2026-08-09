@@ -21,7 +21,7 @@
     "fixtures/vertical-slice/v1/provider/turn-1-assistant.json": "sha256:b0027823395281cc23d35282431a72682ac1a0713424a3c75c9e05c14721758d",
     "fixtures/vertical-slice/v1/provider/turn-2-evidence-sufficient.json": "sha256:bcb488ff179436bc66ec69e13ebe3b463df4f9f9a7c78f0266021298ff4915f0",
     "fixtures/vertical-slice/v1/provider/turn-3-answer.json": "sha256:8d375272bc17b5c3c8062c95dec6ccf81b05d0acfcf8d3f25de13e5eff7e2730",
-    "fixtures/vertical-slice/v1/run-request.json": "sha256:fe46e82a2dffaf0784d2f3db1cf598479f7c7455f49635191bae0eee6923d2c5"
+    "fixtures/vertical-slice/v1/run-request.json": "sha256:4930ef712a9956b474f5fa2a561c6f7fc9efa98f5d4d9eca6f4b96bb52e4f064"
   },
   "case_count": 3
 }
