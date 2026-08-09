@@ -1181,7 +1181,7 @@ fn market_timestamp(value: Option<&Value>) -> Option<String> {
 
 fn market_currency(value: Option<&Value>) -> Option<String> {
     let value = value.and_then(Value::as_str)?;
-    if !(1..=8).contains(&value.len()) || !value.bytes().all(u8::is_ascii_uppercase) {
+    if !(1..=8).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_uppercase()) {
         return None;
     }
     Some(value.to_owned())
