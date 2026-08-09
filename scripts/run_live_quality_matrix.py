@@ -376,7 +376,9 @@ def validate_submit(value: dict[str, Any]) -> tuple[str, str, str]:
     return session_id, run_id, state
 
 
-def validate_status(value: dict[str, Any], expected_run_id: str) -> tuple[str, str, str, str | None, str | None]:
+def validate_status(
+    value: dict[str, Any], expected_session_id: str, expected_run_id: str
+) -> tuple[str, str, str, str | None, str | None]:
     if set(value) != {"schema_version", "session_id", "run_id", "state", "final_output"}:
         raise GatewayProblem("status_shape_invalid")
     session_id, run_id, state = value["session_id"], value["run_id"], value["state"]
@@ -385,6 +387,7 @@ def validate_status(value: dict[str, Any], expected_run_id: str) -> tuple[str, s
         or value["schema_version"] != 1
         or not isinstance(session_id, str)
         or not SESSION_ID_RE.fullmatch(session_id)
+        or session_id != expected_session_id
         or run_id != expected_run_id
         or not isinstance(state, str)
         or state not in KNOWN_STATES
@@ -493,14 +496,16 @@ def run_case(
         while time.monotonic() < deadline:
             time.sleep(poll_seconds)
             status = gateway_json("GET", f"{gateway_url}/runs/{run_id}", token)
-            _, _, state, _, _ = validate_status(status, run_id)
+            _, _, state, _, _ = validate_status(status, session_id, run_id)
             if state in {"final", "cancelled", "failed"}:
                 terminal = status
                 break
         if terminal is None:
             raise GatewayProblem("terminal_wait_timeout")
         write_private_json(status_path, terminal)
-        session_id, run_id, state, answer, final_hash = validate_status(terminal, run_id)
+        session_id, run_id, state, answer, final_hash = validate_status(
+            terminal, session_id, run_id
+        )
         elapsed = round(time.monotonic() - started, 3)
         result = {
             "case_id": case.case_id,
