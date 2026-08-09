@@ -1000,51 +1000,81 @@ enum ProviderRequestPhase {
     Measurement,
 }
 
-fn provider_request_phase(
-    request: &MessagesRequest,
-    retained_payload_bytes: usize,
-) -> Result<ProviderRequestPhase, &'static str> {
-    provider_message_phase(&request.messages, retained_payload_bytes)
+fn provider_request_phase(request: &MessagesRequest) -> Result<ProviderRequestPhase, &'static str> {
+    provider_message_phase(&request.messages)
 }
 
 fn provider_message_phase(
     messages: &[ProviderMessage],
-    retained_payload_bytes: usize,
 ) -> Result<ProviderRequestPhase, &'static str> {
-    let mut tool_messages = messages.iter().flat_map(|message| {
-        message.content.iter().filter_map(|block| match block {
-            ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
-    });
-    let Some(tool_message_text) = tool_messages.next() else {
-        return Ok(ProviderRequestPhase::FirstProvider);
+    let mut compacted_contexts = Vec::new();
+    let mut has_raw_tool_result = false;
+    for block in messages.iter().flat_map(|message| message.content.iter()) {
+        match block {
+            ContentBlock::Text { text } => {
+                if let Some(context) = verified_compacted_context(text)? {
+                    compacted_contexts.push(context);
+                }
+            }
+            ContentBlock::ToolResult { .. } => has_raw_tool_result = true,
+            ContentBlock::ToolUse { .. } | ContentBlock::Thinking { .. } => {}
+        }
+    }
+
+    let Some(context) = compacted_contexts.first() else {
+        return if has_raw_tool_result {
+            Err("post-tool provider request leaked a raw tool result")
+        } else {
+            Ok(ProviderRequestPhase::FirstProvider)
+        };
     };
-    let tool_message: Value = serde_json::from_str(tool_message_text)
-        .map_err(|_| "tool result was not canonical JSON text")?;
-    // A lowered ResearchProposal receives the model-visible result envelope,
-    // not the raw MCP payload.  Keep this assertion explicit: accepting the
-    // old raw result would let the active-run memory benchmark silently stop
-    // covering the real provider transcript contract.
-    let research_state = tool_message
-        .get("result")
-        .ok_or("accepted tool result lacks the model-visible result envelope")?;
-    if tool_messages.next().is_some()
-        || research_state
-            .pointer("/evidence_units/0/summary")
-            .and_then(Value::as_str)
-            .map(str::len)
-            != Some(retained_payload_bytes)
+    if compacted_contexts.len() != 1 || has_raw_tool_result {
+        return Err("post-tool provider request has an ambiguous evidence context");
+    }
+
+    let context: Value = serde_json::from_str(context)
+        .map_err(|_| "verified compacted context was not canonical JSON text")?;
+    let has_evidence = context
+        .get("evidence_index")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| !entries.is_empty());
+    let has_facts = context
+        .get("retained_facts")
+        .and_then(Value::as_array)
+        .is_some_and(|facts| !facts.is_empty());
+    if context
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .filter(|version| *version > 0)
+        .is_none()
+        || context.get("authority").and_then(Value::as_str)
+            != Some("validated_state_and_committed_evidence_only")
+        || !has_evidence
+        || !has_facts
     {
-        return Err("second provider request lacks the accepted retained payload");
+        return Err("verified compacted context lacks accepted evidence");
     }
     Ok(ProviderRequestPhase::Measurement)
+}
+
+fn verified_compacted_context(text: &str) -> Result<Option<&str>, &'static str> {
+    const OPEN: &str = "<verified-compacted-context>\n";
+    const CLOSE: &str = "\n</verified-compacted-context>";
+    let Some((_, tail)) = text.split_once(OPEN) else {
+        return Ok(None);
+    };
+    let Some((context, trailing)) = tail.split_once(CLOSE) else {
+        return Err("verified compacted context lacks a closing delimiter");
+    };
+    if context.is_empty() || trailing.contains(OPEN) {
+        return Err("verified compacted context is ambiguous");
+    }
+    Ok(Some(context))
 }
 
 #[derive(Debug)]
 struct PostToolBlockingProvider {
     assistant: Arc<AssistantMessage>,
-    retained_payload_bytes: usize,
     counters: Arc<ActivePhaseCounters>,
     release: Arc<Semaphore>,
 }
@@ -1056,7 +1086,7 @@ impl Provider for PostToolBlockingProvider {
         request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
-        match provider_request_phase(request, self.retained_payload_bytes) {
+        match provider_request_phase(request) {
             Ok(ProviderRequestPhase::FirstProvider) => {
                 self.counters
                     .first_provider_entered
@@ -1396,7 +1426,6 @@ async fn measure_active_level(
     let release = Arc::new(Semaphore::new(0));
     let provider = Arc::new(PostToolBlockingProvider {
         assistant: Arc::clone(&workload.assistant),
-        retained_payload_bytes: workload.retained_payload_bytes,
         counters: Arc::clone(&counters),
         release: Arc::clone(&release),
     });
@@ -2304,7 +2333,7 @@ mod tests {
     fn only_a_valid_post_tool_request_counts_as_measurement_phase() {
         let first = vec![ProviderMessage::user("bounded")];
         assert_eq!(
-            provider_message_phase(&first, 8),
+            provider_message_phase(&first),
             Ok(ProviderRequestPhase::FirstProvider)
         );
 
@@ -2318,7 +2347,7 @@ mod tests {
             })
         ))];
         assert_eq!(
-            provider_message_phase(&valid, 8),
+            provider_message_phase(&valid),
             Ok(ProviderRequestPhase::Measurement)
         );
 
@@ -2333,7 +2362,7 @@ mod tests {
             .unwrap()
             .into_provider_message(),
         ];
-        assert!(provider_message_phase(&legacy_raw_result, 8).is_err());
+        assert!(provider_message_phase(&legacy_raw_result).is_err());
 
         let rejected = vec![
             ToolResultMessage::from_value(
@@ -2343,7 +2372,7 @@ mod tests {
             .unwrap()
             .into_provider_message(),
         ];
-        assert!(provider_message_phase(&rejected, 8).is_err());
+        assert!(provider_message_phase(&rejected).is_err());
         let rejected_snapshot = ActivePhaseSnapshot {
             rejected_phase_entries: 1,
             ..ActivePhaseSnapshot::default()
@@ -2357,7 +2386,6 @@ mod tests {
         let counters = Arc::new(ActivePhaseCounters::default());
         let provider = PostToolBlockingProvider {
             assistant: Arc::clone(&workload.assistant),
-            retained_payload_bytes: workload.retained_payload_bytes,
             counters: Arc::clone(&counters),
             release: Arc::new(Semaphore::new(0)),
         };

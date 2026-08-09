@@ -13,7 +13,7 @@
     "max_capability_calls": 5,
     "max_replans": 3,
     "max_repairs": 3,
-    "max_input_tokens": 200000,
+    "max_input_tokens": 176000,
     "max_output_tokens": 24000,
     "max_evidence_bytes": 8388608,
     "deadline_ms": 600000,

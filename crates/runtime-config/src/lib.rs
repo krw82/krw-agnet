@@ -977,6 +977,7 @@ impl ResolvedRuntime {
         let (profile, model) = self
             .model_registry
             .resolve_profile_exact(&request.model_profile, &request.requested_model)?;
+        ensure_budget_fits_model_context(&request.budget, model)?;
         Ok(ResolvedExecutionSnapshot {
             protocol_version: PROTOCOL_VERSION,
             run_id: request.run_id.clone(),
@@ -1097,6 +1098,7 @@ impl ResolvedReleaseSet {
                         .ok_or(ConfigError::ModelProfileSetMismatch)?
                         .model_id,
                 )?;
+                ensure_budget_fits_model_context(&budget, model)?;
                 let cardinality = match entrypoint.scope.cardinality {
                     ScopeCardinality::Exact { .. } => ScopeCardinalityKind::Exact,
                     ScopeCardinality::Max { .. } => ScopeCardinalityKind::Max,
@@ -1407,6 +1409,21 @@ fn ensure_exact_budget(request: &BudgetLimits, profile: &BudgetLimits) -> Result
     Ok(())
 }
 
+fn ensure_budget_fits_model_context(
+    limits: &BudgetLimits,
+    model: &ModelDescriptor,
+) -> Result<(), ConfigError> {
+    let total = u64::from(limits.max_input_tokens)
+        .checked_add(u64::from(limits.max_output_tokens))
+        .ok_or(ConfigError::RunBudgetExceedsModelContext)?;
+    if limits.max_output_tokens > model.max_output_tokens
+        || total > u64::from(model.max_context_tokens)
+    {
+        return Err(ConfigError::RunBudgetExceedsModelContext);
+    }
+    Ok(())
+}
+
 impl Drop for ResolvedCapability {
     fn drop(&mut self) {
         self.endpoint.zeroize();
@@ -1445,6 +1462,8 @@ pub enum ConfigError {
     InvalidBudget(&'static str),
     #[error("run budget must exactly match its AgentImage deployment profile")]
     RunBudgetProfileMismatch,
+    #[error("run budget exceeds the selected model's context or output capacity")]
+    RunBudgetExceedsModelContext,
     #[error("model is not an exact supported DeepSeek deployment: {0}")]
     InvalidDeepSeekModel(String),
     #[error("model is not an exact supported GLM deployment: {0}")]
@@ -1743,7 +1762,11 @@ mod tests {
         assert_eq!(snapshot.resolved_model, GLM_MODEL_ID);
         assert_eq!(snapshot.fencing_token, 9);
         assert_eq!(runtime.capabilities.len(), image.body.capabilities.len());
-        assert_eq!(runtime.physical_binding_count(), 3);
+        assert_eq!(
+            runtime.physical_binding_count(),
+            5,
+            "universe aliases share the three query bindings; chain and local skill loading are separate bindings"
+        );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
             runtime
@@ -2036,9 +2059,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(runtime
-            .resolve_run(&image.content_hash, &request, 9, 0)
-            .is_err());
+        assert!(matches!(
+            runtime.resolve_run(&image.content_hash, &request, 9, 0),
+            Err(ConfigError::RunBudgetExceedsModelContext)
+        ));
     }
 
     #[test]
