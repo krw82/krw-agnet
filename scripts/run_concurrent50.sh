@@ -64,7 +64,7 @@ token = '$token'
 gateway = '$gateway'
 outdir = '$outdir'
 poll_start = time.time()
-max_wait = 600  # 10 minutes (GLM coding plan is slower than DeepSeek)
+max_wait = 900  # 15 minutes (GLM coding plan is slower under concurrency)
 
 while True:
     elapsed = time.time() - poll_start

@@ -11,12 +11,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use krw_agent_contracts::{contract as canonical_contract, verify_pin};
-use krw_agent_provider_wire::{ProviderToolDefinition, WireError};
 use krw_agent_image::{
     AgentImageManifest, CompiledState, CompiledWorkflow, ImageError, LoadedImage, StateKind,
     provider_input_parameters,
 };
 use krw_agent_protocol::{ContentHash, RunRequest, provider_tool_name};
+use krw_agent_provider_wire::{ProviderToolDefinition, WireError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

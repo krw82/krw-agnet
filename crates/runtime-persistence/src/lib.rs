@@ -250,11 +250,23 @@ impl RecoveryArtifactStore for ArtifactRepository {
             request.run_id.clone(),
         )
         .map_err(|_| RecoveryArtifactFailure::redacted("artifact_scope_invalid"))?;
-        let secret = self
-            .store
-            .get(&scope, &reference)
-            .await
-            .map_err(|_| RecoveryArtifactFailure::redacted("artifact_read_failed"))?;
+        let secret = self.store.get(&scope, &reference).await.map_err(|error| {
+            // `NotFoundOrUnauthorized` and `Expired` are permanent: the
+            // referenced artifact bytes are not in this worker's local
+            // store and never will be (stale checkpoint from a prior
+            // daemon incarnation, or expired TTL). Retrying only burns
+            // claim cycles in an infinite defer loop, so mark the
+            // failure as non-retryable. Transient I/O errors remain
+            // retryable.
+            if matches!(
+                error,
+                ArtifactStoreError::NotFoundOrUnauthorized | ArtifactStoreError::Expired
+            ) {
+                RecoveryArtifactFailure::permanent("artifact_read_failed")
+            } else {
+                RecoveryArtifactFailure::redacted("artifact_read_failed")
+            }
+        })?;
         let bytes = secret.into_zeroizing();
         if bytes.len() != expected_size
             || ContentHash::sha256(bytes.as_slice()) != request.expected_hash

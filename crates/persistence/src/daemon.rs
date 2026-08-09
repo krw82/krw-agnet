@@ -335,12 +335,29 @@ impl fmt::Debug for RecoveryArtifactRequest {
 #[derive(Clone, PartialEq, Eq)]
 pub struct RecoveryArtifactFailure {
     pub diagnostic_hash: ContentHash,
+    /// When `false` the failure is permanent — retrying will never succeed.
+    /// Typical cause: the referenced artifact was never written to this
+    /// worker's local store (stale checkpoint from a previous daemon
+    /// incarnation). Retrying only burns claim cycles, so the daemon
+    /// should `fail` instead of `defer`.
+    pub retryable: bool,
 }
 
 impl RecoveryArtifactFailure {
     pub fn redacted(diagnostic: impl AsRef<[u8]>) -> Self {
         Self {
             diagnostic_hash: ContentHash::sha256(diagnostic),
+            retryable: true,
+        }
+    }
+
+    /// Like `redacted` but marks the failure as non-retryable. Use when
+    /// the underlying cause (e.g. a missing artifact file) cannot be
+    /// resolved by re-claiming the run.
+    pub fn permanent(diagnostic: impl AsRef<[u8]>) -> Self {
+        Self {
+            diagnostic_hash: ContentHash::sha256(diagnostic),
+            retryable: false,
         }
     }
 }
@@ -350,6 +367,7 @@ impl fmt::Debug for RecoveryArtifactFailure {
         formatter
             .debug_struct("RecoveryArtifactFailure")
             .field("diagnostic_hash", &self.diagnostic_hash)
+            .field("retryable", &self.retryable)
             .finish()
     }
 }
@@ -745,12 +763,19 @@ async fn drive_claim(
             warn!(
                 run_id_hash = %ContentHash::sha256(&receipt.run_id),
                 diagnostic_hash = %failure.diagnostic_hash,
+                retryable = failure.retryable,
                 "claim recovery artifact preflight failed"
             );
-            Err(RunExecutionFailure::deferred(
-                "recovery_artifact_unavailable",
-                Duration::from_secs(5),
-            ))
+            if failure.retryable {
+                Err(RunExecutionFailure::deferred(
+                    "recovery_artifact_unavailable",
+                    Duration::from_secs(5),
+                ))
+            } else {
+                Err(RunExecutionFailure::failed(
+                    "recovery_artifact_permanently_missing",
+                ))
+            }
         }
         Err(_) => Err(RunExecutionFailure::deferred(
             "recovery_artifact_timeout",

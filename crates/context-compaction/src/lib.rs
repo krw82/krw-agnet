@@ -10,12 +10,12 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_evidence::{
     Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger, NormalizedFact,
     PublicCitation,
 };
 use krw_agent_protocol::ContentHash;
+use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
 use krw_ontology_adapter::ResearchPlanningProjection;
 use serde::{Deserialize, Serialize};

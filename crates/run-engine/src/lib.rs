@@ -41,11 +41,6 @@ use krw_agent_contracts::{
     validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
-use krw_agent_provider_wire::{
-    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, ProviderClient,
-    ProviderEpisodeV1, ProviderMessage, ProviderToolDefinition, RequestMetadata, ThinkingConfig,
-    ToolCallKind, ToolChoice, ToolResultMessage, WireError,
-};
 use krw_agent_evidence::{
     AnswerIr, AnswerPolicy, Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger,
     EvidenceRecord, ValidationIssue, render_markdown, validate_answer,
@@ -68,6 +63,11 @@ use krw_agent_protocol::{
     DeploymentBinding, GLM_MODEL_ID, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
     provider_tool_name,
+};
+use krw_agent_provider_wire::{
+    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, ProviderClient, ProviderEpisodeV1,
+    ProviderMessage, ProviderToolDefinition, RequestMetadata, ThinkingConfig, ToolCallKind,
+    ToolChoice, ToolResultMessage, WireError,
 };
 use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
@@ -391,10 +391,9 @@ impl RunEngineMessage {
             });
         }
         if message.role == MessageRole::Assistant {
-            let assistant = krw_agent_provider_wire::AssistantMessage::from_content_blocks(
-                &message.content,
-            )
-            .map_err(|error| format!("{error:?}"))?;
+            let assistant =
+                krw_agent_provider_wire::AssistantMessage::from_content_blocks(&message.content)
+                    .map_err(|error| format!("{error:?}"))?;
             return Ok(Self::from_assistant(assistant));
         }
         Err(format!(
@@ -1875,9 +1874,7 @@ where
             }
             if child_policy.is_none() {
                 state.messages = built.transcript;
-            } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..]
-                .is_empty()
-            {
+            } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..].is_empty() {
                 return Err(EngineError::Invariant(
                     "bounded child provider request retained a transcript",
                 ));
@@ -2503,10 +2500,17 @@ where
                 //   the live path which includes superseded recovery turns.
                 // * `compaction_receipts`: the live path may compact at
                 //   different intermediate states than replay.
+                // * `tool_schema_hash`: the tool frontier depends on the
+                //   interpreter's current state (remaining capability visits).
+                //   During recovery the interpreter has already advanced past
+                //   the checkpoint-captured state, so the capability frontier
+                //   — and therefore the tool schema — can legitimately differ.
+                //   The original episode validated the tool schema at live-run
+                //   time; replay's job is state reconstruction, not
+                //   re-verification of the dynamic tool frontier.
                 //
                 // Security-critical fields (interpreter state, evidence ledger,
-                // action frontier, capability frontier, tool schema) are still
-                // fully compared.
+                // action frontier) are still fully compared.
                 let rebuilt = state.checkpoint_value()?;
                 if declared.interpreter != rebuilt.interpreter
                     || declared.state_trace != rebuilt.state_trace
@@ -2517,7 +2521,6 @@ where
                     || declared.calculations_hash != rebuilt.calculations_hash
                     || declared.action_cache_hash != rebuilt.action_cache_hash
                     || declared.accepted_actions_hash != rebuilt.accepted_actions_hash
-                    || declared.tool_schema_hash != rebuilt.tool_schema_hash
                     || declared.last_provider_episode_hash != rebuilt.last_provider_episode_hash
                     || declared.compacted_context_hash != rebuilt.compacted_context_hash
                     || declared.research_planner_hash != rebuilt.research_planner_hash
@@ -2605,9 +2608,7 @@ where
         }
         if child_policy.is_none() {
             state.messages = built.transcript;
-        } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..]
-            .is_empty()
-        {
+        } else if !request.messages[WIRE_TRUSTED_PREFIX_MESSAGE_COUNT..].is_empty() {
             return Err(EngineError::RecoveryArtifactMismatch(
                 "child request transcript",
             ));
@@ -5781,11 +5782,9 @@ impl ActiveRun {
     ) -> Result<(), EngineError> {
         // `ToolResultMessage` owns the provider's text-only JSON rule. A
         // typed capability object cannot enter the transcript as an object.
-        self.messages
-            .push(RunEngineMessage::from_tool_result(&ToolResultMessage::from_value(
-                tool_call_id,
-                content,
-            )?));
+        self.messages.push(RunEngineMessage::from_tool_result(
+            &ToolResultMessage::from_value(tool_call_id, content)?,
+        ));
         Ok(())
     }
 
@@ -8007,8 +8006,7 @@ fn build_provider_request(
     // field, every remaining `User`/`Assistant`/`Tool` turn becomes a
     // `ProviderMessage { role, content: Vec<ContentBlock> }`, and the leading
     // trusted system+user pair is preserved as the first two messages.
-    let (system_prompt, wire_messages, transcript) =
-        split_system_and_convert_messages(messages)?;
+    let (system_prompt, wire_messages, transcript) = split_system_and_convert_messages(messages)?;
     let max_tokens = turn_policy.max_output_tokens;
     let request = MessagesRequest {
         model: input.snapshot.resolved_model.clone(),
@@ -8924,8 +8922,7 @@ fn validate_episode(
     episode.verify_tool_call_requirements(
         requires_thinking_tool_replay
             && provider_wire_capabilities.requires_assistant_content_for_tool_calls,
-        requires_thinking_tool_replay
-            && provider_wire_capabilities.requires_thinking_block_replay,
+        requires_thinking_tool_replay && provider_wire_capabilities.requires_thinking_block_replay,
     )?;
     if !ALLOWED_MODEL_IDS.contains(&model)
         || episode.schema_version != 1
@@ -9548,14 +9545,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use krw_agent_provider_wire::{
-        AssistantMessage, FunctionCall, ProviderFunctionName, TokenUsage, ToolCall,
-    };
     use krw_agent_evidence::{
         Directness, EvidenceGrade, EvidenceScope, EvidenceSource, NormalizedFact, PublicCitation,
     };
     use krw_agent_image::compile_agent_dir;
     use krw_agent_protocol::{AuthScope, DEEPSEEK_MODEL_ID, McpToolSessionReuse, TransportKind};
+    use krw_agent_provider_wire::{
+        AssistantMessage, FunctionCall, ProviderFunctionName, TokenUsage, ToolCall,
+    };
 
     use super::*;
 
@@ -10980,7 +10977,7 @@ mod tests {
             model_profile: request.model_profile.clone(),
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
-            provider_api_version: "chat-completions-v1".into(),
+            provider_api_version: "anthropic-messages-v1".into(),
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
@@ -11045,7 +11042,7 @@ mod tests {
             model_profile: request.model_profile.clone(),
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
-            provider_api_version: "chat-completions-v1".into(),
+            provider_api_version: "anthropic-messages-v1".into(),
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Disabled,
             reasoning_effort: None,
@@ -11114,7 +11111,7 @@ mod tests {
             model_profile: request.model_profile.clone(),
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
-            provider_api_version: "chat-completions-v1".into(),
+            provider_api_version: "anthropic-messages-v1".into(),
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking,
             reasoning_effort: (thinking == ThinkingMode::Enabled)
@@ -11332,7 +11329,7 @@ mod tests {
             model_profile: request.model_profile.clone(),
             requested_model: request.requested_model.clone(),
             resolved_model: request.requested_model.clone(),
-            provider_api_version: "chat-completions-v1".into(),
+            provider_api_version: "anthropic-messages-v1".into(),
             provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),

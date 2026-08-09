@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use krw_agent_protocol::{ContentHash, ThinkingMode, ALLOWED_MODEL_IDS};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, ThinkingMode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
@@ -313,7 +313,8 @@ impl AssistantMessage {
         }
         let tool_calls = std::mem::take(&mut self.tool_calls);
         for call in tool_calls {
-            let input: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
+            let input: Value =
+                serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
             // `FunctionCall` implements `Drop`, so the name and arguments
             // cannot be partially moved out of `call.function`. Clone the
             // name (a small bounded string) and let `Drop` scrub the husk.
@@ -588,7 +589,10 @@ impl ContentBlock {
                 tool_use_id.zeroize();
                 content.zeroize();
             }
-            Self::Thinking { thinking, signature } => {
+            Self::Thinking {
+                thinking,
+                signature,
+            } => {
                 thinking.zeroize();
                 signature.zeroize();
             }
@@ -789,10 +793,7 @@ impl std::fmt::Debug for MessagesRequest {
             .field("thinking", &self.thinking.kind)
             .field("stream", &self.stream)
             .field("tool_choice", &self.tool_choice)
-            .field(
-                "metadata",
-                &self.metadata.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("metadata", &self.metadata.as_ref().map(|_| "[REDACTED]"))
             .finish_non_exhaustive()
     }
 }
@@ -1063,10 +1064,7 @@ impl ProviderClient {
         key_value.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", key_value);
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static("2023-06-01"),
-        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
@@ -1153,9 +1151,8 @@ impl ProviderClient {
                 let base = 500_u64 * (1_u64 << attempt.min(4));
                 let base = base.min(8_000);
                 let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
-                let delay = Duration::from_millis(
-                    (base.saturating_mul(permille) / 1_000).clamp(1, 8_000),
-                );
+                let delay =
+                    Duration::from_millis((base.saturating_mul(permille) / 1_000).clamp(1, 8_000));
                 tokio::time::sleep(delay).await;
             }
         };
@@ -1278,10 +1275,7 @@ pub enum WireError {
     #[error("provider system/user message content cannot be empty")]
     EmptyMessageContent,
     #[error("observed model {observed} differs from requested model {requested}")]
-    ObservedModelMismatch {
-        requested: String,
-        observed: String,
-    },
+    ObservedModelMismatch { requested: String, observed: String },
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("HTTP transport failed: {0}")]
@@ -1313,9 +1307,7 @@ pub enum WireError {
     InvalidClientLimits,
     #[error("provider allowlist contains an unsupported model id")]
     InvalidAllowedModel,
-    #[error(
-        "provider API returned status {status}; redacted body prefix hash {body_prefix_hash}"
-    )]
+    #[error("provider API returned status {status}; redacted body prefix hash {body_prefix_hash}")]
     ApiStatus {
         status: u16,
         body_prefix_hash: ContentHash,
@@ -1344,10 +1336,7 @@ pub enum WireError {
     #[error("provider stream emitted data after message_stop")]
     DataAfterDone,
     #[error("provider stream error: {error_type}: {message}")]
-    StreamError {
-        error_type: String,
-        message: String,
-    },
+    StreamError { error_type: String, message: String },
 }
 
 pub mod assembler;
@@ -1377,10 +1366,7 @@ mod tests {
             text: "hello 한글".into(),
         };
         let json = serde_json::to_string(&block).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"text","text":"hello 한글"}"#
-        );
+        assert_eq!(json, r#"{"type":"text","text":"hello 한글"}"#);
         let decoded: ContentBlock = serde_json::from_str(&json).unwrap();
         assert_eq!(block, decoded);
     }
@@ -1424,10 +1410,7 @@ mod tests {
             budget_tokens: Some(10_000),
         };
         let json = serde_json::to_string(&config).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"enabled","budget_tokens":10000}"#
-        );
+        assert_eq!(json, r#"{"type":"enabled","budget_tokens":10000}"#);
     }
 
     #[test]
@@ -1659,11 +1642,10 @@ mod tests {
                     },
                 }],
             },
-            tool_results: vec![ToolResultMessage::from_value(
-                "call_1",
-                &serde_json::json!({"result": "ok"}),
-            )
-            .unwrap()],
+            tool_results: vec![
+                ToolResultMessage::from_value("call_1", &serde_json::json!({"result": "ok"}))
+                    .unwrap(),
+            ],
             tool_schema_hash: ContentHash::sha256("tools"),
             agent_image_hash: ContentHash::sha256("image"),
             finish_reason: "tool_calls".into(),
@@ -1708,45 +1690,46 @@ mod tests {
 
     #[test]
     fn full_messages_request_roundtrips_through_serde() {
-        let request = MessagesRequest {
-            model: GLM_MODEL_ID.into(),
-            messages: vec![
-                ProviderMessage::user("What is the weather?"),
-                ProviderMessage {
-                    role: MessageRole::Assistant,
-                    content: vec![ContentBlock::ToolUse {
-                        id: "toolu_01".into(),
-                        name: ProviderFunctionName::parse("krw_weather").unwrap(),
-                        input: serde_json::json!({"city": "Seoul"}),
-                    }],
-                },
-                ProviderMessage {
-                    role: MessageRole::User,
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: "toolu_01".into(),
-                        content: r#"{"temp":22}"#.into(),
-                        is_error: false,
-                    }],
-                },
-            ],
-            system: "You are a weather assistant".into(),
-            max_tokens: 4096,
-            tools: vec![ProviderToolDefinition::new(
+        let request =
+            MessagesRequest {
+                model: GLM_MODEL_ID.into(),
+                messages: vec![
+                    ProviderMessage::user("What is the weather?"),
+                    ProviderMessage {
+                        role: MessageRole::Assistant,
+                        content: vec![ContentBlock::ToolUse {
+                            id: "toolu_01".into(),
+                            name: ProviderFunctionName::parse("krw_weather").unwrap(),
+                            input: serde_json::json!({"city": "Seoul"}),
+                        }],
+                    },
+                    ProviderMessage {
+                        role: MessageRole::User,
+                        content: vec![ContentBlock::ToolResult {
+                            tool_use_id: "toolu_01".into(),
+                            content: r#"{"temp":22}"#.into(),
+                            is_error: false,
+                        }],
+                    },
+                ],
+                system: "You are a weather assistant".into(),
+                max_tokens: 4096,
+                tools: vec![ProviderToolDefinition::new(
                 "krw_weather",
                 "Get weather",
                 serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
             )
             .unwrap()],
-            tool_choice: Some(ToolChoice::Auto),
-            thinking: ThinkingConfig {
-                kind: ThinkingMode::Enabled,
-                budget_tokens: Some(2048),
-            },
-            stream: true,
-            metadata: Some(RequestMetadata {
-                user_id: "user-123".into(),
-            }),
-        };
+                tool_choice: Some(ToolChoice::Auto),
+                thinking: ThinkingConfig {
+                    kind: ThinkingMode::Enabled,
+                    budget_tokens: Some(2048),
+                },
+                stream: true,
+                metadata: Some(RequestMetadata {
+                    user_id: "user-123".into(),
+                }),
+            };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: MessagesRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request, decoded);

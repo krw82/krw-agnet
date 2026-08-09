@@ -7,13 +7,13 @@ use async_trait::async_trait;
 use krw_agent_capability_runtime::{
     CapabilityCatalog, McpToolTransport, PooledMcpCapabilityRuntime, RunScope,
 };
-use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_image::LoadedImage;
 use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
     ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
 };
 use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DeploymentBinding};
+use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
     DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine, RunInput,
     durable_failure_diagnostic, state_artifact_failure_code,

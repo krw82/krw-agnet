@@ -12,9 +12,9 @@ use krw_agent_artifact_store::{
     ArtifactRef, ArtifactScope, ArtifactStore, ArtifactStoreConfig, LocalArtifactStore,
     MasterKeyring, VersionedMasterKey,
 };
-use krw_agent_provider_wire::ProviderEpisodeV1;
 use krw_agent_image::compile_agent_dir;
 use krw_agent_protocol::{RunContextV1, provider_tool_name};
+use krw_agent_provider_wire::ProviderEpisodeV1;
 use krw_agent_research_planner::{InitialPlanError, InitialPlanScope, compile_research_proposal};
 use serde_json::Value;
 

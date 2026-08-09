@@ -43,11 +43,17 @@ pub enum AnthropicSseEvent {
     MessageStart { model: String, input_tokens: u32 },
     /// `event: content_block_start`. The block payload is dispatched on
     /// `content_block.type` (`text`, `tool_use`, `thinking`).
-    ContentBlockStart { index: u32, block: ContentBlockStart },
+    ContentBlockStart {
+        index: u32,
+        block: ContentBlockStart,
+    },
     /// `event: content_block_delta`. The delta payload is dispatched on
     /// `delta.type` (`text_delta`, `input_json_delta`, `thinking_delta`,
     /// `signature_delta`).
-    ContentBlockDelta { index: u32, delta: ContentBlockDelta },
+    ContentBlockDelta {
+        index: u32,
+        delta: ContentBlockDelta,
+    },
     /// `event: content_block_stop`.
     ContentBlockStop { index: u32 },
     /// `event: message_delta`. `stop_reason` lives in `delta.stop_reason`;
@@ -61,10 +67,7 @@ pub enum AnthropicSseEvent {
     /// `event: ping`. Keepalive; no payload.
     Ping,
     /// `event: error` (or an inline `{"type":"error",...}` data frame).
-    Error {
-        error_type: String,
-        message: String,
-    },
+    Error { error_type: String, message: String },
 }
 
 impl std::fmt::Debug for AnthropicSseEvent {
@@ -104,7 +107,9 @@ impl std::fmt::Debug for AnthropicSseEvent {
             Self::MessageStop => formatter.write_str("AnthropicSseEvent::MessageStop"),
             Self::Ping => formatter.write_str("AnthropicSseEvent::Ping"),
             Self::Error {
-                error_type, message, ..
+                error_type,
+                message,
+                ..
             } => formatter
                 .debug_struct("AnthropicSseEvent::Error")
                 .field("error_type", error_type)
@@ -120,7 +125,9 @@ impl std::fmt::Debug for AnthropicSseEvent {
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockStart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -292,13 +299,7 @@ impl AnthropicSseDecoder {
     /// complete as a result. Partial frames remain buffered until the next
     /// call (or [`AnthropicSseDecoder::finish`]).
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<AnthropicSseEvent>, WireError> {
-        if self
-            .buffer
-            .len()
-            .saturating_add(chunk.len())
-            > self
-            .max_buffer_bytes
-        {
+        if self.buffer.len().saturating_add(chunk.len()) > self.max_buffer_bytes {
             return Err(WireError::SseBufferLimit(self.max_buffer_bytes));
         }
         self.buffer.extend_from_slice(chunk);
@@ -387,7 +388,7 @@ fn parse_frame(frame: &[u8]) -> Result<Option<AnthropicSseEvent>, WireError> {
         {
             Some(name) => name,
             None => return Ok(None),
-        }
+        },
     };
 
     let event = parse_event(discriminator, &data)?;
@@ -426,19 +427,17 @@ fn parse_event(discriminator: &str, data: &str) -> Result<AnthropicSseEvent, Wir
             })
         }
         "content_block_stop" => {
-            let envelope: ContentBlockStopEnvelope =
-                serde_json::from_str(data).map_err(|err| {
-                    WireError::SseParseError(format!("content_block_stop body invalid: {err}"))
-                })?;
+            let envelope: ContentBlockStopEnvelope = serde_json::from_str(data).map_err(|err| {
+                WireError::SseParseError(format!("content_block_stop body invalid: {err}"))
+            })?;
             Ok(AnthropicSseEvent::ContentBlockStop {
                 index: envelope.index,
             })
         }
         "message_delta" => {
-            let envelope: MessageDeltaEnvelope =
-                serde_json::from_str(data).map_err(|err| {
-                    WireError::SseParseError(format!("message_delta body invalid: {err}"))
-                })?;
+            let envelope: MessageDeltaEnvelope = serde_json::from_str(data).map_err(|err| {
+                WireError::SseParseError(format!("message_delta body invalid: {err}"))
+            })?;
             Ok(AnthropicSseEvent::MessageDelta {
                 stop_reason: envelope.delta.stop_reason,
                 output_tokens: envelope.usage.output_tokens,
@@ -451,36 +450,36 @@ fn parse_event(discriminator: &str, data: &str) -> Result<AnthropicSseEvent, Wir
         }
         "ping" => Ok(AnthropicSseEvent::Ping),
         "error" => {
-            let value: Value = serde_json::from_str(data).map_err(|err| {
-                WireError::SseParseError(format!("error body invalid: {err}"))
-            })?;
+            let value: Value = serde_json::from_str(data)
+                .map_err(|err| WireError::SseParseError(format!("error body invalid: {err}")))?;
             // Tolerate both nested `error:{type,message}` and flat shapes.
-            let (error_type, message) = if let Some(error_obj) = value.get("error").filter(|v| v.is_object()) {
-                let t = error_obj
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("error")
-                    .to_string();
-                let m = error_obj
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .or_else(|| value.get("message").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .to_string();
-                (t, m)
-            } else {
-                let t = value
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("error")
-                    .to_string();
-                let m = value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                (t, m)
-            };
+            let (error_type, message) =
+                if let Some(error_obj) = value.get("error").filter(|v| v.is_object()) {
+                    let t = error_obj
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("error")
+                        .to_string();
+                    let m = error_obj
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .or_else(|| value.get("message").and_then(Value::as_str))
+                        .unwrap_or("")
+                        .to_string();
+                    (t, m)
+                } else {
+                    let t = value
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("error")
+                        .to_string();
+                    let m = value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    (t, m)
+                };
             Ok(AnthropicSseEvent::Error {
                 error_type,
                 message,
@@ -500,8 +499,9 @@ fn parse_event(discriminator: &str, data: &str) -> Result<AnthropicSseEvent, Wir
             // re-dispatch by raising through parse_frame using None.
             //
             // Simplest correct path: ignore unknown events here.
-            let _ = serde_json::from_str::<Value>(data)
-                .map_err(|err| WireError::SseParseError(format!("unknown event body invalid: {err}")))?;
+            let _ = serde_json::from_str::<Value>(data).map_err(|err| {
+                WireError::SseParseError(format!("unknown event body invalid: {err}"))
+            })?;
             // Signal "drop this frame" via a dedicated marker; since we cannot
             // return None from this fn signature, callers handle unknown types
             // by inspecting the discriminator before calling parse_event.
@@ -608,9 +608,15 @@ mod tests {
         assert_eq!(events.len(), 6);
         assert!(matches!(
             events.first(),
-            Some(AnthropicSseEvent::MessageStart { input_tokens: 25, .. })
+            Some(AnthropicSseEvent::MessageStart {
+                input_tokens: 25,
+                ..
+            })
         ));
-        assert!(matches!(events.last(), Some(AnthropicSseEvent::MessageStop)));
+        assert!(matches!(
+            events.last(),
+            Some(AnthropicSseEvent::MessageStop)
+        ));
     }
 
     #[test]
@@ -622,8 +628,7 @@ mod tests {
         let part1 = &stream[..cut_a];
         let part2 = &stream[cut_a..cut_b];
         let part3 = &stream[cut_b..];
-        let (events, finish) =
-            decode_chunks(&[part1, part2, part3], 64 * 1024).expect("decode ok");
+        let (events, finish) = decode_chunks(&[part1, part2, part3], 64 * 1024).expect("decode ok");
         assert!(finish.is_ok());
         assert_eq!(events.len(), 6);
     }
@@ -637,7 +642,10 @@ mod tests {
         bytes.extend_from_slice(b"data: {\"type\":\"message_stop\"}\r\n\r\n");
         let (events, finish) = decode_chunks(&[bytes.as_slice()], 64 * 1024).expect("decode ok");
         assert!(finish.is_ok());
-        assert!(matches!(&events[..], [AnthropicSseEvent::Ping, AnthropicSseEvent::MessageStop]));
+        assert!(matches!(
+            &events[..],
+            [AnthropicSseEvent::Ping, AnthropicSseEvent::MessageStop]
+        ));
     }
 
     #[test]

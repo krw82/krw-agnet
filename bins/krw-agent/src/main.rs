@@ -5,15 +5,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use krw_agent_protocol::ThinkingMode;
-use krw_agent_provider_wire::{
-    EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderMessage,
-    ThinkingConfig,
-};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
+use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
     ContentHash, DEEPSEEK_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
     PublicReleaseDescriptor,
+};
+use krw_agent_provider_wire::{
+    EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderMessage,
+    ThinkingConfig,
 };
 use krw_agent_release_authorization::{
     RELEASE_AUTHORIZATION_SCHEMA_VERSION, ReleaseAuthorizationPayloadV1, VerificationContext,
@@ -759,8 +759,8 @@ mod tests {
         DEEPSEEK_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT,
         provider_probe_context, provider_probe_request,
     };
-    use krw_agent_provider_wire::ProviderMessage;
     use krw_agent_protocol::ThinkingMode;
+    use krw_agent_provider_wire::ProviderMessage;
 
     #[test]
     fn provider_probe_is_fixed_flash_only_and_has_no_tools() {

@@ -16,12 +16,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
-#[cfg(test)]
-use krw_agent_provider_wire::ToolResultMessage;
-use krw_agent_provider_wire::{
-    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
-    ProviderMessage, TokenUsage,
-};
 use krw_agent_evidence::{
     Answerability, Directness, EvidenceGrade, EvidenceRecord, EvidenceScope, EvidenceSource,
     NormalizedFact, PublicCitation,
@@ -36,6 +30,12 @@ use krw_agent_protocol::{
     McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, TransportKind,
     provider_tool_name,
+};
+#[cfg(test)]
+use krw_agent_provider_wire::ToolResultMessage;
+use krw_agent_provider_wire::{
+    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
+    ProviderMessage, TokenUsage,
 };
 use krw_agent_run_engine::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,

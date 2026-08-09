@@ -16,10 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use krw_agent_provider_wire::{
-    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
-    ProviderMessage, ProviderToolDefinition, TokenUsage,
-};
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{CapabilityResultIngest, LoadedImage, compile_agent_dir};
 use krw_agent_persistence::{
@@ -30,6 +26,10 @@ use krw_agent_protocol::{
     AuthScope, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DEEPSEEK_MODEL_ID,
     DeploymentBinding, McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities,
     ReasoningEffort, ResolvedExecutionSnapshot, RunRequest, ThinkingMode, TransportKind,
+};
+use krw_agent_provider_wire::{
+    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
+    ProviderMessage, ProviderToolDefinition, TokenUsage,
 };
 use krw_agent_run_engine::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,

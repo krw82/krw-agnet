@@ -20,10 +20,10 @@
 //!
 //! | Anthropic `stop_reason` | Internal `finish_reason` |
 //! |-------------------------|--------------------------|
-//! | `end_turn`              | `end_turn`               |
+//! | `end_turn`              | `stop`                   |
 //! | `tool_use`              | `tool_calls`             |
 //! | `max_tokens`            | `max_tokens`             |
-//! | `stop_sequence`         | `stop_sequence`          |
+//! | `stop_sequence`         | `stop`                   |
 //! | (anything else)         | passed through verbatim  |
 
 use std::collections::BTreeMap;
@@ -31,11 +31,11 @@ use std::collections::BTreeMap;
 use krw_agent_protocol::ContentHash;
 use serde_json::Value;
 
+use crate::sse::{AnthropicSseEvent as SseEvent, ContentBlockDelta, ContentBlockStart};
 use crate::{
     AssistantMessage, EpisodeContext, FunctionCall, ProviderEpisodeV1, ProviderFunctionName,
     TokenUsage, ToolCall, ToolCallKind, WireError,
 };
-use crate::sse::{AnthropicSseEvent as SseEvent, ContentBlockDelta, ContentBlockStart};
 
 /// Maximum number of tool calls allowed in a single assistant turn. Mirrors
 /// the cap enforced by `deepseek-wire` for run-engine compatibility.
@@ -314,11 +314,7 @@ impl EpisodeAssembler {
                 self.charge(text.len())?;
                 self.text_blocks.entry(index).or_default().push_str(&text);
             }
-            ContentBlockStart::ToolUse {
-                id,
-                name,
-                input,
-            } => {
+            ContentBlockStart::ToolUse { id, name, input } => {
                 // Anthropic's streaming contract: the `content_block_start`
                 // frame carries `input: {}` (placeholder) and the real
                 // arguments arrive later as `input_json_delta` fragments.
@@ -484,7 +480,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 0 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(7),
@@ -494,7 +491,7 @@ mod tests {
 
         let episode = asm.finish().expect("episode assembles");
         assert_eq!(episode.observed_model, GLM_MODEL_ID);
-        assert_eq!(episode.finish_reason, "end_turn");
+        assert_eq!(episode.finish_reason, "stop");
         assert_eq!(episode.assistant.content.as_deref(), Some("Hello world"));
         assert!(episode.assistant.tool_calls.is_empty());
         assert_eq!(episode.usage.prompt_tokens, 12);
@@ -525,7 +522,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 0 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
         // Tool use block at index 1.
         asm.push_event(SseEvent::ContentBlockStart {
             index: 1,
@@ -543,7 +541,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 1 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 1 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(20),
@@ -593,7 +592,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 0 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
         asm.push_event(SseEvent::ContentBlockStart {
             index: 1,
             block: ContentBlockStart::Text {
@@ -608,7 +608,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 1 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 1 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(3),
@@ -688,10 +689,7 @@ mod tests {
                 input_tokens: 1,
             })
             .expect_err("model change must error");
-        assert!(matches!(
-            err,
-            WireError::ModelChangedMidStream { .. }
-        ));
+        assert!(matches!(err, WireError::ModelChangedMidStream { .. }));
     }
 
     #[test]
@@ -756,7 +754,8 @@ mod tests {
         })
         .unwrap();
         // No input_json_delta: empty input.
-        asm.push_event(SseEvent::ContentBlockStop { index: 0 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(1),
@@ -794,7 +793,8 @@ mod tests {
             },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 0 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(1),
@@ -843,12 +843,11 @@ mod tests {
         .unwrap();
         asm.push_event(SseEvent::ContentBlockDelta {
             index: 2,
-            delta: ContentBlockDelta::TextDelta {
-                text: "B".into(),
-            },
+            delta: ContentBlockDelta::TextDelta { text: "B".into() },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 2 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 2 })
+            .unwrap();
         asm.push_event(SseEvent::ContentBlockStart {
             index: 5,
             block: ContentBlockStart::Text {
@@ -858,12 +857,11 @@ mod tests {
         .unwrap();
         asm.push_event(SseEvent::ContentBlockDelta {
             index: 5,
-            delta: ContentBlockDelta::TextDelta {
-                text: "A".into(),
-            },
+            delta: ContentBlockDelta::TextDelta { text: "A".into() },
         })
         .unwrap();
-        asm.push_event(SseEvent::ContentBlockStop { index: 5 }).unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 5 })
+            .unwrap();
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(2),
