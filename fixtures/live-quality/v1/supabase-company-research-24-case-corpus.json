@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "suite_id": "supabase-company-research-24-case-corpus",
+  "suite_version": 1,
+  "cases": [
+    {
+      "case_id": "short_google_pullback_long_term",
+      "ticker": "GOOGL",
+      "question": "GOOGL 현재 조정 이유와 장기적 관점",
+      "evaluation_focus": ["recent_price_driver", "long_term_thesis", "risk_reward"]
+    },
+    {
+      "case_id": "short_google_price_outlook",
+      "ticker": "GOOGL",
+      "question": "주가 전망과 어제 하락 이유",
+      "evaluation_focus": ["recent_price_driver", "forward_catalyst", "uncertainty"]
+    },
+    {
+      "case_id": "short_msft_risk_mapping",
+      "ticker": "MSFT",
+      "question": "핵심 리스크가 어느 사업 활동과 연결되는지 보여줘",
+      "evaluation_focus": ["risk_mapping", "business_exposure", "materiality"]
+    },
+    {
+      "case_id": "short_sndk_buy_case",
+      "ticker": "SNDK",
+      "question": "지금 살만해?",
+      "evaluation_focus": ["investment_thesis", "valuation_or_expectations", "downside_risk"]
+    },
+    {
+      "case_id": "short_adbe_price_outlook",
+      "ticker": "ADBE",
+      "question": "오늘 가격이 왜이러고 향후전망",
+      "evaluation_focus": ["recent_price_driver", "forward_catalyst", "risk_reward"]
+    },
+    {
+      "case_id": "short_fix_dcf",
+      "ticker": "FIX",
+      "question": "Dcf 분석해봐",
+      "evaluation_focus": ["valuation_method", "key_assumptions", "sensitivity"]
+    },
+    {
+      "case_id": "short_adbe_insider_buying",
+      "ticker": "ADBE",
+      "question": "내부자 매수에 관해서 알려줘",
+      "evaluation_focus": ["insider_activity", "signal_limit", "investment_interpretation"]
+    },
+    {
+      "case_id": "short_aapl_price_drop",
+      "ticker": "AAPL",
+      "question": "오늘 왜 떨어져?",
+      "evaluation_focus": ["recent_price_driver", "company_specific_vs_market", "uncertainty"]
+    },
+    {
+      "case_id": "normal_now_genai_risk",
+      "ticker": "NOW",
+      "question": "GenAI 투자, 대형 고객 판매 사이클, 경쟁 스택 압박이 서비스나우의 성장 논지와 마진에 미치는 리스크를 분석해줘.",
+      "evaluation_focus": ["genai_investment", "enterprise_sales_cycle", "competition", "margin_risk"]
+    },
+    {
+      "case_id": "normal_msft_segment_economics",
+      "ticker": "MSFT",
+      "question": "마이크로소프트의 마이크로소프트 365 상업용, 애저, 다이내믹스 365, 링크드인이 세그먼트별 매출과 영업이익에 기여하는 구조를 공시 기준으로 정리해줘.",
+      "evaluation_focus": ["segment_mapping", "revenue_driver", "operating_income_boundary", "filing_grounding"]
+    },
+    {
+      "case_id": "normal_amzn_retail_aws_mix",
+      "ticker": "AMZN",
+      "question": "아마존의 북미·해외 리테일, AWS, 프라임, 광고, 제3자 판매자 서비스가 매출과 매출총이익률을 어떻게 분해해 만들고 있는지 공시 기준으로 정리해줘.",
+      "evaluation_focus": ["business_mix", "revenue_driver", "gross_margin_boundary", "filing_grounding"]
+    },
+    {
+      "case_id": "normal_aapl_mix_cost_cash",
+      "ticker": "AAPL",
+      "question": "애플의 아이폰·서비스 매출 비중, 지역별 성장 동인, 연구개발·판관비 추세가 마진과 현금창출력에 어떻게 연결되는지 비교해줘.",
+      "evaluation_focus": ["revenue_mix", "regional_trend", "operating_cost", "cash_generation"]
+    },
+    {
+      "case_id": "normal_adi_end_market_growth",
+      "ticker": "ADI",
+      "question": "아날로그 디바이시스에서 아날로그·혼합신호, 전력관리, 산업·자동차 수요가 매출 성장을 각각 어떻게 견인하는지 공시 기준으로 정리해줘.",
+      "evaluation_focus": ["product_mix", "industrial_demand", "auto_demand", "filing_grounding"]
+    },
+    {
+      "case_id": "normal_carr_europe_ac_demand",
+      "ticker": "CARR",
+      "question": "유럽 에어컨 수요가 늘어나면 어느정도 실적이 올라갈까?",
+      "evaluation_focus": ["demand_transmission", "segment_exposure", "quantification_limit", "scenario"]
+    },
+    {
+      "case_id": "normal_now_ai_competition",
+      "ticker": "NOW",
+      "question": "AI가 발전할수록 어떻게 돼? 앤트로픽이나 챗지피티가 크면 NOW는 혜자가 없나?",
+      "evaluation_focus": ["ai_opportunity", "competitive_substitution", "product_moat", "uncertainty"]
+    },
+    {
+      "case_id": "normal_agilent_equipment_consumables",
+      "ticker": "A",
+      "question": "Agilent의 매출에서 분석장비와 소모성 시약이 각각 얼마나 기여하는지 정리해줘.",
+      "evaluation_focus": ["revenue_mix", "recurring_consumables", "equipment_cycle", "filing_grounding"]
+    },
+    {
+      "case_id": "complex_intc_segments_ai_cashflow",
+      "ticker": "INTC",
+      "question": "인텔의 클라이언트 컴퓨팅, 데이터센터 및 AI, 네트워크 및 엣지가 분기별 매출과 현금흐름에 어떻게 기여하는지 공시 기준으로 정리해줘. 특히 AI로 인한 매출이나 성장성 등등이 궁금해",
+      "evaluation_focus": ["segment_trend", "ai_growth", "cash_flow_boundary", "filing_grounding"]
+    },
+    {
+      "case_id": "complex_gev_power_grid_economics",
+      "ticker": "GEV",
+      "question": "GE 버노바의 Power·Grid 장비와 서비스와 계약 가격 조정가 현금흐름, 성장 투자, 비용 구조에 어떤 의미인지 비교해줘.",
+      "evaluation_focus": ["business_mix", "contract_pricing", "cash_flow", "investment_and_cost"]
+    },
+    {
+      "case_id": "complex_nvda_ai_platform_economics",
+      "ticker": "NVDA",
+      "question": "엔비디아의 데이터센터 컴퓨팅 수요, GPU·가속 컴퓨팅 플랫폼 변화가 마진, 현금흐름, 투자 부담에 어떤 의미인지 비교해줘.",
+      "evaluation_focus": ["data_center_demand", "platform_shift", "margin", "cash_flow", "investment_burden"]
+    },
+    {
+      "case_id": "complex_lly_glp1_economics",
+      "ticker": "LLY",
+      "question": "일라이 릴리의 GLP-1·당뇨·비만 포트폴리오, 의약품 가격, 제조설비 증설가 매출과 마진을 어떻게 만드는지 공시 기준으로 정리해줘.",
+      "evaluation_focus": ["portfolio_mix", "pricing", "manufacturing_capacity", "margin", "filing_grounding"]
+    },
+    {
+      "case_id": "complex_expe_platform_demand",
+      "ticker": "EXPE",
+      "question": "익스피디아그룹은 Expedia·Hotels.com·Vrbo 같은 플랫폼에서 숙박·항공·휴가용 주택 예약과 광고·제휴 사업으로 어떻게 돈을 벌며, 현재 성장을 이끄는 수요는 무엇인가?",
+      "evaluation_focus": ["platform_mix", "monetization", "demand_driver", "competitive_context"]
+    },
+    {
+      "case_id": "complex_klac_process_control_economics",
+      "ticker": "KLAC",
+      "question": "케이엘에이의 공정 제어·검사 장비, 계측 장비, 서비스 매출가 매출과 마진을 어떻게 만드는지 공시 기준으로 정리해줘.",
+      "evaluation_focus": ["product_mix", "service_revenue", "margin_driver", "filing_grounding"]
+    },
+    {
+      "case_id": "complex_msft_ai_capex_risk",
+      "ticker": "MSFT",
+      "question": "마이크로소프트의 데이터센터 부품·공급망 제약, AI·클라우드 CAPEX 부담, 규제 승인·소송 리스크가 성장 thesis를 어떻게 흔드는지 정리해줘.",
+      "evaluation_focus": ["supply_constraint", "ai_capex", "regulatory_risk", "thesis_stress_test"]
+    },
+    {
+      "case_id": "complex_amzn_cost_competition_risk",
+      "ticker": "AMZN",
+      "question": "아마존의 노동시장과 인건비 압력, 운송·에너지·포장재 비용, 리테일 경쟁 강도 리스크가 성장 thesis를 어떻게 흔드는지 정리해줘.",
+      "evaluation_focus": ["labor_cost", "logistics_cost", "retail_competition", "thesis_stress_test"]
+    }
+  ]
+}
