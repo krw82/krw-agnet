@@ -2308,7 +2308,21 @@ mod tests {
             Ok(ProviderRequestPhase::FirstProvider)
         );
 
-        let valid = vec![
+        let valid = vec![ProviderMessage::user(format!(
+            "<verified-compacted-context>\n{}\n</verified-compacted-context>",
+            json!({
+                "schema_version": 1,
+                "authority": "validated_state_and_committed_evidence_only",
+                "evidence_index": [{"evidence_id": "perf-evidence"}],
+                "retained_facts": [{"fact_ref": "perf-fact"}]
+            })
+        ))];
+        assert_eq!(
+            provider_message_phase(&valid, 8),
+            Ok(ProviderRequestPhase::Measurement)
+        );
+
+        let legacy_raw_result = vec![
             ToolResultMessage::from_value(
                 "call-valid",
                 &json!({
@@ -2319,10 +2333,7 @@ mod tests {
             .unwrap()
             .into_provider_message(),
         ];
-        assert_eq!(
-            provider_message_phase(&valid, 8),
-            Ok(ProviderRequestPhase::Measurement)
-        );
+        assert!(provider_message_phase(&legacy_raw_result, 8).is_err());
 
         let rejected = vec![
             ToolResultMessage::from_value(

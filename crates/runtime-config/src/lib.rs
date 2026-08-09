@@ -2013,6 +2013,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_run_rejects_budget_that_exceeds_the_bound_model_context() {
+        let (image, binding, registry, mut budget, endpoints, mut request, secrets) = fixture();
+        let limits = {
+            let profile = budget
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.profile_id == "company_research_glm")
+                .unwrap();
+            profile.limits.max_input_tokens = 200_000;
+            profile.limits.clone()
+        };
+        request.budget = limits;
+        let runtime = resolve_runtime(
+            &image,
+            &binding,
+            &registry,
+            &budget,
+            &endpoints,
+            &secrets,
+            ValidationMode::Fixture,
+        )
+        .unwrap();
+
+        assert!(runtime
+            .resolve_run(&image.content_hash, &request, 9, 0)
+            .is_err());
+    }
+
+    #[test]
     fn resolve_run_rejects_context_kind_case_and_duplicates() {
         let (image, binding, registry, budget, endpoints, request, secrets) = fixture();
         let runtime = resolve_runtime(
