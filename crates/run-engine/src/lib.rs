@@ -11660,7 +11660,7 @@ mod tests {
         let second_wire =
             String::from_utf8(serde_jcs::to_vec(&requests[1].messages).unwrap()).unwrap();
         assert!(
-            requests[1].messages.len() == TRUSTED_PREFIX_MESSAGE_COUNT,
+            requests[1].messages.len() == WIRE_TRUSTED_PREFIX_MESSAGE_COUNT,
             "the capability turn must start a fresh provider conversation"
         );
         assert!(second_wire.contains("verified-compacted-context"));
@@ -11669,7 +11669,7 @@ mod tests {
         assert!(!second_wire.contains("PRIVATE_REASONING_CANARY"));
         let third_wire =
             String::from_utf8(serde_jcs::to_vec(&requests[2].messages).unwrap()).unwrap();
-        assert_eq!(requests[2].messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(requests[2].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
         assert!(third_wire.contains("verified-compacted-context"));
         assert!(third_wire.contains("services_growth_driver"));
         assert!(third_wire.contains("FY2025"));
@@ -11761,7 +11761,7 @@ mod tests {
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 6);
         for request in &requests[2..5] {
-            assert_eq!(request.messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+            assert_eq!(request.messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
             let isolated_wire = serde_jcs::to_vec(request).unwrap();
             assert!(
                 !isolated_wire
@@ -11773,7 +11773,7 @@ mod tests {
                     .windows(b"complete reasoning for company-brief".len())
                     .any(|window| window == b"complete reasoning for company-brief")
             );
-            let user = provider_message_content(&request.messages[1]);
+            let user = provider_message_content(&request.messages[0]);
             assert!(user.starts_with("KRW_BOUNDED_CHILD_INPUT_V1"));
             let tools = request
                 .tools
@@ -11800,14 +11800,14 @@ mod tests {
             assert!(!tools.contains(provider_tool_name("guru.company_brief").as_str()));
         }
         assert!(
-            !provider_message_content(&requests[0].messages[1])
+            !provider_message_content(&requests[0].messages[0])
                 .starts_with("KRW_BOUNDED_CHILD_INPUT_V1")
         );
         assert!(
-            !provider_message_content(&requests[5].messages[1])
+            !provider_message_content(&requests[5].messages[0])
                 .starts_with("KRW_BOUNDED_CHILD_INPUT_V1")
         );
-        assert_eq!(requests[5].messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(requests[5].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
         let resumed_parent_wire =
             String::from_utf8(serde_jcs::to_vec(&requests[5].messages).unwrap()).unwrap();
         assert!(resumed_parent_wire.contains("verified-compacted-context"));
@@ -12128,9 +12128,9 @@ mod tests {
         assert_eq!(outcome.answer_bundle.usage.replans, 2);
 
         let requests = rig.provider.requests.lock().unwrap();
-        assert_eq!(requests[2].messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(requests[2].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
         assert!(
-            provider_message_content(&requests[2].messages[1])
+            provider_message_content(&requests[2].messages[0])
                 .contains("verified-compacted-context")
         );
         drop(requests);
@@ -12236,9 +12236,9 @@ mod tests {
         assert_eq!(first.persistence.state.lock().unwrap().actions.len(), 3);
         assert_eq!(outcome.answer_bundle.usage.replans, 2);
         let resumed_request = &provider.requests.lock().unwrap()[0];
-        assert_eq!(resumed_request.messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(resumed_request.messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
         assert!(
-            provider_message_content(&resumed_request.messages[1])
+            provider_message_content(&resumed_request.messages[0])
                 .contains("verified-compacted-context")
         );
     }
@@ -12299,9 +12299,9 @@ mod tests {
                 content.get("reason_code").and_then(Value::as_str) == Some("proposal_rejected")
             })
         }));
-        assert_eq!(requests[3].messages.len(), TRUSTED_PREFIX_MESSAGE_COUNT);
+        assert_eq!(requests[3].messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
         assert!(
-            provider_message_content(&requests[3].messages[1])
+            provider_message_content(&requests[3].messages[0])
                 .contains("verified-compacted-context")
         );
         // `query_context` has now consumed its two legal statechart entries.
