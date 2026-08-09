@@ -35,6 +35,11 @@ PYDANTIC_CONTRACTS: tuple[tuple[str, str, str], ...] = (
 )
 SERVER_TOOL_CONTRACTS: tuple[tuple[str, str, str], ...] = (
     (
+        "ontology-company-context/v1",
+        "krw_ontology_company_context",
+        "ontology-company-context-v1.json",
+    ),
+    (
         "ontology-targeted-query/v1",
         "krw_ontology_query",
         "ontology-targeted-query-v1.json",
@@ -43,6 +48,57 @@ SERVER_TOOL_CONTRACTS: tuple[tuple[str, str, str], ...] = (
         "ontology-trace-input/v1",
         "krw_ontology_trace",
         "ontology-trace-input-v1.json",
+    ),
+)
+# These are kernel-owned, local-only capability contracts. They remain in the
+# same bundle as ontology contracts because AgentImage pins one closed registry
+# at build time, but they are not MCP server schemas and must not be inferred
+# from the external ontology checkout.
+LOCAL_JSON_CONTRACTS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
+    (
+        "skill-load/v1",
+        "krw_skill_load",
+        "skill-load-v1.json",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": False,
+            "properties": {
+                "skill_id": {
+                    "description": "The immutable skill catalog ID. Must match a catalog entry exactly.",
+                    "minLength": 1,
+                    "pattern": "^[a-z][a-z0-9_]*$",
+                    "title": "Skill Id",
+                    "type": "string",
+                }
+            },
+            "required": ["skill_id"],
+            "title": "SkillLoadInput",
+            "type": "object",
+        },
+    ),
+    (
+        "skill-content/v1",
+        "krw_skill_load",
+        "skill-content-v1.json",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": False,
+            "properties": {
+                "content": {
+                    "description": "The full Markdown body of the requested skill (frontmatter stripped).",
+                    "title": "Content",
+                    "type": "string",
+                },
+                "skill_id": {
+                    "description": "The requested skill name, echoed back for correlation.",
+                    "title": "Skill Id",
+                    "type": "string",
+                },
+            },
+            "required": ["skill_id", "content"],
+            "title": "SkillContent",
+            "type": "object",
+        },
     ),
 )
 ALL_CONTRACTS = PYDANTIC_CONTRACTS + SERVER_TOOL_CONTRACTS
@@ -55,8 +111,11 @@ GENERATED_FILES = (
     "schemas/search-plan-v2.json",
     "schemas/research-state-v2.json",
     "schemas/query-context-input-correction-v1.json",
+    "schemas/ontology-company-context-v1.json",
     "schemas/ontology-targeted-query-v1.json",
     "schemas/ontology-trace-input-v1.json",
+    "schemas/skill-load-v1.json",
+    "schemas/skill-content-v1.json",
 )
 
 
@@ -201,6 +260,14 @@ def _schema_bundle(
             "schema_path": f"schemas/{file_name}",
             "semantic_validation": "canonical_fastmcp_argument_model",
         }
+    for contract_id, authority_ref, file_name, schema in LOCAL_JSON_CONTRACTS:
+        schemas[contract_id] = copy.deepcopy(schema)
+        per_contract[contract_id] = {
+            "authority_kind": "json_schema",
+            "authority_ref": authority_ref,
+            "schema_path": f"schemas/{file_name}",
+            "semantic_validation": "canonical_json_schema",
+        }
     bundle = {
         "authority_sha256": authority_hash,
         "contracts": schemas,
@@ -300,6 +367,7 @@ def _conformance_vectors(
     research_state_with_extra = copy.deepcopy(research_state)
     research_state_with_extra["unexpected_runtime_field"] = True
     tools = _server_tools(server)
+    company_context_argument_model = tools["krw_ontology_company_context"].fn_metadata.arg_model
     query_argument_model = tools["krw_ontology_query"].fn_metadata.arg_model
     trace_argument_model = tools["krw_ontology_trace"].fn_metadata.arg_model
 
@@ -342,6 +410,13 @@ def _conformance_vectors(
             lambda value: _validation_outcome(contracts.ResearchState, value),
         ),
         (
+            "company-context-requires-a-ticker-and-keeps-server-defaults",
+            "ontology-company-context/v1",
+            "fastmcp_argument_model_validate",
+            {"ticker": "ACME", "limit_topics": 6, "include_internal_ids": False},
+            lambda value: _validation_outcome(company_context_argument_model, value),
+        ),
+        (
             "targeted-query-applies-server-owned-defaults",
             "ontology-targeted-query/v1",
             "fastmcp_argument_model_validate",
@@ -381,6 +456,7 @@ pub const GENERATED_MANIFEST_SHA256: &str = "{manifest_hash}";
 pub const SEARCH_PLAN_V2_SCHEMA_SHA256: &str = "{by_id["search-plan/v2"]}";
 pub const RESEARCH_STATE_V2_SCHEMA_SHA256: &str = "{by_id["research-state/v2"]}";
 pub const QUERY_CONTEXT_INPUT_CORRECTION_V1_SCHEMA_SHA256: &str = "{by_id["query-context-input-correction/v1"]}";
+pub const ONTOLOGY_COMPANY_CONTEXT_V1_SCHEMA_SHA256: &str = "{by_id["ontology-company-context/v1"]}";
 pub const ONTOLOGY_TARGETED_QUERY_V1_SCHEMA_SHA256: &str = "{by_id["ontology-targeted-query/v1"]}";
 pub const ONTOLOGY_TRACE_INPUT_V1_SCHEMA_SHA256: &str = "{by_id["ontology-trace-input/v1"]}";
 '''
@@ -402,6 +478,12 @@ def _build_artifacts(source_root: Path, fixture_path: Path) -> dict[str, bytes]:
     }
     schema_hashes: dict[str, str] = {}
     for contract_id, _authority_name, file_name in ALL_CONTRACTS:
+        path = f"schemas/{file_name}"
+        raw = _canonical_bytes(schema_bundle["contracts"][contract_id])
+        artifacts[path] = raw
+        schema_hashes[contract_id] = _sha256(raw)
+        descriptors[contract_id]["schema_sha256"] = schema_hashes[contract_id]
+    for contract_id, _authority_ref, file_name, _schema in LOCAL_JSON_CONTRACTS:
         path = f"schemas/{file_name}"
         raw = _canonical_bytes(schema_bundle["contracts"][contract_id])
         artifacts[path] = raw

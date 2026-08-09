@@ -19,6 +19,18 @@ capabilities:
     data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
     max_connections: 4
     request_timeout_ms: 30000
+  - binding_key: krw_ontology_company_context
+    mcp_tool_name: krw_ontology_company_context
+    transport: mcp-http
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: attested-stateless-v1
+    server_schema_bundle_hash: sha256:REPLACE_WITH_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
+    max_connections: 4
+    request_timeout_ms: 15000
   - binding_key: krw_ontology_query
     mcp_tool_name: krw_ontology_query
     transport: mcp-http

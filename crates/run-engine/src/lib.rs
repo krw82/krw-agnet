@@ -6698,6 +6698,38 @@ fn assemble_guru_company_brief(
         .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))
 }
 
+/// Lower the small provider-authored orientation request to the physical MCP
+/// schema. Internal router controls are kernel-owned: they are never part of
+/// the model contract and the raw response is sanitized by capability-runtime
+/// before it is retained in the transcript.
+fn assemble_company_context_request(proposed: &Value) -> Result<Value, EngineError> {
+    let request = proposed.as_object().ok_or_else(|| {
+        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+            "company_context_request_invalid",
+        ))
+    })?;
+    let ticker = request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+        .ok_or_else(|| {
+            EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+                "company_context_request_invalid",
+            ))
+        })?;
+    let mut physical = serde_json::Map::new();
+    physical.insert("ticker".into(), Value::String(ticker.to_owned()));
+    for field in ["document_types", "periods", "limit_topics"] {
+        if let Some(value) = request.get(field) {
+            physical.insert(field.into(), value.clone());
+        }
+    }
+    // The source service defaults this field to true. Always pin it false so
+    // routing/internal IDs cannot enter raw capability retention or logs.
+    physical.insert("include_internal_ids".into(), Value::Bool(false));
+    Ok(Value::Object(physical))
+}
+
 fn assemble_guru_evidence_review(
     state: &ActiveRun,
     analysis: &Value,
@@ -6816,6 +6848,14 @@ fn assemble_capability_arguments(
             arguments: proposed.clone(),
             research_intent_receipt: None,
         }),
+        InputDerivation::CompanyContextRequestV1 => {
+            assemble_company_context_request(proposed).map(|arguments| {
+                AssembledCapabilityArguments {
+                    arguments,
+                    research_intent_receipt: None,
+                }
+            })
+        }
         InputDerivation::ResearchProposalToSearchPlanV4 => {
             let question = resolve_research_proposal_question(capability, state, request)?;
             compile_research_proposal(
@@ -9905,6 +9945,28 @@ mod tests {
             }
             other => panic!("internal policy must not be loadable: {other:?}"),
         }
+    }
+
+    #[test]
+    fn company_context_derivation_pins_internal_visibility_and_omits_transport_controls() {
+        let physical = assemble_company_context_request(&serde_json::json!({
+            "ticker": "AAPL",
+            "document_types": ["10-K"],
+            "periods": ["FY2025"],
+            "limit_topics": 4,
+            // These fields cannot arrive from the narrow model contract, but
+            // the lowerer must remain safe if it is called directly.
+            "include_internal_ids": true,
+            "response_format": "markdown"
+        }))
+        .unwrap();
+
+        assert_eq!(physical["ticker"], "AAPL");
+        assert_eq!(physical["document_types"], serde_json::json!(["10-K"]));
+        assert_eq!(physical["periods"], serde_json::json!(["FY2025"]));
+        assert_eq!(physical["limit_topics"], 4);
+        assert_eq!(physical["include_internal_ids"], false);
+        assert!(physical.get("response_format").is_none());
     }
 
     #[test]

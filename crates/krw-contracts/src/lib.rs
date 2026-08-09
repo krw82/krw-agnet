@@ -62,6 +62,14 @@ const TRACE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/krw-ontology/v2/schemas/ontology-trace-input-v1.json"
 ));
+const COMPANY_CONTEXT_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/krw-ontology/v2/schemas/ontology-company-context-v1.json"
+));
+const COMPANY_CONTEXT_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/company-context-request-v1.json"
+));
 const NORMALIZED_CAPABILITY_RESULT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/normalized-capability-result-v1.json"
@@ -101,6 +109,13 @@ pub const SEARCH_PLAN_V2: &str = "search-plan/v2";
 pub const RESEARCH_PROPOSAL_V4: &str = "research-proposal/v4";
 pub const RESEARCH_STATE_V2: &str = "research-state/v2";
 pub const QUERY_CONTEXT_INPUT_CORRECTION_V1: &str = "query-context-input-correction/v1";
+/// Physical MCP input for the ontology's company-topic context endpoint.
+pub const ONTOLOGY_COMPANY_CONTEXT_V1: &str = "ontology-company-context/v1";
+/// Narrow model-authored request that the kernel expands into
+/// [`ONTOLOGY_COMPANY_CONTEXT_V1`]. It deliberately excludes transport and
+/// internal-ID controls so this optional orientation read works with both
+/// current and older compatible MCP deployments.
+pub const COMPANY_CONTEXT_REQUEST_V1: &str = "company-context-request/v1";
 pub const ONTOLOGY_TARGETED_QUERY_V1: &str = "ontology-targeted-query/v1";
 pub const ONTOLOGY_TRACE_INPUT_V1: &str = "ontology-trace-input/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1: &str = "normalized-capability-result/v1";
@@ -128,6 +143,8 @@ pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
     "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8";
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
     "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49";
+pub const COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
     "sha256:4b19a78d66ff14ef967f10bd30789569eba0c7ceef34f6c280274042baf7de00";
 pub const SKILL_CONTENT_V1_SCHEMA_SHA256: &str =
@@ -181,6 +198,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             id: QUERY_CONTEXT_INPUT_CORRECTION_V1,
             schema_sha256: QUERY_CONTEXT_INPUT_CORRECTION_V1_SCHEMA_SHA256,
             schema: CORRECTION_BYTES,
+        }),
+        ONTOLOGY_COMPANY_CONTEXT_V1 => Some(ContractDescriptor {
+            id: ONTOLOGY_COMPANY_CONTEXT_V1,
+            schema_sha256: ONTOLOGY_COMPANY_CONTEXT_V1_SCHEMA_SHA256,
+            schema: COMPANY_CONTEXT_INPUT_BYTES,
+        }),
+        COMPANY_CONTEXT_REQUEST_V1 => Some(ContractDescriptor {
+            id: COMPANY_CONTEXT_REQUEST_V1,
+            schema_sha256: COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256,
+            schema: COMPANY_CONTEXT_REQUEST_BYTES,
         }),
         ONTOLOGY_TARGETED_QUERY_V1 => Some(ContractDescriptor {
             id: ONTOLOGY_TARGETED_QUERY_V1,
@@ -239,6 +266,8 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(RESEARCH_PROPOSAL_V4).expect("static contract"),
         contract(RESEARCH_STATE_V2).expect("static contract"),
         contract(QUERY_CONTEXT_INPUT_CORRECTION_V1).expect("static contract"),
+        contract(ONTOLOGY_COMPANY_CONTEXT_V1).expect("static contract"),
+        contract(COMPANY_CONTEXT_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
         contract(NORMALIZED_CAPABILITY_RESULT_V1).expect("static contract"),
@@ -314,6 +343,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         RESEARCH_PROPOSAL_V4 => validate_research_proposal_v4(value),
         RESEARCH_STATE_V2 => validate_research_state(value),
         QUERY_CONTEXT_INPUT_CORRECTION_V1 => validate_correction(value),
+        ONTOLOGY_COMPANY_CONTEXT_V1 => validate_company_context_input(value),
+        COMPANY_CONTEXT_REQUEST_V1 => validate_company_context_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
         STATE_OPERATION_OUTPUT_V1 => validate_state_operation_output(value),
@@ -1239,6 +1270,80 @@ fn validate_targeted_query(value: &Value) -> Result<(), ContractValueError> {
     Ok(())
 }
 
+/// Validate the physical company-context MCP request. The model never sees
+/// this broader surface directly: the kernel-owned request derivation pins
+/// `include_internal_ids=false` and omits `response_format` for compatibility.
+fn validate_company_context_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, ONTOLOGY_COMPANY_CONTEXT_V1)?;
+    exact_keys(
+        request,
+        &[
+            "document_types",
+            "include_internal_ids",
+            "limit_topics",
+            "periods",
+            "response_format",
+            "ticker",
+        ],
+        ONTOLOGY_COMPANY_CONTEXT_V1,
+    )?;
+    if !bounded_string(request.get("ticker"), 1, 32)
+        || !string_array(
+            request.get("document_types").filter(|value| !value.is_null()),
+            8,
+            128,
+        )
+        || !string_array(
+            request.get("periods").filter(|value| !value.is_null()),
+            8,
+            128,
+        )
+        || !integer_range(request.get("limit_topics"), 1, 8)
+        || request
+            .get("include_internal_ids")
+            .is_some_and(|value| !value.is_boolean())
+        // The normalized runtime can only accept JSON object results. The
+        // model request surface omits this field entirely, but reject a
+        // direct physical invocation that would ask the server for Markdown.
+        || request
+            .get("response_format")
+            .is_some_and(|value| value.as_str() != Some("json"))
+    {
+        return Err(ContractValueError::Shape(ONTOLOGY_COMPANY_CONTEXT_V1));
+    }
+    Ok(())
+}
+
+/// Validate the small model-authored company-context request. Keeping this
+/// separate from the physical MCP contract prevents optional server controls
+/// from becoming new LLM failure points.
+fn validate_company_context_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, COMPANY_CONTEXT_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["document_types", "limit_topics", "periods", "ticker"],
+        COMPANY_CONTEXT_REQUEST_V1,
+    )?;
+    if !bounded_string(request.get("ticker"), 1, 32)
+        || !string_array(
+            request
+                .get("document_types")
+                .filter(|value| !value.is_null()),
+            8,
+            128,
+        )
+        || !string_array(
+            request.get("periods").filter(|value| !value.is_null()),
+            8,
+            128,
+        )
+        || !integer_range(request.get("limit_topics"), 1, 8)
+    {
+        return Err(ContractValueError::Shape(COMPANY_CONTEXT_REQUEST_V1));
+    }
+    Ok(())
+}
+
 fn validate_trace_input(value: &Value) -> Result<(), ContractValueError> {
     let trace = object(value, ONTOLOGY_TRACE_INPUT_V1)?;
     exact_keys(
@@ -1445,8 +1550,11 @@ pub fn verify_embedded() -> Result<VerifiedBundle, ContractArtifactError> {
         contract(SEARCH_PLAN_V2).expect("static contract"),
         contract(RESEARCH_STATE_V2).expect("static contract"),
         contract(QUERY_CONTEXT_INPUT_CORRECTION_V1).expect("static contract"),
+        contract(ONTOLOGY_COMPANY_CONTEXT_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
+        contract(SKILL_LOAD_V1).expect("static contract"),
+        contract(SKILL_CONTENT_V1).expect("static contract"),
     ] {
         verify_json(descriptor.id, descriptor.schema)?;
         let manifest_contract = manifest
@@ -1461,11 +1569,13 @@ pub fn verify_embedded() -> Result<VerifiedBundle, ContractArtifactError> {
         if manifest_contract.authority_ref.is_empty()
             || !matches!(
                 manifest_contract.authority_kind.as_str(),
-                "pydantic_model" | "mcp_tool_input_schema"
+                "pydantic_model" | "mcp_tool_input_schema" | "json_schema"
             )
             || !matches!(
                 manifest_contract.semantic_validation.as_str(),
-                "canonical_pydantic_model" | "canonical_fastmcp_argument_model"
+                "canonical_pydantic_model"
+                    | "canonical_fastmcp_argument_model"
+                    | "canonical_json_schema"
             )
             || manifest_contract.schema_path.is_empty()
         {
@@ -1610,14 +1720,14 @@ mod tests {
     #[test]
     fn embedded_export_is_complete_canonical_and_hash_bound() {
         let verified = verify_embedded().expect("generated contracts must verify");
-        assert_eq!(verified.contract_count, 7);
+        assert_eq!(verified.contract_count, 8);
         assert_eq!(verified.manifest_sha256, GENERATED_MANIFEST_SHA256);
     }
 
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 55);
+        assert_eq!(descriptors().len(), 57);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -1651,13 +1761,17 @@ mod tests {
     }
 
     #[test]
-    fn five_python_authority_hashes_are_exact() {
+    fn ontology_authority_hashes_are_exact() {
         let expected = [
             (SEARCH_PLAN_V2, SEARCH_PLAN_V2_SCHEMA_SHA256),
             (RESEARCH_STATE_V2, RESEARCH_STATE_V2_SCHEMA_SHA256),
             (
                 QUERY_CONTEXT_INPUT_CORRECTION_V1,
                 QUERY_CONTEXT_INPUT_CORRECTION_V1_SCHEMA_SHA256,
+            ),
+            (
+                ONTOLOGY_COMPANY_CONTEXT_V1,
+                ONTOLOGY_COMPANY_CONTEXT_V1_SCHEMA_SHA256,
             ),
             (
                 ONTOLOGY_TARGETED_QUERY_V1,
@@ -1699,6 +1813,23 @@ mod tests {
         ));
 
         validate_value(ONTOLOGY_TARGETED_QUERY_V1, &serde_json::json!({})).unwrap();
+        validate_value(
+            COMPANY_CONTEXT_REQUEST_V1,
+            &serde_json::json!({"ticker": "ACME", "limit_topics": 6}),
+        )
+        .unwrap();
+        assert!(
+            validate_value(
+                COMPANY_CONTEXT_REQUEST_V1,
+                &serde_json::json!({"ticker": "ACME", "include_internal_ids": false})
+            )
+            .is_err()
+        );
+        validate_value(
+            ONTOLOGY_COMPANY_CONTEXT_V1,
+            &serde_json::json!({"ticker": "ACME", "include_internal_ids": false}),
+        )
+        .unwrap();
         assert!(
             validate_value(
                 ONTOLOGY_TARGETED_QUERY_V1,

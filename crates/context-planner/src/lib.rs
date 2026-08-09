@@ -1001,6 +1001,7 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "ontology.query_context",
+                "ontology.company_context",
                 "ontology.query",
                 "ontology.trace",
                 "skill.load",

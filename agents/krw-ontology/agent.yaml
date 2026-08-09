@@ -3,7 +3,7 @@ kind: AgentSpec
 
 metadata:
   id: krw.research.ko
-  version: 4.2.0
+  version: 4.3.0
   description: Direct-authored Korean KRW filing research, earnings, scenario, and idea-screen programs.
 
 entrypoints:
@@ -62,6 +62,14 @@ contracts:
     schema_ref: canonical:krw-ontology/query-context-input-correction-v1
     content_hash: sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4
     semantic_authority: krw-ontology-python
+  - id: ontology-company-context/v1
+    schema_ref: canonical:krw-ontology/ontology-company-context-v1
+    content_hash: sha256:1f4a7a869d8a1434a184465147dad2c5d9ac015c2d4f25fbb20b65f12911a1f7
+    semantic_authority: krw-ontology-python
+  - id: company-context-request/v1
+    schema_ref: canonical:krw-agent/company-context-request-v1
+    content_hash: sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680
+    semantic_authority: krw-agent-run-engine
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -254,6 +262,24 @@ capabilities:
       reject_non_null_pointers: [/universe]
     parallel_safe: false
     prerequisites: []
+  - id: ontology.company_context
+    binding_key: krw_ontology_company_context
+    permission: read
+    # The model sees only ticker plus optional topic filters. The kernel fixes
+    # internal IDs off and the runtime returns a sanitized orientation map.
+    input_contract: ontology-company-context/v1
+    model_input_contract: company-context-request/v1
+    input_derivation: { kind: company_context_request_v1 }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: company_context_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     binding_key: krw_ontology_query
     permission: read
@@ -395,6 +421,7 @@ workflows:
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
       - { id: ingest_evidence, kind: ingest, max_visits: 3 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
+      - { id: company_context, kind: capability, capability_id: ontology.company_context, max_visits: 1 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
       - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
@@ -416,6 +443,7 @@ workflows:
       - { from: repair_server_violations, on: corrected, to: query_context }
       - { from: ingest_evidence, on: ingested, to: assess_obligations }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
+      - { from: assess_obligations, on: company_context_has_value, to: company_context }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: append_context_plan, to: query_context }
@@ -424,6 +452,7 @@ workflows:
       - { from: assess_obligations, on: output_budget_reserved, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: company_context, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
@@ -674,6 +703,7 @@ validators:
     fuel: 512
     instructions:
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
+      - { op: max_calls, capability_id: ontology.company_context, max: 1, code: company_context_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }

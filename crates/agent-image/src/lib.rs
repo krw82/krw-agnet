@@ -371,6 +371,11 @@ pub enum IdempotencyPolicy {
 pub enum InputDerivation {
     #[default]
     Identity,
+    /// Expand the small provider-visible company-context request into the
+    /// physical ontology MCP input. The kernel fixes internal-ID visibility
+    /// and leaves unsupported transport knobs absent, so the model only
+    /// chooses a trusted ticker and optional retrieval filters.
+    CompanyContextRequestV1,
     /// The provider proposes evidence needs; the kernel deterministically
     /// constructs the private goal graph and minimum sufficient root
     /// `SearchPlan` before direct MCP dispatch.
@@ -457,6 +462,9 @@ pub struct ResearchActionPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityResultIngest {
     ResearchStateV2,
+    /// Sanitized, orientation-only company topic context. It may guide a
+    /// later query but never grants a factual or strong-claim permission.
+    CompanyContextV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     FrontFeedListItemsV1,
@@ -486,6 +494,9 @@ impl CapabilityResultIngest {
         match self {
             Self::ResearchStateV2 => {
                 "Retrieve filing research context for the authenticated in-scope company before drafting an answer. Use the exact provider input schema as the root arguments object; never add a transport wrapper. Use the least sufficient evidence request and never broaden the authenticated scope."
+            }
+            Self::CompanyContextV1 => {
+                "Retrieve a compact, orientation-only topic map for the already in-scope company only when it can improve the next evidence query. Use it to narrow follow-up research, never as factual support or a final-answer claim. The kernel removes internal routing data and keeps the result advisory."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
@@ -808,6 +819,7 @@ impl CapabilitySpec {
                 "Call this function with exactly one top-level `proposal` field. Its value is one complete ResearchProposal v4, not a SearchPlan. Each objective declares whether evidence is required now or deliberately deferred, its proof quality, interchangeable retrieval alternatives, and exactly one tagged semantic goal such as metric_time_series, metric_change, or qualitative_evidence. Do not create goal IDs, candidate IDs, graph dependencies, retrieval_query, tickers, universe, limits, clauses, comparison axes, calculation windows outside a metric_change goal, or MCP encoding: the kernel constructs and validates all of them. Mark only evidence that can materially change this answer as required; deferred objectives do not expand the initial plan."
             }
             InputDerivation::Identity
+            | InputDerivation::CompanyContextRequestV1
             | InputDerivation::SealedGuruCompanyBriefV1 { .. }
             | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
                 self.result_ingest.provider_tool_description()
@@ -3002,6 +3014,24 @@ fn validate_capability_input_abi(
             capability.model_input_contract.is_none()
                 && capability.research_proposal_anchor.is_none()
         }
+        InputDerivation::CompanyContextRequestV1 => {
+            capability.input_contract == "ontology-company-context/v1"
+                && capability.model_input_contract.as_deref() == Some("company-context-request/v1")
+                && capability.research_proposal_anchor.is_none()
+                && capability.permission == Permission::Read
+                && capability.idempotency == IdempotencyPolicy::CanonicalArgs
+                && capability.result_ingest == CapabilityResultIngest::CompanyContextV1
+                && capability.research_action.is_none()
+                && matches!(
+                    &capability.scope_binding,
+                    CapabilityScopeBinding::TrustedTickerSet { .. }
+                )
+                && capability.prerequisites.len() == 1
+                && capability
+                    .prerequisites
+                    .first()
+                    .is_some_and(|id| id == "ontology.query_context")
+        }
         InputDerivation::ResearchProposalToSearchPlanV4 => {
             let valid_anchor = match &capability.research_proposal_anchor {
                 Some(ResearchProposalAnchor::RunQuestion) => true,
@@ -3118,6 +3148,7 @@ fn validate_capability_input_abi(
             ProviderInputCodec::SingleFieldEnvelopeV1 { field } if field == "proposal"
         ),
         InputDerivation::Identity
+        | InputDerivation::CompanyContextRequestV1
         | InputDerivation::SealedGuruCompanyBriefV1 { .. }
         | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
             capability.provider_input_codec.is_canonical_root()
@@ -3186,7 +3217,9 @@ fn capability_has_research_action(
 
 fn input_derivation_references(derivation: &InputDerivation, capability_id: &str) -> bool {
     match derivation {
-        InputDerivation::Identity | InputDerivation::ResearchProposalToSearchPlanV4 => false,
+        InputDerivation::Identity
+        | InputDerivation::CompanyContextRequestV1
+        | InputDerivation::ResearchProposalToSearchPlanV4 => false,
         InputDerivation::SealedGuruCompanyBriefV1 {
             query_context_capability,
         }
@@ -4296,6 +4329,38 @@ mod tests {
         assert!(description.contains("Do not create goal IDs"));
         assert!(description.contains("retrieval_query"));
         assert!(!description.contains("Call with SearchPlan"));
+    }
+
+    #[test]
+    fn company_context_is_a_narrow_advisory_follow_up_capability() {
+        let image = compile_agent_dir(agent_root()).unwrap();
+        let capability = image
+            .manifest
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "ontology.company_context")
+            .unwrap();
+
+        assert_eq!(capability.input_contract, "ontology-company-context/v1");
+        assert_eq!(
+            capability.model_input_contract.as_deref(),
+            Some("company-context-request/v1")
+        );
+        assert_eq!(
+            capability.input_derivation,
+            InputDerivation::CompanyContextRequestV1
+        );
+        assert_eq!(
+            capability.result_ingest,
+            CapabilityResultIngest::CompanyContextV1
+        );
+        assert!(capability.research_action.is_none());
+        assert_eq!(capability.prerequisites.len(), 1);
+        assert_eq!(capability.prerequisites[0], "ontology.query_context");
+        let guidance = capability.provider_tool_description();
+        assert!(guidance.contains("orientation-only"));
+        assert!(guidance.contains("never as factual support"));
     }
 
     #[test]

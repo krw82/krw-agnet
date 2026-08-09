@@ -15,6 +15,7 @@ profiles:
       deadline_ms: 300000
       capability_call_limits:
         ontology.query_context: 6
+        ontology.company_context: 1
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
@@ -36,6 +37,7 @@ profiles:
       deadline_ms: 600000
       capability_call_limits:
         ontology.query_context: 2
+        ontology.company_context: 1
         ontology.query: 2
         ontology.trace: 1
         ontology.chain: 1

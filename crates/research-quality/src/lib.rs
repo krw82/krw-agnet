@@ -40,7 +40,8 @@ use krw_agent_run_engine::{
     durable_failure_diagnostic,
 };
 use krw_ontology_adapter::{
-    MappingContext, map_research_state, map_targeted_query, map_trace, parse_research_state,
+    MappingContext, map_company_context, map_research_state, map_targeted_query, map_trace,
+    parse_research_state,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1341,7 +1342,8 @@ fn load_fixture_capability(
                     validate_research_state_template(&template)?;
                     template
                 }
-                CapabilityResultIngest::TargetedEvidenceV1
+                CapabilityResultIngest::CompanyContextV1
+                | CapabilityResultIngest::TargetedEvidenceV1
                 | CapabilityResultIngest::TraceLineageV1 => read_json_value(
                     &resolve_case_path(root, &response.payload, "supplemental payload")?,
                     MAX_FIXTURE_BYTES,
@@ -1457,6 +1459,21 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
+                })
+            }
+            CapabilityResultIngest::CompanyContextV1 => {
+                let ticker = invocation
+                    .arguments
+                    .get("ticker")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| fixture_dependency("quality_fixture_company_context_ticker"))?;
+                let delta = map_company_context(&payload, ticker, &context)
+                    .map_err(|_| fixture_dependency("quality_fixture_company_context_mapping"))?;
+                Ok(CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.records,
+                    answerability: None,
+                    calculations: Vec::new(),
                 })
             }
             CapabilityResultIngest::TargetedEvidenceV1 => {

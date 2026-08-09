@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 const MAX_SUPPLEMENTAL_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SUPPLEMENTAL_RECORDS: usize = 256;
 const MAX_SUPPLEMENTAL_FACTS: usize = 16;
+const MAX_COMPANY_CONTEXT_TOPICS: usize = 8;
 const MAX_RESEARCH_FACTS_PER_RECORD: usize = 128;
 const MAX_RESEARCH_CALCULATIONS: usize = 64;
 const MAX_NORMALIZED_RECORD_BYTES: usize = 256 * 1024;
@@ -236,6 +237,15 @@ pub struct EvidenceDelta {
 pub struct SupplementalEvidenceDelta {
     pub records: Vec<EvidenceRecord>,
     pub calculations: Vec<Calculation>,
+}
+
+/// A safe, compact projection of the per-company topic store. This is
+/// deliberately orientation-only: it may help select a later evidence query,
+/// but its records are never eligible to support a factual or strong claim.
+#[derive(Debug, Clone)]
+pub struct CompanyContextDelta {
+    pub provider_content: Value,
+    pub records: Vec<EvidenceRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -903,6 +913,171 @@ pub fn map_trace(
     })
 }
 
+/// Sanitize the untyped company-topic response before it can reach the model
+/// transcript or compacted evidence context. The source store exposes routing
+/// metadata and broad topic payloads; neither belongs in a user-facing agent
+/// context. Keep only a bounded label-level orientation map for the exact
+/// trusted ticker and mark every resulting record as unverified.
+pub fn map_company_context(
+    payload: &Value,
+    expected_ticker: &str,
+    context: &MappingContext,
+) -> Result<CompanyContextDelta, AdapterError> {
+    let bytes = serde_json::to_vec(payload)?;
+    if bytes.len() > MAX_SUPPLEMENTAL_PAYLOAD_BYTES {
+        return Err(AdapterError::SupplementalPayloadLimit);
+    }
+    let Some(root) = payload.as_object() else {
+        return Ok(unavailable_company_context(expected_ticker));
+    };
+    if root.get("error").is_some()
+        || root.get("ticker").and_then(Value::as_str) != Some(expected_ticker)
+    {
+        return Ok(unavailable_company_context(expected_ticker));
+    }
+    let Some(topics) = root.get("company_topics").and_then(Value::as_array) else {
+        return Ok(unavailable_company_context(expected_ticker));
+    };
+
+    let topics = topics
+        .iter()
+        .filter_map(|topic| company_context_topic(topic, expected_ticker))
+        .take(MAX_COMPANY_CONTEXT_TOPICS)
+        .collect::<Vec<_>>();
+    let records = topics
+        .iter()
+        .map(|topic| company_context_record(topic, expected_ticker, context))
+        .collect::<Result<Vec<_>, _>>()?;
+    let status = if topics.is_empty() {
+        "empty"
+    } else {
+        "available"
+    };
+    let provider_content = serde_json::json!({
+        "format": "company-context-orientation/v1",
+        "ticker": expected_ticker,
+        "status": status,
+        "advisory_only": true,
+        "topics": topics,
+        "usage": "Use these labels only to narrow a later evidence query; do not cite them as company facts."
+    });
+    Ok(CompanyContextDelta {
+        provider_content,
+        records,
+    })
+}
+
+fn unavailable_company_context(expected_ticker: &str) -> CompanyContextDelta {
+    CompanyContextDelta {
+        provider_content: serde_json::json!({
+            "format": "company-context-orientation/v1",
+            "ticker": expected_ticker,
+            "status": "unavailable",
+            "advisory_only": true,
+            "topics": [],
+            "usage": "No safe orientation data was available. Continue with question-specific evidence retrieval."
+        }),
+        records: Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompanyContextTopic {
+    topic_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    period: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace_status: Option<String>,
+}
+
+fn company_context_topic(topic: &Value, expected_ticker: &str) -> Option<CompanyContextTopic> {
+    let topic = topic.as_object()?;
+    if topic
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(|ticker| ticker != expected_ticker)
+    {
+        return None;
+    }
+    let topic_label = public_orientation_text(topic.get("topic_label"), 256)?;
+    Some(CompanyContextTopic {
+        topic_label,
+        period: public_orientation_text(topic.get("period"), 128),
+        document_type: public_orientation_text(topic.get("document_type"), 128),
+        trace_status: public_orientation_text(topic.get("trace_status"), 128),
+    })
+}
+
+fn public_orientation_text(value: Option<&Value>, max_bytes: usize) -> Option<String> {
+    let text = value.and_then(Value::as_str)?;
+    let text = safe_single_line(text, max_bytes, "");
+    if text.is_empty()
+        || ["/Users/", "/home/", "/tmp/", "file://", "\\Users\\"]
+            .iter()
+            .any(|marker| text.contains(marker))
+    {
+        return None;
+    }
+    Some(text)
+}
+
+fn company_context_record(
+    topic: &CompanyContextTopic,
+    expected_ticker: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(topic)?);
+    let evidence_id = format!(
+        "orientation:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    );
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: EvidenceSource {
+            capability_id: context.capability_id.clone(),
+            action_key: context.action_key.clone(),
+            server_build: context.server_build.clone(),
+            normalized_contract_hash: context.normalized_contract_hash.clone(),
+            server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+            data_release_hash: context.data_release_hash.clone(),
+        },
+        scope: context.scope.clone(),
+        entity: Some(expected_ticker.to_owned()),
+        period: topic.period.clone(),
+        as_of: None,
+        directness: Directness::Unverified,
+        grade: EvidenceGrade::Unverified,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: format!("KRW ontology company orientation: {}", topic.topic_label),
+            document_type: topic.document_type.clone(),
+            period: topic.period.clone(),
+        },
+        facts: vec![NormalizedFact {
+            subject: expected_ticker.to_owned(),
+            predicate: "company_topic_orientation".into(),
+            value: Value::String(topic.topic_label.clone()),
+            unit: None,
+            period: topic.period.clone(),
+        }],
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: Vec::new(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
 fn empty_supplemental_delta() -> SupplementalEvidenceDelta {
     SupplementalEvidenceDelta {
         records: Vec::new(),
@@ -1369,6 +1544,55 @@ mod tests {
         let delta = map_targeted_query(&payload, &context("ontology.query")).unwrap();
         assert_eq!(delta.records[0].directness, Directness::MetricLineage);
         assert!(!delta.records[0].strong_claim_allowed);
+    }
+
+    #[test]
+    fn company_context_is_sanitized_and_never_becomes_claim_evidence() {
+        let payload = serde_json::json!({
+            "ticker": "AAPL",
+            "company_topics": [{
+                "ticker": "AAPL",
+                "topic_label": "Component Procurement",
+                "topic_summary": "Contains noisy LNG terms and must not be shown as evidence.",
+                "period": "FY2025",
+                "document_type": "10-K",
+                "trace_status": "traceable",
+                "object_ids": ["private:object:1"]
+            }],
+            "routing": {
+                "index_path": "/Users/private/index.sqlite",
+                "internal_ids": ["private:route:1"]
+            }
+        });
+
+        let delta =
+            map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
+
+        assert_eq!(delta.provider_content["status"], "available");
+        assert_eq!(
+            delta.provider_content["topics"][0]["topic_label"],
+            "Component Procurement"
+        );
+        assert!(delta.provider_content.get("routing").is_none());
+        assert!(!delta.provider_content.to_string().contains("LNG"));
+        assert!(!delta.provider_content.to_string().contains("/Users/"));
+        assert_eq!(delta.records.len(), 1);
+        assert_eq!(delta.records[0].directness, Directness::Unverified);
+        assert_eq!(delta.records[0].grade, EvidenceGrade::Unverified);
+        assert!(!delta.records[0].strong_claim_allowed);
+        EvidenceLedger::from_records(delta.records).unwrap();
+    }
+
+    #[test]
+    fn cross_ticker_company_context_is_withheld() {
+        let payload = serde_json::json!({
+            "ticker": "MSFT",
+            "company_topics": [{"topic_label": "Cloud"}]
+        });
+        let delta =
+            map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
+        assert_eq!(delta.provider_content["status"], "unavailable");
+        assert!(delta.records.is_empty());
     }
 
     #[test]
