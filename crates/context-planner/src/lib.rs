@@ -1002,6 +1002,7 @@ mod tests {
             BTreeSet::from([
                 "ontology.query_context",
                 "ontology.company_context",
+                "market.snapshot",
                 "ontology.query",
                 "ontology.trace",
                 "skill.load",

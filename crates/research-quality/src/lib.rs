@@ -40,8 +40,8 @@ use krw_agent_run_engine::{
     durable_failure_diagnostic,
 };
 use krw_ontology_adapter::{
-    MappingContext, map_company_context, map_research_state, map_targeted_query, map_trace,
-    parse_research_state,
+    MappingContext, map_company_context, map_market_snapshot, map_research_state,
+    map_targeted_query, map_trace, parse_research_state,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1343,6 +1343,7 @@ fn load_fixture_capability(
                     template
                 }
                 CapabilityResultIngest::CompanyContextV1
+                | CapabilityResultIngest::MarketSnapshotV1
                 | CapabilityResultIngest::TargetedEvidenceV1
                 | CapabilityResultIngest::TraceLineageV1 => read_json_value(
                     &resolve_case_path(root, &response.payload, "supplemental payload")?,
@@ -1469,6 +1470,21 @@ impl FixtureCapabilityRuntime {
                     .ok_or_else(|| fixture_dependency("quality_fixture_company_context_ticker"))?;
                 let delta = map_company_context(&payload, ticker, &context)
                     .map_err(|_| fixture_dependency("quality_fixture_company_context_mapping"))?;
+                Ok(CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                })
+            }
+            CapabilityResultIngest::MarketSnapshotV1 => {
+                let ticker = invocation
+                    .arguments
+                    .get("ticker")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| fixture_dependency("quality_fixture_market_snapshot_ticker"))?;
+                let delta = map_market_snapshot(&payload, ticker, &context)
+                    .map_err(|_| fixture_dependency("quality_fixture_market_snapshot_mapping"))?;
                 Ok(CapabilityResult {
                     provider_content: delta.provider_content,
                     evidence: delta.records,

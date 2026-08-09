@@ -17,6 +17,8 @@ const MAX_SUPPLEMENTAL_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SUPPLEMENTAL_RECORDS: usize = 256;
 const MAX_SUPPLEMENTAL_FACTS: usize = 16;
 const MAX_COMPANY_CONTEXT_TOPICS: usize = 8;
+const MAX_MARKET_SNAPSHOT_METRICS: usize = 6;
+const MAX_MARKET_METRIC_ABS: f64 = 1.0e18;
 const MAX_RESEARCH_FACTS_PER_RECORD: usize = 128;
 const MAX_RESEARCH_CALCULATIONS: usize = 64;
 const MAX_NORMALIZED_RECORD_BYTES: usize = 256 * 1024;
@@ -245,6 +247,18 @@ pub struct SupplementalEvidenceDelta {
 #[derive(Debug, Clone)]
 pub struct CompanyContextDelta {
     pub provider_content: Value,
+    pub records: Vec<EvidenceRecord>,
+}
+
+/// Safe projection of a timestamped, non-filing market-data snapshot. It is
+/// deliberately not represented as evidence: a current quote or multiple can
+/// orient a question, but never proves a filing claim or recommendation.
+#[derive(Debug, Clone)]
+pub struct MarketSnapshotDelta {
+    pub provider_content: Value,
+    /// A deliberately unverified orientation record retains the compact
+    /// timestamped values across transcript compaction. It is not filing
+    /// evidence and cannot support a strong claim.
     pub records: Vec<EvidenceRecord>,
 }
 
@@ -967,6 +981,212 @@ pub fn map_company_context(
     })
 }
 
+/// Sanitize the fixed market router response before the model sees it. This
+/// adapter does not promote volatile values into filing evidence or a
+/// strong-claim path, does not expose upstream errors, and accepts only the
+/// trusted in-scope ticker.
+pub fn map_market_snapshot(
+    payload: &Value,
+    expected_ticker: &str,
+    context: &MappingContext,
+) -> Result<MarketSnapshotDelta, AdapterError> {
+    if serde_json::to_vec(payload)?.len() > MAX_SUPPLEMENTAL_PAYLOAD_BYTES {
+        return Err(AdapterError::SupplementalPayloadLimit);
+    }
+    let Some(root) = payload.as_object() else {
+        return Ok(unavailable_market_snapshot(expected_ticker));
+    };
+    if root.get("format").and_then(Value::as_str) != Some("market-snapshot/v1")
+        || root.get("ticker").and_then(Value::as_str) != Some(expected_ticker)
+        || root.get("source").and_then(Value::as_str) != Some("yahoo_finance")
+        || root.get("source_usage").and_then(Value::as_str) != Some("research_only")
+        || root.get("advisory_only").and_then(Value::as_bool) != Some(true)
+    {
+        return Ok(unavailable_market_snapshot(expected_ticker));
+    }
+    let status = root.get("status").and_then(Value::as_str);
+    if !matches!(status, Some("available" | "unavailable")) {
+        return Ok(unavailable_market_snapshot(expected_ticker));
+    }
+    let metrics = market_snapshot_metrics(root.get("metrics"));
+    let status = if status == Some("available") && !metrics.is_empty() {
+        "available"
+    } else {
+        "unavailable"
+    };
+    let provider_content = serde_json::json!({
+        "format": "market-snapshot-context/v1",
+        "ticker": expected_ticker,
+        "status": status,
+        "source": "yahoo_finance",
+        "source_usage": "research_only",
+        "fetched_at": market_timestamp(root.get("fetched_at")),
+        "as_of": market_timestamp(root.get("as_of")),
+        "currency": market_currency(root.get("currency")),
+        "metrics": metrics,
+        "advisory_only": true,
+        "usage": "Timestamped advisory market context only. Do not treat it as filing evidence or support a recommendation with it."
+    });
+    let records = if status == "available" {
+        vec![market_snapshot_record(
+            &provider_content,
+            expected_ticker,
+            context,
+        )?]
+    } else {
+        Vec::new()
+    };
+    Ok(MarketSnapshotDelta {
+        provider_content,
+        records,
+    })
+}
+
+fn unavailable_market_snapshot(expected_ticker: &str) -> MarketSnapshotDelta {
+    MarketSnapshotDelta {
+        provider_content: serde_json::json!({
+            "format": "market-snapshot-context/v1",
+            "ticker": expected_ticker,
+            "status": "unavailable",
+            "source": "yahoo_finance",
+            "source_usage": "research_only",
+            "fetched_at": null,
+            "as_of": null,
+            "currency": null,
+            "metrics": {},
+            "advisory_only": true,
+            "usage": "No safe current market snapshot was available. Continue with filing-derived research."
+        }),
+        records: Vec::new(),
+    }
+}
+
+fn market_snapshot_record(
+    provider_content: &Value,
+    expected_ticker: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    let metrics = provider_content
+        .get("metrics")
+        .and_then(Value::as_object)
+        .ok_or(AdapterError::InvalidSupplementalPayload("market metrics"))?;
+    let facts = metrics
+        .iter()
+        .filter_map(|(metric, value)| {
+            value.as_f64().map(|number| NormalizedFact {
+                subject: expected_ticker.to_owned(),
+                predicate: format!("market_snapshot_{metric}"),
+                value: Value::from(number),
+                unit: if matches!(
+                    metric.as_str(),
+                    "last_price" | "previous_close" | "market_cap"
+                ) {
+                    provider_content
+                        .get("currency")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                },
+                period: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    if facts.is_empty() || facts.len() > MAX_MARKET_SNAPSHOT_METRICS {
+        return Err(AdapterError::InvalidSupplementalPayload("market metrics"));
+    }
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(provider_content)?);
+    let evidence_id = format!(
+        "market-advisory:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    );
+    let as_of = provider_content
+        .get("as_of")
+        .and_then(Value::as_str)
+        .or_else(|| provider_content.get("fetched_at").and_then(Value::as_str))
+        .map(ToOwned::to_owned);
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: EvidenceSource {
+            capability_id: context.capability_id.clone(),
+            action_key: context.action_key.clone(),
+            server_build: context.server_build.clone(),
+            normalized_contract_hash: context.normalized_contract_hash.clone(),
+            server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+            data_release_hash: context.data_release_hash.clone(),
+        },
+        scope: context.scope.clone(),
+        entity: Some(expected_ticker.to_owned()),
+        period: None,
+        as_of,
+        directness: Directness::Unverified,
+        grade: EvidenceGrade::Unverified,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: "Timestamped Yahoo Finance research snapshot (advisory only)".into(),
+            document_type: Some("market_snapshot".into()),
+            period: None,
+        },
+        facts,
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: Vec::new(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
+fn market_snapshot_metrics(value: Option<&Value>) -> BTreeMap<String, f64> {
+    let Some(values) = value.and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    [
+        "last_price",
+        "previous_close",
+        "market_cap",
+        "trailing_pe",
+        "forward_pe",
+        "price_to_book",
+    ]
+    .into_iter()
+    .filter_map(|field| {
+        let value = values.get(field)?.as_f64()?;
+        (value.is_finite() && value.abs() <= MAX_MARKET_METRIC_ABS)
+            .then(|| (field.to_owned(), value))
+    })
+    .take(MAX_MARKET_SNAPSHOT_METRICS)
+    .collect()
+}
+
+fn market_timestamp(value: Option<&Value>) -> Option<String> {
+    let value = value.and_then(Value::as_str)?;
+    if !(1..=64).contains(&value.len())
+        || !value.is_ascii()
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_digit() || matches!(byte, b'-' | b':' | b'.' | b'+' | b'T' | b'Z')
+        })
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn market_currency(value: Option<&Value>) -> Option<String> {
+    let value = value.and_then(Value::as_str)?;
+    if !(1..=8).contains(&value.len()) || !value.bytes().all(u8::is_ascii_uppercase) {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
 fn unavailable_company_context(expected_ticker: &str) -> CompanyContextDelta {
     CompanyContextDelta {
         provider_content: serde_json::json!({
@@ -1592,6 +1812,66 @@ mod tests {
         let delta =
             map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
         assert_eq!(delta.provider_content["status"], "unavailable");
+        assert!(delta.records.is_empty());
+    }
+
+    #[test]
+    fn market_snapshot_is_sanitized_and_never_becomes_claim_evidence() {
+        let payload = serde_json::json!({
+            "format": "market-snapshot/v1",
+            "ticker": "AAPL",
+            "status": "available",
+            "source": "yahoo_finance",
+            "source_usage": "research_only",
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": "2026-08-10T09:59:00Z",
+            "currency": "USD",
+            "metrics": {
+                "last_price": 210.5,
+                "trailing_pe": 31.2,
+                "private_router_key": "must not cross"
+            },
+            "advisory_only": true,
+            "private_error": "must not cross"
+        });
+
+        let delta = map_market_snapshot(&payload, "AAPL", &context("market.snapshot")).unwrap();
+
+        assert_eq!(delta.provider_content["status"], "available");
+        assert_eq!(delta.provider_content["metrics"]["last_price"], 210.5);
+        assert!(delta.provider_content.get("private_error").is_none());
+        assert!(
+            delta.provider_content["metrics"]
+                .get("private_router_key")
+                .is_none()
+        );
+        assert_eq!(delta.provider_content["advisory_only"], true);
+        assert_eq!(delta.records.len(), 1);
+        assert_eq!(delta.records[0].directness, Directness::Unverified);
+        assert_eq!(delta.records[0].grade, EvidenceGrade::Unverified);
+        assert!(!delta.records[0].strong_claim_allowed);
+        EvidenceLedger::from_records(delta.records).unwrap();
+    }
+
+    #[test]
+    fn cross_ticker_or_untrusted_market_snapshot_is_withheld() {
+        let payload = serde_json::json!({
+            "format": "market-snapshot/v1",
+            "ticker": "MSFT",
+            "status": "available",
+            "source": "yahoo_finance",
+            "source_usage": "research_only",
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": null,
+            "currency": "USD",
+            "metrics": {"last_price": 1.0},
+            "advisory_only": true
+        });
+
+        let delta = map_market_snapshot(&payload, "AAPL", &context("market.snapshot")).unwrap();
+
+        assert_eq!(delta.provider_content["status"], "unavailable");
+        assert_eq!(delta.provider_content["metrics"], serde_json::json!({}));
         assert!(delta.records.is_empty());
     }
 

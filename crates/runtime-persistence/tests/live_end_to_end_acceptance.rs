@@ -96,14 +96,17 @@ fn live_ontology_binding(root: &Path) -> DeploymentBinding {
     let schema_hash = required_hash("KRW_LIVE_MCP_TOOL_SCHEMA_SHA256");
     let release_hash = required_hash("KRW_LIVE_MCP_RELEASE_MANIFEST_SHA256");
     let server_build = required("KRW_LIVE_MCP_SERVER_BUILD");
-    assert_eq!(binding.capabilities.len(), 4);
+    assert_eq!(binding.capabilities.len(), 7);
     for capability in &mut binding.capabilities {
         assert!(matches!(
             capability.binding_key.as_str(),
             "krw_ontology_query_context"
                 | "krw_ontology_company_context"
+                | "krw_market_snapshot"
                 | "krw_ontology_query"
                 | "krw_ontology_trace"
+                | "krw_ontology_chain"
+                | "krw_skill_local"
         ));
         capability.server_schema_bundle_hash = schema_hash.clone();
         capability.data_release_hash = release_hash.clone();

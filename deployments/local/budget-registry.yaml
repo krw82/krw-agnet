@@ -16,6 +16,7 @@ profiles:
       capability_call_limits:
         ontology.query_context: 6
         ontology.company_context: 1
+        market.snapshot: 1
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
@@ -38,6 +39,7 @@ profiles:
       capability_call_limits:
         ontology.query_context: 2
         ontology.company_context: 1
+        market.snapshot: 1
         ontology.query: 2
         ontology.trace: 1
         ontology.chain: 1

@@ -70,6 +70,10 @@ contracts:
     schema_ref: canonical:krw-agent/company-context-request-v1
     content_hash: sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680
     semantic_authority: krw-agent-run-engine
+  - id: market-snapshot-request/v1
+    schema_ref: canonical:krw-agent/market-snapshot-request-v1
+    content_hash: sha256:3bc99711dff7ab052a7c43177b05bf65fe4e706d8a5509eb8573425eacfe8425
+    semantic_authority: krw-agent-market-router
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -280,6 +284,22 @@ capabilities:
       require_any_of: [ticker]
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  - id: market.snapshot
+    binding_key: krw_market_snapshot
+    permission: read
+    # The ticker is the whole model input. The provider and cache policy are
+    # kernel-owned, so this cannot become an arbitrary external fetch surface.
+    input_contract: market-snapshot-request/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: market_snapshot_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     binding_key: krw_ontology_query
     permission: read
@@ -422,6 +442,7 @@ workflows:
       - { id: ingest_evidence, kind: ingest, max_visits: 3 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: company_context, kind: capability, capability_id: ontology.company_context, max_visits: 1 }
+      - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
       - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
@@ -444,6 +465,7 @@ workflows:
       - { from: ingest_evidence, on: ingested, to: assess_obligations }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: assess_obligations, on: company_context_has_value, to: company_context }
+      - { from: assess_obligations, on: market_snapshot_has_value, to: market_snapshot }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: append_context_plan, to: query_context }
@@ -453,6 +475,7 @@ workflows:
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: company_context, on: evidence_observed, to: ingest_evidence }
+      - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
@@ -704,6 +727,7 @@ validators:
     instructions:
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
       - { op: max_calls, capability_id: ontology.company_context, max: 1, code: company_context_limit }
+      - { op: max_calls, capability_id: market.snapshot, max: 1, code: market_snapshot_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }

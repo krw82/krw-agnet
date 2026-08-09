@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use krw_agent_contracts::{
-    NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1, ONTOLOGY_TARGETED_QUERY_V1,
-    ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2,
-    SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
+    MARKET_SNAPSHOT_REQUEST_V1, NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1,
+    ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
+    RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{
@@ -32,8 +32,8 @@ use krw_agent_tool_mcp::{
     McpClientPool, McpError, McpHttpConfig, PoolKey, PoolScope, ToolCallOutcome,
 };
 use krw_ontology_adapter::{
-    MappingContext, map_company_context, map_research_state, map_targeted_query, map_trace,
-    parse_research_state,
+    MappingContext, map_company_context, map_market_snapshot, map_research_state,
+    map_targeted_query, map_trace, parse_research_state,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -114,6 +114,7 @@ fn machine_cpu_work_limiter() -> Arc<CpuWorkLimiter> {
 enum EvidenceMapping {
     ResearchStateV2,
     CompanyContextV1,
+    MarketSnapshotV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     Front(FrontMapping),
@@ -128,6 +129,7 @@ impl EvidenceMapping {
         match value {
             CapabilityResultIngest::ResearchStateV2 => Self::ResearchStateV2,
             CapabilityResultIngest::CompanyContextV1 => Self::CompanyContextV1,
+            CapabilityResultIngest::MarketSnapshotV1 => Self::MarketSnapshotV1,
             CapabilityResultIngest::TargetedEvidenceV1 => Self::TargetedEvidenceV1,
             CapabilityResultIngest::TraceLineageV1 => Self::TraceLineageV1,
             CapabilityResultIngest::FrontFeedListItemsV1 => {
@@ -170,6 +172,7 @@ impl EvidenceMapping {
         match self {
             Self::ResearchStateV2 => SEARCH_PLAN_V2,
             Self::CompanyContextV1 => ONTOLOGY_COMPANY_CONTEXT_V1,
+            Self::MarketSnapshotV1 => MARKET_SNAPSHOT_REQUEST_V1,
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,
             Self::TraceLineageV1 => ONTOLOGY_TRACE_INPUT_V1,
             Self::SkillContent => SKILL_LOAD_V1,
@@ -185,9 +188,10 @@ impl EvidenceMapping {
                 QUERY_CONTEXT_INPUT_CORRECTION_V1,
                 NORMALIZED_CAPABILITY_RESULT_V1,
             ],
-            Self::CompanyContextV1 | Self::TargetedEvidenceV1 | Self::TraceLineageV1 => {
-                &[NORMALIZED_CAPABILITY_RESULT_V1]
-            }
+            Self::CompanyContextV1
+            | Self::MarketSnapshotV1
+            | Self::TargetedEvidenceV1
+            | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
             Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
             Self::Front(mapping) => mapping.output_contracts(),
             Self::Guru(mapping) => mapping.output_contracts(),
@@ -972,6 +976,26 @@ impl PooledMcpCapabilityRuntime {
                     calculations: Vec::new(),
                 }
             }
+            EvidenceMapping::MarketSnapshotV1 => {
+                let ticker = invocation
+                    .arguments
+                    .get("ticker")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        reject(
+                            "market_snapshot_input_identity",
+                            "market snapshot input did not retain a ticker",
+                        )
+                    })?;
+                let delta = map_market_snapshot(&payload, ticker, &context)
+                    .map_err(|error| reject("market_snapshot_mapping", format!("{error:?}")))?;
+                CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                }
+            }
             EvidenceMapping::TargetedEvidenceV1 => {
                 let delta = map_targeted_query(&payload, &context)
                     .map_err(|error| reject("targeted_evidence_mapping", format!("{error:?}")))?;
@@ -1081,6 +1105,7 @@ impl PooledMcpCapabilityRuntime {
             }
             EvidenceMapping::Guru(GuruMapping::QueryContext)
             | EvidenceMapping::CompanyContextV1
+            | EvidenceMapping::MarketSnapshotV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
@@ -1259,6 +1284,7 @@ impl PooledMcpCapabilityRuntime {
             }
             EvidenceMapping::ResearchStateV2
             | EvidenceMapping::CompanyContextV1
+            | EvidenceMapping::MarketSnapshotV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::SkillContent => Ok(()),

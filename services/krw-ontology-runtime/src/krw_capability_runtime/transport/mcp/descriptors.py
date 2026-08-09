@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from krw_capability_runtime.guru import lens_selector
 from krw_capability_runtime.guru import mcp_tools as guru_tools
+from krw_capability_runtime.market import MarketSnapshotRequest, market_snapshot_tool
 from krw_capability_runtime.mcp_server import tools as ontology_tools
 from krw_capability_runtime.mcp_server.contracts import (
     QueryContextInputCorrection,
@@ -176,8 +177,8 @@ class CapabilityRegistry:
                 )
             by_name[descriptor.mcp_tool_name] = descriptor
             by_logical_id[descriptor.logical_capability_id] = descriptor
-        if len(by_name) != 27:
-            raise ValueError(f"expected 27 read capabilities, found {len(by_name)}")
+        if len(by_name) != 28:
+            raise ValueError(f"expected 28 read capabilities, found {len(by_name)}")
         self._by_name = by_name
         self._by_logical_id = by_logical_id
 
@@ -439,8 +440,34 @@ def _query_context_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
     )
 
 
+def _market_snapshot_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
+    """Register the fixed advisory-market router without exposing a source knob."""
+
+    async def handler(decoded: DecodedInput) -> DispatchOutcome:
+        assert isinstance(decoded, MarketSnapshotRequest)
+        value = await runtime_lanes.invoke(
+            CapabilityLane.BROAD,
+            market_snapshot_tool,
+            decoded.model_dump(mode="python"),
+        )
+        return _outcome_from_handler_value(value)
+
+    return ToolDescriptor(
+        logical_capability_id="market.snapshot",
+        mcp_tool_name="krw_market_snapshot",
+        title="Return current market snapshot",
+        description=(
+            "Return compact timestamped price and valuation context for one ticker; "
+            "advisory research data only."
+        ),
+        input_model=MarketSnapshotRequest,
+        lane=CapabilityLane.BROAD,
+        handler=handler,
+    )
+
+
 def build_registry() -> CapabilityRegistry:
-    """Build the one shared registry for the 13 ontology and 14 Guru tools."""
+    """Build the shared registry for 13 ontology, 1 market, and 14 Guru tools."""
 
     lanes = RuntimeLanes()
     standard = _standard_descriptor
@@ -472,6 +499,7 @@ def build_registry() -> CapabilityRegistry:
             lane=CapabilityLane.FAST,
             runtime_lanes=lanes,
         ),
+        _market_snapshot_descriptor(lanes),
         _query_context_descriptor(lanes),
         standard(
             logical_capability_id="ontology.query",

@@ -201,6 +201,7 @@ def _build_id() -> str:
                     "pydantic",
                     "starlette",
                     "uvicorn",
+                    "yfinance",
                 )
             },
         },

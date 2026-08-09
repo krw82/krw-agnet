@@ -465,6 +465,9 @@ pub enum CapabilityResultIngest {
     /// Sanitized, orientation-only company topic context. It may guide a
     /// later query but never grants a factual or strong-claim permission.
     CompanyContextV1,
+    /// Timestamped, research-only current-market context. It is deliberately
+    /// advisory and never enters the filing-evidence or recommendation path.
+    MarketSnapshotV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     FrontFeedListItemsV1,
@@ -497,6 +500,9 @@ impl CapabilityResultIngest {
             }
             Self::CompanyContextV1 => {
                 "Retrieve a compact, orientation-only topic map for the already in-scope company only when it can improve the next evidence query. Use it to narrow follow-up research, never as factual support or a final-answer claim. The kernel removes internal routing data and keeps the result advisory."
+            }
+            Self::MarketSnapshotV1 => {
+                "Retrieve compact current price and valuation context only when it materially improves a current-price or valuation question. It is timestamped advisory research data, not filing evidence and not support for a target price, recommendation, or factual filing claim."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
