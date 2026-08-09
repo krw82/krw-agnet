@@ -2072,7 +2072,7 @@ where
                     }
                     // A bounded child owns no parent transcript. Its typed
                     // transition is durable, while an ordinary run receives a
-                    // local acknowledgement so DeepSeek's tool-call chain is
+                    // local acknowledgement so the provider's tool-call chain is
                     // complete before the next provider turn.
                     state.handle_model_event(&transition.event, &facts, episode_hash.clone())?;
                     if child_policy.is_none() {
@@ -8027,9 +8027,8 @@ fn available_tool_definitions(
 
 /// Encode one semantic decision lane through the exact provider features
 /// pinned for this run. In particular, a state that semantically requires a
-/// tool call does *not* imply that the Anthropic Messages request may use
-/// `tool_choice=any`: native V4 Flash permits tools but rejects that field in
-/// both thinking and direct modes.
+/// tool call may use `tool_choice=any` only when the pinned provider wire
+/// contract explicitly supports it for the active thinking mode.
 fn encode_provider_output_channel(
     output_mode: ModelOutputMode,
     provider_wire_capabilities: ProviderWireCapabilities,
@@ -9996,10 +9995,9 @@ mod tests {
         );
     }
 
-    /// Extract the first text block from an Anthropic `ProviderMessage`. Tests
-    /// treat the first text block as the canonical "content" of a turn, which
-    /// matches how the run-engine stuffs each user/assistant turn into a single
-    /// `ContentBlock::Text`.
+    /// Extract the first text block from an Anthropic `ProviderMessage`.
+    /// Tool-result-only messages are valid in a replay, so their content is
+    /// represented as an empty string for text-only test assertions.
     fn provider_message_content(message: &ProviderMessage) -> &str {
         message
             .content
@@ -10008,7 +10006,7 @@ mod tests {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .expect("provider message has at least one text content block")
+            .unwrap_or_default()
     }
 
     /// Extract the JSON payload of the first `ToolResult` block in a message, if any.
@@ -13748,10 +13746,18 @@ mod tests {
             .for_request(&fixture.request, "author_plan")
             .unwrap();
         assert_eq!(first.tools.as_slice(), expected.tool_definitions.as_ref());
+        let tool_names = first
+            .tools
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            first.tools.len(),
-            1,
-            "planner receives only query_context; its primary skill is role-pinned"
+            tool_names,
+            BTreeSet::from([
+                provider_tool_name("ontology.query_context"),
+                provider_tool_name("skill.load"),
+            ]),
+            "planner receives its research capability and the catalog-backed local skill loader"
         );
         assert!(
             build_tool_definitions(&fixture.image, &fixture.request)
@@ -13773,8 +13779,9 @@ mod tests {
 
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
         assert_eq!(
-            requests[0].tool_choice, None,
-            "DeepSeek Flash must omit tool_choice even for direct planning"
+            requests[0].tool_choice,
+            Some(ToolChoice::Any),
+            "GLM supports tool_choice for direct planning"
         );
         assert!(
             !requests[0]
@@ -13784,8 +13791,9 @@ mod tests {
         );
 
         assert_eq!(
-            requests[1].tool_choice, None,
-            "DeepSeek thinking may advertise typed alternatives but must omit tool_choice"
+            requests[1].tool_choice,
+            Some(ToolChoice::Any),
+            "GLM supports tool_choice for thinking-enabled tool turns"
         );
         assert!(
             requests[1]
@@ -13826,9 +13834,7 @@ mod tests {
         assert_eq!(requests[0].max_tokens, 1_024);
         assert_eq!(requests[1].max_tokens, 4_880);
         assert_eq!(requests[2].max_tokens, 3_072);
-        assert!(
-            provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
-        );
+        assert!(requests[2].system.contains("\"role_id\":\"composer\""));
     }
 
     #[test]
@@ -13931,12 +13937,8 @@ mod tests {
         assert_eq!(rig.provider.calls.load(Ordering::SeqCst), 3);
         assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 1);
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(
-            provider_message_content(&requests[1].messages[0]).contains("\"role_id\":\"analyst\"")
-        );
-        assert!(
-            provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
-        );
+        assert!(requests[1].system.contains("\"role_id\":\"analyst\""));
+        assert!(requests[2].system.contains("\"role_id\":\"composer\""));
         assert_eq!(requests[2].max_tokens, 3_072);
     }
 
@@ -14102,15 +14104,9 @@ mod tests {
         assert_eq!(outcome.answer_bundle.usage.repairs, 1);
         assert_eq!(outcome.answer_bundle.usage.provider_turns, 4);
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(
-            provider_message_content(&requests[0].messages[0]).contains("\"role_id\":\"planner\"")
-        );
-        assert!(
-            provider_message_content(&requests[1].messages[0]).contains("\"role_id\":\"analyst\"")
-        );
-        assert!(
-            provider_message_content(&requests[2].messages[0]).contains("\"role_id\":\"composer\"")
-        );
+        assert!(requests[0].system.contains("\"role_id\":\"planner\""));
+        assert!(requests[1].system.contains("\"role_id\":\"analyst\""));
+        assert!(requests[2].system.contains("\"role_id\":\"composer\""));
     }
 
     #[tokio::test]

@@ -18,25 +18,25 @@ profiles:
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
-  # GLM-5.2 variant: matches DeepSeek's envelope. GLM-5.2 supports 1M context
-  # and 128K output per z.ai docs, so the full research budget applies.
-  # Deadline is extended to 600s because the z.ai coding plan endpoint has
-  # higher latency than DeepSeek's direct API.
+  # GLM-5.2 is the active research profile. Keep local and production on the
+  # same bounded envelope: ordinary research completes in 3-7 turns, with
+  # room for a small recovery loop. The 600-second deadline accommodates
+  # slower provider turns without increasing the number of allowed actions.
   - profile_id: company_research_glm
     limits:
-      max_provider_turns: 32
-      max_capability_calls: 16
+      max_provider_turns: 12
+      max_capability_calls: 5
       max_replans: 3
       max_repairs: 3
-      max_input_tokens: 500000
-      max_output_tokens: 32000
+      max_input_tokens: 200000
+      max_output_tokens: 24000
       max_evidence_bytes: 8388608
       deadline_ms: 600000
       capability_call_limits:
-        ontology.query_context: 6
-        ontology.query: 6
-        ontology.trace: 4
-        ontology.chain: 4
+        ontology.query_context: 2
+        ontology.query: 2
+        ontology.trace: 1
+        ontology.chain: 1
   - profile_id: earnings_deep_dive
     limits:
       max_provider_turns: 10

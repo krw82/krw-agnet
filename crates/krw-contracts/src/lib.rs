@@ -261,7 +261,14 @@ pub fn verify_registry() -> Result<(), ContractArtifactError> {
     guru::verify_embedded()?;
     for descriptor in descriptors() {
         let canonical = descriptor.canonical_schema()?;
-        if canonical != descriptor.schema {
+        // Hand-authored JSON files conventionally end in one POSIX newline.
+        // That transport-only byte is not part of the RFC 8785 value; accept
+        // exactly that one suffix while continuing to reject every other raw
+        // byte drift before verifying the canonical content hash below.
+        let source_matches_canonical = canonical == descriptor.schema
+            || (descriptor.schema.last() == Some(&b'\n')
+                && descriptor.schema[..descriptor.schema.len() - 1] == canonical);
+        if !source_matches_canonical {
             return Err(ContractArtifactError::NonCanonical(
                 descriptor.id.to_owned(),
             ));

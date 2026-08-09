@@ -104,7 +104,7 @@ roles:
     # call.
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
     deterministic: false
-    # Planning is a closed tool-proposal task. Direct Flash avoids spending a
+    # Planning is a closed tool-proposal task. GLM direct mode avoids spending a
     # large hidden-thinking turn before the first immutable evidence lookup.
     # ResearchProposal v4 fits in 500-800 tokens; 1024 is a hard ceiling to
     # prevent reasoning-token bloat that previously caused 13K-token turns.
