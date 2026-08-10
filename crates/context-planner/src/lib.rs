@@ -36,6 +36,10 @@ pub enum ContextSegmentKind {
     AgentInstruction,
     KernelStateContract,
     TrustedRunScope,
+    /// A bounded, kernel-fetched current-market snapshot. It is distinct from
+    /// evidence because volatile advisory data can orient a provider turn but
+    /// must never inherit filing-evidence authority.
+    TrustedMarketSnapshot,
     UntrustedUserTask,
     SessionMemory,
     EvidenceDigest,
@@ -49,6 +53,9 @@ pub enum LoadReason {
     RoleMatch,
     CurrentState,
     ImmutableRunScope,
+    /// Best-effort, fixed market context fetched before the first provider
+    /// turn. It is not model selected and cannot widen the run scope.
+    PreEntryMarketSnapshot,
     CurrentUserTurn,
     RelevantMemory,
     CurrentEvidence,
@@ -97,6 +104,7 @@ impl DynamicContextSegmentRef {
         match (self.kind, self.load_reason) {
             (ContextSegmentKind::KernelStateContract, LoadReason::CurrentState)
             | (ContextSegmentKind::TrustedRunScope, LoadReason::ImmutableRunScope)
+            | (ContextSegmentKind::TrustedMarketSnapshot, LoadReason::PreEntryMarketSnapshot)
             | (ContextSegmentKind::UntrustedUserTask, LoadReason::CurrentUserTurn)
             | (ContextSegmentKind::SessionMemory, LoadReason::RelevantMemory)
             | (ContextSegmentKind::EvidenceDigest, LoadReason::CurrentEvidence)

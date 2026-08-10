@@ -1458,6 +1458,7 @@ async fn measure_active_level(
                 resolved_deployment_binding_hash: &snapshot.deployment_binding_hash,
                 request: &request,
                 snapshot: &snapshot,
+                market_snapshot_context: None,
                 hard_deadline: Instant::now() + Duration::from_secs(30),
             };
             engine.run(input).await

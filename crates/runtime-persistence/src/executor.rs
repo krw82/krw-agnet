@@ -12,11 +12,11 @@ use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
     ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
 };
-use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DeploymentBinding};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DeploymentBinding, RunRequest};
 use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
-    DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine, RunInput,
-    durable_failure_diagnostic, state_artifact_failure_code,
+    CapabilityRuntime, DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine,
+    RunInput, TrustedMarketSnapshot, durable_failure_diagnostic, state_artifact_failure_code,
 };
 use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
 use krw_context_planner::ContextPlanner;
@@ -33,6 +33,9 @@ use crate::{
 
 const CANCEL_DRAIN_GRACE: Duration = Duration::from_secs(2);
 const SESSION_MEMORY_PAGE_LIMIT: u16 = 8;
+/// The market seed is useful only when it arrives immediately. It must never
+/// add a recovery branch or make a company-research run fail.
+const MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Stable, content-free claim admission diagnostics.  The persisted terminal
 /// reason must let operators distinguish a host-contract drift from a corrupt
@@ -435,6 +438,41 @@ impl ProductionClaimedRunExecutor {
     }
 }
 
+/// Fetch a single current market snapshot before the provider sees the task.
+/// This is a sealed runtime seed, not a model-selected capability action: it
+/// receives only the authenticated singleton ticker, shares the normal MCP
+/// capability validation path, and is omitted on every error or timeout.
+async fn preflight_market_snapshot(
+    catalog: &CapabilityCatalog,
+    capabilities: &PooledMcpCapabilityRuntime,
+    request: &RunRequest,
+    hard_deadline: Instant,
+) -> Option<TrustedMarketSnapshot> {
+    if request.run_kind != "company_research" {
+        return None;
+    }
+    let [ticker] = request.context.trusted_tickers() else {
+        return None;
+    };
+    // This seed is optional. If the remaining lease/request time is too short
+    // to give the provider a fair first turn, skip it rather than competing
+    // with research work or extending the run past its hard deadline.
+    if hard_deadline.saturating_duration_since(Instant::now()) <= MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT
+    {
+        return None;
+    }
+    let invocation = catalog
+        .market_snapshot_preflight_invocation(&request.run_id, ticker)
+        .ok()??;
+    let result = timeout(
+        MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT,
+        capabilities.invoke(&invocation),
+    )
+    .await
+    .ok()??;
+    TrustedMarketSnapshot::from_provider_content(ticker, &result.provider_content).ok()
+}
+
 impl fmt::Debug for ProductionClaimedRunExecutor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -573,21 +611,34 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             )
             .map_err(|_| RunExecutionFailure::failed("invalid_capability_scope"))?,
         );
+        let hard_deadline = Instant::now()
+            .checked_add(Duration::from_millis(effective_request.budget.deadline_ms))
+            .ok_or_else(|| RunExecutionFailure::failed("deadline_invalid"))?;
+        let market_snapshot_context = tokio::select! {
+            biased;
+            () = context.cancellation.cancelled() => {
+                return Ok(SuccessfulRunOutcome::Cancelled);
+            }
+            snapshot = preflight_market_snapshot(
+                release.capability_catalog.as_ref(),
+                capabilities.as_ref(),
+                &effective_request,
+                hard_deadline,
+            ) => snapshot,
+        };
         let engine = RunEngine::new(
             provider,
             capabilities,
             Arc::clone(&persistence),
             release.engine_config.clone(),
         );
-        let hard_deadline = Instant::now()
-            .checked_add(Duration::from_millis(effective_request.budget.deadline_ms))
-            .ok_or_else(|| RunExecutionFailure::failed("deadline_invalid"))?;
         let execution = engine.run(RunInput {
             image: &release.image,
             deployment: &release.deployment,
             resolved_deployment_binding_hash: release.runtime.deployment_binding_hash(),
             request: &effective_request,
             snapshot: validated.snapshot(),
+            market_snapshot_context: market_snapshot_context.as_ref(),
             hard_deadline,
         });
         tokio::pin!(execution);

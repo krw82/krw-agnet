@@ -340,6 +340,59 @@ impl CapabilityCatalog {
     pub fn capability_count(&self) -> usize {
         self.descriptors.len()
     }
+
+    /// Construct the one sealed, best-effort market preflight invocation. This
+    /// is intentionally discovered by its closed result mapping, rather than
+    /// by a configurable capability name or arbitrary plugin instruction.
+    /// The normal workflow may still call the same capability later when a
+    /// fresh snapshot can materially improve the answer.
+    pub fn market_snapshot_preflight_invocation(
+        &self,
+        run_id: &str,
+        ticker: &str,
+    ) -> Result<Option<CapabilityInvocation>, CatalogError> {
+        let mut candidates = self.descriptors.iter().filter(|(_, descriptor)| {
+            matches!(descriptor.mapping, EvidenceMapping::MarketSnapshotV1)
+        });
+        let Some((capability_id, descriptor)) = candidates.next() else {
+            return Ok(None);
+        };
+        if candidates.next().is_some() {
+            return Err(CatalogError::AmbiguousMarketSnapshotPreflight);
+        }
+        let arguments = serde_json::json!({"ticker": ticker});
+        validate_value(MARKET_SNAPSHOT_REQUEST_V1, &arguments)
+            .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?;
+        let resolved = self
+            .runtime
+            .capabilities
+            .get(capability_id.as_str())
+            .ok_or_else(|| CatalogError::MissingResolvedBinding(capability_id.clone()))?;
+        let request_hash = ContentHash::sha256(
+            serde_jcs::to_vec(&arguments)
+                .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?,
+        );
+        let action_key = deterministic_action_key(
+            run_id,
+            &self.image_hash,
+            &descriptor.specification,
+            &descriptor.contracts,
+            &resolved.binding,
+            &arguments,
+        )
+        .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?;
+        Ok(Some(CapabilityInvocation {
+            run_id: run_id.to_owned(),
+            action_key,
+            capability_id: capability_id.clone(),
+            request_hash,
+            input_schema_hash: descriptor.contracts.input.content_hash.clone(),
+            output_schema_hash: descriptor.contracts.output_contract_set_hash.clone(),
+            normalized_output_contract_hash: descriptor.normalized_output_contract_hash.clone(),
+            arguments,
+            binding: resolved.binding.clone(),
+        }))
+    }
 }
 
 /// Compile the sealed Guru evidence boundary from `AgentImage` declarations.
@@ -1646,6 +1699,10 @@ pub enum CatalogError {
     InvalidGuruChildPolicy,
     #[error("tenant/principal/run scope is invalid")]
     InvalidRunScope,
+    #[error("more than one capability declares the sealed market preflight mapping")]
+    AmbiguousMarketSnapshotPreflight,
+    #[error("sealed market preflight invocation is invalid")]
+    InvalidMarketSnapshotPreflight,
 }
 
 #[cfg(test)]
@@ -2056,6 +2113,37 @@ mod tests {
                 .expect("image must use only closed mappings");
             assert_eq!(catalog.capability_count(), image.body.capabilities.len());
         }
+    }
+
+    #[test]
+    fn market_snapshot_preflight_is_closed_to_the_pinned_market_mapping() {
+        let (image, runtime) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, runtime).expect("ontology catalog");
+
+        let first = catalog
+            .market_snapshot_preflight_invocation("run-a", "AAPL")
+            .expect("closed preflight invocation")
+            .expect("ontology image declares one market snapshot capability");
+        let second = catalog
+            .market_snapshot_preflight_invocation("run-a", "AAPL")
+            .expect("deterministic preflight invocation")
+            .expect("market preflight invocation");
+
+        assert_eq!(first.capability_id, "market.snapshot");
+        assert_eq!(first.arguments, serde_json::json!({"ticker": "AAPL"}));
+        validate_value(MARKET_SNAPSHOT_REQUEST_V1, &first.arguments)
+            .expect("preflight arguments use the canonical market contract");
+        assert_eq!(first.action_key, second.action_key);
+        assert_eq!(first.request_hash, second.request_hash);
+        assert_eq!(
+            first.binding, catalog.runtime.capabilities["market.snapshot"].binding,
+            "the preflight must use the image-pinned resolved binding"
+        );
+        assert!(
+            catalog
+                .market_snapshot_preflight_invocation("run-a", "not-a-canonical-ticker")
+                .is_err()
+        );
     }
 
     #[test]

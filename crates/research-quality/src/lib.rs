@@ -504,6 +504,7 @@ where
             resolved_deployment_binding_hash: &snapshot.deployment_binding_hash,
             request: &request,
             snapshot: &snapshot,
+            market_snapshot_context: None,
             hard_deadline: deadline,
         })
         .await;
