@@ -37,10 +37,11 @@ usage: scripts/dev-stack.sh <command> [args...]
 
 commands:
   prepare             Build the Rust binaries needed by the local stack.
-  up                  Start the cold stack once, or reuse a ready stack.
+  up [--skip-prepare] Start the cold stack once, or reuse a ready stack.
   status              Show supervisor and Gateway health without secrets.
   down                Stop only the stack started by this wrapper.
-  reload              Restart the complete local stack after a code/image change.
+  reload [--skip-prepare]
+                      Restart the complete local stack after a code/image change.
   test core [args]    Run run-engine tests without HTTP/Postgres features.
   test adapter [args] Run provider-wire tests without HTTP by default.
   test smoke [args]   Run one case from the existing Gateway quality matrix.
@@ -108,6 +109,15 @@ wait_for_gateway() {
 
 start_stack() {
   ensure_state
+  local skip_prepare=0
+  local start_arg
+  for start_arg in "$@"; do
+    case "$start_arg" in
+      --skip-prepare) skip_prepare=1 ;;
+      '') ;;
+      *) printf 'unknown stack option: %s\n' "$start_arg" >&2; return 2 ;;
+    esac
+  done
   if stack_running; then
     if stack_ready; then
       printf 'dev stack already ready: %s\n' "$krw_health_url"
@@ -142,7 +152,7 @@ start_stack() {
   if [[ -f "$krw_pid_file" ]]; then
     rm -f "$krw_pid_file"
   fi
-  if [[ "${KRW_AGENT_SKIP_PREPARE:-0}" != 1 ]]; then
+  if (( skip_prepare == 0 )) && [[ "${KRW_AGENT_SKIP_PREPARE:-0}" != 1 ]]; then
     prepare_binaries
   elif ! binaries_ready; then
     printf 'local Rust binaries are missing or stale; run scripts/dev-stack.sh prepare first\n' >&2
@@ -335,6 +345,10 @@ main() {
     status) show_status "$@" ;;
     down) stop_stack "$@" ;;
     reload)
+      if [[ "${1:-}" == "--skip-prepare" ]]; then
+        export KRW_AGENT_SKIP_PREPARE=1
+        shift
+      fi
       stop_stack
       start_stack "$@"
       ;;

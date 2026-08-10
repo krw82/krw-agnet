@@ -84,6 +84,15 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 too_many_lines = "allow"
 
+# The local daemon is normally run from `target/debug`, but line-level debug
+# information is not used by the fast feedback loop. Keeping incremental
+# compilation while omitting those symbols materially reduces linker output
+# and macOS metadata/indexing work. Release/production profiles remain
+# unchanged for diagnostics and shipped artifacts.
+[profile.dev]
+debug = 0
+incremental = true
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
