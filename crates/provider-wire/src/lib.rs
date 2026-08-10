@@ -1737,6 +1737,10 @@ fn scrub_json(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "http")]
+    use super::http_client::{parse_retry_after_ms, safe_request_id_hash};
+    #[cfg(feature = "http")]
+    use reqwest::header::{HeaderMap, HeaderValue};
     use krw_agent_protocol::{DEEPSEEK_MODEL_ID, GLM_MODEL_ID};
 
     #[test]
@@ -2311,6 +2315,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn retry_after_and_request_id_diagnostics_are_bounded_and_hashed() {
         let mut headers = HeaderMap::new();
