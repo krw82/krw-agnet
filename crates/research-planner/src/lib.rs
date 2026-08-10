@@ -1421,12 +1421,35 @@ fn map_goals(
         benefits.insert(ActionBenefit::RaisesDirectnessCeiling);
         recommendation.clause_id.as_deref()?
     } else if proposal.kind == ResearchActionKind::TargetedQuery {
-        let topic = proposal.arguments.get("topic").and_then(Value::as_str)?;
-        projection
-            .clauses
-            .iter()
-            .find(|clause| clause.retrieval_query == topic)
-            .map(|clause| clause.clause_id.as_str())?
+        if proposal.capability_id.ends_with("chain") {
+            // A chain traversal starts from one observed object, not from a
+            // free-text topic. Admit it only when the trusted ontology result
+            // recommended this exact `(ticker, object_id)` mechanism lookup.
+            // This keeps chain useful for causal analysis without letting the
+            // model invent a graph root or turn every evidence item into work.
+            let object_id = proposal
+                .arguments
+                .get("object_id")
+                .and_then(Value::as_str)?;
+            let ticker = proposal.arguments.get("ticker").and_then(Value::as_str);
+            let recommendation = projection
+                .recommended_actions
+                .iter()
+                .find(|recommendation| {
+                    normalize_tool(&recommendation.tool) == "chain"
+                        && recommendation.object_id.as_deref() == Some(object_id)
+                        && recommendation.ticker.as_deref() == ticker
+                })?;
+            benefits.insert(ActionBenefit::ServerRecommended);
+            recommendation.clause_id.as_deref()?
+        } else {
+            let topic = proposal.arguments.get("topic").and_then(Value::as_str)?;
+            projection
+                .clauses
+                .iter()
+                .find(|clause| clause.retrieval_query == topic)
+                .map(|clause| clause.clause_id.as_str())?
+        }
     } else {
         return None;
     };
@@ -1607,10 +1630,7 @@ fn normalize_tool(tool: &str) -> &str {
     } else if tool.ends_with("query") || tool.ends_with("query_universe") {
         "query"
     } else if tool.ends_with("chain") {
-        // The ontology chain traversal tool is declared with the targeted
-        // research action kind, so it is normalized alongside the precise
-        // query family for server-recommendation matching.
-        "query"
+        "chain"
     } else {
         "unknown"
     }
@@ -2022,6 +2042,35 @@ mod tests {
                 reason: NoPositiveReason::ProposalUnmapped,
             }
         );
+    }
+
+    #[test]
+    fn server_recommended_chain_is_eligible_for_causal_follow_up() {
+        let mut state = partial_fixture();
+        state.recommended_actions[0].tool = "krw_ontology_chain".into();
+        state.recommended_actions[0].reason = "expand causal mechanism".into();
+
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&state).unwrap();
+        let chain = proposal(
+            "chain",
+            "ontology.chain",
+            serde_json::json!({
+                "object_id": "claim:vg:cash-generation:2025",
+                "ticker": "VG"
+            }),
+            0,
+        );
+
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&chain)).unwrap(),
+            PlannerDecision::Execute {
+                proposal_id,
+                score: Some(score),
+                reason: SelectionReason::PositiveExpectedValue,
+                evaluated: 1,
+            } if proposal_id == "chain" && score > 0
+        ));
     }
 
     #[test]
