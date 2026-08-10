@@ -238,6 +238,18 @@ def test_router_falls_back_to_direct_fmp_when_the_persisted_snapshot_is_unavaila
     assert payload["metrics"] == {"last_price": 210.5}
 
 
+def test_valuation_store_allows_only_https_or_loopback_http() -> None:
+    FmpValuationStoreProvider(
+        store_url="http://127.0.0.1:54321",
+        service_role_key="test-store-key",
+    )
+    with pytest.raises(ValueError):
+        FmpValuationStoreProvider(
+            store_url="http://market.example.test",
+            service_role_key="test-store-key",
+        )
+
+
 def test_cache_ttl_starts_after_the_source_fetch_completes() -> None:
     now = [10.0]
 

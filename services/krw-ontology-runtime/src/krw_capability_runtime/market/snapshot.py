@@ -9,6 +9,7 @@ become filing evidence or strong-claim support.
 from __future__ import annotations
 
 import json
+import ipaddress
 import math
 import os
 import threading
@@ -198,6 +199,17 @@ def _open_fmp_request(request: Request, *, timeout: float) -> Any:
     return build_opener(_RejectRedirects()).open(request, timeout=timeout)
 
 
+def _is_loopback_host(host: str | None) -> bool:
+    if host is None:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class FmpValuationStoreProvider:
     """Read the existing FMP-backed valuation store through one fixed query.
 
@@ -223,15 +235,16 @@ class FmpValuationStoreProvider:
         ).strip()
         parsed = urlsplit(raw_url)
         if raw_url and (
-            parsed.scheme != "https"
+            parsed.scheme not in {"https", "http"}
             or not parsed.netloc
+            or (parsed.scheme == "http" and not _is_loopback_host(parsed.hostname))
             or parsed.username is not None
             or parsed.password is not None
             or parsed.path not in ("", "/")
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("market store URL must be a bare HTTPS origin")
+            raise ValueError("market store URL must be a bare HTTPS or loopback HTTP origin")
         self._store_url = raw_url.rstrip("/")
         self._service_role_key = (
             service_role_key
