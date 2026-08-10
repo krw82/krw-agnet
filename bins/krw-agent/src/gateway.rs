@@ -388,7 +388,12 @@ fn valid_markdown(markdown: &str) -> bool {
 fn valid_usage(usage: &GatewayUsage) -> bool {
     usage.total_tokens == usage.input_tokens.saturating_add(usage.output_tokens)
         && match usage.token_usage_status {
-            TokenUsageStatus::Complete => usage.billable_tokens == usage.total_tokens,
+            TokenUsageStatus::Complete => {
+                usage.billable_tokens == usage.total_tokens
+                    && !(usage.provider_turns > 0
+                        && usage.input_tokens == 0
+                        && usage.output_tokens > 0)
+            }
             TokenUsageStatus::OutputOnly => {
                 usage.input_tokens == 0 && usage.billable_tokens == usage.output_tokens
             }
@@ -640,7 +645,7 @@ mod tests {
                             .flatten()
                     })
                 })
-                .expect("content length");
+                .unwrap_or(0);
             if bytes.len() >= header_end + 4 + content_length {
                 return bytes;
             }
