@@ -79,11 +79,22 @@ gateway_ready() {
   curl --fail --silent --show-error --max-time 2 "$krw_health_url" >/dev/null 2>&1
 }
 
+agentd_ready() {
+  # The local daemon is intentionally a direct child of the cold-start
+  # script. Match its executable plus one stable argument, not arbitrary user
+  # processes or a stale PID file.
+  pgrep -f -- "$krw_root/target/debug/krw-agentd --image-dir" >/dev/null 2>&1
+}
+
+stack_ready() {
+  gateway_ready && agentd_ready
+}
+
 wait_for_gateway() {
   local attempts=${1:-120}
   local index
   for index in $(seq 1 "$attempts"); do
-    gateway_ready && return 0
+    stack_ready && return 0
     stack_running || return 1
     sleep 0.5
   done
@@ -93,9 +104,13 @@ wait_for_gateway() {
 start_stack() {
   ensure_state
   if stack_running; then
-    if gateway_ready; then
+    if stack_ready; then
       printf 'dev stack already ready: %s\n' "$krw_health_url"
       return 0
+    fi
+    if gateway_ready; then
+      printf 'Gateway is up but krw-agentd is absent; refusing to reuse a stale stack\n' >&2
+      return 1
     fi
     printf 'dev stack is already starting; waiting for Gateway\n'
     if wait_for_gateway 120; then
@@ -110,9 +125,13 @@ start_stack() {
   # Reuse a healthy Gateway instead of launching a second set of processes on
   # the same ports. It is intentionally treated as externally supervised, so
   # `down` will never terminate it.
-  if gateway_ready; then
+  if gateway_ready && agentd_ready; then
     printf 'existing externally supervised Gateway is ready: %s\n' "$krw_health_url"
     return 0
+  fi
+  if gateway_ready; then
+    printf 'Gateway is up but krw-agentd is absent; stop the stale external stack before retrying\n' >&2
+    return 1
   fi
 
   if [[ -f "$krw_pid_file" ]]; then
@@ -140,8 +159,10 @@ stop_stack() {
   local pid
   pid=$(read_pid) || {
     rm -f "$krw_pid_file"
-    if gateway_ready; then
+    if gateway_ready && agentd_ready; then
       printf 'external dev stack is still serving; leaving it running\n'
+    elif gateway_ready; then
+      printf 'stale external Gateway is still serving; leaving it untouched\n'
     else
       printf 'dev stack is not running\n'
     fi
@@ -175,17 +196,26 @@ show_status() {
   local pid=''
   if pid=$(read_pid) && kill -0 "$pid" 2>/dev/null && stack_command_matches "$pid"; then
     printf 'supervisor=running pid=%s\n' "$pid"
-    if gateway_ready; then
+    if stack_ready; then
       printf 'gateway=ready url=%s\n' "$krw_health_url"
+      printf 'agentd=ready\n'
     else
-      printf 'gateway=starting_or_unhealthy url=%s\n' "$krw_health_url"
+      if gateway_ready; then
+        printf 'gateway=ready agentd=missing_or_stopped url=%s\n' "$krw_health_url"
+      else
+        printf 'gateway=starting_or_unhealthy url=%s\n' "$krw_health_url"
+      fi
       return 1
     fi
   else
     printf 'supervisor=stopped\n'
-    if gateway_ready; then
+    if gateway_ready && agentd_ready; then
       printf 'gateway=ready (external supervisor) url=%s\n' "$krw_health_url"
+      printf 'agentd=ready (external supervisor)\n'
       return 0
+    elif gateway_ready; then
+      printf 'gateway=ready but agentd=missing_or_stopped (stale external stack)\n'
+      return 1
     fi
     return 1
   fi
