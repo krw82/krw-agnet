@@ -23,7 +23,7 @@
 //! |-------------------------|--------------------------|
 //! | `end_turn`              | `stop`                   |
 //! | `tool_use`              | `tool_calls`             |
-//! | `max_tokens`            | `max_tokens`             |
+//! | `max_tokens`            | `length`                |
 //! | `stop_sequence`         | `stop`                   |
 //! | (anything else)         | passed through verbatim  |
 
@@ -422,7 +422,12 @@ fn map_stop_reason(reason: &str) -> String {
         "end_turn" | "stop_sequence" => "stop".to_string(),
         // Anthropic uses `tool_use`; run-engine expects `tool_calls`.
         "tool_use" => "tool_calls".to_string(),
-        "max_tokens" => "max_tokens".to_string(),
+        // Anthropic uses `max_tokens` for a truncated response.  The
+        // run-engine's bounded recovery path already treats the provider-
+        // neutral `length` reason as "ask for a shorter final answer".
+        // Normalize here so the GLM/Anthropic wire does not turn a recoverable
+        // output-length event into a terminal protocol failure.
+        "max_tokens" => "length".to_string(),
         other => other.to_string(),
     }
 }
@@ -819,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_stop_reason_passes_through() {
+    fn max_tokens_stop_reason_maps_to_recoverable_length() {
         let mut asm = build_assembler(64 * 1024);
         asm.push_event(SseEvent::MessageStart {
             model: GLM_MODEL_ID.to_string(),
@@ -833,7 +838,7 @@ mod tests {
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
         let episode = asm.finish().expect("episode assembles");
-        assert_eq!(episode.finish_reason, "max_tokens");
+        assert_eq!(episode.finish_reason, "length");
     }
 
     #[test]
