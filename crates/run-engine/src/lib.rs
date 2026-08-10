@@ -2240,9 +2240,29 @@ where
             }
 
             match resolve_local_skill_load(&episode, &state.tool_definitions, input.image) {
-                Ok(Some((tool_call_id, result))) => {
+                Ok(Some(resolution)) => {
                     state.append_assistant(&episode);
-                    state.append_tool_result(&tool_call_id, &result.provider_content)?;
+                    for (tool_call_id, result) in resolution.loaded {
+                        state.append_tool_result(&tool_call_id, &result.provider_content)?;
+                    }
+                    // A model can batch a progressive-disclosure load with a
+                    // research call.  Local skill loading is intentionally
+                    // handled before the statechart, so defer the other calls
+                    // with a normal tool result and let the next turn issue
+                    // them after it has received the skill body.  This keeps
+                    // multiple skill loads useful without authorizing an
+                    // unscoped skill capability as an MCP action.
+                    for tool_call_id in resolution.deferred_tool_call_ids {
+                        state.append_tool_result(
+                            &tool_call_id,
+                            &serde_json::json!({
+                                "schema_version": 1,
+                                "status": "not_dispatched",
+                                "reason_code": "skill_load_completed_before_other_calls",
+                                "contains_evidence": false,
+                            }),
+                        )?;
+                    }
                     state.check_conversation_limit(self.config.max_conversation_bytes)?;
                     self.checkpoint_active_state(&identity, &state, deadline)
                         .await?;
@@ -3980,41 +4000,50 @@ where
 /// image blob store. It is deliberately outside the workflow statechart and
 /// external-action ledger: loading an already pinned instruction changes no
 /// research state and performs no network or MCP operation.
+struct LocalSkillLoadResolution {
+    loaded: Vec<(String, CapabilityResult)>,
+    deferred_tool_call_ids: Vec<String>,
+}
+
 fn resolve_local_skill_load(
     episode: &ProviderEpisodeV1,
     advertised_tools: &[ProviderToolDefinition],
     image: &LoadedImage,
-) -> Result<Option<(String, CapabilityResult)>, EngineError> {
-    if episode.assistant.tool_calls.len() != 1 {
+) -> Result<Option<LocalSkillLoadResolution>, EngineError> {
+    if episode.assistant.tool_calls.is_empty() {
         return Ok(None);
     }
-    let call = &episode.assistant.tool_calls[0];
-    if call.kind != ToolCallKind::Function
-        || call.function.name.as_str() != provider_tool_name("skill.load")
-    {
-        return Ok(None);
+    let skill_name = provider_tool_name("skill.load");
+    let mut loaded = Vec::new();
+    let mut deferred_tool_call_ids = Vec::new();
+    for call in &episode.assistant.tool_calls {
+        if call.kind != ToolCallKind::Function || call.function.name.as_str() != skill_name {
+            deferred_tool_call_ids.push(call.id.clone());
+            continue;
+        }
+        if call.id.is_empty()
+            || !advertised_tools
+                .iter()
+                .any(|definition| definition.name() == call.function.name.as_str())
+        {
+            return Err(EngineError::InvalidToolCallId);
+        }
+        let arguments: Value = serde_json::from_str(&call.function.arguments).map_err(|_| {
+            EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+                "skill_load_arguments_invalid",
+            ))
+        })?;
+        validate_canonical_value(SKILL_LOAD_V1, &arguments).map_err(|_| {
+            EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+                "skill_load_arguments_invalid",
+            ))
+        })?;
+        loaded.push((call.id.clone(), invoke_skill_load(image, &arguments)?));
     }
-    if call.id.is_empty()
-        || !advertised_tools
-            .iter()
-            .any(|definition| definition.name() == call.function.name.as_str())
-    {
-        return Err(EngineError::InvalidToolCallId);
-    }
-    let arguments: Value = serde_json::from_str(&call.function.arguments).map_err(|_| {
-        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
-            "skill_load_arguments_invalid",
-        ))
-    })?;
-    validate_canonical_value(SKILL_LOAD_V1, &arguments).map_err(|_| {
-        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
-            "skill_load_arguments_invalid",
-        ))
-    })?;
-    Ok(Some((
-        call.id.clone(),
-        invoke_skill_load(image, &arguments)?,
-    )))
+    Ok((!loaded.is_empty()).then_some(LocalSkillLoadResolution {
+        loaded,
+        deferred_tool_call_ids,
+    }))
 }
 
 /// Resolve a `skill.load` input locally from the immutable image blob store.
