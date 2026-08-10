@@ -756,31 +756,15 @@ fn retained_provider_dependency_code<'a>(origin: &str, code: &'a str) -> Option<
 /// artifacts, provider episodes, tool results, prompts, and state identifiers
 /// must never cross the durable failure boundary.
 ///
-/// A closed set of model-correctable failure categories (protocol, proposal,
-/// workflow state, planner, capability selection) is routed to `deferred`
-/// instead of `failed` so the daemon re-queues the run for another attempt.
-/// These failures are transient in the sense that a fresh provider turn may
-/// produce a valid decision; the repair budget already bounded the in-process
-/// recovery, so re-queuing gives the model a clean slate. Failures that are
-/// structural (budget exhaustion, immutable scope, recovery integrity) remain
-/// terminal.
+/// Model/protocol errors reach this boundary only after the engine has already
+/// spent its bounded in-process recovery budget. They must therefore be
+/// terminal: deferring them starts the same immutable run from a fresh claim,
+/// resets the per-claim defer counter, and can turn one malformed model output
+/// into an unbounded provider loop. Actual transient dependencies are handled
+/// above as `EngineError::Dependency` and remain eligible for re-queueing.
 fn engine_execution_failure(error: &EngineError) -> RunExecutionFailure {
     let reason_code = engine_reason_code(error);
-    let is_requeueable = matches!(
-        reason_code,
-        "provider_protocol_failure"
-            | "model_proposal_rejected"
-            | "workflow_state_failure"
-            | "capability_unknown"
-            | "research_planner_failure"
-            | "context_plan_failure"
-            | "capability_result_invalid"
-    );
-    let failure = if is_requeueable {
-        RunExecutionFailure::deferred(reason_code, REQUEUE_DELAY)
-    } else {
-        RunExecutionFailure::failed(reason_code)
-    };
+    let failure = RunExecutionFailure::failed(reason_code);
     match durable_failure_diagnostic(error) {
         Some(diagnostic) => failure.with_release(json!({
             "kind": "krw.agent/failure-diagnostic-v1",
@@ -790,11 +774,6 @@ fn engine_execution_failure(error: &EngineError) -> RunExecutionFailure {
         None => failure,
     }
 }
-
-/// Delay before a re-queued run becomes claimable again. Short enough to keep
-/// interactive latency reasonable, long enough to let a transient provider
-/// hiccup clear.
-const REQUEUE_DELAY: Duration = Duration::from_secs(5);
 
 fn engine_reason_code(error: &EngineError) -> &'static str {
     match error {
@@ -982,11 +961,24 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_engine_failure_does_not_create_a_diagnostic_payload() {
+    fn exhausted_model_recovery_is_terminal_without_a_diagnostic_payload() {
         let failure = engine_execution_failure(&EngineError::InvalidWorkflowControl);
 
         assert_eq!(failure.reason_code, "workflow_state_failure");
+        assert!(!failure.retryable);
+        assert_eq!(failure.retry_delay, Duration::ZERO);
         assert_eq!(failure.release, json!({}));
+    }
+
+    #[test]
+    fn malformed_provider_episode_is_terminal_after_in_process_recovery() {
+        let failure = engine_execution_failure(&EngineError::InvalidProviderEpisode(
+            "capability state requires a tool call",
+        ));
+
+        assert_eq!(failure.reason_code, "provider_protocol_failure");
+        assert!(!failure.retryable);
+        assert_eq!(failure.retry_delay, Duration::ZERO);
     }
 
     #[test]
