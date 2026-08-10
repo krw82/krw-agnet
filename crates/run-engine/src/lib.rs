@@ -58,9 +58,11 @@ use krw_agent_persistence::{
     ActionDisposition, ActionFinalizationReceipt, ActionReceipt, ActionStage, BeginActionMutation,
     CheckpointEpisodeMutation, FinalCommitMutation, FinalizeActionMutation, ObserveActionMutation,
 };
+#[cfg(feature = "http")]
+use krw_agent_protocol::GLM_MODEL_ID;
 use krw_agent_protocol::{
     ALLOWED_MODEL_IDS, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash,
-    DeploymentBinding, GLM_MODEL_ID, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
+    DeploymentBinding, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
     provider_tool_name,
 };
@@ -435,6 +437,7 @@ fn elapsed_millis(start: Instant) -> u64 {
 
 /// The raw API body stays outside ordinary logs; only the HTTP status is
 /// exposed when one exists.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn deepseek_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -483,6 +486,7 @@ fn deepseek_failure_code(error: &WireError) -> String {
     }
 }
 
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     match error {
         WireError::InvalidEndpoint
@@ -526,6 +530,7 @@ fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
 /// distinguish GLM episodes from `DeepSeek` episodes while keeping the wire
 /// error taxonomy identical (both providers use the Anthropic-compatible
 /// Messages contract here).
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn glm_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -577,6 +582,7 @@ fn glm_failure_code(error: &WireError) -> String {
 /// Classify a GLM wire failure for retry/delivery semantics.  Identical
 /// taxonomy to [`classify_deepseek_failure`] since GLM shares the same
 /// Anthropic-compatible wire layer; only the failure-code labels differ.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     match error {
         WireError::InvalidEndpoint
