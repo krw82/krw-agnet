@@ -274,8 +274,12 @@ function generatedId(prefix: "ses" | "run" | "mut"): string {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function projectFailureUsage(value: JsonValue | null): JsonObject | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value === null || !isJsonObject(value)) return null;
   const candidate = value.usage;
   if (candidate === undefined) return null;
   try {
