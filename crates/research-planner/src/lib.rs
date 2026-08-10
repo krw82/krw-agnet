@@ -33,7 +33,10 @@ const MAX_PROPOSALS: usize = 64;
 const MAX_COMPLETED_FINGERPRINTS: usize = 256;
 const MAX_REJECTED_CONTEXT_FINGERPRINTS: usize = 32;
 const MAX_CONTEXT_PLAN_HASHES: usize = 64;
-const MAX_CONTEXT_CLAUSES: usize = 12;
+// This is still a small bounded context, but it must cover a complex question
+// plus one adaptive follow-up without turning a valid research plan into a
+// terminal repair loop.
+const MAX_CONTEXT_CLAUSES: usize = 18;
 const PLANNER_CHECKPOINT_SCHEMA_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

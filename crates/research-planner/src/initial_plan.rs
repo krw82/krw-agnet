@@ -19,7 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-const MAX_SELECTED_CLAUSES: usize = 12;
+// Keep the physical context bounded, but leave enough room for a complex
+// question to append one focused follow-up plan after the initial read.
+// Twelve clauses made otherwise valid multi-objective GLM plans fail as soon
+// as a 9-clause initial plan needed a small second pass.
+const MAX_SELECTED_CLAUSES: usize = 18;
 const MAX_EXACT_SEARCH_NODES: usize = 65_536;
 const RESEARCH_INTENT_RECEIPT_SCHEMA_VERSION: u16 = 1;
 
