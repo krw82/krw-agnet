@@ -52,8 +52,21 @@ pub(crate) struct GatewayUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub total_tokens: u32,
+    pub token_usage_status: TokenUsageStatus,
+    pub billable_tokens: u32,
     pub provider_total_ms: u64,
     pub capability_total_ms: u64,
+}
+
+/// Whether the provider reported both sides of the token ledger.  When GLM's
+/// Anthropic-compatible stream reports zero input tokens for a non-empty
+/// request, the gateway exposes only output tokens as credit-eligible rather
+/// than fabricating an input count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenUsageStatus {
+    Complete,
+    OutputOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,32 +331,39 @@ async fn parse_status_response(
         return Err(GatewayClientError::InvalidResponse);
     }
     let final_output = match (response.state, response.final_output) {
-        (GatewayRunState::Final, Some(final_output))
-            if valid_markdown(&final_output.markdown) => Some(FinalOutput {
+        (GatewayRunState::Final, Some(final_output)) if valid_markdown(&final_output.markdown) => {
+            Some(FinalOutput {
                 markdown: final_output.markdown,
                 final_output_hash: final_output.final_output_hash,
-            }),
-        (GatewayRunState::Final, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
+            })
+        }
+        (GatewayRunState::Final, None | Some(_)) => {
+            return Err(GatewayClientError::InvalidResponse);
+        }
         (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, None) => None,
     };
     let retry_message = match (response.state, response.retry_message) {
         (GatewayRunState::Failed, Some(message))
-            if valid_markdown(&message.markdown) && message.retry_recommended => Some(RetryMessage {
+            if valid_markdown(&message.markdown) && message.retry_recommended =>
+        {
+            Some(RetryMessage {
                 markdown: message.markdown,
                 category: message.category,
                 retry_recommended: message.retry_recommended,
-            }),
-        (GatewayRunState::Failed, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
+            })
+        }
+        (GatewayRunState::Failed, None | Some(_)) => {
+            return Err(GatewayClientError::InvalidResponse);
+        }
         (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, None) => None,
     };
     let usage = match (response.state, response.usage) {
-        (GatewayRunState::Final, Some(usage))
-            if usage.total_tokens == usage.input_tokens.saturating_add(usage.output_tokens) => {
-                Some(usage)
-            }
-        (GatewayRunState::Final, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
+        (GatewayRunState::Final, Some(usage)) if valid_usage(&usage) => Some(usage),
+        (GatewayRunState::Final, None | Some(_)) => {
+            return Err(GatewayClientError::InvalidResponse);
+        }
         (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, None) => None,
     };
@@ -359,6 +379,16 @@ async fn parse_status_response(
 
 fn valid_markdown(markdown: &str) -> bool {
     !markdown.is_empty() && !markdown.contains('\0') && markdown.len() <= MAX_QUESTION_BYTES
+}
+
+fn valid_usage(usage: &GatewayUsage) -> bool {
+    usage.total_tokens == usage.input_tokens.saturating_add(usage.output_tokens)
+        && match usage.token_usage_status {
+            TokenUsageStatus::Complete => usage.billable_tokens == usage.total_tokens,
+            TokenUsageStatus::OutputOnly => {
+                usage.input_tokens == 0 && usage.billable_tokens == usage.output_tokens
+            }
+        }
 }
 
 async fn parse_response<T: for<'de> Deserialize<'de>>(
@@ -397,7 +427,10 @@ fn map_request_error(_: reqwest::Error) -> GatewayClientError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentGatewayClient, GatewayClientError, GatewayRunState, is_gateway_id};
+    use super::{
+        AgentGatewayClient, GatewayClientError, GatewayRunState, GatewayUsage, TokenUsageStatus,
+        is_gateway_id, valid_usage,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -437,6 +470,30 @@ mod tests {
         assert!(GatewayRunState::Final.is_terminal());
         assert!(GatewayRunState::Cancelled.is_terminal());
         assert!(GatewayRunState::Failed.is_terminal());
+    }
+
+    #[test]
+    fn credit_usage_never_bills_an_unreported_glm_input_count() {
+        let output_only = GatewayUsage {
+            provider_turns: 3,
+            capability_calls: 1,
+            repairs: 0,
+            input_tokens: 0,
+            output_tokens: 800,
+            total_tokens: 800,
+            token_usage_status: TokenUsageStatus::OutputOnly,
+            billable_tokens: 800,
+            provider_total_ms: 5_000,
+            capability_total_ms: 120,
+        };
+        assert!(valid_usage(&output_only));
+
+        let fabricated_input = GatewayUsage {
+            token_usage_status: TokenUsageStatus::Complete,
+            billable_tokens: 800,
+            ..output_only
+        };
+        assert!(!valid_usage(&fabricated_input));
     }
 
     #[tokio::test]

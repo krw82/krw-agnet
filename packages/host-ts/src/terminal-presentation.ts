@@ -14,7 +14,16 @@ export interface PublicRunUsage extends JsonObject {
   readonly repairs: number;
   readonly input_tokens: number;
   readonly output_tokens: number;
+  /**
+   * `total_tokens` is the sum reported by the provider, not an estimate.
+   * Consumers must inspect `token_usage_status` before treating it as a
+   * complete request-and-response total.
+   */
   readonly total_tokens: number;
+  /** Whether the upstream supplied an input-token count for this run. */
+  readonly token_usage_status: "complete" | "output_only";
+  /** Conservative credit counter: never includes an unreported input count. */
+  readonly billable_tokens: number;
   readonly provider_total_ms: number;
   readonly capability_total_ms: number;
 }
@@ -36,8 +45,10 @@ const MAX_COUNTER = 0xffff_ffff;
 
 /**
  * Project kernel-recorded usage into the stable, product-facing counters.
- * `total_tokens` is derived here so billing consumers never need to assume a
- * provider-specific usage shape.
+ * `total_tokens` is derived here from provider-reported counters.  Some GLM
+ * Anthropic-compatible streams return a literal zero for non-empty input;
+ * that is not an input-token measurement.  In that case expose only the
+ * provider-reported output as billable rather than inventing a prompt count.
  */
 export function projectPublicRunUsage(value: JsonValue): PublicRunUsage {
   if (!isPlainObject(value)) throw new TypeError("terminal_usage_not_object");
@@ -52,6 +63,10 @@ export function projectPublicRunUsage(value: JsonValue): PublicRunUsage {
   if (!Number.isSafeInteger(totalTokens) || totalTokens > MAX_COUNTER) {
     throw new TypeError("terminal_usage_total_tokens");
   }
+  const tokenUsageStatus = providerTurns > 0 && inputTokens === 0 && outputTokens > 0
+    ? "output_only" as const
+    : "complete" as const;
+  const billableTokens = tokenUsageStatus === "output_only" ? outputTokens : totalTokens;
   return {
     provider_turns: providerTurns,
     capability_calls: capabilityCalls,
@@ -59,6 +74,8 @@ export function projectPublicRunUsage(value: JsonValue): PublicRunUsage {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     total_tokens: totalTokens,
+    token_usage_status: tokenUsageStatus,
+    billable_tokens: billableTokens,
     provider_total_ms: providerTotalMs,
     capability_total_ms: capabilityTotalMs,
   };

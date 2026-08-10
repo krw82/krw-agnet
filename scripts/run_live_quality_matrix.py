@@ -435,7 +435,7 @@ def validate_status(
     return session_id, run_id, state, markdown, final_hash, validate_usage(usage), None
 
 
-def validate_usage(value: Any) -> dict[str, int]:
+def validate_usage(value: Any) -> dict[str, Any]:
     fields = {
         "provider_turns",
         "capability_calls",
@@ -443,16 +443,30 @@ def validate_usage(value: Any) -> dict[str, int]:
         "input_tokens",
         "output_tokens",
         "total_tokens",
+        "token_usage_status",
+        "billable_tokens",
         "provider_total_ms",
         "capability_total_ms",
     }
+    numeric_fields = fields - {"token_usage_status"}
     if not isinstance(value, dict) or set(value) != fields:
         raise GatewayProblem("usage_shape_invalid")
-    if any(type(item) is not int or item < 0 for item in value.values()):
+    if any(type(value[key]) is not int or value[key] < 0 for key in numeric_fields):
         raise GatewayProblem("usage_value_invalid")
     if value["total_tokens"] != value["input_tokens"] + value["output_tokens"]:
         raise GatewayProblem("usage_total_invalid")
-    return {key: int(value[key]) for key in sorted(fields)}
+    if value["token_usage_status"] == "complete":
+        if value["billable_tokens"] != value["total_tokens"]:
+            raise GatewayProblem("usage_complete_billable_invalid")
+    elif value["token_usage_status"] == "output_only":
+        if value["input_tokens"] != 0 or value["billable_tokens"] != value["output_tokens"]:
+            raise GatewayProblem("usage_output_only_billable_invalid")
+    else:
+        raise GatewayProblem("usage_status_invalid")
+    return {
+        key: int(value[key]) if key != "token_usage_status" else value[key]
+        for key in sorted(fields)
+    }
 
 
 def validate_retry_message(value: Any) -> dict[str, Any]:

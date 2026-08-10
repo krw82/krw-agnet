@@ -87,6 +87,8 @@ class TerminalActionTraceTest(unittest.TestCase):
                 "input_tokens": 1200,
                 "output_tokens": 800,
                 "total_tokens": 2000,
+                "token_usage_status": "complete",
+                "billable_tokens": 2000,
                 "provider_total_ms": 1000,
                 "capability_total_ms": 120,
             },
@@ -98,6 +100,7 @@ class TerminalActionTraceTest(unittest.TestCase):
         self.assertEqual(state, "final")
         self.assertEqual(answer, "## 답변")
         self.assertEqual(usage["total_tokens"], 2000)
+        self.assertEqual(usage["billable_tokens"], 2000)
         self.assertIsNone(retry)
 
         failed = {
