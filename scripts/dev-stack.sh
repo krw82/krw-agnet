@@ -149,9 +149,33 @@ start_stack() {
     return 1
   fi
   printf 'starting cold dev stack; log=%s\n' "$krw_log_file"
-  nohup env KRW_AGENT_LOCAL_STATE_DIR="$krw_state" \
-    "$krw_start_script" >>"$krw_log_file" 2>&1 </dev/null &
-  local pid=$!
+  # A plain background child can remain in the terminal's process group and
+  # be reaped when the invoking shell closes. Spawn the supervisor in a new
+  # session so `up` can return while the stack remains available for later
+  # quality requests. Python is already a required local runtime for the
+  # quality runner, so this avoids adding another process-manager dependency.
+  local pid
+  pid=$(python3 - "$krw_start_script" "$krw_state" "$krw_log_file" <<'PY'
+import os
+import subprocess
+import sys
+
+script, state, log_path = sys.argv[1:]
+env = os.environ.copy()
+env["KRW_AGENT_LOCAL_STATE_DIR"] = state
+with open(log_path, "ab", buffering=0) as log:
+    child = subprocess.Popen(
+        [script],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+        close_fds=True,
+    )
+print(child.pid)
+PY
+  )
   printf '%s\n' "$pid" >"$krw_pid_file"
   if wait_for_gateway 240; then
     printf 'dev stack ready: %s\n' "$krw_health_url"
