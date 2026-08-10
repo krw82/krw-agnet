@@ -1847,7 +1847,10 @@ mod tests {
         let delta =
             map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
 
-        assert_eq!(delta.provider_content["topics"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            delta.provider_content["topics"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(delta.records.len(), 1);
         EvidenceLedger::from_records(delta.records).unwrap();
     }
