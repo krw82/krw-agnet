@@ -469,7 +469,8 @@ async fn preflight_market_snapshot(
         capabilities.invoke(&invocation),
     )
     .await
-    .ok()??;
+    .ok()?
+    .ok()?;
     TrustedMarketSnapshot::from_provider_content(ticker, &result.provider_content).ok()
 }
 
