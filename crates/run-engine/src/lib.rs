@@ -4697,18 +4697,26 @@ impl ActiveRun {
         Ok(ids)
     }
 
-    fn available_outgoing_events(
+    /// Return only transitions that a provider may select through the local
+    /// `krw_agent_transition` tool. Capability-targeted edges deliberately do
+    /// not appear here: the provider selects those by calling the advertised
+    /// capability itself, and `route_to_capability` resolves the edge from the
+    /// validated call. Mixing both control paths lets a model select a
+    /// capability edge as a transition, which leaves the kernel outside a
+    /// model-decision state after it records the event.
+    fn available_model_transition_events(
         &self,
-        current: &CompiledState,
-        available_capabilities: &BTreeSet<String>,
+        image: &AgentImageManifest,
+        request: &RunRequest,
     ) -> Result<Vec<String>, EngineError> {
+        let current_numeric_id = self.current_state()?.numeric_id;
         let mut events = BTreeSet::new();
         for transition in self
             .program
             .workflow
             .transitions
             .iter()
-            .filter(|transition| transition.from == current.numeric_id)
+            .filter(|transition| transition.from == current_numeric_id)
         {
             let next = self
                 .program
@@ -4717,11 +4725,14 @@ impl ActiveRun {
                 .iter()
                 .find(|state| state.numeric_id == transition.to)
                 .ok_or(EngineError::InvalidStateProgram)?;
-            if !self.state_has_remaining_visit(next)? {
+            if !matches!(next.operation, StateOperation::ModelDecision { .. })
+                || !self.state_has_remaining_visit(next)?
+            {
                 continue;
             }
-            if let Some(capability_id) = &next.capability_id
-                && !available_capabilities.contains(capability_id)
+            let facts = kernel_workflow_facts(image, request, &transition.event)?;
+            if !transition.guard.matches(&facts)
+                || !self.event_has_remaining_target(&transition.event, &facts)?
             {
                 continue;
             }
@@ -8326,8 +8337,7 @@ fn build_provider_request(
     let output_mode = state.current_model_output_mode()?;
     let available_capabilities =
         state.available_capability_ids(&context, &input.image.manifest, input.deployment)?;
-    let outgoing_events =
-        state.available_outgoing_events(state.current_state()?, &available_capabilities)?;
+    let outgoing_events = state.available_model_transition_events(input.image, input.request)?;
     let provider_capabilities = match output_mode {
         ModelOutputMode::CapabilityCall | ModelOutputMode::CapabilityOrWorkflowTransition => {
             available_capabilities.clone()
@@ -14050,12 +14060,16 @@ mod tests {
         for request in requests.iter() {
             assert!(request.system.contains("<trusted-market-snapshot>"));
             assert!(request.system.contains("\"last_price\":125.5"));
-            assert!(request
-                .system
-                .contains("first compare `last_price` with `previous_close`"));
-            assert!(request
-                .system
-                .contains("never substitute an unrelated filing metric or generic driver list"));
+            assert!(
+                request
+                    .system
+                    .contains("first compare `last_price` with `previous_close`")
+            );
+            assert!(
+                request
+                    .system
+                    .contains("never substitute an unrelated filing metric or generic driver list")
+            );
             assert!(request.system.contains(
                 "must not support a factual filing claim, recommendation, or target price"
             ));
@@ -14094,6 +14108,34 @@ mod tests {
                 .iter()
                 .any(|tool| tool.name() == WORKFLOW_TRANSITION_TOOL_NAME)
         );
+        let transition = requests[1]
+            .tools
+            .iter()
+            .find(|tool| tool.name() == WORKFLOW_TRANSITION_TOOL_NAME)
+            .expect("assessment exposes the local transition tool");
+        let events = transition.input_schema.as_value()["properties"]["event"]["enum"]
+            .as_array()
+            .expect("transition event enum");
+        let has_event = |event: &str| {
+            events
+                .iter()
+                .any(|candidate| candidate.as_str() == Some(event))
+        };
+        assert!(has_event("evidence_sufficient"));
+        assert!(has_event("no_positive_value_action"));
+        assert!(has_event("output_budget_reserved"));
+        for capability_edge in [
+            "company_context_has_value",
+            "market_snapshot_has_value",
+            "precise_query_has_value",
+            "selected_trace_has_value",
+            "append_context_plan",
+        ] {
+            assert!(
+                !has_event(capability_edge),
+                "capability edge {capability_edge} must be selected by its capability call, not the transition tool"
+            );
+        }
 
         assert!(requests[2].tools.is_empty());
         assert!(requests[2].tool_choice.is_none());
