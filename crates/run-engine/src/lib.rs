@@ -13196,6 +13196,54 @@ mod tests {
     }
 
     #[test]
+    fn causal_chain_capability_is_reachable_from_each_ontology_analysis_stage() {
+        let image = compile_agent_dir(agent_root()).unwrap();
+
+        for (workflow_id, assess_state_id) in [
+            ("company_research_v2", "assess_obligations"),
+            (
+                "earnings_deep_dive_v1",
+                "reconcile_periods_and_commentary",
+            ),
+            ("scenario_sensitivity_v1", "assess_transmission_path"),
+        ] {
+            let workflow = image
+                .manifest
+                .body
+                .workflows
+                .iter()
+                .find(|workflow| workflow.id == workflow_id)
+                .expect("ontology workflow");
+            let assess = workflow
+                .states
+                .iter()
+                .find(|state| state.stable_id == assess_state_id)
+                .expect("analysis state");
+            let chain = workflow
+                .states
+                .iter()
+                .find(|state| state.capability_id.as_deref() == Some("ontology.chain"))
+                .expect("chain capability state");
+            let ingest = workflow
+                .states
+                .iter()
+                .find(|state| state.stable_id == "ingest_evidence")
+                .expect("evidence ingest state");
+
+            assert!(workflow.transitions.iter().any(|transition| {
+                transition.from == assess.numeric_id
+                    && transition.to == chain.numeric_id
+                    && transition.event == "selected_chain_has_value"
+            }));
+            assert!(workflow.transitions.iter().any(|transition| {
+                transition.from == chain.numeric_id
+                    && transition.to == ingest.numeric_id
+                    && transition.event == "evidence_observed"
+            }));
+        }
+    }
+
+    #[test]
     fn every_planner_assess_state_has_rejection_stop_and_context_replan_edges() {
         let mut audited = BTreeSet::new();
         let mut with_rejection_self_loop = BTreeSet::new();

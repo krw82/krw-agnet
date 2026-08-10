@@ -445,6 +445,10 @@ workflows:
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      # The analyst skill uses chain only when an observed record needs its
+      # causal/business context. Keep this as a separate bounded capability
+      # state so it is advertised only after evidence has been ingested.
+      - { id: chain_selected, kind: capability, capability_id: ontology.chain, max_visits: 1 }
       - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
       - { id: verify_ir, kind: verify, max_visits: 2 }
       - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
@@ -468,12 +472,14 @@ workflows:
       - { from: assess_obligations, on: market_snapshot_has_value, to: market_snapshot }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
       - { from: assess_obligations, on: append_context_plan, to: query_context }
       - { from: assess_obligations, on: evidence_sufficient, to: compose_ir }
       - { from: assess_obligations, on: no_positive_value_action, to: compose_ir }
       - { from: assess_obligations, on: output_budget_reserved, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
       - { from: company_context, on: evidence_observed, to: ingest_evidence }
       - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
@@ -496,6 +502,7 @@ workflows:
       - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 3 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: chain_selected, kind: capability, capability_id: ontology.chain, max_visits: 1 }
       - { id: classify_thesis_change, kind: assess, role_id: earnings_analyst, max_visits: 2 }
       - { id: compose_ir, kind: compose, role_id: earnings_composer, max_visits: 2 }
       - { id: verify_ir, kind: verify, max_visits: 2 }
@@ -518,6 +525,7 @@ workflows:
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: reconcile_periods_and_commentary, on: precise_query_has_value, to: targeted_query }
       - { from: reconcile_periods_and_commentary, on: selected_trace_has_value, to: trace_selected }
+      - { from: reconcile_periods_and_commentary, on: selected_chain_has_value, to: chain_selected }
       - { from: reconcile_periods_and_commentary, on: append_context_plan, to: query_context }
       - { from: reconcile_periods_and_commentary, on: obligations_resolved, to: classify_thesis_change }
       - { from: reconcile_periods_and_commentary, on: external_input_required, to: classify_thesis_change }
@@ -525,6 +533,7 @@ workflows:
       - { from: reconcile_periods_and_commentary, on: output_budget_reserved, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
       - { from: classify_thesis_change, on: classified, to: compose_ir }
       - { from: classify_thesis_change, on: output_budget_reserved, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
@@ -547,6 +556,7 @@ workflows:
       - { id: assess_transmission_path, kind: assess, role_id: scenario_analyst, max_visits: 5 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: chain_selected, kind: capability, capability_id: ontology.chain, max_visits: 1 }
       - { id: construct_scenarios, kind: assess, role_id: scenario_analyst, max_visits: 2 }
       - { id: compose_ir, kind: compose, role_id: scenario_composer, max_visits: 2 }
       - { id: verify_ir, kind: verify, max_visits: 2 }
@@ -569,6 +579,7 @@ workflows:
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: assess_transmission_path, on: precise_query_has_value, to: targeted_query }
       - { from: assess_transmission_path, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_transmission_path, on: selected_chain_has_value, to: chain_selected }
       - { from: assess_transmission_path, on: append_context_plan, to: query_context }
       - { from: assess_transmission_path, on: proposal_rejected, to: assess_transmission_path }
       - { from: assess_transmission_path, on: evidence_sufficient, to: construct_scenarios }
@@ -576,6 +587,7 @@ workflows:
       - { from: assess_transmission_path, on: output_budget_reserved, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
       - { from: construct_scenarios, on: scenarios_ready, to: compose_ir }
       - { from: construct_scenarios, on: output_budget_reserved, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
@@ -736,6 +748,7 @@ validators:
       - { op: max_calls, capability_id: ontology.trace_universe, max: 2, code: universe_trace_limit }
       - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_targeted_query }
       - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
+      - { op: state_precedes, before: query_context, after: chain_selected, code: context_before_chain }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
   - id: research_state_contract
