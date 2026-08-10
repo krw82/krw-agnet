@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import threading
+from datetime import UTC, datetime
 
 import pytest
 
@@ -139,7 +139,7 @@ def test_concurrent_cache_misses_share_one_source_fetch() -> None:
         try:
             start.wait(timeout=1.0)
             results.append(router.snapshot("VG"))
-        except Exception as error:  # test threads retain any failure for the main assertion
+        except (AssertionError, threading.BrokenBarrierError) as error:
             errors.append(error)
 
     first = threading.Thread(target=call_snapshot)
