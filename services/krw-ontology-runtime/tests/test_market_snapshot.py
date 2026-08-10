@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import UTC, datetime
+from typing import Self
 from urllib.request import Request
 
 import pytest
@@ -91,7 +92,7 @@ class _FakeFmpResponse:
     def __init__(self, payload: object) -> None:
         self._body = json.dumps(payload).encode("utf-8")
 
-    def __enter__(self) -> _FakeFmpResponse:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
