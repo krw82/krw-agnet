@@ -179,6 +179,51 @@ print(value["build_id"], value["tool_schema_sha256"], value["release_manifest_sh
 '
 )
 
+# The image, descriptor, and release authorization are immutable inputs to
+# agentd. Keying them by source/configuration content means a stop/start cycle
+# only recreates short-lived processes; it does not compile every skill or
+# sign an identical release again.
+krw_cache_root="$krw_state/cache"
+mkdir -p "$krw_cache_root"
+chmod 700 "$krw_cache_root"
+krw_prepare_fingerprint=$(python3 - \
+  "$krw_root/agents/krw-ontology" \
+  "$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml" \
+  "$krw_root/deployments/local/model-registry.yaml" \
+  "$krw_root/deployments/local/budget-registry.yaml" \
+  "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+paths = [pathlib.Path(value) for value in sys.argv[1:4]]
+identity = sys.argv[4:]
+digest = hashlib.sha256()
+
+for value in identity:
+    digest.update(b"identity\0")
+    digest.update(value.encode("utf-8"))
+    digest.update(b"\0")
+
+files = []
+for root in paths:
+    if root.is_dir():
+        files.extend(path for path in root.rglob("*") if path.is_file())
+    elif root.is_file():
+        files.append(root)
+for path in sorted(files, key=lambda item: item.as_posix()):
+    digest.update(b"path\0")
+    digest.update(path.as_posix().encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(hashlib.sha256(path.read_bytes()).digest())
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+)
+krw_cache_dir="$krw_cache_root/$krw_prepare_fingerprint"
+mkdir -p "$krw_cache_dir"
+chmod 700 "$krw_cache_dir"
+
 python3 - "$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
 import pathlib, sys
 import json
@@ -225,16 +270,29 @@ krw_proxy_pid=$!
 for _ in $(seq 1 100); do curl --fail --silent --cacert "$krw_state/ca.pem" "https://127.0.0.1:$krw_tls_port/healthz" >/dev/null && break; sleep 0.1; done
 curl --fail --silent --cacert "$krw_state/ca.pem" "https://127.0.0.1:$krw_tls_port/healthz" >/dev/null
 
-krw_run_tag="$(date +%s)-$$"
-krw_image_dir="$krw_state/images/krw-ontology-$krw_run_tag"
-krw_descriptor="$krw_state/public-release-$krw_run_tag.json"
-krw_release_authorization="$krw_state/release-authorization-$krw_run_tag.json"
-"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
+krw_agent_bin="$krw_root/target/debug/krw-agent"
+krw_agentd_bin="$krw_root/target/debug/krw-agentd"
+krw_image_dir="$krw_cache_dir/image"
+if [[ -d "$krw_image_dir" && -f "$krw_image_dir/manifest.json" ]]; then
+  if "$krw_agent_bin" image verify "$krw_image_dir" >/dev/null 2>&1; then
+    printf 'reusing prepared agent image: %s\n' "$krw_prepare_fingerprint"
+  else
+    krw_quarantine="$krw_cache_dir/image-invalid-$(date +%s)-$$"
+    mv "$krw_image_dir" "$krw_quarantine"
+    "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
+    printf 'rebuilt invalid prepared agent image: %s\n' "$krw_prepare_fingerprint"
+  fi
+else
+  "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
+  printf 'built prepared agent image: %s\n' "$krw_prepare_fingerprint"
+fi
 krw_database_user=$(id -un)
 export KRW_ONTOLOGY_MCP_URL="https://127.0.0.1:$krw_tls_port/mcp/"
 export KRW_ONTOLOGY_READY_URL="https://127.0.0.1:$krw_tls_port/healthz"
 export KRW_ONTOLOGY_CA_PEM="$(< "$krw_state/ca.pem")"
-"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agentd" \
+krw_descriptor="$krw_cache_dir/public-release.json"
+krw_release_authorization="$krw_cache_dir/release-authorization.json"
+"$krw_root/scripts/with_local_env.sh" "$krw_agentd_bin" \
   --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
   --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
   --endpoint-registry "$krw_state/endpoint-registry.yaml" --check \
@@ -251,11 +309,23 @@ value = {"keys":[{"ed25519_public_key_hex":public,"key_id":"local-dev-v1","not_a
 open(path, "w", encoding="utf-8").write(json.dumps(value, separators=(",", ":"), sort_keys=True))
 PY
 krw_now=$(date +%s)
-krw_expiry=$((krw_now + 2592000))
-"$krw_root/scripts/with_local_env.sh" "$krw_root/target/debug/krw-agent" release sign \
-  --descriptor "$krw_descriptor" --private-key "$krw_state/release-private.pk8" --key-id local-dev-v1 --sequence 1 \
-  --issued-at-unix-seconds "$krw_now" --expires-at-unix-seconds "$krw_expiry" --runtime-version 0.1.0 --kernel-version 0.1.0 \
-  --out "$krw_release_authorization" >/dev/null
+if [[ -f "$krw_release_authorization" ]] && \
+    "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" release verify \
+      --descriptor "$krw_descriptor" --authorization "$krw_release_authorization" \
+      --trust-registry "$krw_state/release-trust-registry.json" \
+      --runtime-version 0.1.0 --kernel-version 0.1.0 --now-unix-seconds "$krw_now" \
+      >/dev/null 2>&1; then
+  printf 'reusing unexpired release authorization: %s\n' "$krw_prepare_fingerprint"
+else
+  krw_expiry=$((krw_now + 2592000))
+  krw_new_authorization="$krw_cache_dir/release-authorization.$$.json"
+  "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" release sign \
+    --descriptor "$krw_descriptor" --private-key "$krw_state/release-private.pk8" --key-id local-dev-v1 --sequence 1 \
+    --issued-at-unix-seconds "$krw_now" --expires-at-unix-seconds "$krw_expiry" --runtime-version 0.1.0 --kernel-version 0.1.0 \
+    --out "$krw_new_authorization" >/dev/null
+  mv -f "$krw_new_authorization" "$krw_release_authorization"
+  printf 'signed prepared release authorization: %s\n' "$krw_prepare_fingerprint"
+fi
 
 export KRW_AGENT_DATABASE_URL="$krw_database_url"
 krw_agentd_database_args=(--database-url-env KRW_AGENT_DATABASE_URL --database-tls-mode "$krw_database_tls_mode")
@@ -272,7 +342,6 @@ export KRW_DEBUG_PROVIDER="${KRW_DEBUG_PROVIDER:-}"
 export KRW_DEBUG_MCP_ARGS="${KRW_DEBUG_MCP_ARGS:-}"
 # Run the pre-built agentd binary directly (not via cargo run) so the log
 # stays clean and the process is a simple child of this script.
-krw_agentd_bin="$krw_root/target/debug/krw-agentd"
 "$krw_root/scripts/with_local_env.sh" "$krw_agentd_bin" \
     --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
     --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
