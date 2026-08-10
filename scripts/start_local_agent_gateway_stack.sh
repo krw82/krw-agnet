@@ -262,4 +262,16 @@ printf '  cd %q\n' "$krw_root"
 printf '  ./scripts/with_local_env.sh cargo run -q -p krw-agent -- run --gateway-url http://127.0.0.1:%s/v1/agent --ticker AAPL --question "..." --wait\n' "$krw_gateway_port"
 printf 'Logs: %s/logs\n\n' "$krw_state"
 printf 'Stack is running. Press Ctrl-C to stop all services.\n'
-wait
+
+# The Gateway can still answer /healthz while the actual worker has exited.
+# Supervising the worker prevents a stale Gateway from accepting a long quality
+# batch that no process can ever claim. The EXIT trap below tears down the
+# remaining local children without touching the persistent PostgreSQL state.
+if wait "$krw_daemon_pid"; then
+  printf 'agentd exited; stopping the local stack\n' >&2
+  exit 0
+else
+  krw_daemon_status=$?
+  printf 'agentd exited with status %s; stopping the local stack\n' "$krw_daemon_status" >&2
+  exit "$krw_daemon_status"
+fi
