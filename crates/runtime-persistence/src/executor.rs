@@ -444,7 +444,7 @@ impl ProductionClaimedRunExecutor {
 /// capability validation path, and is omitted on every error or timeout.
 async fn preflight_market_snapshot(
     catalog: &CapabilityCatalog,
-    capabilities: &PooledMcpCapabilityRuntime,
+    capabilities: &(dyn CapabilityRuntime),
     request: &RunRequest,
     hard_deadline: Instant,
 ) -> Option<TrustedMarketSnapshot> {
@@ -944,7 +944,10 @@ fn agent_image_reason_code(error: &krw_agent_image::ImageError) -> &'static str 
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
+    use async_trait::async_trait;
     use krw_agent_image::{PromptBlobInterner, compile_agent_dir};
     use krw_agent_persistence::agent_v1::RecoveryReceipt;
     use krw_agent_protocol::{
@@ -1053,6 +1056,73 @@ mod tests {
     fn provider_dependency_failure_rejects_unbounded_or_foreign_code() {
         assert!(retained_provider_dependency_code("provider", "private-detail").is_none());
         assert!(retained_provider_dependency_code("mcp", "deepseek_http_400").is_none());
+    }
+
+    #[derive(Debug)]
+    struct FixtureMarketCapability {
+        provider_content: serde_json::Value,
+        invocations: Mutex<Vec<krw_agent_run_engine::CapabilityInvocation>>,
+    }
+
+    #[async_trait]
+    impl CapabilityRuntime for FixtureMarketCapability {
+        async fn invoke(
+            &self,
+            invocation: &krw_agent_run_engine::CapabilityInvocation,
+        ) -> Result<krw_agent_run_engine::CapabilityResult, krw_agent_run_engine::DependencyFailure>
+        {
+            self.invocations.lock().unwrap().push(invocation.clone());
+            Ok(krw_agent_run_engine::CapabilityResult {
+                provider_content: self.provider_content.clone(),
+                evidence: Vec::new(),
+                answerability: None,
+                calculations: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn company_research_preflight_uses_one_closed_market_invocation() {
+        let (catalog, _providers, image_hash, _en_hash, request, _en_request) = fixture();
+        let release = catalog.release(&image_hash).expect("company release");
+        let capability = FixtureMarketCapability {
+            provider_content: serde_json::json!({
+                "format": "market-snapshot-context/v1",
+                "ticker": "VG",
+                "status": "available",
+                "source": "yahoo_finance",
+                "source_usage": "research_only",
+                "fetched_at": "2026-08-10T00:00:00Z",
+                "as_of": null,
+                "currency": "USD",
+                "metrics": {"last_price": 13.26, "trailing_pe": 13.8},
+                "advisory_only": true
+            }),
+            invocations: Mutex::new(Vec::new()),
+        };
+
+        let preflight = preflight_market_snapshot(
+            release.capability_catalog.as_ref(),
+            &capability,
+            &request,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(
+            preflight.is_some(),
+            "available advisory context is retained"
+        );
+        let invocations = capability.invocations.lock().unwrap();
+        let [invocation] = invocations.as_slice() else {
+            panic!("expected exactly one preflight invocation");
+        };
+        assert_eq!(invocation.capability_id, "market.snapshot");
+        assert_eq!(invocation.arguments, serde_json::json!({"ticker": "VG"}));
+        assert_eq!(
+            invocation.binding, release.runtime.capabilities["market.snapshot"].binding,
+            "preflight must preserve the exact resolved MCP binding"
+        );
     }
 
     #[derive(Debug)]
