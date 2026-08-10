@@ -398,7 +398,11 @@ async function readRunTrace(
     run_id: runId,
   };
   const outcome = await agent.readCommittedOutcome(ownership);
-  if (!(["final", "cancelled", "failed"] as const).includes(outcome.state)) {
+  if (
+    outcome.state !== "final"
+    && outcome.state !== "cancelled"
+    && outcome.state !== "failed"
+  ) {
     return {
       schema_version: 1,
       session_id: ownership.session_id,
