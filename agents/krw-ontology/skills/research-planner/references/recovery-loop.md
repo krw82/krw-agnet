@@ -19,12 +19,13 @@ user and do not treat it as evidence.
   "class": "model_correctable",
   "reason_code": "proposal_shape_invalid",
   "repair_mode": "replace",
-  "allowed_actions": ["revise_research", "narrow_scope", "answer_with_limits"]
+  "allowed_actions": ["revise_research"]
 }
 ```
 
 The exact `reason_code`, `repair_mode`, and `allowed_actions` are authoritative
-for that turn. The envelope contains no new investment fact.
+for that turn; do not invent another action name. The envelope contains no new
+investment fact.
 
 ### Diagnostic detail (when present)
 

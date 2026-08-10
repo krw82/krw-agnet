@@ -83,8 +83,9 @@ All are corrected by making one complete `proposal`-only call.
 
 `intent` is a stable lowercase slug. `document_types` and `periods` state the
 evidence boundary. `alternatives` are interchangeable literal filing phrases,
-not additional research topics. `object_types` is an optional ontology object
-filter. `goal` is exactly one of the five tagged goal types documented in the
-examples. Every objective has `priority`, `alternatives`, `directness`,
-`object_types`, and `goal`; every metric goal includes `metric_dimensions`,
-including an empty array when no dimension is requested.
+not additional research topics. `object_types` is a required ontology-filter
+array; use `[]` when no filter is needed. `goal` is exactly one of the five
+tagged goal types documented in the examples. Every objective has `priority`,
+`alternatives`, `directness`, `object_types`, and `goal`; every metric goal
+includes `metric_dimensions`, including an empty array when no dimension is
+requested.

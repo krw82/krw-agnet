@@ -278,7 +278,7 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
           { "terms": ["iphone", "services", "products"] },
           { "terms": ["segment revenue", "product revenue"] }
         ],
-        "directness": "related",
+        "directness": "any",
         "object_types": ["BusinessActivity", "NumericEvidence"],
         "goal": {
           "kind": "qualitative_evidence",

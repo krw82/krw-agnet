@@ -61,11 +61,11 @@ details.
 | `uncertainty` | How uncertain the question is | `"low"` (single number), `"medium"` (analysis) |
 | `document_types` | Which filings to search | `["10-K"]`, `["10-K", "10-Q"]` |
 | `periods` | Which fiscal periods | `["FY2024"]`, `["FY2023", "FY2024"]` |
-| `objectives` | Evidence requests (1–5 items) | see below |
+| `objectives` | Evidence requests (1–12 items); keep only decision-relevant ones | see below |
 | `priority` | `required` (essential) or `deferred` (optional) | |
 | `alternatives[].terms` | Literal filing-language search phrases | `["net sales", "revenue"]` |
-| `directness` | How direct the evidence must be | `direct_required`, `direct_preferred`, `related` |
-| `object_types` | What kind of data to find | `MetricObservation`, `NarrativeEvidence`, etc. |
+| `directness` | How direct the evidence must be | `any`, `direct_preferred`, `direct_required` |
+| `object_types` | Required array of ontology filters; use `[]` when none is needed | `MetricObservation`, `NarrativeEvidence`, or `[]` |
 
 ## Goal types (5 kinds)
 
@@ -108,7 +108,7 @@ Use when the question asks "how much did X grow/change?".
 ```
 
 - `change`: `"growth_rate"` (percentage) or `"absolute_change"` (raw delta)
-- `window`: `"year_over_year"`, `"quarter_over_quarter"`, `"sequential"`
+- `window`: `"year_over_year"` or `"period_over_period"`
 
 ### 4. metric_difference — a comparison between segments
 
