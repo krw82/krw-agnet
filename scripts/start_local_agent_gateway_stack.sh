@@ -268,7 +268,7 @@ curl --fail --silent "http://127.0.0.1:$krw_gateway_port/healthz" >/dev/null
 
 printf '\nGateway ready: http://127.0.0.1:%s/v1/agent\n' "$krw_gateway_port"
 printf 'In another terminal:\n'
-printf '  source %q\n' "$krw_secrets"
+printf '  source %q; export KRW_AGENT_GATEWAY_TOKEN\n' "$krw_secrets"
 printf '  cd %q\n' "$krw_root"
 printf '  ./scripts/with_local_env.sh cargo run -q -p krw-agent -- run --gateway-url http://127.0.0.1:%s/v1/agent --ticker AAPL --question "..." --wait\n' "$krw_gateway_port"
 printf 'Logs: %s/logs\n\n' "$krw_state"
