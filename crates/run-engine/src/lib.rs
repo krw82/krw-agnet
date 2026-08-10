@@ -1590,7 +1590,7 @@ impl TrustedMarketSnapshot {
         if root.get("format").and_then(Value::as_str) != Some("market-snapshot-context/v1")
             || root.get("ticker").and_then(Value::as_str) != Some(expected_ticker)
             || root.get("status").and_then(Value::as_str) != Some("available")
-            || root.get("source").and_then(Value::as_str) != Some("yahoo_finance")
+            || root.get("source").and_then(Value::as_str) != Some("fmp")
             || root.get("source_usage").and_then(Value::as_str) != Some("research_only")
             || root.get("advisory_only").and_then(Value::as_bool) != Some(true)
         {
@@ -1616,7 +1616,7 @@ impl TrustedMarketSnapshot {
             "format": "market-snapshot-context/v1",
             "ticker": expected_ticker,
             "status": "available",
-            "source": "yahoo_finance",
+            "source": "fmp",
             "source_usage": "research_only",
             "fetched_at": trusted_market_timestamp(root.get("fetched_at")),
             "as_of": trusted_market_timestamp(root.get("as_of")),
@@ -13993,7 +13993,7 @@ mod tests {
                 "format": "market-snapshot-context/v1",
                 "ticker": "VG",
                 "status": "available",
-                "source": "yahoo_finance",
+                "source": "fmp",
                 "source_usage": "research_only",
                 "fetched_at": "2026-08-10T10:00:00Z",
                 "as_of": "2026-08-10T09:59:00Z",
@@ -14020,7 +14020,7 @@ mod tests {
                     "format": "market-snapshot-context/v1",
                     "ticker": "MSFT",
                     "status": "available",
-                    "source": "yahoo_finance",
+                    "source": "fmp",
                     "source_usage": "research_only",
                     "advisory_only": true,
                     "metrics": {"last_price": 1.0}
@@ -14039,7 +14039,7 @@ mod tests {
                 "format": "market-snapshot-context/v1",
                 "ticker": "VG",
                 "status": "available",
-                "source": "yahoo_finance",
+                "source": "fmp",
                 "source_usage": "research_only",
                 "fetched_at": "2026-08-10T10:00:00Z",
                 "as_of": null,

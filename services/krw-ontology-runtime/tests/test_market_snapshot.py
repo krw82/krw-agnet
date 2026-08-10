@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import threading
 from datetime import UTC, datetime
+from urllib.request import Request
 
 import pytest
 
 from krw_capability_runtime.market.snapshot import (
+    FmpResearchProvider,
     MarketSnapshotRequest,
     MarketSnapshotRouter,
     MarketSnapshotStore,
@@ -13,7 +16,7 @@ from krw_capability_runtime.market.snapshot import (
 
 
 class _FakeProvider:
-    source_name = "yahoo_finance"
+    source_name = "fmp"
 
     def __init__(self, payload: dict[str, object] | None = None, *, fail: bool = False) -> None:
         self.payload = payload or {}
@@ -59,7 +62,7 @@ def test_snapshot_is_allow_list_sanitized_and_cached_per_ticker() -> None:
         "format": "market-snapshot/v1",
         "ticker": "VG",
         "status": "available",
-        "source": "yahoo_finance",
+        "source": "fmp",
         "source_usage": "research_only",
         "fetched_at": "2024-01-01T00:00:00Z",
         "as_of": "2024-01-01T00:00:00Z",
@@ -82,6 +85,91 @@ def test_source_failure_returns_a_bounded_unavailable_control_result() -> None:
     assert result["metrics"] == {}
     assert result["advisory_only"] is True
     assert "private upstream diagnostic" not in str(result)
+
+
+class _FakeFmpResponse:
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self) -> _FakeFmpResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def read(self, _: int) -> bytes:
+        return self._body
+
+
+def test_fmp_provider_combines_quote_with_ttm_valuation_metrics() -> None:
+    requested_paths: list[str] = []
+
+    def opener(request: Request, *, timeout: float) -> _FakeFmpResponse:
+        assert timeout == 1.25
+        path = request.full_url.split("?")[0]
+        requested_paths.append(path)
+        if path.endswith("/quote"):
+            return _FakeFmpResponse(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "price": 210.5,
+                        "previousClose": 212.0,
+                        "marketCap": 3_100_000_000_000,
+                        "timestamp": 1_704_067_200,
+                    }
+                ]
+            )
+        if path.endswith("/ratios-ttm"):
+            return _FakeFmpResponse(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "priceToEarningsRatioTTM": 31.2,
+                        "priceToBookRatioTTM": 45.4,
+                    }
+                ]
+            )
+        raise AssertionError(f"unexpected FMP endpoint: {path}")
+
+    payload = FmpResearchProvider(api_key="test-key", opener=opener).fetch("AAPL")
+
+    assert requested_paths == [
+        "https://financialmodelingprep.com/stable/quote",
+        "https://financialmodelingprep.com/stable/ratios-ttm",
+    ]
+    assert payload == {
+        "ticker": "AAPL",
+        "source": "fmp",
+        "currency": None,
+        "as_of": 1_704_067_200,
+        "metrics": {
+            "last_price": 210.5,
+            "previous_close": 212.0,
+            "market_cap": 3_100_000_000_000,
+            "trailing_pe": 31.2,
+            "price_to_book": 45.4,
+        },
+    }
+
+
+def test_fmp_ratio_failure_keeps_a_valid_quote_but_never_uses_another_source() -> None:
+    def opener(request: Request, *, timeout: float) -> _FakeFmpResponse:
+        del timeout
+        if request.full_url.split("?")[0].endswith("/quote"):
+            return _FakeFmpResponse([{"symbol": "AAPL", "price": 210.5}])
+        raise OSError("private FMP ratio failure")
+
+    router = MarketSnapshotRouter(
+        FmpResearchProvider(api_key="test-key", opener=opener),
+        utc_now=lambda: datetime(2024, 1, 1, tzinfo=UTC),
+    )
+
+    payload = router.snapshot("AAPL")
+
+    assert payload["source"] == "fmp"
+    assert payload["status"] == "available"
+    assert payload["metrics"] == {"last_price": 210.5}
 
 
 def test_cache_ttl_starts_after_the_source_fetch_completes() -> None:

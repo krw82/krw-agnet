@@ -998,7 +998,7 @@ pub fn map_market_snapshot(
     };
     if root.get("format").and_then(Value::as_str) != Some("market-snapshot/v1")
         || root.get("ticker").and_then(Value::as_str) != Some(expected_ticker)
-        || root.get("source").and_then(Value::as_str) != Some("yahoo_finance")
+        || root.get("source").and_then(Value::as_str) != Some("fmp")
         || root.get("source_usage").and_then(Value::as_str) != Some("research_only")
         || root.get("advisory_only").and_then(Value::as_bool) != Some(true)
     {
@@ -1018,7 +1018,7 @@ pub fn map_market_snapshot(
         "format": "market-snapshot-context/v1",
         "ticker": expected_ticker,
         "status": status,
-        "source": "yahoo_finance",
+        "source": "fmp",
         "source_usage": "research_only",
         "fetched_at": market_timestamp(root.get("fetched_at")),
         "as_of": market_timestamp(root.get("as_of")),
@@ -1048,7 +1048,7 @@ fn unavailable_market_snapshot(expected_ticker: &str) -> MarketSnapshotDelta {
             "format": "market-snapshot-context/v1",
             "ticker": expected_ticker,
             "status": "unavailable",
-            "source": "yahoo_finance",
+            "source": "fmp",
             "source_usage": "research_only",
             "fetched_at": null,
             "as_of": null,
@@ -1130,7 +1130,7 @@ fn market_snapshot_record(
         strong_claim_allowed: false,
         payload_ref: context.payload_ref.clone(),
         citation: PublicCitation {
-            title: "Timestamped Yahoo Finance research snapshot (advisory only)".into(),
+            title: "Timestamped FMP research snapshot (advisory only)".into(),
             document_type: Some("market_snapshot".into()),
             period: None,
         },
@@ -1821,7 +1821,7 @@ mod tests {
             "format": "market-snapshot/v1",
             "ticker": "AAPL",
             "status": "available",
-            "source": "yahoo_finance",
+            "source": "fmp",
             "source_usage": "research_only",
             "fetched_at": "2026-08-10T10:00:00Z",
             "as_of": "2026-08-10T09:59:00Z",
@@ -1859,7 +1859,7 @@ mod tests {
             "format": "market-snapshot/v1",
             "ticker": "MSFT",
             "status": "available",
-            "source": "yahoo_finance",
+            "source": "fmp",
             "source_usage": "research_only",
             "fetched_at": "2026-08-10T10:00:00Z",
             "as_of": null,

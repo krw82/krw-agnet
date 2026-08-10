@@ -9,7 +9,6 @@ dependencies = [
   "starlette>=0.47,<2",
   "uvicorn>=0.34,<1",
   "PyYAML>=6,<7",
-  "yfinance>=1.2,<2",
 ]
 
 [project.scripts]

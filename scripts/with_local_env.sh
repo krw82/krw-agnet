@@ -23,6 +23,8 @@ fi
 
 krw_env_glm_key=''
 krw_env_glm_seen=false
+krw_env_fmp_key=''
+krw_env_fmp_seen=false
 while IFS= read -r krw_env_line || [[ -n "$krw_env_line" ]]; do
   if [[ -z "$krw_env_line" || "$krw_env_line" == \#* ]]; then
     continue
@@ -36,13 +38,22 @@ while IFS= read -r krw_env_line || [[ -n "$krw_env_line" ]]; do
     krw_env_glm_seen=true
     continue
   fi
+  if [[ "$krw_env_line" =~ ^FMP_API_KEY=([^[:space:]#]+)$ ]]; then
+    if [[ "$krw_env_fmp_seen" == true ]]; then
+      printf 'local secret file defines FMP_API_KEY more than once\n' >&2
+      exit 2
+    fi
+    krw_env_fmp_key=${BASH_REMATCH[1]}
+    krw_env_fmp_seen=true
+    continue
+  fi
   # Older local files can retain a DeepSeek key from a previous provider
   # configuration. Keep that file format compatible, but deliberately do not
   # read or export it: this runtime launches GLM only.
   if [[ "$krw_env_line" =~ ^DEEPSEEK_API_KEY=([^[:space:]#]+)$ ]]; then
     continue
   fi
-  printf 'local secret file may contain GLM_API_KEY and an ignored legacy DEEPSEEK_API_KEY only\n' >&2
+  printf 'local secret file may contain GLM_API_KEY, optional FMP_API_KEY, and an ignored legacy DEEPSEEK_API_KEY only\n' >&2
   exit 2
 done < "$krw_env_file"
 
@@ -72,5 +83,8 @@ fi
 if [[ "$krw_env_glm_seen" == true && -n "$krw_env_glm_key" ]]; then
   export GLM_API_KEY="$krw_env_glm_key"
 fi
-unset krw_env_glm_key krw_env_glm_seen
+if [[ "$krw_env_fmp_seen" == true && -n "$krw_env_fmp_key" ]]; then
+  export FMP_API_KEY="$krw_env_fmp_key"
+fi
+unset krw_env_glm_key krw_env_glm_seen krw_env_fmp_key krw_env_fmp_seen
 exec "$@"

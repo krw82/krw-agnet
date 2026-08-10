@@ -1090,7 +1090,7 @@ mod tests {
                 "format": "market-snapshot-context/v1",
                 "ticker": "VG",
                 "status": "available",
-                "source": "yahoo_finance",
+                "source": "fmp",
                 "source_usage": "research_only",
                 "fetched_at": "2026-08-10T00:00:00Z",
                 "as_of": null,

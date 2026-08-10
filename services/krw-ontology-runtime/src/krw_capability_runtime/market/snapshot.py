@@ -1,14 +1,16 @@
 """One fixed, bounded router for advisory per-ticker market snapshots.
 
 This is deliberately not a plugin runner or a provider-selection surface.
-The only current provider is a research-only Yahoo Finance adapter, and the
-router returns a compact allow-listed projection with a short per-ticker TTL.
-Volatile market values never become filing evidence or strong-claim support.
+The router owns one research-only FMP adapter and a compact per-ticker cache;
+the model sees only its allow-listed projection. Volatile market values never
+become filing evidence or strong-claim support.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -16,6 +18,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import urlencode
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,6 +29,9 @@ _AVAILABLE_TTL_SECONDS = 60.0
 _UNAVAILABLE_TTL_SECONDS = 15.0
 _INFLIGHT_WAIT_SECONDS = 2.0
 _MAX_METRIC_ABS = 1.0e18
+_FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+_FMP_TIMEOUT_SECONDS = 1.25
+_MAX_FMP_RESPONSE_BYTES = 128 * 1024
 _METRIC_FIELDS = {
     "last_price",
     "previous_close",
@@ -111,7 +118,7 @@ class MarketSnapshotStore:
         """Return one cache hit or elect exactly one source-fetch leader.
 
         Concurrent readers of the same missing ticker wait on the leader's
-        single result instead of multiplying an external Yahoo request.
+        single result instead of multiplying an external FMP request.
         """
 
         with self._lock:
@@ -178,52 +185,86 @@ class MarketSnapshotStore:
             self._entries.popitem(last=False)
 
 
-class YahooFinanceResearchProvider:
-    """Research-only, fixed Yahoo Finance adapter loaded only on first use."""
+class _RejectRedirects(HTTPRedirectHandler):
+    """Keep the FMP key on the fixed HTTPS origin even if upstream redirects."""
 
-    source_name = "yahoo_finance"
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        return None
+
+
+def _open_fmp_request(request: Request, *, timeout: float) -> Any:
+    return build_opener(_RejectRedirects()).open(request, timeout=timeout)
+
+
+class FmpResearchProvider:
+    """Research-only FMP adapter with a closed endpoint and field allow-list.
+
+    `quote` is the authoritative current-price source. `ratios-ttm` adds
+    trailing P/E and P/B only when it is available; a ratio outage must not
+    erase a valid current quote. FMP does not provide a directly labelled
+    forward P/E in this endpoint family, so this adapter intentionally never
+    infers one from PEG or another derived metric.
+    """
+
+    source_name = "fmp"
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        opener: Callable[..., Any] = _open_fmp_request,
+        timeout_seconds: float = _FMP_TIMEOUT_SECONDS,
+    ) -> None:
+        if not 0 < timeout_seconds <= 3.0:
+            raise ValueError("FMP timeout must be within 0..3 seconds")
+        self._api_key = (api_key if api_key is not None else os.getenv("FMP_API_KEY", "")).strip()
+        self._opener = opener
+        self._timeout_seconds = timeout_seconds
 
     def fetch(self, ticker: str) -> Mapping[str, Any]:
-        # Import lazily so capability-daemon startup and deterministic tests do
-        # not depend on the optional network client being initialized.
-        import yfinance as yf
-
-        instrument = yf.Ticker(ticker)
-        fast_info = _mapping_or_empty(getattr(instrument, "fast_info", None))
-        try:
-            info = _mapping_or_empty(instrument.get_info())
-        except Exception:  # noqa: BLE001 - a price-only response is still useful
-            info = {}
-        market_time = _first_value(
-            (info, fast_info),
-            "regularMarketTime",
-            "regular_market_time",
-            "last_trade_time",
-        )
+        quote = self._fetch_first_record("quote", ticker)
+        ratios = self._optional_first_record("ratios-ttm", ticker)
+        if ratios and ratios.get("symbol") not in (None, ticker):
+            ratios = {}
         return {
-            "ticker": ticker,
+            "ticker": quote.get("symbol"),
             "source": self.source_name,
-            "currency": _first_value((info, fast_info), "currency"),
-            "as_of": market_time,
+            # The stable quote response does not guarantee a currency field;
+            # keep it absent rather than assuming USD for every ticker.
+            "currency": quote.get("currency"),
+            "as_of": quote.get("timestamp"),
             "metrics": {
-                "last_price": _first_value(
-                    (info, fast_info),
-                    "regularMarketPrice",
-                    "regular_market_price",
-                    "last_price",
-                ),
-                "previous_close": _first_value(
-                    (info, fast_info),
-                    "regularMarketPreviousClose",
-                    "regular_market_previous_close",
-                    "previous_close",
-                ),
-                "market_cap": _first_value((info, fast_info), "marketCap", "market_cap"),
-                "trailing_pe": _first_value((info, fast_info), "trailingPE", "trailing_pe"),
-                "forward_pe": _first_value((info, fast_info), "forwardPE", "forward_pe"),
-                "price_to_book": _first_value((info, fast_info), "priceToBook", "price_to_book"),
+                "last_price": quote.get("price"),
+                "previous_close": quote.get("previousClose"),
+                "market_cap": quote.get("marketCap"),
+                "trailing_pe": ratios.get("priceToEarningsRatioTTM"),
+                "price_to_book": ratios.get("priceToBookRatioTTM"),
             },
         }
+
+    def _optional_first_record(self, endpoint: str, ticker: str) -> Mapping[str, Any]:
+        try:
+            return self._fetch_first_record(endpoint, ticker)
+        except Exception:  # noqa: BLE001 - the quote remains usable without valuation ratios
+            return {}
+
+    def _fetch_first_record(self, endpoint: str, ticker: str) -> Mapping[str, Any]:
+        if not self._api_key:
+            raise RuntimeError("FMP market snapshot provider is not configured")
+        query = urlencode({"symbol": ticker, "apikey": self._api_key})
+        request = Request(
+            f"{_FMP_BASE_URL}/{endpoint}?{query}",
+            headers={"Accept": "application/json", "Accept-Encoding": "gzip, deflate"},
+            method="GET",
+        )
+        with self._opener(request, timeout=self._timeout_seconds) as response:
+            body = response.read(_MAX_FMP_RESPONSE_BYTES + 1)
+        if not isinstance(body, bytes) or len(body) > _MAX_FMP_RESPONSE_BYTES:
+            raise ValueError("FMP response exceeds the bounded market snapshot payload")
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, list) or not decoded or not isinstance(decoded[0], Mapping):
+            raise ValueError("FMP response has no usable market record")
+        return decoded[0]
 
 
 class MarketSnapshotRouter:
@@ -237,7 +278,7 @@ class MarketSnapshotRouter:
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
     ) -> None:
-        self._provider = provider or YahooFinanceResearchProvider()
+        self._provider = provider or FmpResearchProvider()
         self._store = store or MarketSnapshotStore()
         self._monotonic_clock = monotonic_clock
         self._utc_now = utc_now or (lambda: datetime.now(UTC))
@@ -285,21 +326,6 @@ class MarketSnapshotRouter:
             ttl_seconds=ttl_seconds,
         )
         return payload
-
-
-def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _first_value(sources: tuple[Mapping[str, Any], ...], *keys: str) -> Any:
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        for key in keys:
-            value = source.get(key)
-            if value is not None:
-                return value
-    return None
 
 
 def _normalize_timestamp(value: Any) -> str | None:
