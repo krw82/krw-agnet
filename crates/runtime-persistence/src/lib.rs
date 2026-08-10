@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 mod bridge;
 mod claim;
+#[cfg(feature = "http")]
 mod executor;
 mod memory;
 
@@ -32,6 +33,7 @@ pub use claim::{
     ClaimValidationError, ImmutableRunClaimV1, RunResourceProfileV1, ValidatedClaim, WorkloadClass,
     validate_claim,
 };
+#[cfg(feature = "http")]
 pub use executor::{
     DeepSeekProviderCatalog, ExecutorBuildError, ProductionClaimedRunExecutor,
     ProductionReleaseCatalog, ProductionReleaseEntry, ProviderCatalogError, RoutedClaimError,

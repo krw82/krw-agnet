@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-krw-agent-provider-wire = { path = "../provider-wire" }
+krw-agent-provider-wire = { path = "../provider-wire", default-features = false }
 krw-agent-evidence = { path = "../evidence" }
 krw-agent-protocol = { path = "../protocol" }
 krw-agent-state-artifact = { path = "../state-artifact" }

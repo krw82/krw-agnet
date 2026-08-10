@@ -211,7 +211,7 @@ KRW_LIVE_MCP_SERVER_BUILD="$krw_capability_build" \
 KRW_LIVE_MCP_TOOL_SCHEMA_SHA256="$krw_capability_tool_schema_sha256" \
 KRW_LIVE_MCP_RELEASE_MANIFEST_SHA256="$krw_capability_release_manifest_sha256" \
 "$krw_root/scripts/with_local_env.sh" \
-  cargo test -p krw-agent-runtime-persistence --test live_end_to_end_acceptance -- --nocapture
+cargo test -p krw-agent-runtime-persistence --features postgres --test live_end_to_end_acceptance -- --nocapture
 
 krw_atomic_shape=$(PGSSLMODE=disable /opt/homebrew/bin/psql -X -A -t -v ON_ERROR_STOP=1 \
   -h 127.0.0.1 -p "$krw_pg_port" -d postgres -c "

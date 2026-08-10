@@ -5,17 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["http"]
+http = ["krw-agent-provider-wire/http", "krw-agent-run-engine/http"]
+postgres = ["krw-agent-persistence/postgres"]
+
 [dependencies]
 async-trait.workspace = true
-krw-agent-provider-wire = { path = "../provider-wire" }
+krw-agent-provider-wire = { path = "../provider-wire", default-features = false }
 krw-agent-bounded-child = { path = "../bounded-child" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-artifact-store = { path = "../artifact-store" }
 krw-agent-capability-runtime = { path = "../capability-runtime" }
 krw-context-planner = { path = "../context-planner" }
-krw-agent-persistence = { path = "../persistence" }
+krw-agent-persistence = { path = "../persistence", default-features = false }
 krw-agent-protocol = { path = "../protocol" }
-krw-agent-run-engine = { path = "../run-engine" }
+krw-agent-run-engine = { path = "../run-engine", default-features = false }
 krw-agent-runtime-config = { path = "../runtime-config" }
 krw-agent-tool-mcp = { path = "../tool-mcp" }
 krw-session-memory = { path = "../session-memory" }

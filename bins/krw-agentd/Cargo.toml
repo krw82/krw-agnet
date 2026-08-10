@@ -14,10 +14,10 @@ krw-agent-capability-runtime = { path = "../../crates/capability-runtime" }
 krw-agent-image = { path = "../../crates/agent-image" }
 krw-agent-protocol = { path = "../../crates/protocol" }
 krw-agent-release-authorization = { path = "../../crates/release-authorization" }
-krw-agent-persistence = { path = "../../crates/persistence" }
-krw-agent-run-engine = { path = "../../crates/run-engine" }
+krw-agent-persistence = { path = "../../crates/persistence", default-features = false, features = ["postgres"] }
+krw-agent-run-engine = { path = "../../crates/run-engine", default-features = false, features = ["http"] }
 krw-agent-runtime-config = { path = "../../crates/runtime-config" }
-krw-agent-runtime-persistence = { path = "../../crates/runtime-persistence" }
+krw-agent-runtime-persistence = { path = "../../crates/runtime-persistence", default-features = false, features = ["http", "postgres"] }
 krw-agent-tool-mcp = { path = "../../crates/tool-mcp" }
 serde_jcs.workspace = true
 serde_json.workspace = true

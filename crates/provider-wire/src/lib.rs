@@ -9,6 +9,7 @@
 //! `ProviderEpisodeV1` replay-hash envelope shared with `run-engine`.
 
 use std::collections::BTreeSet;
+#[cfg(feature = "http")]
 use std::time::Duration;
 
 use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, ThinkingMode};
@@ -1178,391 +1179,446 @@ pub struct EpisodeContext {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP client configuration.
+// Optional HTTP client.
 // ---------------------------------------------------------------------------
 
-/// Configuration for [`ProviderClient`]. Mirrors `DeepSeekClientConfig` field
-/// for field so the runtime can swap clients without touching the limits
-/// plumbing. The factory [`ProviderClientConfig::production`] chooses sane
-/// defaults tuned for the Anthropic Messages API streaming contract.
-pub struct ProviderClientConfig {
-    pub api_base: String,
-    pub allowed_models: BTreeSet<String>,
-    pub connect_timeout: Duration,
-    pub request_timeout: Duration,
-    pub max_error_body_bytes: usize,
-    pub max_sse_frame_bytes: usize,
-    pub max_stream_bytes: usize,
-    pub max_episode_bytes: usize,
-    pub max_idle_per_host: usize,
+/// A redacted transport failure classification shared by the core wire ABI
+/// and the optional HTTP adapter. The underlying client error is deliberately
+/// not retained in durable state or ordinary diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportErrorKind {
+    Connect,
+    Timeout,
+    Other,
 }
 
-impl ProviderClientConfig {
-    /// Production defaults for the Anthropic Messages API. Limits are chosen
-    /// to match `DeepSeekClientConfig::production` so the runtime can route to
-    /// either provider without re-tuning.
-    pub fn production(
-        api_base: impl Into<String>,
-        allowed_models: impl IntoIterator<Item = String>,
-        max_idle_per_host: usize,
-    ) -> Self {
-        Self {
-            api_base: api_base.into(),
-            allowed_models: allowed_models.into_iter().collect(),
-            connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(130),
-            max_error_body_bytes: 64 * 1024,
-            max_sse_frame_bytes: 2 * 1024 * 1024,
-            max_stream_bytes: 8 * 1024 * 1024,
-            max_episode_bytes: 4 * 1024 * 1024,
-            max_idle_per_host,
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("provider HTTP transport failed")]
+pub struct TransportError {
+    kind: TransportErrorKind,
+}
+
+impl TransportError {
+    pub const fn is_connect(&self) -> bool {
+        matches!(self.kind, TransportErrorKind::Connect)
     }
 
-    /// Chainable override for the per-host idle connection limit.
-    #[must_use]
-    pub fn with_max_idle_per_host(mut self, max_idle_per_host: usize) -> Self {
-        self.max_idle_per_host = max_idle_per_host;
-        self
+    pub const fn is_timeout(&self) -> bool {
+        matches!(self.kind, TransportErrorKind::Timeout)
     }
 }
 
-impl std::fmt::Debug for ProviderClientConfig {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ProviderClientConfig")
-            .field("api_base_hash", &ContentHash::sha256(&self.api_base))
-            .field("allowed_models", &self.allowed_models)
-            .field("connect_timeout", &self.connect_timeout)
-            .field("request_timeout", &self.request_timeout)
-            .field("max_error_body_bytes", &self.max_error_body_bytes)
-            .field("max_sse_frame_bytes", &self.max_sse_frame_bytes)
-            .field("max_stream_bytes", &self.max_stream_bytes)
-            .field("max_episode_bytes", &self.max_episode_bytes)
-            .field("max_idle_per_host", &self.max_idle_per_host)
-            .finish()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HTTP client.
-// ---------------------------------------------------------------------------
-
-use futures_util::StreamExt;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
-use reqwest::redirect::Policy as RedirectPolicy;
-
-/// HTTP client for the Anthropic Messages API. Stateless beyond the embedded
-/// `reqwest::Client` connection pool; one client can serve many concurrent
-/// requests.
-pub struct ProviderClient {
-    http: reqwest::Client,
-    endpoint: String,
-    allowed_models: BTreeSet<String>,
-    request_timeout: Duration,
-    max_error_body_bytes: usize,
-    max_sse_frame_bytes: usize,
-    max_stream_bytes: usize,
-    max_episode_bytes: usize,
-}
-
-impl std::fmt::Debug for ProviderClient {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ProviderClient")
-            .field("endpoint_hash", &ContentHash::sha256(&self.endpoint))
-            .field("allowed_models", &self.allowed_models)
-            .field("request_timeout", &self.request_timeout)
-            .field("authorization", &"[REDACTED]")
-            .finish_non_exhaustive()
-    }
-}
-
-impl ProviderClient {
-    /// Construct a client. Performs URL validation (HTTPS, no userinfo, no
-    /// query/fragment), API-key validation, and limit sanity checks. Installs
-    /// the rustls ring provider as a side effect.
-    pub fn new(config: ProviderClientConfig, api_key: &str) -> Result<Self, WireError> {
-        let url = reqwest::Url::parse(&config.api_base).map_err(|_| WireError::InvalidEndpoint)?;
-        if url.scheme() != "https"
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(WireError::InvalidEndpoint);
-        }
-        if api_key.is_empty() {
-            return Err(WireError::InvalidAuthorization);
-        }
-        if config.request_timeout.is_zero()
-            || config.max_error_body_bytes == 0
-            || config.max_sse_frame_bytes == 0
-            || config.max_stream_bytes < config.max_sse_frame_bytes
-            || config.max_episode_bytes == 0
-            || config.max_idle_per_host == 0
-        {
-            return Err(WireError::InvalidClientLimits);
-        }
-        if config.allowed_models.is_empty()
-            || !config
-                .allowed_models
-                .iter()
-                .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
-        {
-            return Err(WireError::InvalidAllowedModel);
-        }
-
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        // Anthropic uses a custom `x-api-key` header + a pinned
-        // `anthropic-version` date. No `Authorization: Bearer` is sent.
-        let mut key_value =
-            HeaderValue::from_str(api_key).map_err(|_| WireError::InvalidAuthorization)?;
-        key_value.set_sensitive(true);
-        let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", key_value);
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .redirect(RedirectPolicy::none())
-            .connect_timeout(config.connect_timeout)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(config.max_idle_per_host)
-            .tcp_keepalive(Duration::from_secs(30))
-            .build()?;
-
-        Ok(Self {
-            http,
-            endpoint: format!("{}/v1/messages", config.api_base.trim_end_matches('/')),
-            allowed_models: config.allowed_models,
-            request_timeout: config.request_timeout,
-            max_error_body_bytes: config.max_error_body_bytes,
-            max_sse_frame_bytes: config.max_sse_frame_bytes,
-            max_stream_bytes: config.max_stream_bytes,
-            max_episode_bytes: config.max_episode_bytes,
-        })
-    }
-
-    /// Send a streaming [`MessagesRequest`] and assemble the response into a
-    /// [`ProviderEpisodeV1`]. Retries the dispatch (before any byte is
-    /// consumed) on 429/500/503 and connect/timeout errors, with bounded
-    /// exponential backoff.
-    pub async fn complete_stream(
-        &self,
-        request: &MessagesRequest,
-        context: &EpisodeContext,
-    ) -> Result<ProviderEpisodeV1, WireError> {
-        if !self.allowed_models.contains(&request.model) {
-            return Err(WireError::UnknownModel(request.model.clone()));
-        }
-        request.validate()?;
-        let request_hash = ContentHash::sha256(serde_jcs::to_vec(request)?);
-
-        if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
-            eprintln!(
-                "[KRW_DEBUG_PROVIDER] request model={} thinking={:?} tool_choice={:?} stream={} tools={} messages={} request_hash={}",
-                request.model,
-                request.thinking.kind,
-                request.tool_choice,
-                request.stream,
-                request.tools.len(),
-                request.messages.len(),
-                request_hash
-            );
-        }
-
-        let response = {
-            // Bounded retry ONLY over the dispatch of the POST request, before
-            // any response byte is consumed. A connect/timeout failure or a
-            // retryable provider status (429/500/503) is safe to re-issue
-            // because no episode output has been emitted yet.
-            let max_attempts = 3u32;
-            let mut attempt = 0u32;
-            loop {
-                let mut server_retry_after_ms = None;
-                match self
-                    .http
-                    .post(&self.endpoint)
-                    .timeout(self.request_timeout)
-                    .json(request)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        if status.is_success() || !matches!(status.as_u16(), 429 | 500 | 503) {
-                            break resp;
-                        }
-                        if attempt + 1 >= max_attempts {
-                            break resp;
-                        }
-                        server_retry_after_ms = parse_retry_after_ms(resp.headers());
-                        drop(resp);
-                    }
-                    Err(err) => {
-                        if attempt + 1 >= max_attempts || !(err.is_connect() || err.is_timeout()) {
-                            return Err(err.into());
-                        }
-                    }
-                }
-                attempt += 1;
-                let delay = server_retry_after_ms.map_or_else(
-                    || {
-                        let base = 500_u64 * (1_u64 << attempt.min(4));
-                        let base = base.min(8_000);
-                        let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
-                        Duration::from_millis(
-                            (base.saturating_mul(permille) / 1_000).clamp(1, 8_000),
-                        )
-                    },
-                    Duration::from_millis,
-                );
-                tokio::time::sleep(delay).await;
-            }
+#[cfg(feature = "http")]
+impl From<reqwest::Error> for TransportError {
+    fn from(error: reqwest::Error) -> Self {
+        let kind = if error.is_connect() {
+            TransportErrorKind::Connect
+        } else if error.is_timeout() {
+            TransportErrorKind::Timeout
+        } else {
+            TransportErrorKind::Other
         };
+        Self { kind }
+    }
+}
 
-        let status = response.status();
-        if !status.is_success() {
-            let request_id_hash = safe_request_id_hash(response.headers());
-            let retry_after_ms = parse_retry_after_ms(response.headers());
-            let mut bytes = Vec::new();
-            let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk?;
-                let remaining = self.max_error_body_bytes.saturating_sub(bytes.len());
-                bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                if bytes.len() >= self.max_error_body_bytes {
-                    break;
-                }
+#[cfg(feature = "http")]
+mod http_client {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // HTTP client configuration.
+    // ---------------------------------------------------------------------------
+
+    /// Configuration for [`ProviderClient`]. Mirrors `DeepSeekClientConfig` field
+    /// for field so the runtime can swap clients without touching the limits
+    /// plumbing. The factory [`ProviderClientConfig::production`] chooses sane
+    /// defaults tuned for the Anthropic Messages API streaming contract.
+    pub struct ProviderClientConfig {
+        pub api_base: String,
+        pub allowed_models: BTreeSet<String>,
+        pub connect_timeout: Duration,
+        pub request_timeout: Duration,
+        pub max_error_body_bytes: usize,
+        pub max_sse_frame_bytes: usize,
+        pub max_stream_bytes: usize,
+        pub max_episode_bytes: usize,
+        pub max_idle_per_host: usize,
+    }
+
+    impl ProviderClientConfig {
+        /// Production defaults for the Anthropic Messages API. Limits are chosen
+        /// to match `DeepSeekClientConfig::production` so the runtime can route to
+        /// either provider without re-tuning.
+        pub fn production(
+            api_base: impl Into<String>,
+            allowed_models: impl IntoIterator<Item = String>,
+            max_idle_per_host: usize,
+        ) -> Self {
+            Self {
+                api_base: api_base.into(),
+                allowed_models: allowed_models.into_iter().collect(),
+                connect_timeout: Duration::from_secs(10),
+                request_timeout: Duration::from_secs(130),
+                max_error_body_bytes: 64 * 1024,
+                max_sse_frame_bytes: 2 * 1024 * 1024,
+                max_stream_bytes: 8 * 1024 * 1024,
+                max_episode_bytes: 4 * 1024 * 1024,
+                max_idle_per_host,
             }
+        }
+
+        /// Chainable override for the per-host idle connection limit.
+        #[must_use]
+        pub fn with_max_idle_per_host(mut self, max_idle_per_host: usize) -> Self {
+            self.max_idle_per_host = max_idle_per_host;
+            self
+        }
+    }
+
+    impl std::fmt::Debug for ProviderClientConfig {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("ProviderClientConfig")
+                .field("api_base_hash", &ContentHash::sha256(&self.api_base))
+                .field("allowed_models", &self.allowed_models)
+                .field("connect_timeout", &self.connect_timeout)
+                .field("request_timeout", &self.request_timeout)
+                .field("max_error_body_bytes", &self.max_error_body_bytes)
+                .field("max_sse_frame_bytes", &self.max_sse_frame_bytes)
+                .field("max_stream_bytes", &self.max_stream_bytes)
+                .field("max_episode_bytes", &self.max_episode_bytes)
+                .field("max_idle_per_host", &self.max_idle_per_host)
+                .finish()
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // HTTP client.
+    // ---------------------------------------------------------------------------
+
+    use futures_util::StreamExt;
+    use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+    use reqwest::redirect::Policy as RedirectPolicy;
+
+    /// HTTP client for the Anthropic Messages API. Stateless beyond the embedded
+    /// `reqwest::Client` connection pool; one client can serve many concurrent
+    /// requests.
+    pub struct ProviderClient {
+        http: reqwest::Client,
+        endpoint: String,
+        allowed_models: BTreeSet<String>,
+        request_timeout: Duration,
+        max_error_body_bytes: usize,
+        max_sse_frame_bytes: usize,
+        max_stream_bytes: usize,
+        max_episode_bytes: usize,
+    }
+
+    impl std::fmt::Debug for ProviderClient {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("ProviderClient")
+                .field("endpoint_hash", &ContentHash::sha256(&self.endpoint))
+                .field("allowed_models", &self.allowed_models)
+                .field("request_timeout", &self.request_timeout)
+                .field("authorization", &"[REDACTED]")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl ProviderClient {
+        /// Construct a client. Performs URL validation (HTTPS, no userinfo, no
+        /// query/fragment), API-key validation, and limit sanity checks. Installs
+        /// the rustls ring provider as a side effect.
+        pub fn new(config: ProviderClientConfig, api_key: &str) -> Result<Self, WireError> {
+            let url =
+                reqwest::Url::parse(&config.api_base).map_err(|_| WireError::InvalidEndpoint)?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(WireError::InvalidEndpoint);
+            }
+            if api_key.is_empty() {
+                return Err(WireError::InvalidAuthorization);
+            }
+            if config.request_timeout.is_zero()
+                || config.max_error_body_bytes == 0
+                || config.max_sse_frame_bytes == 0
+                || config.max_stream_bytes < config.max_sse_frame_bytes
+                || config.max_episode_bytes == 0
+                || config.max_idle_per_host == 0
+            {
+                return Err(WireError::InvalidClientLimits);
+            }
+            if config.allowed_models.is_empty()
+                || !config
+                    .allowed_models
+                    .iter()
+                    .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
+            {
+                return Err(WireError::InvalidAllowedModel);
+            }
+
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
+            // Anthropic uses a custom `x-api-key` header + a pinned
+            // `anthropic-version` date. No `Authorization: Bearer` is sent.
+            let mut key_value =
+                HeaderValue::from_str(api_key).map_err(|_| WireError::InvalidAuthorization)?;
+            key_value.set_sensitive(true);
+            let mut headers = HeaderMap::new();
+            headers.insert("x-api-key", key_value);
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+
+            let http = reqwest::Client::builder()
+                .default_headers(headers)
+                .redirect(RedirectPolicy::none())
+                .connect_timeout(config.connect_timeout)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(config.max_idle_per_host)
+                .tcp_keepalive(Duration::from_secs(30))
+                .build()?;
+
+            Ok(Self {
+                http,
+                endpoint: format!("{}/v1/messages", config.api_base.trim_end_matches('/')),
+                allowed_models: config.allowed_models,
+                request_timeout: config.request_timeout,
+                max_error_body_bytes: config.max_error_body_bytes,
+                max_sse_frame_bytes: config.max_sse_frame_bytes,
+                max_stream_bytes: config.max_stream_bytes,
+                max_episode_bytes: config.max_episode_bytes,
+            })
+        }
+
+        /// Send a streaming [`MessagesRequest`] and assemble the response into a
+        /// [`ProviderEpisodeV1`]. Retries the dispatch (before any byte is
+        /// consumed) on 429/500/503 and connect/timeout errors, with bounded
+        /// exponential backoff.
+        pub async fn complete_stream(
+            &self,
+            request: &MessagesRequest,
+            context: &EpisodeContext,
+        ) -> Result<ProviderEpisodeV1, WireError> {
+            if !self.allowed_models.contains(&request.model) {
+                return Err(WireError::UnknownModel(request.model.clone()));
+            }
+            request.validate()?;
+            let request_hash = ContentHash::sha256(serde_jcs::to_vec(request)?);
+
             if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
                 eprintln!(
-                    "[KRW_DEBUG_PROVIDER] error status={} body_hash={} provider_code={:?}",
-                    status.as_u16(),
-                    ContentHash::sha256(&bytes),
-                    safe_api_error_code(&bytes)
+                    "[KRW_DEBUG_PROVIDER] request model={} thinking={:?} tool_choice={:?} stream={} tools={} messages={} request_hash={}",
+                    request.model,
+                    request.thinking.kind,
+                    request.tool_choice,
+                    request.stream,
+                    request.tools.len(),
+                    request.messages.len(),
+                    request_hash
                 );
             }
-            let provider_code = safe_api_error_code(&bytes);
-            return Err(WireError::ApiStatus {
-                status: status.as_u16(),
-                body_prefix_hash: ContentHash::sha256(bytes),
-                provider_code,
-                request_id_hash,
-                retry_after_ms,
-            });
-        }
 
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        if !content_type.starts_with("text/event-stream") {
-            return Err(WireError::UnexpectedContentType);
-        }
+            let response = {
+                // Bounded retry ONLY over the dispatch of the POST request, before
+                // any response byte is consumed. A connect/timeout failure or a
+                // retryable provider status (429/500/503) is safe to re-issue
+                // because no episode output has been emitted yet.
+                let max_attempts = 3u32;
+                let mut attempt = 0u32;
+                loop {
+                    let mut server_retry_after_ms = None;
+                    match self
+                        .http
+                        .post(&self.endpoint)
+                        .timeout(self.request_timeout)
+                        .json(request)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            if status.is_success() || !matches!(status.as_u16(), 429 | 500 | 503) {
+                                break resp;
+                            }
+                            if attempt + 1 >= max_attempts {
+                                break resp;
+                            }
+                            server_retry_after_ms = parse_retry_after_ms(resp.headers());
+                            drop(resp);
+                        }
+                        Err(err) => {
+                            if attempt + 1 >= max_attempts
+                                || !(err.is_connect() || err.is_timeout())
+                            {
+                                return Err(err.into());
+                            }
+                        }
+                    }
+                    attempt += 1;
+                    let delay = server_retry_after_ms.map_or_else(
+                        || {
+                            let base = 500_u64 * (1_u64 << attempt.min(4));
+                            let base = base.min(8_000);
+                            let permille: u64 = 750 + (u64::from(attempt) * 97) % 501;
+                            Duration::from_millis(
+                                (base.saturating_mul(permille) / 1_000).clamp(1, 8_000),
+                            )
+                        },
+                        Duration::from_millis,
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            };
 
-        let mut sse = sse::AnthropicSseDecoder::new(self.max_sse_frame_bytes);
-        let mut assembler = assembler::EpisodeAssembler::new(
-            request_hash,
-            request.model.clone(),
-            context.clone(),
-            self.max_episode_bytes,
-        );
-        let mut stream = response.bytes_stream();
-        let mut streamed_bytes = 0_usize;
-        let mut done = false;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            streamed_bytes = streamed_bytes
-                .checked_add(chunk.len())
-                .ok_or(WireError::StreamLimit(self.max_stream_bytes))?;
-            if streamed_bytes > self.max_stream_bytes {
-                return Err(WireError::StreamLimit(self.max_stream_bytes));
-            }
-            for event in sse.push(&chunk)? {
-                if done {
-                    return Err(WireError::DataAfterDone);
+            let status = response.status();
+            if !status.is_success() {
+                let request_id_hash = safe_request_id_hash(response.headers());
+                let retry_after_ms = parse_retry_after_ms(response.headers());
+                let mut bytes = Vec::new();
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    let remaining = self.max_error_body_bytes.saturating_sub(bytes.len());
+                    bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    if bytes.len() >= self.max_error_body_bytes {
+                        break;
+                    }
                 }
                 if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
                     eprintln!(
-                        "[KRW_DEBUG_PROVIDER] sse event: {:?}",
-                        crate::sse::AnthropicSseEvent::clone(&event)
+                        "[KRW_DEBUG_PROVIDER] error status={} body_hash={} provider_code={:?}",
+                        status.as_u16(),
+                        ContentHash::sha256(&bytes),
+                        safe_api_error_code(&bytes)
                     );
                 }
-                if matches!(event, crate::sse::AnthropicSseEvent::MessageStop) {
-                    done = true;
+                let provider_code = safe_api_error_code(&bytes);
+                return Err(WireError::ApiStatus {
+                    status: status.as_u16(),
+                    body_prefix_hash: ContentHash::sha256(bytes),
+                    provider_code,
+                    request_id_hash,
+                    retry_after_ms,
+                });
+            }
+
+            let content_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if !content_type.starts_with("text/event-stream") {
+                return Err(WireError::UnexpectedContentType);
+            }
+
+            let mut sse = sse::AnthropicSseDecoder::new(self.max_sse_frame_bytes);
+            let mut assembler = assembler::EpisodeAssembler::new(
+                request_hash,
+                request.model.clone(),
+                context.clone(),
+                self.max_episode_bytes,
+            );
+            let mut stream = response.bytes_stream();
+            let mut streamed_bytes = 0_usize;
+            let mut done = false;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                streamed_bytes = streamed_bytes
+                    .checked_add(chunk.len())
+                    .ok_or(WireError::StreamLimit(self.max_stream_bytes))?;
+                if streamed_bytes > self.max_stream_bytes {
+                    return Err(WireError::StreamLimit(self.max_stream_bytes));
                 }
-                assembler.push_event(event)?;
+                for event in sse.push(&chunk)? {
+                    if done {
+                        return Err(WireError::DataAfterDone);
+                    }
+                    if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                        eprintln!(
+                            "[KRW_DEBUG_PROVIDER] sse event: {:?}",
+                            crate::sse::AnthropicSseEvent::clone(&event)
+                        );
+                    }
+                    if matches!(event, crate::sse::AnthropicSseEvent::MessageStop) {
+                        done = true;
+                    }
+                    assembler.push_event(event)?;
+                }
+                if done {
+                    break;
+                }
             }
-            if done {
-                break;
-            }
-        }
-        sse.finish()?;
-        assembler.finish()
-    }
-}
-
-/// Extract only a tightly bounded machine error code from a provider error
-/// response. Human-readable error text is never retained: it can contain
-/// echoed request material or account information.
-fn safe_api_error_code(bytes: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let candidate = value
-        .get("error")
-        .and_then(|error| error.get("type"))
-        .or_else(|| value.get("type"))
-        .and_then(Value::as_str)?;
-    (1..=64)
-        .contains(&candidate.len())
-        .then_some(candidate)
-        .filter(|candidate| {
-            candidate
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        })
-        .map(ToOwned::to_owned)
-}
-
-/// Accept only a short, printable request identifier. The raw value is never
-/// retained; the hash is sufficient to correlate one provider response across
-/// bounded logs without leaking account or routing data.
-fn safe_request_id_hash(headers: &HeaderMap) -> Option<ContentHash> {
-    for header_name in ["request-id", "x-request-id"] {
-        let Some(value) = headers.get(header_name) else {
-            continue;
-        };
-        let Ok(value) = value.to_str() else {
-            continue;
-        };
-        if !value.is_empty()
-            && value.len() <= 128
-            && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
-        {
-            return Some(ContentHash::sha256(value));
+            sse.finish()?;
+            assembler.finish()
         }
     }
-    None
+
+    /// Extract only a tightly bounded machine error code from a provider error
+    /// response. Human-readable error text is never retained: it can contain
+    /// echoed request material or account information.
+    fn safe_api_error_code(bytes: &[u8]) -> Option<String> {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        let candidate = value
+            .get("error")
+            .and_then(|error| error.get("type"))
+            .or_else(|| value.get("type"))
+            .and_then(Value::as_str)?;
+        (1..=64)
+            .contains(&candidate.len())
+            .then_some(candidate)
+            .filter(|candidate| {
+                candidate
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            })
+            .map(ToOwned::to_owned)
+    }
+
+    /// Accept only a short, printable request identifier. The raw value is never
+    /// retained; the hash is sufficient to correlate one provider response across
+    /// bounded logs without leaking account or routing data.
+    fn safe_request_id_hash(headers: &HeaderMap) -> Option<ContentHash> {
+        for header_name in ["request-id", "x-request-id"] {
+            let Some(value) = headers.get(header_name) else {
+                continue;
+            };
+            let Ok(value) = value.to_str() else {
+                continue;
+            };
+            if !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            {
+                return Some(ContentHash::sha256(value));
+            }
+        }
+        None
+    }
+
+    /// Parse only the bounded delta-seconds form of `Retry-After`. HTTP-date is
+    /// deliberately ignored: accepting a clock-dependent date would make retry
+    /// latency unbounded and would complicate the provider admission contract.
+    fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+        let value = headers.get("retry-after")?.to_str().ok()?.trim();
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let seconds = value.parse::<u64>().ok()?;
+        if !(1..=8).contains(&seconds) {
+            return None;
+        }
+        seconds.checked_mul(1_000)
+    }
 }
 
-/// Parse only the bounded delta-seconds form of `Retry-After`. HTTP-date is
-/// deliberately ignored: accepting a clock-dependent date would make retry
-/// latency unbounded and would complicate the provider admission contract.
-fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
-    let value = headers.get("retry-after")?.to_str().ok()?.trim();
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let seconds = value.parse::<u64>().ok()?;
-    if !(1..=8).contains(&seconds) {
-        return None;
-    }
-    seconds.checked_mul(1_000)
-}
+#[cfg(feature = "http")]
+pub use http_client::{ProviderClient, ProviderClientConfig};
 
 // ---------------------------------------------------------------------------
 // Error type (adapted from deepseek-wire).
@@ -1590,8 +1646,8 @@ pub enum WireError {
     ObservedModelMismatch { requested: String, observed: String },
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("HTTP transport failed: {0}")]
-    Http(#[from] reqwest::Error),
+    #[error("HTTP transport failed")]
+    Http(TransportError),
     #[error("model is not in the exact allowlist: {0}")]
     UnknownModel(String),
     #[error("invalid provider request: {0}")]
@@ -1653,6 +1709,13 @@ pub enum WireError {
     DataAfterDone,
     #[error("provider stream error: {error_type}: {message}")]
     StreamError { error_type: String, message: String },
+}
+
+#[cfg(feature = "http")]
+impl From<reqwest::Error> for WireError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.into())
+    }
 }
 
 pub mod assembler;

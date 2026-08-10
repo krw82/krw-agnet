@@ -5,15 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+http = ["krw-agent-provider-wire/http"]
+
 [dependencies]
 async-trait.workspace = true
 krw-agent-bounded-child = { path = "../bounded-child" }
-krw-agent-provider-wire = { path = "../provider-wire" }
+krw-agent-provider-wire = { path = "../provider-wire", default-features = false }
 krw-agent-contracts = { path = "../krw-contracts" }
 krw-agent-evidence = { path = "../evidence" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-kernel = { path = "../agent-kernel" }
-krw-agent-persistence = { path = "../persistence" }
+krw-agent-persistence = { path = "../persistence", default-features = false }
 krw-agent-protocol = { path = "../protocol" }
 krw-agent-research-planner = { path = "../research-planner" }
 krw-agent-state-artifact = { path = "../state-artifact" }

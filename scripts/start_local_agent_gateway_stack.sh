@@ -12,6 +12,8 @@ set -euo pipefail
 krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_state=${KRW_AGENT_LOCAL_STATE_DIR:-"$krw_root/.local/agent-gateway"}
 krw_release_root=${KRW_AGENT_LOCAL_ONTOLOGY_RELEASE_ROOT:-~/krw-ontology-data/releases/prod/current}
+krw_database_mode=${KRW_AGENT_DATABASE_MODE:-local}
+krw_supabase_project_dir=${KRW_AGENT_SUPABASE_PROJECT_DIR:-}
 # Source ontology root for build-time metric prose codegen. The Rust build
 # reads `ontology/schema/metric_dictionary.yaml` from here so metric
 # natural-language phrases stay in sync with the ontology without a parallel
@@ -26,8 +28,19 @@ krw_daemon_pid=''
 krw_proxy_pid=''
 krw_capability_pid=''
 krw_pg_started=false
+krw_database_url=''
+krw_database_ca_file=''
+krw_database_tls_mode=require
 # PostgreSQL is managed externally (init once, stays up). The script only
 # starts it if it is not already running.
+
+case "$krw_database_mode" in
+  local|supabase) ;;
+  *)
+    printf 'KRW_AGENT_DATABASE_MODE must be local or supabase\n' >&2
+    exit 2
+    ;;
+esac
 
 for krw_value in "$krw_gateway_port" "$krw_pg_port" "$krw_capability_port" "$krw_tls_port"; do
   [[ "$krw_value" =~ ^[0-9]+$ ]] && (( krw_value >= 1 && krw_value <= 65535 )) || {
@@ -39,7 +52,13 @@ done
   printf 'KRW_AGENT_LOCAL_ONTOLOGY_RELEASE_ROOT must be an existing absolute directory\n' >&2
   exit 2
 }
-for krw_binary in openssl curl uv /opt/homebrew/bin/initdb /opt/homebrew/bin/pg_ctl /opt/homebrew/bin/psql node npm; do
+krw_required_binaries=(openssl curl uv /opt/homebrew/bin/psql node npm)
+if [[ "$krw_database_mode" == local ]]; then
+  krw_required_binaries+=(/opt/homebrew/bin/initdb /opt/homebrew/bin/pg_ctl)
+else
+  krw_required_binaries+=(supabase)
+fi
+for krw_binary in "${krw_required_binaries[@]}"; do
   if [[ "$krw_binary" == /* ]]; then
     [[ -x "$krw_binary" ]] || { printf 'missing required binary: %s\n' "$krw_binary" >&2; exit 1; }
   else
@@ -75,64 +94,78 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# PostgreSQL: reuse if already running, otherwise init+start.
-# Once started the server stays up across script restarts. agentd connects
-# with SslMode::Require, so a reused instance MUST accept TLS; a previously
-# started server without ssl=on would make agentd fail readiness with an
-# opaque ReadinessFailed hash. We probe TLS below and refuse to continue if
-# the running server does not accept SSL.
+# Database: either reuse the script-managed TLS PostgreSQL instance or use an
+# already-running Supabase CLI project. The two modes share the same Rust
+# Postgres ABI and migration runner; only startup/transport setup differs.
 krw_state_abs=$(CDPATH= cd -- "$krw_state" && pwd)
-if [[ ! -f "$krw_state_abs/postgres/PG_VERSION" ]]; then
-  /opt/homebrew/bin/initdb -A trust -D "$krw_state_abs/postgres" >"$krw_state_abs/logs/initdb.log"
-fi
-# Ensure CA + server cert/key exist. pg_ctl needs ABSOLUTE cert paths: when
-# given a relative path Postgres resolves it against its own CWD, not the
-# data directory, so an ssl=on start silently fails and leaves a server
-# that agentd cannot talk to over TLS.
-if [[ ! -f "$krw_state_abs/ca.pem" || ! -f "$krw_state_abs/server.pem" || ! -f "$krw_state_abs/server.key" ]]; then
-  openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
-    -config "$krw_root/scripts/live_e2e_openssl.cnf" -extensions certificate_authority_extensions \
-    -keyout "$krw_state_abs/ca.key" -out "$krw_state_abs/ca.pem" >/dev/null 2>&1
-  openssl req -new -newkey rsa:2048 -nodes -sha256 \
-    -config "$krw_root/scripts/live_e2e_openssl.cnf" -reqexts request_extensions \
-    -keyout "$krw_state_abs/server.key" -out "$krw_state_abs/server.csr" >/dev/null 2>&1
-  openssl x509 -req -sha256 -days 30 -in "$krw_state_abs/server.csr" \
-    -CA "$krw_state_abs/ca.pem" -CAkey "$krw_state_abs/ca.key" -CAcreateserial \
-    -extfile "$krw_root/scripts/live_e2e_openssl.cnf" -extensions server_certificate_extensions \
-    -out "$krw_state_abs/server.pem" >/dev/null 2>&1
-  chmod 600 "$krw_state_abs/ca.key" "$krw_state_abs/server.key"
-fi
-if ! /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" status >/dev/null 2>&1; then
-  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
-    -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
-    -w start >/dev/null
-fi
-# Reused-instance guard: agentd hard-requires SslMode::Require. If a server
-# from an earlier run is up but not TLS-capable, stop+restart it with ssl=on
-# using the absolute cert paths instead of silently inheriting a broken one.
-if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
-    /opt/homebrew/bin/psql -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres -tAc "select 1" >/dev/null 2>&1; then
-  printf 'local PostgreSQL is up but does not accept TLS; restarting with ssl=on\n' >&2
-  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -m fast -w stop >/dev/null 2>&1
-  /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
-    -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
-    -w start >/dev/null
-fi
+if [[ "$krw_database_mode" == local ]]; then
+  if [[ ! -f "$krw_state_abs/postgres/PG_VERSION" ]]; then
+    /opt/homebrew/bin/initdb -A trust -D "$krw_state_abs/postgres" >"$krw_state_abs/logs/initdb.log"
+  fi
+  # pg_ctl needs absolute certificate paths; PostgreSQL otherwise resolves
+  # relative paths against its own working directory.
+  if [[ ! -f "$krw_state_abs/ca.pem" || ! -f "$krw_state_abs/server.pem" || ! -f "$krw_state_abs/server.key" ]]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
+      -config "$krw_root/scripts/live_e2e_openssl.cnf" -extensions certificate_authority_extensions \
+      -keyout "$krw_state_abs/ca.key" -out "$krw_state_abs/ca.pem" >/dev/null 2>&1
+    openssl req -new -newkey rsa:2048 -nodes -sha256 \
+      -config "$krw_root/scripts/live_e2e_openssl.cnf" -reqexts request_extensions \
+      -keyout "$krw_state_abs/server.key" -out "$krw_state_abs/server.csr" >/dev/null 2>&1
+    openssl x509 -req -sha256 -days 30 -in "$krw_state_abs/server.csr" \
+      -CA "$krw_state_abs/ca.pem" -CAkey "$krw_state_abs/ca.key" -CAcreateserial \
+      -extfile "$krw_root/scripts/live_e2e_openssl.cnf" -extensions server_certificate_extensions \
+      -out "$krw_state_abs/server.pem" >/dev/null 2>&1
+    chmod 600 "$krw_state_abs/ca.key" "$krw_state_abs/server.key"
+  fi
+  if ! /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" status >/dev/null 2>&1; then
+    /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
+      -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
+      -w start >/dev/null
+  fi
+  if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+      /opt/homebrew/bin/psql -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres -tAc "select 1" >/dev/null 2>&1; then
+    printf 'local PostgreSQL is up but does not accept TLS; restarting with ssl=on\n' >&2
+    /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -m fast -w stop >/dev/null 2>&1
+    /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
+      -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
+      -w start >/dev/null
+  fi
 
-# Production deployment creates database roles outside the migration runner,
-# but a fresh local cluster has no such role.  Migration 0008 grants the
-# bounded retention procedure to this no-login daemon role, so create exactly
-# that inert role before the first migration pass.  The local worker itself
-# still connects as the current OS user; this is only bootstrap parity with
-# the documented production grant boundary.
-PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
-  /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
-  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'krw_agent_daemon') THEN CREATE ROLE krw_agent_daemon NOLOGIN; END IF; END \$\$;" \
-  >/dev/null
-
-PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
-  "$krw_root/scripts/apply_migrations.sh" -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
-  >/dev/null
+  # Bootstrap the inert retention role before applying the agent migrations.
+  PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+    /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
+    -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'krw_agent_daemon') THEN CREATE ROLE krw_agent_daemon NOLOGIN; END IF; END \$\$;" \
+    >/dev/null
+  PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+    "$krw_root/scripts/apply_migrations.sh" -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
+    >/dev/null
+  krw_database_url="postgresql://127.0.0.1:$krw_pg_port/postgres?user=$(id -un)"
+  krw_database_ca_file="$krw_state_abs/ca.pem"
+else
+  [[ -n "$krw_supabase_project_dir" && "$krw_supabase_project_dir" == /* && -d "$krw_supabase_project_dir" ]] || {
+    printf 'KRW_AGENT_SUPABASE_PROJECT_DIR must point to an existing absolute Supabase project\n' >&2
+    exit 2
+  }
+  if [[ "${KRW_AGENT_SUPABASE_AUTOSTART:-0}" == 1 ]]; then
+    supabase start --workdir "$krw_supabase_project_dir" >/dev/null 2>&1
+  fi
+  krw_database_url="${KRW_AGENT_DATABASE_URL:-}"
+  if [[ -z "$krw_database_url" ]]; then
+    krw_database_url="$(supabase status --workdir "$krw_supabase_project_dir" -o json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("DB_URL", ""))')"
+  fi
+  [[ "$krw_database_url" == postgresql://* || "$krw_database_url" == postgres://* ]] || {
+    printf 'Supabase DB_URL was not found; start Supabase or set KRW_AGENT_DATABASE_URL\n' >&2
+    exit 1
+  }
+  # Supabase CLI's local Postgres port is plain TCP by default. This is a
+  # deliberate local-only mode; hosted Supabase should use database mode
+  # `local` plus a TLS URL, or be supplied through the standard daemon path.
+  krw_database_tls_mode=disable
+  PGSSLMODE=disable /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 "$krw_database_url" \
+    -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'krw_agent_daemon') THEN CREATE ROLE krw_agent_daemon NOLOGIN; END IF; END \$\$;" \
+    >/dev/null
+  PGSSLMODE=disable "$krw_root/scripts/apply_migrations.sh" "$krw_database_url" >/dev/null
+fi
 
 read -r krw_build krw_schema_hash krw_release_hash < <(
   (
@@ -224,8 +257,14 @@ krw_expiry=$((krw_now + 2592000))
   --issued-at-unix-seconds "$krw_now" --expires-at-unix-seconds "$krw_expiry" --runtime-version 0.1.0 --kernel-version 0.1.0 \
   --out "$krw_release_authorization" >/dev/null
 
-export KRW_AGENT_DATABASE_URL="postgresql://127.0.0.1:$krw_pg_port/postgres?user=$krw_database_user"
-export KRW_AGENT_DATABASE_CA_PEM="$(< "$krw_state/ca.pem")"
+export KRW_AGENT_DATABASE_URL="$krw_database_url"
+krw_agentd_database_args=(--database-url-env KRW_AGENT_DATABASE_URL --database-tls-mode "$krw_database_tls_mode")
+if [[ -n "$krw_database_ca_file" ]]; then
+  export KRW_AGENT_DATABASE_CA_PEM="$(< "$krw_database_ca_file")"
+  krw_agentd_database_args+=(--database-ca-pem-env KRW_AGENT_DATABASE_CA_PEM)
+else
+  unset KRW_AGENT_DATABASE_CA_PEM
+fi
 export RUST_LOG="${RUST_LOG:-info}"
 # Forward provider/MCP debug flags to agentd when set in the caller's env so
 # DeepSeek SSE payloads and MCP arguments land in agentd.log for diagnosis.
@@ -239,7 +278,7 @@ krw_agentd_bin="$krw_root/target/debug/krw-agentd"
     --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
     --endpoint-registry "$krw_state/endpoint-registry.yaml" --release-authorization "$krw_release_authorization" \
     --release-trust-registry "$krw_state/release-trust-registry.json" --runtime-version 0.1.0 --worker-id local-agentd \
-    --database-url-env KRW_AGENT_DATABASE_URL --database-ca-pem-env KRW_AGENT_DATABASE_CA_PEM \
+    "${krw_agentd_database_args[@]}" \
     --database-max-connections 32 \
     --artifact-root "$krw_state/artifacts" --artifact-active-key-env KRW_AGENT_ARTIFACT_KEY_V1 \
     >"$krw_state/logs/agentd.log" 2>&1 &
@@ -254,7 +293,11 @@ PY
 export KRW_AGENT_GATEWAY_HOST=127.0.0.1 KRW_AGENT_GATEWAY_PORT="$krw_gateway_port"
 export KRW_AGENT_GATEWAY_TENANT_ID=local_tenant KRW_AGENT_GATEWAY_PRINCIPAL_ID=local_principal
 export KRW_AGENT_GATEWAY_DATABASE_URL="$KRW_AGENT_DATABASE_URL"
-export KRW_AGENT_GATEWAY_DATABASE_CA_PEM_FILE="$krw_state/ca.pem"
+if [[ -n "$krw_database_ca_file" ]]; then
+  export KRW_AGENT_GATEWAY_DATABASE_CA_PEM_FILE="$krw_database_ca_file"
+else
+  unset KRW_AGENT_GATEWAY_DATABASE_CA_PEM_FILE
+fi
 export KRW_AGENT_RELEASE_DESCRIPTOR_PATH="$krw_descriptor"
 export KRW_AGENT_RELEASE_DESCRIPTOR_HASH="$krw_descriptor_hash"
 export KRW_AGENT_RELEASE_SET_HASH="$krw_release_set_hash"

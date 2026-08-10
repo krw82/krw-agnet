@@ -58,12 +58,29 @@ const MAX_TIMEOUT: Duration = Duration::from_mins(2);
 const MAX_POOL_CONNECTIONS: usize = 64;
 const MAX_MIN_IDLE: usize = 8;
 
+/// Database transport security for the PostgreSQL adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresTlsMode {
+    /// Require certificate-verified TLS. This is the production default.
+    Require,
+    /// Use a plain connection. Only use this with an isolated local Supabase
+    /// CLI database; it must never be selected for a remote URL.
+    Disable,
+}
+
+impl Default for PostgresTlsMode {
+    fn default() -> Self {
+        Self::Require
+    }
+}
+
 /// Non-secret deployment settings. `url_env` and `ca_pem_env` name secret
 /// sources; they never contain the values themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostgresPoolOptions {
     pub url_env: String,
     pub ca_pem_env: Option<String>,
+    pub tls_mode: PostgresTlsMode,
     pub application_name: String,
     pub max_connections: usize,
     pub min_idle: usize,
@@ -79,6 +96,7 @@ impl Default for PostgresPoolOptions {
         Self {
             url_env: "KRW_AGENT_DATABASE_URL".into(),
             ca_pem_env: None,
+            tls_mode: PostgresTlsMode::Require,
             application_name: "krw-agentd".into(),
             max_connections: 8,
             min_idle: 1,
@@ -161,7 +179,8 @@ impl fmt::Debug for PostgresJsonExecutor {
 
 struct PoolInner {
     postgres: tokio_postgres::Config,
-    tls: ClientConfig,
+    tls: Option<ClientConfig>,
+    tls_mode: PostgresTlsMode,
     idle: Mutex<Vec<PooledConnection>>,
     permits: Arc<Semaphore>,
     max_connections: usize,
@@ -238,7 +257,10 @@ impl PostgresJsonExecutor {
             .parse::<tokio_postgres::Config>()
             .map_err(|_| PostgresSetupError::InvalidConnectionConfiguration)?;
         postgres
-            .ssl_mode(SslMode::Require)
+            .ssl_mode(match options.tls_mode {
+                PostgresTlsMode::Require => SslMode::Require,
+                PostgresTlsMode::Disable => SslMode::Disable,
+            })
             .target_session_attrs(TargetSessionAttrs::ReadWrite)
             .connect_timeout(options.connect_timeout)
             .application_name(&options.application_name)
@@ -250,10 +272,16 @@ impl PostgresJsonExecutor {
             ));
         drop(database_url);
 
-        let tls = build_tls_config(options.ca_pem_env.as_deref(), secrets)?;
+        let tls = match options.tls_mode {
+            PostgresTlsMode::Require => {
+                Some(build_tls_config(options.ca_pem_env.as_deref(), secrets)?)
+            }
+            PostgresTlsMode::Disable => None,
+        };
         let inner = Arc::new(PoolInner {
             postgres,
             tls,
+            tls_mode: options.tls_mode,
             idle: Mutex::new(Vec::with_capacity(options.max_connections)),
             permits: Arc::new(Semaphore::new(options.max_connections)),
             max_connections: options.max_connections,
@@ -347,7 +375,29 @@ impl PostgresJsonExecutor {
     }
 
     async fn open_connection(&self) -> Result<PooledConnection, PostgresSetupError> {
-        let connector = MakeRustlsConnect::new(self.inner.tls.clone());
+        match self.inner.tls_mode {
+            PostgresTlsMode::Require => {
+                let tls = self
+                    .inner
+                    .tls
+                    .clone()
+                    .ok_or(PostgresSetupError::InvalidPoolSetting("TLS configuration"))?;
+                self.open_connection_with(MakeRustlsConnect::new(tls)).await
+            }
+            PostgresTlsMode::Disable => self.open_connection_with(tokio_postgres::NoTls).await,
+        }
+    }
+
+    async fn open_connection_with<T>(
+        &self,
+        connector: T,
+    ) -> Result<PooledConnection, PostgresSetupError>
+    where
+        T: tokio_postgres::tls::MakeTlsConnect<tokio_postgres::Socket> + Send + 'static,
+        T::Stream: Send + 'static,
+        T::TlsConnect: Send + 'static,
+        T::Error: Send + Sync + 'static,
+    {
         let (client, connection) = timeout(
             self.inner.connect_timeout,
             self.inner.postgres.connect(connector),

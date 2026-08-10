@@ -64,11 +64,12 @@ use krw_agent_protocol::{
     ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
     provider_tool_name,
 };
+#[cfg(feature = "http")]
+use krw_agent_provider_wire::ProviderClient;
 use krw_agent_provider_wire::{
-    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, OutputConfig, ProviderClient,
-    ProviderEpisodeV1, ProviderMessage, ProviderToolDefinition, RequestMetadata, ResponseFormat,
-    ThinkingConfig, ToolCallKind, ToolChoice, ToolResultMessage, WireError,
-    provider_request_footprint,
+    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, OutputConfig, ProviderEpisodeV1,
+    ProviderMessage, ProviderToolDefinition, RequestMetadata, ResponseFormat, ThinkingConfig,
+    ToolCallKind, ToolChoice, ToolResultMessage, WireError, provider_request_footprint,
 };
 use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
@@ -170,6 +171,7 @@ pub trait Provider: fmt::Debug + Send + Sync {
     ) -> Result<ProviderEpisodeV1, DependencyFailure>;
 }
 
+#[cfg(feature = "http")]
 #[async_trait]
 impl Provider for ProviderClient {
     async fn complete(

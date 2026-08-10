@@ -5,6 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+postgres = [
+    "dep:rustls",
+    "dep:rustls-native-certs",
+    "dep:rustls-pemfile",
+    "dep:tokio-postgres",
+    "dep:tokio-postgres-rustls",
+]
+
 [dependencies]
 async-trait.workspace = true
 krw-agent-bounded-child = { path = "../bounded-child" }
@@ -16,13 +26,13 @@ serde_jcs.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-postgres.workspace = true
-tokio-postgres-rustls.workspace = true
+tokio-postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
 tokio-util.workspace = true
 tracing.workspace = true
-rustls.workspace = true
-rustls-native-certs.workspace = true
-rustls-pemfile.workspace = true
+rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 zeroize.workspace = true
 
 [dev-dependencies]

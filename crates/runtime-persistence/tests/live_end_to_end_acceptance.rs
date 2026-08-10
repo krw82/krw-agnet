@@ -11,6 +11,8 @@
 //! is emitted by this test. It is skipped unless an operator sets the explicit
 //! `KRW_LIVE_E2E_ACCEPTANCE=1` gate.
 
+#![cfg(feature = "postgres")]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -174,6 +176,7 @@ fn postgres_options() -> PostgresPoolOptions {
     PostgresPoolOptions {
         url_env: "KRW_LIVE_E2E_DATABASE_URL".into(),
         ca_pem_env: Some("KRW_LIVE_E2E_DATABASE_CA_PEM".into()),
+        tls_mode: krw_agent_persistence::postgres::PostgresTlsMode::Require,
         application_name: "krw-agent-live-e2e".into(),
         max_connections: 4,
         min_idle: 1,

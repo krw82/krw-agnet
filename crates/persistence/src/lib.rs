@@ -3,6 +3,7 @@
 pub mod agent_v1;
 pub mod daemon;
 pub mod metrics;
+#[cfg(feature = "postgres")]
 pub mod postgres;
 
 use std::collections::{BTreeMap, BTreeSet};

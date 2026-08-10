@@ -5,17 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+http = ["dep:futures-util", "dep:reqwest", "dep:rustls", "dep:tokio"]
+
 [dependencies]
-bytes.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, optional = true }
 krw-agent-protocol = { path = "../protocol" }
-reqwest.workspace = true
-rustls.workspace = true
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 serde.workspace = true
 serde_jcs.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, optional = true }
 zeroize.workspace = true
 
 [lints]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use krw_agent_artifact_store::{
     ArtifactStore, ArtifactStoreConfig, LocalArtifactStore, MasterKeyring, VersionedMasterKey,
 };
@@ -18,7 +18,7 @@ use krw_agent_persistence::daemon::{
 };
 use krw_agent_persistence::metrics;
 use krw_agent_persistence::postgres::{
-    PostgresJsonExecutor, PostgresPoolOptions, ProcessEnvironmentDatabaseSecrets,
+    PostgresJsonExecutor, PostgresPoolOptions, PostgresTlsMode, ProcessEnvironmentDatabaseSecrets,
 };
 use krw_agent_protocol::{DeploymentBinding, ModelRegistry, PublicReleaseDescriptor};
 use krw_agent_release_authorization::{
@@ -49,6 +49,13 @@ const MAX_DESCRIPTOR_WRITE_ATTEMPTS: u64 = 16;
 const MAX_RELEASE_AUTHORIZATION_ARTIFACT_BYTES: u64 = 64 * 1024;
 static DESCRIPTOR_STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DatabaseTlsModeArg {
+    Require,
+    /// Local-only escape hatch for Supabase CLI's plain PostgreSQL port.
+    Disable,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "krw-agentd", version, about = "Machine-wide KRW Agent daemon")]
 struct Args {
@@ -78,6 +85,9 @@ struct Args {
     /// Optional environment variable name containing additional CA PEM data.
     #[arg(long)]
     database_ca_pem_env: Option<String>,
+    /// PostgreSQL transport mode. Keep `require` for every non-local database.
+    #[arg(long, value_enum, default_value_t = DatabaseTlsModeArg::Require)]
+    database_tls_mode: DatabaseTlsModeArg,
     #[arg(long, default_value_t = 8)]
     database_max_connections: usize,
     #[arg(long, default_value_t = 1)]
@@ -608,6 +618,10 @@ fn postgres_options(args: &Args) -> PostgresPoolOptions {
     PostgresPoolOptions {
         url_env: args.database_url_env.clone(),
         ca_pem_env: args.database_ca_pem_env.clone(),
+        tls_mode: match args.database_tls_mode {
+            DatabaseTlsModeArg::Require => PostgresTlsMode::Require,
+            DatabaseTlsModeArg::Disable => PostgresTlsMode::Disable,
+        },
         application_name: "krw-agentd".into(),
         max_connections: args.database_max_connections,
         min_idle: args.database_min_idle,
