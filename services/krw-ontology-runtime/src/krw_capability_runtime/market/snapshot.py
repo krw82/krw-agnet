@@ -400,6 +400,7 @@ class MarketSnapshotRouter:
             self._utc_now(),
         )
         for provider in self._providers:
+            candidate: dict[str, Any] | None = None
             try:
                 raw = provider.fetch(canonical_ticker)
                 candidate = _sanitize_payload(
@@ -409,8 +410,8 @@ class MarketSnapshotRouter:
                     self._utc_now(),
                 )
             except Exception:  # noqa: BLE001 - source details never cross the MCP boundary
-                continue
-            if candidate["status"] == "available":
+                candidate = None
+            if candidate is not None and candidate["status"] == "available":
                 payload = candidate
                 break
         ttl_seconds = (
@@ -432,7 +433,7 @@ def _normalize_timestamp(value: Any) -> str | None:
         timestamp = value.astimezone(UTC)
     elif isinstance(value, str) and 1 <= len(value) <= 64 and value.isascii():
         try:
-            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            timestamp = datetime.fromisoformat(value)
         except ValueError:
             return None
         if timestamp.tzinfo is None:
