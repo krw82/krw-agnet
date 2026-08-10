@@ -168,7 +168,7 @@ done
   KRW_CAPABILITYD_EXPECTED_BUILD_ID="$krw_capability_build" \
   KRW_CAPABILITYD_EXPECTED_TOOL_SCHEMA_SHA256="$krw_capability_tool_schema_sha256" \
   KRW_CAPABILITYD_EXPECTED_RELEASE_MANIFEST_SHA256="$krw_capability_release_manifest_sha256" \
-  exec "$krw_root/scripts/with_local_env.sh" uv run krw-capabilityd
+  exec "$krw_root/scripts/with_local_env.sh" --market-sidecar uv run krw-capabilityd
 ) >"$krw_tmp/capabilityd.log" 2>&1 &
 krw_capability_pid=$!
 

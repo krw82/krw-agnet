@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -32,6 +32,8 @@ _MAX_METRIC_ABS = 1.0e18
 _FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 _FMP_TIMEOUT_SECONDS = 1.25
 _MAX_FMP_RESPONSE_BYTES = 128 * 1024
+_MARKET_STORE_URL_ENV = "KRW_MARKET_SNAPSHOT_STORE_URL"
+_MARKET_STORE_KEY_ENV = "KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY"
 _METRIC_FIELDS = {
     "last_price",
     "previous_close",
@@ -196,6 +198,91 @@ def _open_fmp_request(request: Request, *, timeout: float) -> Any:
     return build_opener(_RejectRedirects()).open(request, timeout=timeout)
 
 
+class FmpValuationStoreProvider:
+    """Read the existing FMP-backed valuation store through one fixed query.
+
+    The caller cannot select a table, column, ticker syntax, or query option.
+    This is the preferred source because the frontend refresh job already
+    normalizes FMP values per ticker; direct FMP is only a miss fallback.
+    """
+
+    source_name = "fmp"
+
+    def __init__(
+        self,
+        *,
+        store_url: str | None = None,
+        service_role_key: str | None = None,
+        opener: Callable[..., Any] = _open_fmp_request,
+        timeout_seconds: float = _FMP_TIMEOUT_SECONDS,
+    ) -> None:
+        if not 0 < timeout_seconds <= 3.0:
+            raise ValueError("market store timeout must be within 0..3 seconds")
+        raw_url = (
+            store_url if store_url is not None else os.getenv(_MARKET_STORE_URL_ENV, "")
+        ).strip()
+        parsed = urlsplit(raw_url)
+        if raw_url and (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("market store URL must be a bare HTTPS origin")
+        self._store_url = raw_url.rstrip("/")
+        self._service_role_key = (
+            service_role_key
+            if service_role_key is not None
+            else os.getenv(_MARKET_STORE_KEY_ENV, "")
+        ).strip()
+        self._opener = opener
+        self._timeout_seconds = timeout_seconds
+
+    def fetch(self, ticker: str) -> Mapping[str, Any]:
+        if not self._store_url or not self._service_role_key:
+            raise RuntimeError("FMP valuation store provider is not configured")
+        query = urlencode(
+            {
+                "select": "ticker,reference_price,currency,market_cap,pe_ttm,pb,computed_at,session_date",
+                "ticker": f"eq.{ticker}",
+                "order": "session_date.desc,computed_at.desc",
+                "limit": "1",
+            }
+        )
+        request = Request(
+            f"{self._store_url}/rest/v1/valuation_snapshots?{query}",
+            headers={
+                "Accept": "application/json",
+                "apikey": self._service_role_key,
+                "Authorization": f"Bearer {self._service_role_key}",
+            },
+            method="GET",
+        )
+        with self._opener(request, timeout=self._timeout_seconds) as response:
+            body = response.read(_MAX_FMP_RESPONSE_BYTES + 1)
+        if not isinstance(body, bytes) or len(body) > _MAX_FMP_RESPONSE_BYTES:
+            raise ValueError("market store response exceeds the bounded snapshot payload")
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, list) or not decoded or not isinstance(decoded[0], Mapping):
+            raise ValueError("market store response has no usable valuation record")
+        row = decoded[0]
+        return {
+            "ticker": row.get("ticker"),
+            "source": self.source_name,
+            "currency": row.get("currency"),
+            "as_of": row.get("computed_at"),
+            "metrics": {
+                "last_price": row.get("reference_price"),
+                "market_cap": row.get("market_cap"),
+                "trailing_pe": row.get("pe_ttm"),
+                "price_to_book": row.get("pb"),
+            },
+        }
+
+
 class FmpResearchProvider:
     """Research-only FMP adapter with a closed endpoint and field allow-list.
 
@@ -275,10 +362,17 @@ class MarketSnapshotRouter:
         provider: MarketSnapshotProvider | None = None,
         store: MarketSnapshotStore | None = None,
         *,
+        fallback_provider: MarketSnapshotProvider | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
     ) -> None:
-        self._provider = provider or FmpResearchProvider()
+        if provider is not None:
+            providers = (provider,) if fallback_provider is None else (provider, fallback_provider)
+        else:
+            providers = (FmpValuationStoreProvider(), FmpResearchProvider())
+        if not providers or any(provider.source_name != "fmp" for provider in providers):
+            raise ValueError("market snapshot providers must preserve FMP provenance")
+        self._providers = providers
         self._store = store or MarketSnapshotStore()
         self._monotonic_clock = monotonic_clock
         self._utc_now = utc_now or (lambda: datetime.now(UTC))
@@ -296,24 +390,29 @@ class MarketSnapshotRouter:
                 return cached
             return _unavailable_payload(
                 canonical_ticker,
-                self._provider.source_name,
+                self._providers[0].source_name,
                 self._utc_now(),
             )
 
-        try:
-            raw = self._provider.fetch(canonical_ticker)
-            payload = _sanitize_payload(
-                canonical_ticker,
-                self._provider.source_name,
-                raw,
-                self._utc_now(),
-            )
-        except Exception:  # noqa: BLE001 - source details never cross the MCP boundary
-            payload = _unavailable_payload(
-                canonical_ticker,
-                self._provider.source_name,
-                self._utc_now(),
-            )
+        payload = _unavailable_payload(
+            canonical_ticker,
+            self._providers[0].source_name,
+            self._utc_now(),
+        )
+        for provider in self._providers:
+            try:
+                raw = provider.fetch(canonical_ticker)
+                candidate = _sanitize_payload(
+                    canonical_ticker,
+                    provider.source_name,
+                    raw,
+                    self._utc_now(),
+                )
+            except Exception:  # noqa: BLE001 - source details never cross the MCP boundary
+                continue
+            if candidate["status"] == "available":
+                payload = candidate
+                break
         ttl_seconds = (
             _AVAILABLE_TTL_SECONDS if payload["status"] == "available" else _UNAVAILABLE_TTL_SECONDS
         )
@@ -331,6 +430,14 @@ class MarketSnapshotRouter:
 def _normalize_timestamp(value: Any) -> str | None:
     if isinstance(value, datetime):
         timestamp = value.astimezone(UTC)
+    elif isinstance(value, str) and 1 <= len(value) <= 64 and value.isascii():
+        try:
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if timestamp.tzinfo is None:
+            return None
+        timestamp = timestamp.astimezone(UTC)
     elif (
         isinstance(value, (int, float))
         and not isinstance(value, bool)

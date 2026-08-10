@@ -9,17 +9,24 @@ cp .env.example .env.local
 chmod 600 .env.local
 ```
 
-`.env.local`에는 GLM 키와, 현재가·PER/PBR 사전 문맥을 쓰려면 선택적으로 FMP 키를 넣는다. 값을
-채팅, 명령행 인자, AgentSpec/Image, fixture, log에 넣지 않는다.
+`.env.local`에는 GLM 키와, 현재가·PER/PBR 사전 문맥을 쓰려면 선택적으로 FMP 키를 넣는다. 이미
+FMP 결과를 ticker별 valuation store에 적재한다면 그 읽기 전용 경로를 함께 넣을 수 있다. 값을 채팅,
+명령행 인자, AgentSpec/Image, fixture, log에 넣지 않는다.
 
 ```text
 GLM_API_KEY=<new-secret>
 FMP_API_KEY=<optional-market-data-secret>
+KRW_MARKET_SNAPSHOT_STORE_URL=https://your-project.supabase.co
+KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY=<optional-store-secret>
 ```
 
 이 파일은 자동으로 source되지 않는다. [`../scripts/with_local_env.sh`](../scripts/with_local_env.sh)가
 regular-file/0600/허용 목록 형식을 확인한 뒤, 자식 프로세스에만 전달한다. 따라서 환경 파일 안의
 shell code, 다른 변수, 명령 치환은 허용하지 않는다.
+
+기본 실행은 GLM 키만 agent 프로세스에 전달한다. FMP와 valuation-store 키는
+`--market-sidecar` 범위로 capability sidecar에만 전달되므로 agentd나 provider 프로세스에
+불필요하게 상속되지 않는다.
 
 현재 live wire 확인 명령은 다음과 같다.
 

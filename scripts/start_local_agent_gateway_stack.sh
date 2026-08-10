@@ -181,7 +181,7 @@ PY
   KRW_CAPABILITYD_EXPECTED_BUILD_ID="$krw_build" \
   KRW_CAPABILITYD_EXPECTED_TOOL_SCHEMA_SHA256="$krw_schema_hash" \
   KRW_CAPABILITYD_EXPECTED_RELEASE_MANIFEST_SHA256="$krw_release_hash" \
-  exec "$krw_root/scripts/with_local_env.sh" uv run krw-capabilityd
+  exec "$krw_root/scripts/with_local_env.sh" --market-sidecar uv run krw-capabilityd
 ) >"$krw_state/logs/capabilityd.log" 2>&1 &
 krw_capability_pid=$!
 for _ in $(seq 1 100); do curl --fail --silent "http://127.0.0.1:$krw_capability_port/healthz" >/dev/null && break; sleep 0.1; done

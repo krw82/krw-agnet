@@ -10,6 +10,7 @@ import pytest
 
 from krw_capability_runtime.market.snapshot import (
     FmpResearchProvider,
+    FmpValuationStoreProvider,
     MarketSnapshotRequest,
     MarketSnapshotRouter,
     MarketSnapshotStore,
@@ -169,6 +170,70 @@ def test_fmp_ratio_failure_keeps_a_valid_quote_but_never_uses_another_source() -
     payload = router.snapshot("AAPL")
 
     assert payload["source"] == "fmp"
+    assert payload["status"] == "available"
+    assert payload["metrics"] == {"last_price": 210.5}
+
+
+def test_router_prefers_persisted_fmp_valuation_before_direct_fmp() -> None:
+    requested_paths: list[str] = []
+
+    def store_opener(request: Request, *, timeout: float) -> _FakeFmpResponse:
+        assert timeout == 1.25
+        requested_paths.append(request.full_url.split("?")[0])
+        assert "apikey=" not in request.full_url
+        return _FakeFmpResponse(
+            [
+                {
+                    "ticker": "AAPL",
+                    "reference_price": 210.5,
+                    "currency": "USD",
+                    "market_cap": 3_100_000_000_000,
+                    "pe_ttm": 31.2,
+                    "pb": 45.4,
+                    "computed_at": "2026-08-07T20:00:00+00:00",
+                    "session_date": "2026-08-07",
+                }
+            ]
+        )
+
+    direct = _FakeProvider({"metrics": {"last_price": 999.0}})
+    router = MarketSnapshotRouter(
+        FmpValuationStoreProvider(
+            store_url="https://example.supabase.co",
+            service_role_key="test-store-key",
+            opener=store_opener,
+        ),
+        fallback_provider=direct,
+        utc_now=lambda: datetime(2026, 8, 10, tzinfo=UTC),
+    )
+
+    payload = router.snapshot("AAPL")
+
+    assert requested_paths == ["https://example.supabase.co/rest/v1/valuation_snapshots"]
+    assert direct.calls == 0
+    assert payload["source"] == "fmp"
+    assert payload["as_of"] == "2026-08-07T20:00:00Z"
+    assert payload["metrics"] == {
+        "last_price": 210.5,
+        "market_cap": 3_100_000_000_000.0,
+        "trailing_pe": 31.2,
+        "price_to_book": 45.4,
+    }
+
+
+def test_router_falls_back_to_direct_fmp_when_the_persisted_snapshot_is_unavailable() -> None:
+    persisted = _FakeProvider(fail=True)
+    direct = _FakeProvider({"metrics": {"last_price": 210.5}})
+    router = MarketSnapshotRouter(
+        persisted,
+        fallback_provider=direct,
+        utc_now=lambda: datetime(2024, 1, 1, tzinfo=UTC),
+    )
+
+    payload = router.snapshot("AAPL")
+
+    assert persisted.calls == 1
+    assert direct.calls == 1
     assert payload["status"] == "available"
     assert payload["metrics"] == {"last_price": 210.5}
 
