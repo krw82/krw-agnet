@@ -441,7 +441,9 @@ impl ProductionClaimedRunExecutor {
 /// Fetch a single current market snapshot before the provider sees the task.
 /// This is a sealed runtime seed, not a model-selected capability action: it
 /// receives only the authenticated singleton ticker, shares the normal MCP
-/// capability validation path, and is omitted on every error or timeout.
+/// capability validation path, and is omitted on every error or timeout. An
+/// explicit, adapter-sanitized `unavailable` result is retained so the model
+/// can decide not to spend a later tool turn repeating the same lookup.
 async fn preflight_market_snapshot(
     catalog: &CapabilityCatalog,
     capabilities: &dyn CapabilityRuntime,
@@ -1114,6 +1116,40 @@ mod tests {
         assert_eq!(
             invocation.binding, release.runtime.capabilities["market.snapshot"].binding,
             "preflight must preserve the exact resolved MCP binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn company_research_preflight_retains_explicit_market_unavailability() {
+        let (catalog, _providers, image_hash, _en_hash, request, _en_request) = fixture();
+        let release = catalog.release(&image_hash).expect("company release");
+        let capability = FixtureMarketCapability {
+            provider_content: serde_json::json!({
+                "format": "market-snapshot-context/v1",
+                "ticker": "VG",
+                "status": "unavailable",
+                "source": "fmp",
+                "source_usage": "research_only",
+                "fetched_at": null,
+                "as_of": null,
+                "currency": null,
+                "metrics": {},
+                "advisory_only": true
+            }),
+            invocations: Mutex::new(Vec::new()),
+        };
+
+        let preflight = preflight_market_snapshot(
+            release.capability_catalog.as_ref(),
+            &capability,
+            &request,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(
+            preflight.is_some(),
+            "an explicit safe unavailability signal reaches the provider context"
         );
     }
 
