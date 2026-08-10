@@ -94,6 +94,15 @@ start_stack() {
     return 1
   fi
 
+  # A stack started by the older standalone script may not have our PID file.
+  # Reuse a healthy Gateway instead of launching a second set of processes on
+  # the same ports. It is intentionally treated as externally supervised, so
+  # `down` will never terminate it.
+  if gateway_ready; then
+    printf 'existing externally supervised Gateway is ready: %s\n' "$krw_health_url"
+    return 0
+  fi
+
   if [[ -f "$krw_pid_file" ]]; then
     rm -f "$krw_pid_file"
   fi
@@ -116,7 +125,11 @@ stop_stack() {
   local pid
   pid=$(read_pid) || {
     rm -f "$krw_pid_file"
-    printf 'dev stack is not running\n'
+    if gateway_ready; then
+      printf 'external dev stack is still serving; leaving it running\n'
+    else
+      printf 'dev stack is not running\n'
+    fi
     return 0
   }
   if ! kill -0 "$pid" 2>/dev/null; then
@@ -155,6 +168,10 @@ show_status() {
     fi
   else
     printf 'supervisor=stopped\n'
+    if gateway_ready; then
+      printf 'gateway=ready (external supervisor) url=%s\n' "$krw_health_url"
+      return 0
+    fi
     return 1
   fi
 }
