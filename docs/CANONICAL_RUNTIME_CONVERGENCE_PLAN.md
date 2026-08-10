@@ -265,7 +265,7 @@ listener를 열기 전에 다음 세 값을 스스로 계산하고, deployment�
 | Pin | 계산 원본 | 바뀌는 경우 |
 | --- | --- | --- |
 | `build_id` | 실행 중인 `krw_capability_runtime` source bundle + Python/MCP/Pydantic/Starlette/Uvicorn dependency version | sidecar code 또는 runtime dependency 변경 |
-| `tool_schema_sha256` | 실제 immutable `ToolDescriptor` 27개에서 생성한 complete `tools/list` wire bundle | tool name/input/output schema/description/mapping 변경 |
+| `tool_schema_sha256` | 실제 immutable `ToolDescriptor` 28개에서 생성한 complete `tools/list` wire bundle | tool name/input/output schema/description/mapping 변경 |
 | `release_manifest_sha256` | startup admission을 통과한 release `manifest.json`의 정확한 bytes | ontology/Guru data release 변경 |
 
 모든 HTTP MCP sidecar는 `krw-capabilityd/readiness/v1` shape로 다음을 반환한다.
@@ -281,7 +281,7 @@ listener를 열기 전에 다음 세 값을 스스로 계산하고, deployment�
   "build_id": "...",
   "tool_schema_sha256": "sha256:...",
   "release_manifest_sha256": "sha256:...",
-  "tool_count": 27
+  "tool_count": 28
 }
 ```
 
