@@ -7203,7 +7203,7 @@ fn prepare_calls(
                     "tool_arguments_json_invalid",
                 ))
             })?;
-        let proposed_arguments = capability
+        let mut proposed_arguments = capability
             .provider_input_codec
             .decode(raw_arguments)
             .map_err(|_| {
@@ -7221,6 +7221,7 @@ fn prepare_calls(
         let model_input = input
             .image
             .resolve_capability_model_input_contract(capability)?;
+        normalize_provider_model_input(&model_input.id, &mut proposed_arguments);
         let frontier_schema = current_context
             .capability_schemas
             .iter()
@@ -7402,6 +7403,42 @@ fn model_input_repair_directive(
         .then(|| research_proposal_v4_repair_directive(value))
         .flatten()
         .map(ModelProposalRejection::ResearchProposalV4)
+}
+
+/// Apply one deterministic compatibility repair for a common GLM omission.
+///
+/// The provider schema advertises the tagged `kind` field on qualitative
+/// goals, but GLM occasionally emits the untagged pair `{concepts, predicates}`
+/// while preserving every other proposal field.  Those two keys identify one
+/// unambiguous goal variant, so adding the discriminator at the trusted
+/// model-input boundary removes a needless repair turn without accepting
+/// unknown fields or inferring any user-supplied scope.
+fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
+    if contract_id != RESEARCH_PROPOSAL_V4 {
+        return;
+    }
+    let Some(objectives) = value
+        .as_object_mut()
+        .and_then(|proposal| proposal.get_mut("objectives"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for objective in objectives {
+        let Some(goal) = objective.get_mut("goal").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if goal.len() == 2
+            && goal.contains_key("concepts")
+            && goal.contains_key("predicates")
+            && !goal.contains_key("kind")
+        {
+            goal.insert(
+                "kind".to_string(),
+                Value::String("qualitative_evidence".to_string()),
+            );
+        }
+    }
 }
 
 /// Maps only model-controlled canonical input failures to a repairable,
@@ -10112,6 +10149,38 @@ mod tests {
             }
             other => panic!("internal policy must not be loadable: {other:?}"),
         }
+    }
+
+    #[test]
+    fn glm_untagged_qualitative_goal_gets_only_its_missing_discriminator() {
+        let mut proposal = serde_json::json!({
+            "intent": "risk",
+            "answer_scope": "direct",
+            "uncertainty": "medium",
+            "document_types": ["10-K"],
+            "periods": ["FY2024"],
+            "objectives": [{
+                "priority": "required",
+                "alternatives": [{"terms": ["demand", "revenue"]}],
+                "directness": "direct_required",
+                "object_types": ["NarrativeEvidence"],
+                "goal": {"concepts": ["demand"], "predicates": ["pressures"]}
+            }]
+        });
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut proposal);
+        assert_eq!(
+            proposal["objectives"][0]["goal"]["kind"],
+            serde_json::json!("qualitative_evidence")
+        );
+
+        let mut ambiguous = proposal.clone();
+        ambiguous["objectives"][0]["goal"]["extra"] = serde_json::json!(true);
+        ambiguous["objectives"][0]["goal"]
+            .as_object_mut()
+            .expect("goal object")
+            .remove("kind");
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut ambiguous);
+        assert!(ambiguous["objectives"][0]["goal"].get("kind").is_none());
     }
 
     #[test]
