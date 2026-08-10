@@ -171,6 +171,11 @@ python3 scripts/collect_release_evidence.py --profile ci
 direct Markdown output boundary → EvidenceLedger receipt → final commit 계약을 확인합니다. live GLM 품질이나 production MCP 품질을 주장하는
 명령은 아닙니다.
 
+매번 전체 스택을 다시 띄우지 않는 빠른 개발 루프와 변경 계층별 명령은
+[`docs/LOCAL_FEEDBACK_LOOP.md`](docs/LOCAL_FEEDBACK_LOOP.md)에 정리되어 있습니다. 요지는
+`./scripts/dev-stack.sh up`으로 스택을 유지하고, Rust는 `test core/adapter`, Python·TypeScript만
+바꾼 경우에는 `reload --skip-prepare`, 실제 GLM 검증은 `test smoke`로 분리하는 것입니다.
+
 Production daemon의 설정 검증과 실제 실행 인자는
 [`docs/POSTGRES_RUNTIME.md`](docs/POSTGRES_RUNTIME.md)에 정리되어 있습니다.
 
