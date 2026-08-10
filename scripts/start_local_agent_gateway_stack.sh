@@ -119,6 +119,17 @@ if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
     -w start >/dev/null
 fi
 
+# Production deployment creates database roles outside the migration runner,
+# but a fresh local cluster has no such role.  Migration 0008 grants the
+# bounded retention procedure to this no-login daemon role, so create exactly
+# that inert role before the first migration pass.  The local worker itself
+# still connects as the current OS user; this is only bootstrap parity with
+# the documented production grant boundary.
+PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
+  /opt/homebrew/bin/psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
+  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'krw_agent_daemon') THEN CREATE ROLE krw_agent_daemon NOLOGIN; END IF; END \$\$;" \
+  >/dev/null
+
 PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
   "$krw_root/scripts/apply_migrations.sh" -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres \
   >/dev/null
