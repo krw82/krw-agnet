@@ -444,7 +444,7 @@ impl ProductionClaimedRunExecutor {
 /// capability validation path, and is omitted on every error or timeout.
 async fn preflight_market_snapshot(
     catalog: &CapabilityCatalog,
-    capabilities: &(dyn CapabilityRuntime),
+    capabilities: &dyn CapabilityRuntime,
     request: &RunRequest,
     hard_deadline: Instant,
 ) -> Option<TrustedMarketSnapshot> {
