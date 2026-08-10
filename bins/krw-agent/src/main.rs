@@ -616,6 +616,7 @@ async fn run_through_gateway(
                             "category": retry.category,
                             "retry_recommended": retry.retry_recommended,
                         },
+                        "usage": terminal.usage,
                     }))?
                 );
             } else {

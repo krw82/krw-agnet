@@ -41,8 +41,8 @@ pub(crate) struct FinalOutput {
     pub final_output_hash: ContentHash,
 }
 
-/// Public, credit-oriented usage counters returned only for a committed final
-/// Markdown answer. Provider prompts, tool arguments, and raw episode data
+/// Public, credit-oriented usage counters returned for a committed final or
+/// terminal failed run. Provider prompts, tool arguments, and raw episode data
 /// remain private to the kernel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GatewayUsage {
@@ -360,10 +360,14 @@ async fn parse_status_response(
         (_, None) => None,
     };
     let usage = match (response.state, response.usage) {
-        (GatewayRunState::Final, Some(usage)) if valid_usage(&usage) => Some(usage),
+        (GatewayRunState::Final | GatewayRunState::Failed, Some(usage)) if valid_usage(&usage) => {
+            Some(usage)
+        }
         (GatewayRunState::Final, None | Some(_)) => {
             return Err(GatewayClientError::InvalidResponse);
         }
+        (GatewayRunState::Failed, None) => None,
+        (GatewayRunState::Failed, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, None) => None,
     };
@@ -547,6 +551,67 @@ mod tests {
         assert_eq!(submitted.session_id, "ses_unit");
         assert_eq!(submitted.run_id, "run_unit");
         assert_eq!(submitted.state, GatewayRunState::Queued);
+        server.await.expect("gateway server task");
+    }
+
+    #[tokio::test]
+    async fn failed_status_preserves_bounded_usage_for_credit_settlement() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind isolated test gateway");
+        let address = listener.local_addr().expect("test gateway address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept one client");
+            let _ = read_http_request(&mut socket).await;
+            let response = serde_json::json!({
+                "schema_version": 1,
+                "session_id": "ses_failed",
+                "run_id": "run_failed",
+                "state": "failed",
+                "final_output": null,
+                "usage": {
+                    "provider_turns": 2,
+                    "capability_calls": 1,
+                    "repairs": 1,
+                    "input_tokens": 0,
+                    "output_tokens": 700,
+                    "total_tokens": 700,
+                    "token_usage_status": "output_only",
+                    "billable_tokens": 700,
+                    "provider_total_ms": 12,
+                    "capability_total_ms": 4
+                },
+                "retry_message": {
+                    "markdown": "## 재시도 필요",
+                    "category": "model_response",
+                    "retry_recommended": true
+                }
+            })
+            .to_string();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write failed status");
+        });
+
+        let client =
+            AgentGatewayClient::new(&format!("http://{address}/v1/agent"), "unit-token".into())
+                .expect("gateway client");
+        let status = client
+            .read_run("run_failed")
+            .await
+            .expect("read failed status");
+        assert_eq!(status.state, GatewayRunState::Failed);
+        assert_eq!(
+            status.usage.as_ref().map(|usage| usage.billable_tokens),
+            Some(700)
+        );
         server.await.expect("gateway server task");
     }
 
