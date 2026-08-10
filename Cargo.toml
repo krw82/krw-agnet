@@ -91,6 +91,9 @@ opt-level = 3
 panic = "abort"
 strip = "symbols"
 
+[profile.test]
+debug = 0
+
 [profile.production]
 inherits = "release"
 lto = "fat"
