@@ -29,6 +29,7 @@ if [[ "$krw_cargo_bin" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
     krw_cargo_bin=/opt/homebrew/opt/rustup/bin/cargo
   fi
 fi
+krw_cargo_dir=$(CDPATH= cd -- "$(dirname -- "$krw_cargo_bin")" 2>/dev/null && pwd || printf '.')
 
 usage() {
   cat >&2 <<'EOF'
@@ -198,6 +199,7 @@ prepare_binaries() {
   mkdir -p "$krw_root/target"
   touch "$krw_root/target/.metadata_never_index"
   CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+    PATH="$krw_cargo_dir:$PATH" \
     "$krw_cargo_bin" build --locked \
     -p krw-agent -p krw-agentd
   printf 'Rust binaries prepared\n'
@@ -236,12 +238,14 @@ run_test() {
   case "$lane" in
     core)
       CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+        PATH="$krw_cargo_dir:$PATH" \
         "$krw_cargo_bin" test \
         -p krw-agent-run-engine --no-default-features --locked \
         --lib "$@"
       ;;
     adapter)
       CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+        PATH="$krw_cargo_dir:$PATH" \
         "$krw_cargo_bin" test \
         -p krw-agent-provider-wire --no-default-features --locked \
         --lib "$@"
