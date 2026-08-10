@@ -124,7 +124,12 @@ function terminalReasonCode(value: JsonValue | null): string {
 }
 
 function nonnegativeCounter(value: JsonValue | undefined, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_COUNTER) {
+  if (
+    typeof value !== "number"
+    || !Number.isSafeInteger(value)
+    || value < 0
+    || value > MAX_COUNTER
+  ) {
     throw new TypeError(`terminal_usage_${name}`);
   }
   return value;
