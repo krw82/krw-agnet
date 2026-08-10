@@ -23,6 +23,7 @@ _MAX_TICKER_LENGTH = 32
 _MAX_CACHE_ENTRIES = 128
 _AVAILABLE_TTL_SECONDS = 60.0
 _UNAVAILABLE_TTL_SECONDS = 15.0
+_INFLIGHT_WAIT_SECONDS = 2.0
 _MAX_METRIC_ABS = 1.0e18
 _METRIC_FIELDS = {
     "last_price",
@@ -79,6 +80,13 @@ class _CacheEntry:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _FetchReservation:
+    cached: dict[str, Any] | None
+    completed: threading.Event | None
+    is_leader: bool
+
+
 class MarketSnapshotStore:
     """Small process-local LRU store keyed only by canonical ticker.
 
@@ -92,18 +100,29 @@ class MarketSnapshotStore:
             raise ValueError("market snapshot cache capacity is outside the supported bound")
         self._capacity = capacity
         self._entries: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._inflight: dict[str, threading.Event] = {}
         self._lock = threading.RLock()
 
     def get(self, ticker: str, now: float) -> dict[str, Any] | None:
         with self._lock:
-            entry = self._entries.get(ticker)
-            if entry is None:
-                return None
-            if entry.expires_at <= now:
-                self._entries.pop(ticker, None)
-                return None
-            self._entries.move_to_end(ticker)
-            return dict(entry.payload)
+            return self._get_locked(ticker, now)
+
+    def reserve_fetch(self, ticker: str, now: float) -> _FetchReservation:
+        """Return one cache hit or elect exactly one source-fetch leader.
+
+        Concurrent readers of the same missing ticker wait on the leader's
+        single result instead of multiplying an external Yahoo request.
+        """
+
+        with self._lock:
+            cached = self._get_locked(ticker, now)
+            if cached is not None:
+                return _FetchReservation(cached=cached, completed=None, is_leader=False)
+            if completed := self._inflight.get(ticker):
+                return _FetchReservation(cached=None, completed=completed, is_leader=False)
+            completed = threading.Event()
+            self._inflight[ticker] = completed
+            return _FetchReservation(cached=None, completed=completed, is_leader=True)
 
     def put(
         self,
@@ -114,13 +133,49 @@ class MarketSnapshotStore:
         ttl_seconds: float,
     ) -> None:
         with self._lock:
-            self._entries[ticker] = _CacheEntry(
-                expires_at=now + ttl_seconds,
-                payload=dict(payload),
-            )
-            self._entries.move_to_end(ticker)
-            while len(self._entries) > self._capacity:
-                self._entries.popitem(last=False)
+            self._put_locked(ticker, payload, now=now, ttl_seconds=ttl_seconds)
+
+    def complete_fetch(
+        self,
+        ticker: str,
+        payload: Mapping[str, Any],
+        *,
+        now: float,
+        ttl_seconds: float,
+    ) -> None:
+        """Publish the leader result before waking concurrent waiters."""
+
+        with self._lock:
+            self._put_locked(ticker, payload, now=now, ttl_seconds=ttl_seconds)
+            completed = self._inflight.pop(ticker, None)
+            if completed is not None:
+                completed.set()
+
+    def _get_locked(self, ticker: str, now: float) -> dict[str, Any] | None:
+        entry = self._entries.get(ticker)
+        if entry is None:
+            return None
+        if entry.expires_at <= now:
+            self._entries.pop(ticker, None)
+            return None
+        self._entries.move_to_end(ticker)
+        return dict(entry.payload)
+
+    def _put_locked(
+        self,
+        ticker: str,
+        payload: Mapping[str, Any],
+        *,
+        now: float,
+        ttl_seconds: float,
+    ) -> None:
+        self._entries[ticker] = _CacheEntry(
+            expires_at=now + ttl_seconds,
+            payload=dict(payload),
+        )
+        self._entries.move_to_end(ticker)
+        while len(self._entries) > self._capacity:
+            self._entries.popitem(last=False)
 
 
 class YahooFinanceResearchProvider:
@@ -189,10 +244,20 @@ class MarketSnapshotRouter:
 
     def snapshot(self, ticker: str) -> dict[str, Any]:
         canonical_ticker = MarketSnapshotRequest(ticker=ticker).ticker
-        now = self._monotonic_clock()
-        cached = self._store.get(canonical_ticker, now)
-        if cached is not None:
-            return cached
+        reservation = self._store.reserve_fetch(canonical_ticker, self._monotonic_clock())
+        if reservation.cached is not None:
+            return reservation.cached
+        if not reservation.is_leader:
+            assert reservation.completed is not None
+            reservation.completed.wait(_INFLIGHT_WAIT_SECONDS)
+            cached = self._store.get(canonical_ticker, self._monotonic_clock())
+            if cached is not None:
+                return cached
+            return _unavailable_payload(
+                canonical_ticker,
+                self._provider.source_name,
+                self._utc_now(),
+            )
 
         try:
             raw = self._provider.fetch(canonical_ticker)
@@ -211,7 +276,14 @@ class MarketSnapshotRouter:
         ttl_seconds = (
             _AVAILABLE_TTL_SECONDS if payload["status"] == "available" else _UNAVAILABLE_TTL_SECONDS
         )
-        self._store.put(canonical_ticker, payload, now=now, ttl_seconds=ttl_seconds)
+        # Start freshness at source completion, not before an unpredictable
+        # external round-trip began.
+        self._store.complete_fetch(
+            canonical_ticker,
+            payload,
+            now=self._monotonic_clock(),
+            ttl_seconds=ttl_seconds,
+        )
         return payload
 
 
@@ -295,9 +367,7 @@ def _sanitize_payload(
         "source": source_name,
         "source_usage": "research_only",
         "fetched_at": _iso_now(fetched_at),
-        "as_of": _normalize_timestamp(raw.get("as_of"))
-        if raw.get("as_of") is not None
-        else None,
+        "as_of": _normalize_timestamp(raw.get("as_of")) if raw.get("as_of") is not None else None,
         "currency": _safe_currency(raw.get("currency")),
         "metrics": metrics,
         "advisory_only": True,
