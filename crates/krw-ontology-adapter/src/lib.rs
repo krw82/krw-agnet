@@ -953,9 +953,24 @@ pub fn map_company_context(
         return Ok(unavailable_company_context(expected_ticker));
     };
 
+    // The source topic index may return several raw entries that collapse to
+    // the same safe, label-level orientation record once private metadata is
+    // removed.  Keep the first occurrence only.  Otherwise two identical
+    // normalized records have the same content hash and are rightly rejected
+    // by the capability evidence-lineage boundary, turning harmless source
+    // duplication into a failed research run.
+    let mut seen_topics = BTreeSet::new();
     let topics = topics
         .iter()
         .filter_map(|topic| company_context_topic(topic, expected_ticker))
+        .filter(|topic| {
+            seen_topics.insert((
+                topic.topic_label.clone(),
+                topic.period.clone(),
+                topic.document_type.clone(),
+                topic.trace_status.clone(),
+            ))
+        })
         .take(MAX_COMPANY_CONTEXT_TOPICS)
         .collect::<Vec<_>>();
     let records = topics
@@ -1800,6 +1815,40 @@ mod tests {
         assert_eq!(delta.records[0].directness, Directness::Unverified);
         assert_eq!(delta.records[0].grade, EvidenceGrade::Unverified);
         assert!(!delta.records[0].strong_claim_allowed);
+        EvidenceLedger::from_records(delta.records).unwrap();
+    }
+
+    #[test]
+    fn company_context_deduplicates_topics_that_collapse_after_sanitization() {
+        let payload = serde_json::json!({
+            "ticker": "AAPL",
+            "company_topics": [
+                {
+                    "ticker": "AAPL",
+                    "topic_label": "Inflation",
+                    "period": "FY2025",
+                    "document_type": "10-K",
+                    "trace_status": "traceable",
+                    "topic_summary": "First private source summary.",
+                    "private_source_id": "topic:one"
+                },
+                {
+                    "ticker": "AAPL",
+                    "topic_label": "Inflation",
+                    "period": "FY2025",
+                    "document_type": "10-K",
+                    "trace_status": "traceable",
+                    "topic_summary": "Different private source summary.",
+                    "private_source_id": "topic:two"
+                }
+            ]
+        });
+
+        let delta =
+            map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
+
+        assert_eq!(delta.provider_content["topics"].as_array().unwrap().len(), 1);
+        assert_eq!(delta.records.len(), 1);
         EvidenceLedger::from_records(delta.records).unwrap();
     }
 
