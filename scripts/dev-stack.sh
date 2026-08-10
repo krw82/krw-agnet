@@ -18,6 +18,17 @@ krw_gateway_port=${KRW_AGENT_GATEWAY_PORT:-4318}
 krw_health_url=${KRW_AGENT_LOCAL_GATEWAY_HEALTH_URL:-"http://127.0.0.1:$krw_gateway_port/healthz"}
 krw_start_script="$krw_root/scripts/start_local_agent_gateway_stack.sh"
 krw_cargo_bin=${KRW_AGENT_CARGO_BIN:-cargo}
+if [[ "$krw_cargo_bin" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
+  if command -v rustup >/dev/null 2>&1; then
+    krw_rustup_cargo=$(rustup which cargo 2>/dev/null || true)
+    if [[ -n "$krw_rustup_cargo" && -x "$krw_rustup_cargo" ]]; then
+      krw_cargo_bin="$krw_rustup_cargo"
+    fi
+  fi
+  if [[ "$krw_cargo_bin" == cargo && -x /opt/homebrew/opt/rustup/bin/cargo ]]; then
+    krw_cargo_bin=/opt/homebrew/opt/rustup/bin/cargo
+  fi
+fi
 
 usage() {
   cat >&2 <<'EOF'
@@ -187,7 +198,7 @@ prepare_binaries() {
   mkdir -p "$krw_root/target"
   touch "$krw_root/target/.metadata_never_index"
   CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
-    PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" build --locked \
+    "$krw_cargo_bin" build --locked \
     -p krw-agent -p krw-agentd
   printf 'Rust binaries prepared\n'
 }
@@ -225,13 +236,13 @@ run_test() {
   case "$lane" in
     core)
       CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
-        PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
+        "$krw_cargo_bin" test \
         -p krw-agent-run-engine --no-default-features --locked \
         --lib "$@"
       ;;
     adapter)
       CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
-        PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
+        "$krw_cargo_bin" test \
         -p krw-agent-provider-wire --no-default-features --locked \
         --lib "$@"
       ;;
