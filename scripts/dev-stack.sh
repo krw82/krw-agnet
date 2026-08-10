@@ -90,6 +90,11 @@ stack_ready() {
   gateway_ready && agentd_ready
 }
 
+binaries_ready() {
+  [[ -x "$krw_root/target/debug/krw-agent" && -x "$krw_root/target/debug/krw-agentd" ]] || return 1
+  "$krw_root/target/debug/krw-agentd" --help 2>&1 | grep -q -- '--database-tls-mode'
+}
+
 wait_for_gateway() {
   local attempts=${1:-120}
   local index
@@ -139,6 +144,9 @@ start_stack() {
   fi
   if [[ "${KRW_AGENT_SKIP_PREPARE:-0}" != 1 ]]; then
     prepare_binaries
+  elif ! binaries_ready; then
+    printf 'local Rust binaries are missing or stale; run scripts/dev-stack.sh prepare first\n' >&2
+    return 1
   fi
   printf 'starting cold dev stack; log=%s\n' "$krw_log_file"
   nohup env KRW_AGENT_LOCAL_STATE_DIR="$krw_state" \
