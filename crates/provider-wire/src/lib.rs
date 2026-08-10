@@ -1736,12 +1736,12 @@ fn scrub_json(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[cfg(feature = "http")]
     use super::http_client::{parse_retry_after_ms, safe_request_id_hash};
+    use super::*;
+    use krw_agent_protocol::{DEEPSEEK_MODEL_ID, GLM_MODEL_ID};
     #[cfg(feature = "http")]
     use reqwest::header::{HeaderMap, HeaderValue};
-    use krw_agent_protocol::{DEEPSEEK_MODEL_ID, GLM_MODEL_ID};
 
     #[test]
     fn content_block_roundtrips_through_serde() {

@@ -627,10 +627,9 @@ async fn run_through_gateway(
             }
             Ok(())
         }
-        GatewayRunState::Cancelled => Err(std::io::Error::other(
-            "gateway reported a cancelled terminal run",
-        )
-        .into()),
+        GatewayRunState::Cancelled => {
+            Err(std::io::Error::other("gateway reported a cancelled terminal run").into())
+        }
         GatewayRunState::Queued | GatewayRunState::Deferred | GatewayRunState::Active => {
             Err(std::io::Error::other("gateway returned a non-terminal state after wait").into())
         }
