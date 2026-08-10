@@ -263,6 +263,23 @@ export interface ReadFinalProjectionResponse {
   readonly memory_frontier_hash: ContentHash | null;
 }
 
+/** One safe action receipt summary for an already-terminal operator trace. */
+export interface TerminalActionTraceEntry {
+  readonly capability_id: string;
+  readonly stage: "begun" | "observed" | "accepted" | "rejected" | "ambiguous";
+  readonly result_hash: ContentHash | null;
+}
+
+/**
+ * Full-owner terminal trace for quality review. This is deliberately an
+ * execution summary, not provider reasoning or raw capability output.
+ */
+export interface ReadTerminalTraceResponse {
+  readonly run_id: string;
+  readonly state: "final" | "cancelled" | "failed";
+  readonly actions: readonly TerminalActionTraceEntry[];
+}
+
 export interface OutboxReceipt {
   readonly outbox_id: number;
   readonly run_id: string;

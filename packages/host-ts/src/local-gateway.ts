@@ -376,6 +376,51 @@ async function readRun(
   };
 }
 
+async function readRunTrace(
+  pool: Pool,
+  agent: HostAgentClient,
+  config: Config,
+  request: IncomingMessage,
+  runId: string,
+): Promise<JsonObject> {
+  const principal = resolvePrincipal(config, request);
+  const owned = await pool.query<StoredRun>({
+    name: "krw_gateway_read_trace_owner_v1",
+    text: "SELECT session_id FROM krw_gateway_local.runs WHERE run_id=$1 AND tenant_id=$2 AND principal_id=$3",
+    values: [runId, principal.tenantId, principal.principalId],
+  });
+  if (owned.rowCount !== 1 || !owned.rows[0]) throw new ContractViolation("gateway_run_not_owned");
+  const ownership = {
+    schema_version: 1 as const,
+    tenant_id: principal.tenantId,
+    principal_id: principal.principalId,
+    session_id: owned.rows[0].session_id,
+    run_id: runId,
+  };
+  const outcome = await agent.readCommittedOutcome(ownership);
+  if (!(["final", "cancelled", "failed"] as const).includes(outcome.state)) {
+    return {
+      schema_version: 1,
+      session_id: ownership.session_id,
+      run_id: runId,
+      state: outcome.state,
+      actions: null,
+    };
+  }
+  const trace = await agent.readTerminalTrace(ownership);
+  return {
+    schema_version: 1,
+    session_id: ownership.session_id,
+    run_id: runId,
+    state: trace.state,
+    actions: trace.actions.map((action) => ({
+      capability_id: action.capability_id,
+      stage: action.stage,
+      result_hash: action.result_hash,
+    })),
+  };
+}
+
 async function main(): Promise<void> {
   const settings = await config();
   // Read the descriptor exactly once before accepting traffic. The loaded
@@ -439,6 +484,11 @@ async function main(): Promise<void> {
         return;
       }
       const status = new RegExp(`^${API_PREFIX}/runs/([A-Za-z0-9_-]{1,128})$`).exec(path);
+      const trace = new RegExp(`^${API_PREFIX}/runs/([A-Za-z0-9_-]{1,128})/trace$`).exec(path);
+      if (request.method === "GET" && trace) {
+        writeJson(response, 200, await readRunTrace(pool, agent, settings, request, trace[1] ?? ""));
+        return;
+      }
       if (request.method === "GET" && status) {
         writeJson(response, 200, await readRun(pool, agent, settings, request, status[1] ?? ""));
         return;

@@ -7,7 +7,8 @@ export type HostProcedure =
   | "agent_v1.request_cancel"
   | "agent_v1.read_committed_outcome"
   | "agent_v1.read_final_output"
-  | "agent_v1.read_final_projection";
+  | "agent_v1.read_final_projection"
+  | "agent_v1.read_terminal_trace";
 
 export type OutboxProcedure = "agent_v1.claim_outbox" | "agent_v1.ack_outbox";
 

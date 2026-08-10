@@ -533,6 +533,65 @@ test("readFinalProjection sends full ownership and parses the projection envelop
   );
 });
 
+test("readTerminalTrace returns only the bounded terminal action summary", async () => {
+  const ownership = {
+    schema_version: 1 as const,
+    tenant_id: "tenant-01",
+    principal_id: "principal-01",
+    session_id: "session-01",
+    run_id: "run-01",
+  };
+  const validTrace = {
+    run_id: "run-01",
+    state: "final",
+    actions: [
+      {
+        capability_id: "ontology.query_context",
+        stage: "accepted",
+        result_hash: hash("a"),
+      },
+      {
+        capability_id: "ontology.chain",
+        stage: "rejected",
+        result_hash: hash("b"),
+      },
+    ],
+  } as const;
+
+  const transport = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(procedure: HostProcedure, request: JsonObject): Promise<unknown> {
+      assert.equal(procedure, "agent_v1.read_terminal_trace");
+      assert.deepEqual(request, {
+        abi_version: 1,
+        run_id: "run-01",
+        tenant_id: "tenant-01",
+        principal_id: "principal-01",
+        session_id: "session-01",
+      });
+      return validTrace;
+    }
+  })();
+  assert.deepEqual(await new HostAgentClient(transport).readTerminalTrace(ownership), validTrace);
+
+  const leakingTransport = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return {
+        ...validTrace,
+        actions: [
+          {
+            ...validTrace.actions[0],
+            arguments_artifact_ref: "must-not-cross-the-host-boundary",
+          },
+        ],
+      };
+    }
+  })();
+  await assert.rejects(
+    () => new HostAgentClient(leakingTransport).readTerminalTrace(ownership),
+    /unknown_or_missing_response_field/,
+  );
+});
+
 test("outbox delivery uses a separately typed least-privilege client", async () => {
   const transport = new CaptureOutboxTransport();
   const client = new HostOutboxClient(transport);

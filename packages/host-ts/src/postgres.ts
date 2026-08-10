@@ -48,6 +48,10 @@ const HOST_STATEMENTS = Object.freeze({
     name: "krw_host_agent_v1_read_final_projection",
     text: "SELECT agent_v1.read_final_projection($1::jsonb) AS result",
   },
+  "agent_v1.read_terminal_trace": {
+    name: "krw_host_agent_v1_read_terminal_trace",
+    text: "SELECT agent_v1.read_terminal_trace($1::jsonb) AS result",
+  },
 } satisfies Record<HostProcedure, Statement>);
 
 const OUTBOX_STATEMENTS = Object.freeze({

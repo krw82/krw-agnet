@@ -6,6 +6,7 @@ import {
   type ReadCommittedOutcomeResponse,
   type ReadFinalOutputResponse,
   type ReadFinalProjectionResponse,
+  type ReadTerminalTraceResponse,
 } from "./contracts.js";
 import { isContentHash, type JsonObject } from "./json.js";
 import {
@@ -101,6 +102,25 @@ export class HostAgentClient {
       session_id: ownership.session_id,
     });
     return parseFinalProjectionResponse(response, ownership.run_id);
+  }
+
+  /**
+   * Reads a bounded terminal action summary for operator quality review.
+   * The database verifies full ownership and excludes prompts, arguments,
+   * result bodies, artifact references, and provider reasoning.
+   */
+  async readTerminalTrace(
+    ownership: AuthenticatedRunOwnershipV1,
+  ): Promise<ReadTerminalTraceResponse> {
+    validateAuthenticatedRunOwnership(ownership);
+    const response = await this.transport.execute("agent_v1.read_terminal_trace", {
+      abi_version: AGENT_V1_ABI_VERSION,
+      run_id: ownership.run_id,
+      tenant_id: ownership.tenant_id,
+      principal_id: ownership.principal_id,
+      session_id: ownership.session_id,
+    });
+    return parseTerminalTraceResponse(response, ownership.run_id);
   }
 }
 
@@ -264,6 +284,30 @@ function parseFinalProjectionResponse(
     throw new ContractViolation("invalid_final_projection_memory_frontier_hash");
   }
   return object as unknown as ReadFinalProjectionResponse;
+}
+
+function parseTerminalTraceResponse(value: unknown, runId: string): ReadTerminalTraceResponse {
+  const object = exactObject(value, ["run_id", "state", "actions"]);
+  if (object.run_id !== runId || !isOneOf(object.state, ["final", "cancelled", "failed"])) {
+    throw new ContractViolation("invalid_terminal_trace_identity");
+  }
+  if (!Array.isArray(object.actions) || object.actions.length > 512) {
+    throw new ContractViolation("invalid_terminal_trace_actions");
+  }
+  for (const action of object.actions) {
+    const entry = exactObject(action, ["capability_id", "stage", "result_hash"]);
+    if (typeof entry.capability_id !== "string") {
+      throw new ContractViolation("invalid_terminal_trace_capability");
+    }
+    validateBoundedIdentifier(entry.capability_id, "terminal_trace_capability");
+    if (!isOneOf(entry.stage, ["begun", "observed", "accepted", "rejected", "ambiguous"])) {
+      throw new ContractViolation("invalid_terminal_trace_stage");
+    }
+    if (!isNullableContentHash(entry.result_hash)) {
+      throw new ContractViolation("invalid_terminal_trace_result_hash");
+    }
+  }
+  return object as unknown as ReadTerminalTraceResponse;
 }
 
 function isNullableContentHash(value: unknown): value is string | null {

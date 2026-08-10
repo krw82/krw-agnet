@@ -85,6 +85,16 @@ defers across many claims does not surface a false
 `deferred_attempts_exhausted` failure. Apply `0007` through `0010` in lexical
 order after `0006`.
 
+`0011_read_final_projection.sql` adds the full-owner final Markdown projection
+used by product surfaces. It returns only rendered Markdown, usage counters,
+and public ledger hashes.
+
+`0012_read_terminal_trace.sql` adds a separate full-owner terminal action
+trace for operator quality review. It returns at most the run's bounded
+capability IDs, their final action stages, and opaque result hashes. It never
+returns model prompts, provider episodes, action arguments, raw capability
+results, artifact references, or evidence bodies.
+
 The migration deliberately does not create deployment roles. After applying
 it as the schema owner, deployment automation should grant the daemon role
 only:
@@ -96,8 +106,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA agent_v1 TO krw_agent_daemon;
 
 Do not grant the daemon role `USAGE` on `agent_store`, table CRUD, sequence
 access, schema creation, or ownership. A separate host role may receive only
-the `enqueue_run`, `request_cancel`, `read_committed_outcome`, and
-`read_final_output` functions if those calls are made outside the daemon.
+the `enqueue_run`, `request_cancel`, `read_committed_outcome`,
+`read_final_output`, `read_final_projection`, and `read_terminal_trace`
+functions if those calls are made outside the daemon.
 
 `request_cancel` is intentionally host-linearized: it authenticates tenant and
 locks the run row, but does not require the current worker's fence or version.

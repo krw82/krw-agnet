@@ -10,8 +10,9 @@ rather than repeated local-stack boot time.
 By default it selects six cases from each ``short_``, ``normal_``, and
 ``complex_`` bucket in the Supabase-derived corpus and dispatches at most two
 independent runs at once.  The resulting private report includes the original
-question, raw final Markdown, terminal Gateway receipt, elapsed time, and
-evaluation focus.  It deliberately reports content quality as
+question, raw final Markdown, terminal Gateway receipt, sanitized action
+trace, elapsed time, and evaluation focus.  It deliberately reports content
+quality as
 ``manual_review_required`` rather than pretending a transport check proves
 grounding or investment-research quality.
 
@@ -51,12 +52,16 @@ from urllib.request import Request, urlopen
 MAX_CORPUS_BYTES = 2 * 1024 * 1024
 MAX_GATEWAY_RESPONSE_BYTES = 256 * 1024
 MAX_ANSWER_BYTES = 64 * 1024
+MAX_TERMINAL_TRACE_ACTIONS = 512
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,31}$")
 SESSION_ID_RE = re.compile(r"^ses_[A-Za-z0-9_-]{1,128}$")
 RUN_ID_RE = re.compile(r"^run_[A-Za-z0-9_-]{1,128}$")
 HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+CAPABILITY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 KNOWN_STATES = {"queued", "deferred", "active", "final", "cancelled", "failed"}
+TERMINAL_STATES = {"final", "cancelled", "failed"}
+ACTION_STAGES = {"begun", "observed", "accepted", "rejected", "ambiguous"}
 DEFAULT_BUCKETS = ("short", "normal", "complex")
 
 
@@ -414,21 +419,122 @@ def validate_status(
     return session_id, run_id, state, markdown, final_hash
 
 
+def validate_terminal_trace(
+    value: dict[str, Any],
+    expected_session_id: str,
+    expected_run_id: str,
+    expected_state: str,
+) -> list[dict[str, str | None]]:
+    if set(value) != {"schema_version", "session_id", "run_id", "state", "actions"}:
+        raise GatewayProblem("terminal_trace_shape_invalid")
+    session_id, run_id, state, actions = (
+        value["session_id"],
+        value["run_id"],
+        value["state"],
+        value["actions"],
+    )
+    if (
+        type(value["schema_version"]) is not int
+        or value["schema_version"] != 1
+        or not isinstance(session_id, str)
+        or not SESSION_ID_RE.fullmatch(session_id)
+        or session_id != expected_session_id
+        or run_id != expected_run_id
+        or not isinstance(state, str)
+        or state not in TERMINAL_STATES
+        or state != expected_state
+        or not isinstance(actions, list)
+        or len(actions) > MAX_TERMINAL_TRACE_ACTIONS
+    ):
+        raise GatewayProblem("terminal_trace_identity_invalid")
+    normalized: list[dict[str, str | None]] = []
+    for action in actions:
+        if not isinstance(action, dict) or set(action) != {
+            "capability_id",
+            "stage",
+            "result_hash",
+        }:
+            raise GatewayProblem("terminal_trace_action_shape_invalid")
+        capability_id, stage, result_hash = (
+            action["capability_id"],
+            action["stage"],
+            action["result_hash"],
+        )
+        if (
+            not isinstance(capability_id, str)
+            or not CAPABILITY_ID_RE.fullmatch(capability_id)
+            or not isinstance(stage, str)
+            or stage not in ACTION_STAGES
+            or (
+                result_hash is not None
+                and (not isinstance(result_hash, str) or not HASH_RE.fullmatch(result_hash))
+            )
+        ):
+            raise GatewayProblem("terminal_trace_action_invalid")
+        normalized.append(
+            {
+                "capability_id": capability_id,
+                "stage": stage,
+                "result_hash": result_hash,
+            }
+        )
+    return normalized
+
+
+def action_trace_block(
+    actions: list[dict[str, str | None]] | None,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Keep only operator-safe action metadata, never private reasoning or results."""
+
+    if actions is None:
+        return {
+            "status": "unavailable",
+            "action_count": 0,
+            "capability_sequence": [],
+            "chain_capability_called": False,
+            "actions": [],
+            "private_reasoning": "not_collected",
+            "reason": reason or "terminal_trace_unavailable",
+        }
+    capability_sequence = [str(action["capability_id"]) for action in actions]
+    return {
+        "status": "available",
+        "action_count": len(actions),
+        "capability_sequence": capability_sequence,
+        "chain_capability_called": "ontology.chain" in capability_sequence,
+        "actions": actions,
+        "private_reasoning": "not_collected",
+    }
+
+
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def review_block(case: QualityCase, state: str, answer: str | None) -> dict[str, Any]:
+def review_block(
+    case: QualityCase,
+    state: str,
+    answer: str | None,
+    action_trace: dict[str, Any],
+) -> dict[str, Any]:
     if state != "final" or not answer:
         return {
             "transport_verdict": "failed",
             "research_quality_verdict": "not_assessable",
+            "execution_trace_verdict": (
+                "available" if action_trace["status"] == "available" else "missing"
+            ),
             "required_focus": list(case.evaluation_focus),
             "reason": "No final answer was available for qualitative review.",
         }
     return {
         "transport_verdict": "passed",
         "research_quality_verdict": "manual_review_required",
+        "execution_trace_verdict": (
+            "available" if action_trace["status"] == "available" else "missing"
+        ),
         "required_focus": list(case.evaluation_focus),
         "review_prompt": (
             "Check whether every required focus is answered with appropriate "
@@ -456,11 +562,19 @@ def planned_result(case: QualityCase) -> dict[str, Any]:
             "state": "not_dispatched",
             "elapsed_seconds": 0.0,
             "final_output_hash": None,
-            "internal_chain_trace": "not_requested",
+            "action_trace": {
+                "status": "not_dispatched",
+                "action_count": 0,
+                "capability_sequence": [],
+                "chain_capability_called": False,
+                "actions": [],
+                "private_reasoning": "not_collected",
+            },
         },
         "quality": {
             "transport_verdict": "not_run",
             "research_quality_verdict": "not_assessable",
+            "execution_trace_verdict": "not_run",
             "required_focus": list(case.evaluation_focus),
             "reason": "Dry run does not contact the Gateway.",
         },
@@ -482,6 +596,7 @@ def run_case(
     write_private_text(case_dir / "question.txt", case.question + "\n")
     submit_path = case_dir / "submit-response.json"
     status_path = case_dir / "terminal-response.json"
+    trace_path = case_dir / "terminal-trace-response.json"
     try:
         submitted = gateway_json(
             "POST",
@@ -506,6 +621,16 @@ def run_case(
         session_id, run_id, state, answer, final_hash = validate_status(
             terminal, session_id, run_id
         )
+        try:
+            terminal_trace = gateway_json(
+                "GET", f"{gateway_url}/runs/{run_id}/trace", token
+            )
+            write_private_json(trace_path, terminal_trace)
+            action_trace = action_trace_block(
+                validate_terminal_trace(terminal_trace, session_id, run_id, state)
+            )
+        except GatewayProblem as trace_error:
+            action_trace = action_trace_block(None, reason=str(trace_error))
         elapsed = round(time.monotonic() - started, 3)
         result = {
             "case_id": case.case_id,
@@ -521,13 +646,18 @@ def run_case(
                 "state": state,
                 "elapsed_seconds": elapsed,
                 "final_output_hash": final_hash,
-                "internal_chain_trace": "not_exposed_by_gateway",
+                "action_trace": action_trace,
             },
-            "quality": review_block(case, state, answer),
+            "quality": review_block(case, state, answer, action_trace),
             "artifacts": {
                 "question": f"cases/{case.case_id}/question.txt",
                 "submit_response": f"cases/{case.case_id}/submit-response.json",
                 "terminal_response": f"cases/{case.case_id}/terminal-response.json",
+                "terminal_trace_response": (
+                    f"cases/{case.case_id}/terminal-trace-response.json"
+                    if trace_path.exists()
+                    else None
+                ),
             },
         }
     except GatewayProblem as exc:
@@ -546,11 +676,12 @@ def run_case(
                 "state": "unknown",
                 "elapsed_seconds": elapsed,
                 "final_output_hash": None,
-                "internal_chain_trace": "not_exposed_by_gateway",
+                "action_trace": action_trace_block(None, reason="run_not_terminal"),
             },
             "quality": {
                 "transport_verdict": "failed",
                 "research_quality_verdict": "not_assessable",
+                "execution_trace_verdict": "not_available",
                 "required_focus": list(case.evaluation_focus),
                 "reason": f"Gateway transport/protocol failure: {exc}",
             },
@@ -561,6 +692,11 @@ def run_case(
                 ),
                 "terminal_response": (
                     f"cases/{case.case_id}/terminal-response.json" if status_path.exists() else None
+                ),
+                "terminal_trace_response": (
+                    f"cases/{case.case_id}/terminal-trace-response.json"
+                    if trace_path.exists()
+                    else None
                 ),
             },
         }
