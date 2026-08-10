@@ -14,7 +14,7 @@ krw-agent-contracts = { path = "../krw-contracts" }
 krw-agent-persistence = { path = "../persistence" }
 krw-agent-protocol = { path = "../protocol" }
 krw-agent-research-planner = { path = "../research-planner" }
-krw-agent-run-engine = { path = "../run-engine" }
+krw-agent-run-engine = { path = "../run-engine", features = ["http"] }
 krw-ontology-adapter = { path = "../krw-ontology-adapter" }
 serde.workspace = true
 serde_jcs.workspace = true
