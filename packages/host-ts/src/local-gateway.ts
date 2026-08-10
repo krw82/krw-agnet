@@ -23,6 +23,7 @@ import {
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
   type JsonObject,
+  type JsonValue,
   type MaterializationPorts,
   type PgQueryClient,
 } from "./index.js";
@@ -273,6 +274,20 @@ function generatedId(prefix: "ses" | "run" | "mut"): string {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
+function projectFailureUsage(value: JsonValue | null): JsonObject | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value.usage;
+  if (candidate === undefined) return null;
+  try {
+    return projectPublicRunUsage(candidate);
+  } catch {
+    // A malformed release payload must not turn a terminal failure into a
+    // second Gateway failure.  The kernel still exposes the safe retry
+    // message; credits remain uncharged until a valid usage receipt exists.
+    return null;
+  }
+}
+
 const noCommittedAnswerMaterializer: MaterializationPorts = {
   committedAnswers: {
     async materializeCommittedAnswerSource() {
@@ -372,7 +387,7 @@ async function readRun(
       run_id: runId,
       state: outcome.state,
       final_output: null,
-      usage: null,
+      usage: projectFailureUsage(outcome.terminal_outcome),
       retry_message: retryMessageForTerminalFailure(outcome.terminal_outcome),
     };
   }

@@ -12,11 +12,14 @@ use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
     ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
 };
-use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, DeploymentBinding, RunRequest};
+use krw_agent_protocol::{
+    ALLOWED_MODEL_IDS, BudgetUsage, ContentHash, DeploymentBinding, RunRequest,
+};
 use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
-    CapabilityRuntime, DeliveryCertainty, EngineConfig, EngineError, FinalStatus, RunEngine,
-    RunInput, TrustedMarketSnapshot, durable_failure_diagnostic, state_artifact_failure_code,
+    CapabilityRuntime, DeliveryCertainty, EngineConfig, EngineError, FinalStatus, Persistence,
+    RunEngine, RunIdentity, RunInput, TrustedMarketSnapshot, durable_failure_diagnostic,
+    recovery_budget_usage, state_artifact_failure_code,
 };
 use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
 use krw_context_planner::ContextPlanner;
@@ -635,6 +638,12 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             Arc::clone(&persistence),
             release.engine_config.clone(),
         );
+        let recovery_identity = RunIdentity {
+            run_id: effective_request.run_id.clone(),
+            tenant_id: effective_request.tenant_id.clone(),
+            fencing_token: validated.snapshot().fencing_token,
+            expected_cancel_generation: validated.snapshot().cancel_generation,
+        };
         let execution = engine.run(RunInput {
             image: &release.image,
             deployment: &release.deployment,
@@ -688,7 +697,11 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                 Duration::from_secs(1),
             )),
             Err(EngineError::DeadlineExceeded(_)) => {
-                Err(RunExecutionFailure::failed("deadline_exceeded"))
+                let usage = load_failure_usage(&persistence, &recovery_identity).await;
+                Err(with_failure_usage(
+                    RunExecutionFailure::failed("deadline_exceeded"),
+                    usage,
+                ))
             }
             Err(error) => {
                 // Observability: engine_execution_failure deliberately discards
@@ -698,10 +711,25 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                 // the exact planner/contract failure without changing the durable
                 // ABI reason code.
                 tracing::warn!(error = ?error, "run_engine_terminal_failure");
-                Err(engine_execution_failure(&error))
+                let usage = load_failure_usage(&persistence, &recovery_identity).await;
+                Err(engine_execution_failure_with_usage(&error, usage))
             }
         }
     }
+}
+
+/// Read usage only on a terminal execution path.  The normal success path has
+/// the in-memory authoritative counters; failure paths need the last durable
+/// checkpoint so credits can still be settled without retaining model text.
+async fn load_failure_usage(
+    persistence: &DurableRunPersistence,
+    identity: &RunIdentity,
+) -> Option<BudgetUsage> {
+    persistence
+        .load_recovery(identity)
+        .await
+        .ok()
+        .and_then(|snapshot| recovery_budget_usage(&snapshot))
 }
 
 fn session_memory_execution_failure(_: MemoryResolutionError) -> RunExecutionFailure {
@@ -775,6 +803,31 @@ fn engine_execution_failure(error: &EngineError) -> RunExecutionFailure {
         })),
         None => failure,
     }
+}
+
+fn engine_execution_failure_with_usage(
+    error: &EngineError,
+    usage: Option<BudgetUsage>,
+) -> RunExecutionFailure {
+    with_failure_usage(engine_execution_failure(error), usage)
+}
+
+fn with_failure_usage(
+    failure: RunExecutionFailure,
+    usage: Option<BudgetUsage>,
+) -> RunExecutionFailure {
+    let Some(usage) = usage else {
+        return failure;
+    };
+    let mut failure = failure;
+    let Some(object) = failure.release.as_object_mut() else {
+        return failure;
+    };
+    object.insert(
+        "usage".into(),
+        serde_json::to_value(usage).expect("BudgetUsage is serializable"),
+    );
+    failure
 }
 
 fn engine_reason_code(error: &EngineError) -> &'static str {

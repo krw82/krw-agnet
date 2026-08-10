@@ -1207,6 +1207,43 @@ pub enum RecoverySnapshot {
     Durable(Box<DurableRecoverySnapshot>),
 }
 
+/// Recover the bounded usage counters that were durable at the last
+/// checkpoint, including a provider episode that was persisted just before a
+/// terminal validation error.  This is intentionally a counter-only
+/// projection: it never exposes checkpoint bytes, prompts, tool arguments, or
+/// provider output.
+pub fn recovery_budget_usage(snapshot: &RecoverySnapshot) -> Option<BudgetUsage> {
+    let RecoverySnapshot::Durable(recovery) = snapshot else {
+        return Some(BudgetUsage::default());
+    };
+
+    let mut usage = recovery
+        .state
+        .as_ref()
+        .map(|checkpoint| serde_json::from_slice::<ActiveRunCheckpoint>(&checkpoint.state_bytes))
+        .transpose()
+        .ok()?
+        .map(|checkpoint| checkpoint.usage)
+        .unwrap_or_default();
+
+    let base_episode_count = recovery
+        .state
+        .as_ref()
+        .and_then(|checkpoint| usize::try_from(checkpoint.provider_checkpoint_seq).ok())
+        .unwrap_or(0);
+    for episode in recovery.episodes.iter().skip(base_episode_count) {
+        let episode = serde_json::from_slice::<ProviderEpisodeV1>(&episode.episode_bytes).ok()?;
+        usage.provider_turns = usage.provider_turns.saturating_add(1);
+        usage.input_tokens = usage
+            .input_tokens
+            .saturating_add(episode.usage.prompt_tokens);
+        usage.output_tokens = usage
+            .output_tokens
+            .saturating_add(episode.usage.completion_tokens);
+    }
+    Some(usage)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunIdentity {
     pub run_id: String,

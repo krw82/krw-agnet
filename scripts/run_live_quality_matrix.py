@@ -410,9 +410,10 @@ def validate_status(
     usage = value["usage"]
     retry_message = value["retry_message"]
     if state == "failed":
-        if final_output is not None or usage is not None:
-            raise GatewayProblem("status_failed_output_or_usage")
-        return session_id, run_id, state, None, None, None, validate_retry_message(retry_message)
+        if final_output is not None:
+            raise GatewayProblem("status_failed_output")
+        failed_usage = None if usage is None else validate_usage(usage)
+        return session_id, run_id, state, None, None, failed_usage, validate_retry_message(retry_message)
     if state != "final":
         if final_output is not None or usage is not None or retry_message is not None:
             raise GatewayProblem("status_non_final_payload")
