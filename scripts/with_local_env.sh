@@ -36,7 +36,13 @@ while IFS= read -r krw_env_line || [[ -n "$krw_env_line" ]]; do
     krw_env_glm_seen=true
     continue
   fi
-  printf 'local secret file may contain only GLM_API_KEY=<non-whitespace-value>\n' >&2
+  # Older local files can retain a DeepSeek key from a previous provider
+  # configuration. Keep that file format compatible, but deliberately do not
+  # read or export it: this runtime launches GLM only.
+  if [[ "$krw_env_line" =~ ^DEEPSEEK_API_KEY=([^[:space:]#]+)$ ]]; then
+    continue
+  fi
+  printf 'local secret file may contain GLM_API_KEY and an ignored legacy DEEPSEEK_API_KEY only\n' >&2
   exit 2
 done < "$krw_env_file"
 
