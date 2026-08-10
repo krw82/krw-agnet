@@ -106,6 +106,9 @@ start_stack() {
   if [[ -f "$krw_pid_file" ]]; then
     rm -f "$krw_pid_file"
   fi
+  if [[ "${KRW_AGENT_SKIP_PREPARE:-0}" != 1 ]]; then
+    prepare_binaries
+  fi
   printf 'starting cold dev stack; log=%s\n' "$krw_log_file"
   nohup env KRW_AGENT_LOCAL_STATE_DIR="$krw_state" \
     "$krw_start_script" >>"$krw_log_file" 2>&1 </dev/null &
@@ -183,7 +186,8 @@ prepare_binaries() {
   # already disabled or the directory does not exist yet.
   mkdir -p "$krw_root/target"
   touch "$krw_root/target/.metadata_never_index"
-  PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" build --locked \
+  CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+    PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" build --locked \
     -p krw-agent -p krw-agentd
   printf 'Rust binaries prepared\n'
 }
@@ -220,12 +224,16 @@ run_test() {
   shift || true
   case "$lane" in
     core)
-      PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
-        -p krw-agent-run-engine --no-default-features "$@"
+      CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+        PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
+        -p krw-agent-run-engine --no-default-features --locked \
+        --lib "$@"
       ;;
     adapter)
-      PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
-        -p krw-agent-provider-wire --no-default-features "$@"
+      CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${KRW_AGENT_BUILD_JOBS:-4}}" \
+        PATH="$(dirname "$krw_cargo_bin"):$PATH" "$krw_cargo_bin" test \
+        -p krw-agent-provider-wire --no-default-features --locked \
+        --lib "$@"
       ;;
     smoke)
       run_smoke "$@"
