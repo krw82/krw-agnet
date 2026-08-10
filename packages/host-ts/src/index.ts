@@ -9,4 +9,5 @@ export * from "./outbox.js";
 export * from "./ownership.js";
 export * from "./postgres.js";
 export * from "./release-artifact.js";
+export * from "./terminal-presentation.js";
 export * from "./validation.js";

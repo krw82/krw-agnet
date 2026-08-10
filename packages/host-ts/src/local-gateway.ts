@@ -20,6 +20,8 @@ import {
   loadPinnedReleaseArtifact,
   parseGatewayCompanyResearchRequest,
   prepareGatewayCompanyResearch,
+  projectPublicRunUsage,
+  retryMessageForTerminalFailure,
   type JsonObject,
   type MaterializationPorts,
   type PgQueryClient,
@@ -363,16 +365,37 @@ async function readRun(
     run_id: runId,
   };
   const outcome = await agent.readCommittedOutcome(ownership);
-  if (outcome.state !== "final") {
-    return { schema_version: 1, session_id: ownership.session_id, run_id: runId, state: outcome.state, final_output: null };
+  if (outcome.state === "failed") {
+    return {
+      schema_version: 1,
+      session_id: ownership.session_id,
+      run_id: runId,
+      state: outcome.state,
+      final_output: null,
+      usage: null,
+      retry_message: retryMessageForTerminalFailure(outcome.terminal_outcome),
+    };
   }
-  const finalOutput = await agent.readFinalOutput(ownership);
+  if (outcome.state !== "final") {
+    return {
+      schema_version: 1,
+      session_id: ownership.session_id,
+      run_id: runId,
+      state: outcome.state,
+      final_output: null,
+      usage: null,
+      retry_message: null,
+    };
+  }
+  const finalOutput = await agent.readFinalProjection(ownership);
   return {
     schema_version: 1,
     session_id: ownership.session_id,
     run_id: runId,
     state: "final",
     final_output: { markdown: finalOutput.markdown, final_output_hash: finalOutput.final_output_hash },
+    usage: projectPublicRunUsage(finalOutput.usage),
+    retry_message: null,
   };
 }
 

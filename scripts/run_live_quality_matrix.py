@@ -383,8 +383,16 @@ def validate_submit(value: dict[str, Any]) -> tuple[str, str, str]:
 
 def validate_status(
     value: dict[str, Any], expected_session_id: str, expected_run_id: str
-) -> tuple[str, str, str, str | None, str | None]:
-    if set(value) != {"schema_version", "session_id", "run_id", "state", "final_output"}:
+) -> tuple[str, str, str, str | None, str | None, dict[str, int] | None, dict[str, Any] | None]:
+    if set(value) != {
+        "schema_version",
+        "session_id",
+        "run_id",
+        "state",
+        "final_output",
+        "usage",
+        "retry_message",
+    }:
         raise GatewayProblem("status_shape_invalid")
     session_id, run_id, state = value["session_id"], value["run_id"], value["state"]
     if (
@@ -399,10 +407,16 @@ def validate_status(
     ):
         raise GatewayProblem("status_identity_invalid")
     final_output = value["final_output"]
+    usage = value["usage"]
+    retry_message = value["retry_message"]
+    if state == "failed":
+        if final_output is not None or usage is not None:
+            raise GatewayProblem("status_failed_output_or_usage")
+        return session_id, run_id, state, None, None, None, validate_retry_message(retry_message)
     if state != "final":
-        if final_output is not None:
-            raise GatewayProblem("status_non_final_output")
-        return session_id, run_id, state, None, None
+        if final_output is not None or usage is not None or retry_message is not None:
+            raise GatewayProblem("status_non_final_payload")
+        return session_id, run_id, state, None, None, None, None
     if not isinstance(final_output, dict) or set(final_output) != {"markdown", "final_output_hash"}:
         raise GatewayProblem("final_output_shape_invalid")
     markdown = final_output["markdown"]
@@ -416,7 +430,53 @@ def validate_status(
         or not HASH_RE.fullmatch(final_hash)
     ):
         raise GatewayProblem("final_output_invalid")
-    return session_id, run_id, state, markdown, final_hash
+    if retry_message is not None:
+        raise GatewayProblem("status_final_retry_message")
+    return session_id, run_id, state, markdown, final_hash, validate_usage(usage), None
+
+
+def validate_usage(value: Any) -> dict[str, int]:
+    fields = {
+        "provider_turns",
+        "capability_calls",
+        "repairs",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "provider_total_ms",
+        "capability_total_ms",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise GatewayProblem("usage_shape_invalid")
+    if any(type(item) is not int or item < 0 for item in value.values()):
+        raise GatewayProblem("usage_value_invalid")
+    if value["total_tokens"] != value["input_tokens"] + value["output_tokens"]:
+        raise GatewayProblem("usage_total_invalid")
+    return {key: int(value[key]) for key in sorted(fields)}
+
+
+def validate_retry_message(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"markdown", "category", "retry_recommended"}:
+        raise GatewayProblem("retry_message_shape_invalid")
+    markdown = value["markdown"]
+    category = value["category"]
+    retry_recommended = value["retry_recommended"]
+    if (
+        not isinstance(markdown, str)
+        or not markdown
+        or "\x00" in markdown
+        or len(markdown.encode("utf-8")) > MAX_ANSWER_BYTES
+        or category not in {
+            "model_response",
+            "data_connection",
+            "processing_limit",
+            "service_setup",
+            "temporary_processing",
+        }
+        or retry_recommended is not True
+    ):
+        raise GatewayProblem("retry_message_invalid")
+    return {"markdown": markdown, "category": category, "retry_recommended": True}
 
 
 def validate_terminal_trace(
@@ -562,6 +622,8 @@ def planned_result(case: QualityCase) -> dict[str, Any]:
             "state": "not_dispatched",
             "elapsed_seconds": 0.0,
             "final_output_hash": None,
+            "usage": None,
+            "retry_message": None,
             "action_trace": {
                 "status": "not_dispatched",
                 "action_count": 0,
@@ -611,14 +673,14 @@ def run_case(
         while time.monotonic() < deadline:
             time.sleep(poll_seconds)
             status = gateway_json("GET", f"{gateway_url}/runs/{run_id}", token)
-            _, _, state, _, _ = validate_status(status, session_id, run_id)
+            _, _, state, _, _, _, _ = validate_status(status, session_id, run_id)
             if state in {"final", "cancelled", "failed"}:
                 terminal = status
                 break
         if terminal is None:
             raise GatewayProblem("terminal_wait_timeout")
         write_private_json(status_path, terminal)
-        session_id, run_id, state, answer, final_hash = validate_status(
+        session_id, run_id, state, answer, final_hash, usage, retry_message = validate_status(
             terminal, session_id, run_id
         )
         try:
@@ -646,6 +708,8 @@ def run_case(
                 "state": state,
                 "elapsed_seconds": elapsed,
                 "final_output_hash": final_hash,
+                "usage": usage,
+                "retry_message": retry_message,
                 "action_trace": action_trace,
             },
             "quality": review_block(case, state, answer, action_trace),
@@ -676,6 +740,8 @@ def run_case(
                 "state": "unknown",
                 "elapsed_seconds": elapsed,
                 "final_output_hash": None,
+                "usage": None,
+                "retry_message": None,
                 "action_trace": action_trace_block(None, reason="run_not_terminal"),
             },
             "quality": {

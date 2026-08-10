@@ -569,6 +569,12 @@ async fn run_through_gateway(
                 )
             })?;
             if json {
+                let usage = terminal.usage.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "gateway reported final without credit usage",
+                    )
+                })?;
                 println!(
                     "{}",
                     serde_json::to_string(&serde_json::json!({
@@ -578,6 +584,7 @@ async fn run_through_gateway(
                         "state": terminal.state,
                         "final_output_hash": final_output.final_output_hash,
                         "markdown": final_output.markdown,
+                        "usage": usage,
                     }))?
                 );
             } else {
@@ -589,8 +596,39 @@ async fn run_through_gateway(
             }
             Ok(())
         }
-        GatewayRunState::Cancelled | GatewayRunState::Failed => Err(std::io::Error::other(
-            "gateway reported a non-final terminal run; inspect the authenticated run status",
+        GatewayRunState::Failed => {
+            let retry = terminal.retry_message.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "gateway reported failed without retry Markdown",
+                )
+            })?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "schema_version": 1,
+                        "session_id": terminal.session_id,
+                        "run_id": terminal.run_id,
+                        "state": terminal.state,
+                        "retry_message": {
+                            "markdown": retry.markdown,
+                            "category": retry.category,
+                            "retry_recommended": retry.retry_recommended,
+                        },
+                    }))?
+                );
+            } else {
+                eprintln!(
+                    "session_id={} run_id={} state=failed",
+                    terminal.session_id, terminal.run_id
+                );
+                println!("{}", retry.markdown);
+            }
+            Ok(())
+        }
+        GatewayRunState::Cancelled => Err(std::io::Error::other(
+            "gateway reported a cancelled terminal run",
         )
         .into()),
         GatewayRunState::Queued | GatewayRunState::Deferred | GatewayRunState::Active => {

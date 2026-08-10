@@ -31,12 +31,46 @@ pub(crate) struct RunStatus {
     pub run_id: String,
     pub state: GatewayRunState,
     pub final_output: Option<FinalOutput>,
+    pub usage: Option<GatewayUsage>,
+    pub retry_message: Option<RetryMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FinalOutput {
     pub markdown: String,
     pub final_output_hash: ContentHash,
+}
+
+/// Public, credit-oriented usage counters returned only for a committed final
+/// Markdown answer. Provider prompts, tool arguments, and raw episode data
+/// remain private to the kernel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GatewayUsage {
+    pub provider_turns: u16,
+    pub capability_calls: u16,
+    pub repairs: u8,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+    pub provider_total_ms: u64,
+    pub capability_total_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetryMessage {
+    pub markdown: String,
+    pub category: RetryCategory,
+    pub retry_recommended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RetryCategory {
+    ModelResponse,
+    DataConnection,
+    ProcessingLimit,
+    ServiceSetup,
+    TemporaryProcessing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +267,8 @@ struct StatusResponse {
     run_id: String,
     state: GatewayRunState,
     final_output: Option<FinalOutputResponse>,
+    usage: Option<GatewayUsage>,
+    retry_message: Option<RetryMessageResponse>,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +276,14 @@ struct StatusResponse {
 struct FinalOutputResponse {
     markdown: String,
     final_output_hash: ContentHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryMessageResponse {
+    markdown: String,
+    category: RetryCategory,
+    retry_recommended: bool,
 }
 
 async fn parse_submit_response(
@@ -275,18 +319,31 @@ async fn parse_status_response(
     }
     let final_output = match (response.state, response.final_output) {
         (GatewayRunState::Final, Some(final_output))
-            if !final_output.markdown.is_empty()
-                && !final_output.markdown.contains('\0')
-                && final_output.markdown.len() <= MAX_QUESTION_BYTES =>
-        {
-            Some(FinalOutput {
+            if valid_markdown(&final_output.markdown) => Some(FinalOutput {
                 markdown: final_output.markdown,
                 final_output_hash: final_output.final_output_hash,
-            })
-        }
-        (GatewayRunState::Final, None | Some(_)) => {
-            return Err(GatewayClientError::InvalidResponse);
-        }
+            }),
+        (GatewayRunState::Final, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
+        (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
+        (_, None) => None,
+    };
+    let retry_message = match (response.state, response.retry_message) {
+        (GatewayRunState::Failed, Some(message))
+            if valid_markdown(&message.markdown) && message.retry_recommended => Some(RetryMessage {
+                markdown: message.markdown,
+                category: message.category,
+                retry_recommended: message.retry_recommended,
+            }),
+        (GatewayRunState::Failed, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
+        (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
+        (_, None) => None,
+    };
+    let usage = match (response.state, response.usage) {
+        (GatewayRunState::Final, Some(usage))
+            if usage.total_tokens == usage.input_tokens.saturating_add(usage.output_tokens) => {
+                Some(usage)
+            }
+        (GatewayRunState::Final, None | Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, Some(_)) => return Err(GatewayClientError::InvalidResponse),
         (_, None) => None,
     };
@@ -295,7 +352,13 @@ async fn parse_status_response(
         run_id: response.run_id,
         state: response.state,
         final_output,
+        usage,
+        retry_message,
     })
+}
+
+fn valid_markdown(markdown: &str) -> bool {
+    !markdown.is_empty() && !markdown.contains('\0') && markdown.len() <= MAX_QUESTION_BYTES
 }
 
 async fn parse_response<T: for<'de> Deserialize<'de>>(

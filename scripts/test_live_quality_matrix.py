@@ -73,6 +73,54 @@ class TerminalActionTraceTest(unittest.TestCase):
         with self.assertRaisesRegex(quality.GatewayProblem, "terminal_trace_identity_invalid"):
             quality.validate_terminal_trace(wrong_state, self.session_id, self.run_id, "final")
 
+    def test_terminal_status_carries_credit_usage_or_markdown_retry_guidance(self) -> None:
+        final = {
+            "schema_version": 1,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "state": "final",
+            "final_output": {"markdown": "## 답변", "final_output_hash": self.result_hash},
+            "usage": {
+                "provider_turns": 3,
+                "capability_calls": 2,
+                "repairs": 1,
+                "input_tokens": 1200,
+                "output_tokens": 800,
+                "total_tokens": 2000,
+                "provider_total_ms": 1000,
+                "capability_total_ms": 120,
+            },
+            "retry_message": None,
+        }
+        _, _, state, answer, _, usage, retry = quality.validate_status(
+            final, self.session_id, self.run_id
+        )
+        self.assertEqual(state, "final")
+        self.assertEqual(answer, "## 답변")
+        self.assertEqual(usage["total_tokens"], 2000)
+        self.assertIsNone(retry)
+
+        failed = {
+            "schema_version": 1,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "state": "failed",
+            "final_output": None,
+            "usage": None,
+            "retry_message": {
+                "markdown": "## 분석을 완료하지 못했습니다\n\n다시 요청해 주세요.",
+                "category": "data_connection",
+                "retry_recommended": True,
+            },
+        }
+        _, _, state, answer, _, usage, retry = quality.validate_status(
+            failed, self.session_id, self.run_id
+        )
+        self.assertEqual(state, "failed")
+        self.assertIsNone(answer)
+        self.assertIsNone(usage)
+        self.assertEqual(retry["category"], "data_connection")
+
 
 if __name__ == "__main__":
     unittest.main()
