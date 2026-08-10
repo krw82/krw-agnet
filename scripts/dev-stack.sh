@@ -172,12 +172,28 @@ prepare_binaries() {
 }
 
 run_quality() {
-  show_status >/dev/null
+  local arg
+  local dry_run=0
+  for arg in "$@"; do
+    [[ "$arg" == "--dry-run" ]] && dry_run=1
+  done
+  [[ "${KRW_LIVE_QUALITY_DRY_RUN:-0}" == 1 ]] && dry_run=1
+  if [[ "$dry_run" == 0 ]]; then
+    show_status >/dev/null
+  fi
   exec python3 "$krw_root/scripts/run_live_quality_matrix.py" "$@"
 }
 
 run_smoke() {
-  show_status >/dev/null
+  local arg
+  local dry_run=0
+  for arg in "$@"; do
+    [[ "$arg" == "--dry-run" ]] && dry_run=1
+  done
+  [[ "${KRW_LIVE_QUALITY_DRY_RUN:-0}" == 1 ]] && dry_run=1
+  if [[ "$dry_run" == 0 ]]; then
+    show_status >/dev/null
+  fi
   exec python3 "$krw_root/scripts/run_live_quality_matrix.py" \
     --per-bucket 1 --parallelism 1 "$@"
 }
@@ -217,7 +233,7 @@ main() {
     status) show_status "$@" ;;
     down) stop_stack "$@" ;;
     reload)
-      stop_stack || true
+      stop_stack
       start_stack "$@"
       ;;
     test) run_test "$@" ;;
