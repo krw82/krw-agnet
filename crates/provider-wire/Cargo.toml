@@ -10,6 +10,7 @@ default = []
 http = ["dep:futures-util", "dep:reqwest", "dep:rustls", "dep:tokio"]
 
 [dependencies]
+bytes.workspace = true
 futures-util = { workspace = true, optional = true }
 krw-agent-protocol = { path = "../protocol" }
 reqwest = { workspace = true, optional = true }

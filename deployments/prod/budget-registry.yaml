@@ -13,7 +13,7 @@ profiles:
       max_replans: 3
       max_repairs: 3
       max_input_tokens: 176000
-      max_output_tokens: 24000
+      max_output_tokens: 28000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
@@ -49,7 +49,10 @@ profiles:
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
-      max_output_tokens: 14000
+      # Two GLM Guru turns seal the lens/brief before the ordinary filing
+      # researcher continues in the parent workflow. Keep a separate tail for
+      # evidence review and the final Korean answer.
+      max_output_tokens: 24000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
@@ -162,19 +165,26 @@ profiles:
   - profile_id: guru_company_advisor
     limits:
       max_provider_turns: 20
-      max_capability_calls: 10
+      max_capability_calls: 11
       max_replans: 1
       max_repairs: 2
       max_input_tokens: 120000
-      max_output_tokens: 14000
+      # The parent envelope covers the ordinary filing researcher plus the
+      # final evidence review/composer turns.
+      max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      # Guru uses several normal GLM turns; keep the same ten-minute
+      # envelope as company_research_glm so a slow but valid turn is not
+      # mistaken for a workflow failure. Existing action caps remain explicit;
+      # the causal chain gets one additional optional slot.
+      deadline_ms: 600000
       capability_call_limits:
         guru.query_context: 1
         guru.company_brief: 2
         ontology.query_context: 2
         ontology.query: 2
         ontology.trace: 1
+        ontology.chain: 1
         guru.review_company_evidence: 2
   - profile_id: notebook_transform
     limits:

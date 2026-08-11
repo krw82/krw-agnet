@@ -12,11 +12,15 @@ use std::collections::BTreeSet;
 #[cfg(feature = "http")]
 use std::time::Duration;
 
-use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, ThinkingMode};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, ReasoningEffort, ThinkingMode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
+
+mod prepared;
+
+pub use prepared::PreparedMessagesRequest;
 
 const MAX_PROVIDER_FUNCTION_NAME_BYTES: usize = 64;
 const MAX_TOOL_CALL_ID_BYTES: usize = 256;
@@ -703,6 +707,7 @@ impl ProviderToolDefinition {
         self.description = description.into();
     }
 
+    #[must_use]
     pub fn with_strict(mut self) -> Self {
         self.strict = Some(true);
         self
@@ -751,12 +756,19 @@ pub struct RequestMetadata {
     pub user_id: String,
 }
 
-/// Anthropic structured-output request configuration. The format is required
-/// when this object is present so an invalid `{}` cannot cross the wire.
+/// Anthropic request-level output configuration.
+///
+/// DeepSeek's Anthropic compatibility uses `effort` here, while the native
+/// Anthropic structured-output lane uses `format`. Keeping both optional but
+/// requiring at least one at validation time lets a DeepSeek thinking turn
+/// combine effort control with the provider's JSON-object compatibility field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
-    pub format: OutputFormat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<OutputFormat>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -768,8 +780,26 @@ pub enum OutputFormat {
 impl OutputConfig {
     pub fn json_schema(schema: JsonSchemaDocument) -> Self {
         Self {
-            format: OutputFormat::JsonSchema { schema },
+            effort: None,
+            format: Some(OutputFormat::JsonSchema { schema }),
         }
+    }
+
+    pub const fn effort(effort: ReasoningEffort) -> Self {
+        Self {
+            effort: Some(effort),
+            format: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.effort = Some(effort);
+        self
+    }
+
+    pub const fn has_format(&self) -> bool {
+        self.format.is_some()
     }
 }
 
@@ -855,7 +885,7 @@ fn project_schema_node(value: &mut Value) -> Result<(), WireError> {
         if types.is_empty()
             || types
                 .iter()
-                .any(|kind| !kind.as_str().is_some_and(|kind| !kind.is_empty()))
+                .any(|kind| kind.as_str().is_none_or(str::is_empty))
             || object.contains_key("anyOf")
         {
             return Err(WireError::UnsupportedStructuredOutputSchema);
@@ -1012,19 +1042,28 @@ impl MessagesRequest {
                 "tool_choice=any requires at least one tool".into(),
             ));
         }
-        if let Some(OutputConfig {
-            format: OutputFormat::JsonSchema { schema },
-        }) = &self.output_config
-        {
-            // Validate the exact provider grammar at the final wire boundary
-            // even for callers outside run-engine. The engine normally stores
-            // a pre-projected schema, but this prevents an accidental direct
-            // client from bypassing the same closed subset.
-            project_anthropic_json_schema(schema.as_value().clone())?;
+        if let Some(output_config) = &self.output_config {
+            if output_config.effort.is_none() && output_config.format.is_none() {
+                return Err(WireError::InvalidRequest(
+                    "output_config requires effort or format".into(),
+                ));
+            }
+            if let Some(OutputFormat::JsonSchema { schema }) = &output_config.format {
+                // Validate the exact provider grammar at the final wire boundary
+                // even for callers outside run-engine. The engine normally stores
+                // a pre-projected schema, but this prevents an accidental direct
+                // client from bypassing the same closed subset.
+                project_anthropic_json_schema(schema.as_value().clone())?;
+            }
         }
-        if self.output_config.is_some() && self.response_format.is_some() {
+        if self
+            .output_config
+            .as_ref()
+            .is_some_and(OutputConfig::has_format)
+            && self.response_format.is_some()
+        {
             return Err(WireError::InvalidRequest(
-                "output_config and response_format are mutually exclusive".into(),
+                "output_config.format and response_format are mutually exclusive".into(),
             ));
         }
         Ok(())
@@ -1045,7 +1084,7 @@ impl std::fmt::Debug for MessagesRequest {
             .field("tool_choice", &self.tool_choice)
             .field(
                 "output_config",
-                &self.output_config.as_ref().map(|_| "[SCHEMA]"),
+                &self.output_config.as_ref().map(|_| "[REDACTED]"),
             )
             .field("response_format", &self.response_format)
             .field("metadata", &self.metadata.as_ref().map(|_| "[REDACTED]"))
@@ -1064,8 +1103,8 @@ impl Drop for MessagesRequest {
             tool.scrub_sensitive();
         }
         if let Some(output_config) = &mut self.output_config {
-            match &mut output_config.format {
-                OutputFormat::JsonSchema { schema } => schema.scrub_sensitive(),
+            if let Some(OutputFormat::JsonSchema { schema }) = &mut output_config.format {
+                schema.scrub_sensitive();
             }
         }
         if let Some(metadata) = &mut self.metadata {
@@ -1223,6 +1262,7 @@ impl From<reqwest::Error> for TransportError {
 }
 
 #[cfg(feature = "http")]
+#[allow(clippy::wildcard_imports)]
 mod http_client {
     use super::*;
 
@@ -1255,11 +1295,21 @@ mod http_client {
             allowed_models: impl IntoIterator<Item = String>,
             max_idle_per_host: usize,
         ) -> Self {
+            let api_base = api_base.into();
+            // DeepSeek documents that inference may wait while the connection
+            // remains open for up to ten minutes. The run engine still applies
+            // each run's hard deadline; this client timeout only prevents a
+            // provider request from being cut off before that outer fence.
+            let request_timeout = if api_base == "https://api.deepseek.com/anthropic" {
+                Duration::from_secs(590)
+            } else {
+                Duration::from_secs(130)
+            };
             Self {
-                api_base: api_base.into(),
+                api_base,
                 allowed_models: allowed_models.into_iter().collect(),
                 connect_timeout: Duration::from_secs(10),
-                request_timeout: Duration::from_secs(130),
+                request_timeout,
                 max_error_body_bytes: 64 * 1024,
                 max_sse_frame_bytes: 2 * 1024 * 1024,
                 max_stream_bytes: 8 * 1024 * 1024,
@@ -1405,11 +1455,20 @@ mod http_client {
             request: &MessagesRequest,
             context: &EpisodeContext,
         ) -> Result<ProviderEpisodeV1, WireError> {
+            let prepared = PreparedMessagesRequest::new(request)?;
+            self.complete_stream_prepared(&prepared, context).await
+        }
+
+        pub async fn complete_stream_prepared(
+            &self,
+            prepared: &PreparedMessagesRequest<'_>,
+            context: &EpisodeContext,
+        ) -> Result<ProviderEpisodeV1, WireError> {
+            let request = prepared.request();
             if !self.allowed_models.contains(&request.model) {
                 return Err(WireError::UnknownModel(request.model.clone()));
             }
-            request.validate()?;
-            let request_hash = ContentHash::sha256(serde_jcs::to_vec(request)?);
+            let request_hash = prepared.request_hash().clone();
 
             if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
                 eprintln!(
@@ -1437,7 +1496,8 @@ mod http_client {
                         .http
                         .post(&self.endpoint)
                         .timeout(self.request_timeout)
-                        .json(request)
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(prepared.canonical_bytes().clone())
                         .send()
                         .await
                     {
@@ -1583,7 +1643,7 @@ mod http_client {
     /// Accept only a short, printable request identifier. The raw value is never
     /// retained; the hash is sufficient to correlate one provider response across
     /// bounded logs without leaking account or routing data.
-    fn safe_request_id_hash(headers: &HeaderMap) -> Option<ContentHash> {
+    pub(super) fn safe_request_id_hash(headers: &HeaderMap) -> Option<ContentHash> {
         for header_name in ["request-id", "x-request-id"] {
             let Some(value) = headers.get(header_name) else {
                 continue;
@@ -1604,7 +1664,7 @@ mod http_client {
     /// Parse only the bounded delta-seconds form of `Retry-After`. HTTP-date is
     /// deliberately ignored: accepting a clock-dependent date would make retry
     /// latency unbounded and would complicate the provider admission contract.
-    fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    pub(super) fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
         let value = headers.get("retry-after")?.to_str().ok()?.trim();
         if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
@@ -2313,6 +2373,37 @@ mod tests {
             footprint.input_tokens_upper_bound,
             footprint.canonical_bytes as u64
         );
+    }
+
+    #[test]
+    fn prepared_request_reuses_one_hash_and_body() {
+        let request = MessagesRequest {
+            model: GLM_MODEL_ID.into(),
+            messages: vec![ProviderMessage::user("probe")],
+            system: "system".into(),
+            max_tokens: 128,
+            tools: Vec::new(),
+            tool_choice: None,
+            output_config: None,
+            response_format: None,
+            thinking: ThinkingConfig {
+                kind: ThinkingMode::Disabled,
+                budget_tokens: None,
+            },
+            stream: true,
+            metadata: None,
+        };
+        let prepared = PreparedMessagesRequest::new(&request).unwrap();
+        assert_eq!(prepared.request(), &request);
+        assert_eq!(
+            prepared.request_hash(),
+            &ContentHash::sha256(prepared.canonical_bytes().as_ref())
+        );
+        assert_eq!(
+            prepared.footprint().canonical_bytes,
+            prepared.canonical_bytes().len()
+        );
+        assert_eq!(prepared.canonical_bytes(), prepared.canonical_bytes());
     }
 
     #[cfg(feature = "http")]

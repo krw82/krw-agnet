@@ -83,3 +83,19 @@ following ways:
 
 See `deployments/local/README.md` for the local-only setup that admits
 fixture fingerprints and loopback origins.
+
+## Provider selection
+
+Production uses the same immutable release shape for either provider. Choose
+one registry at deployment time and keep the choice stable for the daemon's
+lifetime:
+
+- `model-registry.glm.yaml` + `--provider glm` for the GLM test/staging lane.
+- `model-registry.deepseek.yaml` + `--provider deepseek` for the DeepSeek
+  service lane.
+
+The selected registry must be passed to `krw-agentd` together with the matching
+`--provider` flag. The daemon fails closed if they disagree. Inject only the
+selected `GLM_API_KEY` or `DEEPSEEK_API_KEY` into its environment; do not put
+credentials in YAML. Switching is a bounded restart/rollout, not a hot toggle,
+so queued claims retain the provider contract that was admitted at startup.

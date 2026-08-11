@@ -6,7 +6,7 @@
   complete fixed `agent_v1.*($1::jsonb)` inventory on every admitted connection and has no
   arbitrary SQL method.
 - `daemon::RunSupervisor` owns claim admission, lease renewal, fencing, defer/fail release, and
-  graceful drain. `krw-agentd` injects the direct DeepSeek executor, pooled MCP runtime, and
+  graceful drain. `krw-agentd` injects the selected-provider executor, pooled MCP runtime, and
   encrypted artifact repository.
 - Atomic final inserts presentation/billing outbox rows, but `krw-agentd` deliberately installs no
   outbox handler. The product host owns real sink delivery and ACK; a no-op adapter can never
@@ -32,6 +32,12 @@ cargo run -p krw-agentd -- \
 `--database-check` connects and prepares all 20 procedures but does not claim a run. The v1 SQL
 ABI does not expose a separate migration-version/readiness function, so successful preparation of
 the entire inventory is the strongest side-effect-free version check currently possible.
+
+For a GLM test/staging lane, point `--model-registry` at
+`model-registry.glm.yaml` and pass `--provider glm`; for the DeepSeek service
+lane use `model-registry.deepseek.yaml` and `--provider deepseek`. The flag is
+an optional fail-closed assertion, while the registry remains the source of
+the exact model facts.
 
 ## Required integration contracts
 
@@ -60,7 +66,7 @@ the entire inventory is the strongest side-effect-free version check currently p
 
 ## Live daemon
 
-Database, DeepSeek, MCP, and artifact-key values are injected by a secret manager. The CLI accepts
+Database, the selected provider, MCP, and artifact-key values are injected by a secret manager. The CLI accepts
 only environment-variable names, never secret material. An artifact key is exactly 32 bytes encoded
 as 64 hex characters. The active version writes new artifacts; repeated `--artifact-read-key
 VERSION:ENV_NAME` arguments permit short-TTL reads during rotation.
@@ -86,7 +92,7 @@ cargo run -p krw-agentd -- \
 ```
 
 `--database-check` never admits a claim. It validates the configured provider credential's
-presence but makes no DeepSeek or MCP request. It may omit release authorization artifacts for
+presence but makes no provider or MCP request. It may omit release authorization artifacts for
 authoring/DB diagnostics; when either artifact is supplied, both must verify the exact resolved
 descriptor. Without `--check` or `--database-check`, claim admission starts only after a signed
 release authorization, worker identity, encrypted artifact store, exact registries, capability
@@ -100,7 +106,7 @@ rollback selector. A receipt is routed by `agent_image_hash` before payload vali
 claim pin is rederived against that exact release.
 
 The default is at most 16 active runs. Additional sessions remain queued in PostgreSQL instead of
-allocating a task, prompt, transcript, MCP client, or provider client. DeepSeek HTTP/2 clients, the
+allocating a task, prompt, transcript, MCP client, or provider client. Provider HTTP/2 clients, the
 MCP single-flight pool, content-interned prompt blobs, immutable images, and precompiled capability
 catalogs are shared machine-wide. Resident runtime memory is `O(images + active runs)`, not
 `O(sessions)`.

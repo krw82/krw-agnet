@@ -24,7 +24,9 @@ models:
         supports_json_object: true
         supports_json_schema_output: false
         supports_strict_tool_input: false
-      requires_thinking_block_replay: true
+      # GLM can omit thinking on tool-only turns; the kernel normalizes replay
+      # messages without fabricating stored model reasoning.
+      requires_thinking_block_replay: false
       requires_assistant_content_for_tool_calls: false
 profiles:
   - profile_id: glm_high

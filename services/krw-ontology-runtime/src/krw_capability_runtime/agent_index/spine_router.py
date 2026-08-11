@@ -28,6 +28,7 @@ from krw_capability_runtime.agent_index.router_sidecar import (
 from krw_capability_runtime.agent_index.semantic_identity import effective_ticker
 from krw_capability_runtime.agent_index.store import (
     OntologyStore,
+    build_guru_light_company_context,
     filing_document_roles_from_documents,
     latest_document_anchors_from_documents,
 )
@@ -421,6 +422,41 @@ class OntologySpineRouter:
         payload = self._store_for_ticker(ticker).company_context(ticker=ticker, **kwargs)
         payload = self._project_shard_payload(payload, ticker=normalized)
         payload.setdefault("routing", self._route_payload("company_shard", [normalized]))
+        return payload
+
+    def guru_light_company_context(
+        self,
+        *,
+        ticker: str,
+        company_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Return neutral Guru orientation without exposing object identities."""
+        normalized = str(ticker or "").strip().upper()
+        resolved_name = str(company_name or "").strip() or None
+        if resolved_name is None:
+            row = self.conn.execute(
+                """
+                SELECT company_name
+                FROM global_document_catalog
+                WHERE ticker = ? AND company_name IS NOT NULL AND TRIM(company_name) != ''
+                ORDER BY period DESC, document_type DESC
+                LIMIT 1
+                """,
+                (normalized,),
+            ).fetchone()
+            if row is not None:
+                resolved_name = str(row["company_name"] or "").strip() or None
+        if normalized in self._missing_shard_paths or normalized not in self._shard_paths:
+            payload = build_guru_light_company_context(
+                ticker=normalized,
+                company_name=resolved_name,
+                documents=self.list_documents(ticker=normalized),
+            )
+        else:
+            payload = self._store_for_ticker(normalized).guru_light_company_context(
+                ticker=normalized,
+                company_name=resolved_name,
+            )
         return payload
 
     def topic_map(self, *, ticker: str, **kwargs: Any) -> dict[str, Any]:

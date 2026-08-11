@@ -46,7 +46,8 @@ Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 �
 
 - production target은 service-account/OS-user 범위의 machine-wide Rust daemon이다.
 - provider wire는 Anthropic Messages 계약을 사용한다. 현재 live provider 검증과 quality run은
-  GLM-5.2만 사용하고, DeepSeek은 정적 compatibility fixture/replay 범위로 제한한다.
+  GLM-5.2만 사용하고, 실서비스는 동일한 하네스의 `deepseek-v4-flash` lane으로 전환할 수
+  있다. DeepSeek live 호출은 아직 이 검증 세션에서 수행하지 않는다.
 - 물리 model/profile은 immutable registry에서 exact-match로 검증하며 alias와 silent fallback은 startup에서 거절한다.
 - model ID는 deployment registry에서 정확히 allowlist하며 alias, silent fallback과 provider 자동 매핑을
   허용하지 않는다.
@@ -328,7 +329,9 @@ AgentSpec과 prompt source 수정으로 끝나야 한다.
 
 ## 9. 현재 안전 차단
 
-DeepSeek live provider path는 비활성이고, 이 단계의 live 검증은 GLM-5.2 고정 probe만 허용한다.
+DeepSeek live 호출은 운영 전 별도 승인된 환경에서만 수행하며, 이 검증 세션에서는 GLM-5.2
+고정 probe/quality만 허용한다. provider 전환은 `KRW_AGENT_PROVIDER`와 immutable registry를
+함께 바꾸는 bounded restart이며, hot switch가 아니다.
 새 key는 secret manager 또는 process environment를 통해서만 주입하고 source, image, fixture, log와
 debug bundle에는 저장하지 않는다.
 

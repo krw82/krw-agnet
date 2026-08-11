@@ -1,0 +1,41 @@
+schema_version: 4
+registry_id: glm-local-2026-08
+models:
+  - model_id: glm-5.2
+    api_base: https://api.z.ai/api/anthropic
+    api_version: anthropic-messages-v1
+    max_context_tokens: 204800
+    max_output_tokens: 131072
+    max_in_flight: 32
+    provider_wire_capabilities:
+      thinking:
+        supported: true
+        supports_tools: true
+        supports_tool_choice: true
+        supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
+      non_thinking:
+        supported: true
+        supports_tools: true
+        supports_tool_choice: true
+        supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
+      requires_thinking_block_replay: false
+      requires_assistant_content_for_tool_calls: false
+profiles:
+  # These are logical execution slots shared with the DeepSeek registry. The
+  # model_id below is the only provider-specific part of the slot.
+  - profile_id: glm_high
+    model_id: glm-5.2
+    thinking: enabled
+    reasoning_effort: high
+  - profile_id: glm_max
+    model_id: glm-5.2
+    thinking: enabled
+    reasoning_effort: max
+  - profile_id: glm_direct
+    model_id: glm-5.2
+    thinking: disabled
+    reasoning_effort: null

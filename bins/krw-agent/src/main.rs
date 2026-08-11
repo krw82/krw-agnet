@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
-    ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PublicReleaseDescriptor,
+    ALLOWED_MODEL_IDS, ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
+    PublicReleaseDescriptor,
 };
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderFunctionName,
@@ -160,6 +161,10 @@ enum ReleaseCommand {
         runtime_version: String,
         #[arg(long)]
         kernel_version: String,
+        /// Exact provider model to bind to this authorization. When omitted,
+        /// the CLI infers the single model present in the public descriptor.
+        #[arg(long)]
+        model_id: Option<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -328,11 +333,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     expires_at_unix_seconds,
                     runtime_version,
                     kernel_version,
+                    model_id,
                     out,
                 },
         } => {
             let descriptor = read_canonical_descriptor(&descriptor)?;
             let private_key = read_private_key(&private_key)?;
+            let model_id = release_model_id(&descriptor, model_id.as_deref())?;
             let authorization = sign(
                 ReleaseAuthorizationPayloadV1 {
                     schema_version: RELEASE_AUTHORIZATION_SCHEMA_VERSION,
@@ -344,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     release_set_hash: descriptor.release_set_hash.clone(),
                     runtime_version,
                     kernel_version,
-                    model_id: GLM_MODEL_ID.to_owned(),
+                    model_id,
                 },
                 &private_key,
             )?;
@@ -925,6 +932,42 @@ fn current_unix_seconds() -> Result<u64, std::io::Error> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| std::io::Error::other("system clock is before Unix epoch"))
+}
+
+fn release_model_id(
+    descriptor: &PublicReleaseDescriptor,
+    requested: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(model_id) = requested {
+        if !ALLOWED_MODEL_IDS.contains(&model_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("model_id is not an admitted provider model: {model_id}"),
+            )
+            .into());
+        }
+        return Ok(model_id.to_owned());
+    }
+
+    let model_ids = descriptor
+        .entries
+        .iter()
+        .map(|entry| entry.execution.resolved_model.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if model_ids.is_empty() {
+        // Empty descriptors are only useful for offline authorization unit
+        // fixtures; keep their historical default while live daemon startup
+        // still binds the payload to the selected registry model.
+        return Ok(GLM_MODEL_ID.to_owned());
+    }
+    if model_ids.len() != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "descriptor contains multiple models; pass --model-id explicitly",
+        )
+        .into());
+    }
+    Ok((*model_ids.iter().next().expect("one model id")).to_owned())
 }
 
 fn read_canonical_descriptor(

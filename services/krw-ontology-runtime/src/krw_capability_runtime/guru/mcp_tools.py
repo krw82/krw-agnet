@@ -508,15 +508,18 @@ def guru_query_context_tool(
     response_format: GuruResponseFormat = GuruResponseFormat.JSON,
 ) -> str:
     """Return a bounded answer-planning research pack for one guru question."""
+    provided_context = _json_arg(
+        company_context if company_context is not None else company_context_json,
+        field_name="company_context",
+    )
+    if not provided_context and ticker:
+        provided_context = _trusted_light_company_context(ticker)
     payload = _build_guru_research_context(
         question=question,
         root=root,
         author_keys=author_keys,
         ticker=ticker,
-        company_context=_json_arg(
-            company_context if company_context is not None else company_context_json,
-            field_name="company_context",
-        ),
+        company_context=provided_context,
         intent_family=intent_family,
         limit_lens=limit_lens,
         limit_consultation=limit_consultation,
@@ -1507,6 +1510,7 @@ def _build_guru_research_context(
         if company_context_model is not None
         else {}
     )
+    light_company_context_payload = _light_company_context_payload(company_context)
     company_bridge = {
         **filing_bridge,
         "requires_company_evidence": needs_company_data,
@@ -1562,7 +1566,10 @@ def _build_guru_research_context(
             for key in selected_authors
         ],
         "requires_company_evidence": needs_company_data,
-        "company_context": company_context_payload,
+        # The top-level result field is the strict neutral light context used
+        # for kernel linkage. The ResearchPack keeps the richer derived topic
+        # projection above for lens ranking and remains generic by contract.
+        "company_context": light_company_context_payload,
         "filing_evidence_requirements": (
             _filing_requirements_with_company_context(
                 question,
@@ -1589,6 +1596,22 @@ def _build_guru_research_context(
             "search_policy": "Use krw_guru_search only for fallback discovery or debugging.",
         },
     }
+
+
+def _trusted_light_company_context(ticker: str) -> dict[str, Any]:
+    """Read neutral orientation through the configured ontology release only."""
+    from krw_capability_runtime.mcp_server.tools import trusted_guru_light_company_context
+
+    return trusted_guru_light_company_context(ticker=ticker)
+
+
+def _light_company_context_payload(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep only the strict neutral context at the query-result boundary."""
+    if not isinstance(value, Mapping):
+        return {}
+    if value.get("format") != "krw-guru-light-company-context/v1":
+        return {}
+    return dict(value)
 
 
 def _selected_author_keys(question: str, author_keys: Sequence[str] | None) -> list[str]:

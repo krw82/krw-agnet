@@ -3,7 +3,7 @@ kind: AgentSpec
 
 metadata:
   id: krw.research.ko
-  version: 4.3.0
+  version: 4.4.0
   description: Direct-authored Korean KRW filing research, earnings, scenario, and idea-screen programs.
 
 entrypoints:
@@ -110,6 +110,13 @@ contracts:
     content_hash: sha256:29e76200a214632bb215b6427f1308438f11adc6437cbad1ed466818f23ab55e
     semantic_authority: krw-agent-image
 roles:
+  - id: company_orienter
+    # A small, company-specific ontology map is fetched before the planner
+    # sees the question. It is orientation only: it gives the planner useful
+    # vocabulary and connections without pre-deciding a conclusion.
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, company_scope, company_ontology_orientation]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 512 }
   - id: planner
     # The planner's primary skill is role-scoped, so it is available on the
     # first turn without asking the model to make a preliminary skill.load
@@ -183,6 +190,7 @@ prompt_segments:
   - { id: security_boundary, path: prompts/security-boundary.md, stable_prefix: true, private: true }
   - { id: kernel_runtime, path: skills/kernel-runtime/SKILL.md, stable_prefix: true, private: true }
   - { id: company_scope, path: prompts/company-scope.md, stable_prefix: true, private: true }
+  - { id: company_ontology_orientation, path: prompts/company-ontology-orientation.md, stable_prefix: true, private: true }
   - { id: research_scope, path: prompts/research-scope.md, stable_prefix: true, private: true, loadable: true }
   - { id: retrieval_planner, path: prompts/retrieval-planner.md, stable_prefix: true, private: true, loadable: true }
   - { id: research_planner_skill, path: skills/research-planner/SKILL.md, stable_prefix: true, private: true, loadable: true }
@@ -283,7 +291,9 @@ capabilities:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
       require_any_of: [ticker]
     parallel_safe: false
-    prerequisites: [ontology.query_context]
+    # Every company run reads this small ontology map before the first research
+    # proposal. It is not evidence and never substitutes for filing retrieval.
+    prerequisites: []
   - id: market.snapshot
     binding_key: krw_market_snapshot
     permission: read
@@ -399,16 +409,16 @@ capabilities:
   - id: ontology.chain
     binding_key: krw_ontology_chain
     permission: read
-    # The chain tool accepts the same object_id + ticker envelope as
-    # ontology.query, so the targeted-query input contract is reused. Extra
-    # optional knobs (max_depth, direction) ride along without a new contract.
-    input_contract: ontology-targeted-query/v1
+    # Chain is an object-centered follow-up.  Its physical MCP surface is
+    # object_id + ticker (with server-side depth/direction defaults), so use
+    # the pinned trace envelope rather than the search/query envelope.
+    input_contract: ontology-trace-input/v1
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: targeted_evidence_v1
+    result_ingest: trace_lineage_v1
     research_action:
-      kind: targeted
-      estimate: { historical_success_lower_ppm: 600000, expected_duplicate_ppm: 100000, failure_risk_upper_ppm: 80000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      kind: trace
+      estimate: { historical_success_lower_ppm: 700000, expected_duplicate_ppm: 50000, failure_risk_upper_ppm: 50000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
       conflict_domain: research:ontology-chain
     scope_binding:
       kind: trusted_ticker_set
@@ -434,6 +444,12 @@ workflows:
     initial: accepted
     states:
       - { id: accepted, kind: start, max_visits: 1 }
+      # This is an orientation decision, not a ResearchProposal authoring
+      # phase.  Keeping it as assess prevents the planner-only proposal
+      # validators from being applied to the small company-context request.
+      - { id: orient_company, kind: assess, role_id: company_orienter, max_visits: 1 }
+      - { id: company_context, kind: capability, capability_id: ontology.company_context, max_visits: 1 }
+      - { id: ingest_company_orientation, kind: ingest, max_visits: 1 }
       - { id: author_plan, kind: plan, role_id: planner, max_visits: 1 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: planner, max_visits: 1 }
@@ -441,7 +457,6 @@ workflows:
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
       - { id: ingest_evidence, kind: ingest, max_visits: 3 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
-      - { id: company_context, kind: capability, capability_id: ontology.company_context, max_visits: 1 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
@@ -456,7 +471,12 @@ workflows:
       - { id: commit, kind: commit, max_visits: 1 }
       - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
     transitions:
-      - { from: accepted, on: begin, to: author_plan }
+      - { from: accepted, on: begin, to: orient_company }
+      - { from: orient_company, on: orientation_ready, to: company_context }
+      - { from: orient_company, on: output_budget_reserved, to: compose_ir }
+      - { from: company_context, on: evidence_observed, to: ingest_company_orientation }
+      - { from: ingest_company_orientation, on: ingested, to: author_plan }
+      - { from: ingest_company_orientation, on: output_budget_reserved, to: compose_ir }
       - { from: author_plan, on: plan_ready, to: validate_plan }
       - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_invalid, to: repair_plan }
@@ -468,7 +488,6 @@ workflows:
       - { from: repair_server_violations, on: corrected, to: query_context }
       - { from: ingest_evidence, on: ingested, to: assess_obligations }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
-      - { from: assess_obligations, on: company_context_has_value, to: company_context }
       - { from: assess_obligations, on: market_snapshot_has_value, to: market_snapshot }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
@@ -480,7 +499,6 @@ workflows:
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
-      - { from: company_context, on: evidence_observed, to: ingest_evidence }
       - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }

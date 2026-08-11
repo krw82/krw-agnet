@@ -78,6 +78,8 @@ fail-closed 됩니다. 이 때문에 schema snapshot이 존재한다는 사실�
 krw_guru_query_context
   -> immutable GuruResearchPack
   -> krw_guru_company_brief (one sealed main_tension)
+  -> kernel GuruResearchFrame (one tension, independently typed evidence needs)
+  -> ResearchProposal v4 (bounded multi-objective lowering)
   -> krw_ontology_query_context/query/trace
   -> kernel-built company research context
   -> krw_guru_review_company_evidence

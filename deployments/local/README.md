@@ -50,3 +50,25 @@ its listener.
 `krw-agentd` accepts repeated `--image-dir` arguments (1 through 64) as one
 immutable release set. It has no single-image fallback, hot reload, or rollback
 selector; changing the set requires a bounded daemon restart.
+
+## Provider lane
+
+The local stack defaults to GLM for the live quality lane. Select the provider
+once per stack start; the selector chooses the matching immutable registry and
+credential without changing AgentImages or the ontology:
+
+```bash
+KRW_AGENT_PROVIDER=glm ./scripts/dev-stack.sh up
+KRW_AGENT_PROVIDER=deepseek ./scripts/dev-stack.sh up
+```
+
+The first command reads `GLM_API_KEY`, and the second reads
+`DEEPSEEK_API_KEY`, from the mode-0600 `.env.local` file. The selected key is
+the only provider key passed to the daemon. `model-registry.glm.yaml` and
+`model-registry.deepseek.yaml` are explicit lane variants; the historical
+`model-registry.yaml` remains as a GLM compatibility default.
+
+Switching providers requires `scripts/dev-stack.sh down` followed by `up` so
+the daemon, release descriptor, and signed authorization are rebuilt as one
+immutable set. The DeepSeek lane is a production configuration path; local
+quality/live tests remain GLM-only unless explicitly selected.

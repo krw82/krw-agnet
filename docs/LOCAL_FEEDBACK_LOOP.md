@@ -36,7 +36,11 @@
 
 # 실제 GLM 품질은 재사용 중인 Gateway에 소수 smoke부터 보냄
 KRW_AGENT_GATEWAY_TOKEN=... \
-  ./scripts/dev-stack.sh test smoke --case short_aapl_price_drop
+./scripts/dev-stack.sh test smoke --case short_aapl_price_drop
+
+# 네트워크·GLM 호출 없이 다회원/다채팅방 경계만 빠르게 확인
+cargo run -p krw-agent-perf-harness -- \
+  --scenario chat-matrix --thresholds perf/release-gates.json --profile ci
 ```
 
 `--skip-prepare`는 Rust binary나 AgentImage를 바꾸지 않았을 때만 사용한다. Rust 코드, AgentSpec,
@@ -55,6 +59,12 @@ prompt, image contract를 바꿨다면 먼저 `prepare`를 실행한다. `up`은
   migration만 적용한다.
 - 품질 runner는 질문을 직접 서버에 보내며, 로컬 stack을 시작하지 않는다. 따라서 품질 시간은
   GLM·MCP 작업 시간만 측정한다.
+- `chat-matrix`는 20명 × 3개 방 × 2턴을 fake provider/capability로 실행하고, 2,000개 대기
+  principal은 task/client 없이 queue 후보로만 만든다. 같은 방 직렬화, 다른 방 병렬성,
+  principal 공정성, scope 격리, 중복 run 방지를 네트워크 변동 없이 확인한다.
+- 실제 warm-stack 성능은 `run_session_followup_quality.py`의 stage timing과 perf harness의
+  scheduler/active/soak 결과를 함께 본다. 모델 turn·추론·capability 정책은 이 매트릭스에서도
+  baseline과 동일하게 유지한다.
 
 ## 4. 무엇을 매번 하지 않는가
 

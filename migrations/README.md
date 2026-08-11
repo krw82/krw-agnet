@@ -47,6 +47,17 @@ invocation using `FOR UPDATE SKIP LOCKED`. Session-scoped memory projections
 `session_memory_deltas`) are intentionally preserved: they are keyed by session
 rather than run, and deltas reject deletion by trigger.
 
+`0016_session_memory_source_retention.sql` completes that separation for
+databases that have the original run-owned foreign keys. It creates a compact
+`session_memory_sources` hash tombstone, backfills it from existing
+deltas/snapshots, and re-points the frontier, delta, and snapshot source links
+to the tombstone. The heavy provider/action/checkpoint/run graph can then be
+reaped without losing same-room follow-up context. Normal soft deletion never
+removes this projection. The server-only `agent_v1.retire_session_memory`
+procedure is an idempotent, owner-scoped hard-purge path for a trusted product
+`product_hard_purge` lifecycle receipt and refuses to run while any queued,
+deferred, or active room run exists.
+
 `0009_migration_tracking.sql` adds the `agent_store.schema_migrations` table
 that records which migration versions have been applied, replacing the legacy
 sentinel-file mechanism. `scripts/apply_migrations.sh` consults this table to

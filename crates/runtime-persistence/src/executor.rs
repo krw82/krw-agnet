@@ -17,12 +17,14 @@ use krw_agent_protocol::{
 };
 use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
-    CapabilityRuntime, DeliveryCertainty, EngineConfig, EngineError, FinalStatus, Persistence,
-    RunEngine, RunIdentity, RunInput, TrustedMarketSnapshot, durable_failure_diagnostic,
-    recovery_budget_usage, state_artifact_failure_code,
+    CapabilityRuntime, CompiledExecutionPlan, DeliveryCertainty, EngineConfig, EngineError,
+    FinalStatus, Persistence, RunEngine, RunIdentity, RunInput, RuntimeStageTimings,
+    TrustedMarketSnapshot, durable_failure_diagnostic, recovery_budget_usage,
+    state_artifact_failure_code,
 };
 use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
 use krw_context_planner::ContextPlanner;
+use krw_session_memory::SessionViewQuery;
 use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -30,8 +32,8 @@ use tokio::time::timeout;
 
 use crate::{
     ArtifactRepository, ClaimValidationError, DurableRunPersistence, DurableRunStore,
-    FinalizationPolicy, MemoryResolutionError, SessionMemoryPageAccumulator, ValidatedClaim,
-    validate_claim,
+    FinalizationPolicy, MemoryResolutionError, PermitBoundProvider, SessionMemoryPageAccumulator,
+    ValidatedClaim, validate_claim,
 };
 
 const CANCEL_DRAIN_GRACE: Duration = Duration::from_secs(2);
@@ -237,7 +239,35 @@ impl DeepSeekProviderCatalog {
         }))
     }
 
-    fn exact(&self, model: &str) -> Option<Arc<ProviderClient>> {
+    /// Return a provider whose semaphore is held only while one provider
+    /// episode is executing.  Memory reconstruction, capability dispatch,
+    /// checkpointing, and finalization happen outside this critical section,
+    /// so a slow room cannot reserve a model slot for its whole run.
+    fn episode_provider(
+        &self,
+        model: &str,
+        timings: Arc<RuntimeStageTimings>,
+    ) -> Result<Arc<PermitBoundProvider<ProviderClient>>, RunExecutionFailure> {
+        let provider = self
+            .by_model
+            .get(model)
+            .cloned()
+            .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
+        let permits = self
+            .permits_by_model
+            .get(model)
+            .cloned()
+            .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
+        Ok(Arc::new(PermitBoundProvider::new(
+            provider, permits, timings,
+        )))
+    }
+
+    /// Compatibility accessor for callers that only need to inspect the
+    /// configured client.  Execution must use `episode_provider` so the
+    /// semaphore is scoped to the active model episode rather than the whole
+    /// run.
+    pub fn exact(&self, model: &str) -> Option<Arc<ProviderClient>> {
         self.by_model.get(model).cloned()
     }
 
@@ -283,6 +313,7 @@ pub struct ProductionReleaseEntry {
     pub runtime: Arc<ResolvedRuntime>,
     pub capability_catalog: Arc<CapabilityCatalog>,
     pub context_planner: Arc<ContextPlanner>,
+    pub execution_plans: BTreeMap<(String, String), Arc<CompiledExecutionPlan>>,
     pub engine_config: EngineConfig,
 }
 
@@ -294,7 +325,16 @@ impl fmt::Debug for ProductionReleaseEntry {
             .field("agent_id", &self.image.body.metadata.id)
             .field("capability_catalog", &self.capability_catalog)
             .field("context_states", &self.context_planner.state_count())
+            .field("execution_plan_count", &self.execution_plans.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl ProductionReleaseEntry {
+    fn execution_plan(&self, request: &RunRequest) -> Option<Arc<CompiledExecutionPlan>> {
+        self.execution_plans
+            .get(&(request.run_kind.clone(), request.locale.clone()))
+            .cloned()
     }
 }
 
@@ -323,12 +363,30 @@ impl ProductionReleaseCatalog {
             {
                 return Err(ExecutorBuildError::InvalidConfiguration);
             }
+            let mut execution_plans = BTreeMap::new();
+            for entrypoint in release.image.manifest.body.entrypoints.values() {
+                let key = (entrypoint.run_kind.clone(), entrypoint.locale.clone());
+                let plan = CompiledExecutionPlan::compile_with_context(
+                    &release.image,
+                    key.0.clone(),
+                    key.1.clone(),
+                    Arc::clone(&context_planner),
+                )
+                .map_err(|_| ExecutorBuildError::InvalidConfiguration)?;
+                if execution_plans.insert(key, Arc::new(plan)).is_some() {
+                    return Err(ExecutorBuildError::InvalidConfiguration);
+                }
+            }
+            if execution_plans.is_empty() {
+                return Err(ExecutorBuildError::InvalidConfiguration);
+            }
             let entry = Arc::new(ProductionReleaseEntry {
                 image: Arc::clone(&release.image),
                 deployment: Arc::clone(&release.deployment),
                 runtime: Arc::clone(&release.runtime),
                 capability_catalog,
                 context_planner,
+                execution_plans,
                 engine_config,
             });
             if by_image_hash
@@ -516,17 +574,11 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                     RunExecutionFailure::failed(claim_failure_code(&error))
                 }
             })?;
-        let provider = self
-            .providers
-            .exact(&validated.snapshot().resolved_model)
-            .ok_or_else(|| RunExecutionFailure::failed("provider_model_not_loaded"))?;
-        // Bound concurrent provider episodes for this model to its declared
-        // `max_in_flight`. The permit is released when it drops at scope exit,
-        // which is always after `execution` resolves or is cancelled.
-        let _provider_permit = self
-            .providers
-            .acquire_permit(&validated.snapshot().resolved_model)
-            .await?;
+        let runtime_timings = Arc::new(RuntimeStageTimings::default());
+        let provider = self.providers.episode_provider(
+            &validated.snapshot().resolved_model,
+            Arc::clone(&runtime_timings),
+        )?;
         let persistence = Arc::new(
             DurableRunPersistence::new(
                 Arc::clone(&self.store),
@@ -538,6 +590,7 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             )
             .map_err(|_| RunExecutionFailure::failed("persistence_bridge_invalid"))?,
         );
+        let session_memory_t0 = Instant::now();
         let mut memory = SessionMemoryPageAccumulator::new(
             validated.request().run_id.clone(),
             &validated.request().session_id,
@@ -584,8 +637,12 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                 break;
             }
         }
+        let session_query = SessionViewQuery {
+            question: &validated.request().question,
+            trusted_tickers: validated.request().context.trusted_tickers(),
+        };
         let resolved_memory = memory
-            .finish(&validated.request().question)
+            .finish_with_query(&session_query)
             .map_err(session_memory_execution_failure)?;
         // Hashing the receipt here makes the exact memory resolution auditable
         // without retaining its plaintext view in generic logs. The carrier's
@@ -603,6 +660,7 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                     execution_failure_from_dependency("session_memory_snapshot", &failure)
                 })?;
         }
+        runtime_timings.add_session_memory(session_memory_t0.elapsed());
         let mut effective_request = validated.request().clone();
         effective_request.session_memory = resolved_memory.carrier;
         let capabilities = Arc::new(
@@ -620,6 +678,7 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
         let hard_deadline = Instant::now()
             .checked_add(Duration::from_millis(effective_request.budget.deadline_ms))
             .ok_or_else(|| RunExecutionFailure::failed("deadline_invalid"))?;
+        let market_t0 = Instant::now();
         let market_snapshot_context = tokio::select! {
             biased;
             () = context.cancellation.cancelled() => {
@@ -632,12 +691,16 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
                 hard_deadline,
             ) => snapshot,
         };
+        runtime_timings.add_market_preflight(market_t0.elapsed());
         let engine = RunEngine::new(
             provider,
             capabilities,
             Arc::clone(&persistence),
             release.engine_config.clone(),
         );
+        let execution_plan = release
+            .execution_plan(&effective_request)
+            .ok_or_else(|| RunExecutionFailure::failed("execution_plan_not_loaded"))?;
         let recovery_identity = RunIdentity {
             run_id: effective_request.run_id.clone(),
             tenant_id: effective_request.tenant_id.clone(),
@@ -651,6 +714,8 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             request: &effective_request,
             snapshot: validated.snapshot(),
             market_snapshot_context: market_snapshot_context.as_ref(),
+            runtime_timings: Some(Arc::clone(&runtime_timings)),
+            execution_plan: Some(execution_plan),
             hard_deadline,
         });
         tokio::pin!(execution);

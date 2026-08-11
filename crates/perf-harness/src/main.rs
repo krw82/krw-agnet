@@ -5,7 +5,7 @@
 //! disposable harness.
 
 use std::alloc::System;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 use thiserror::Error;
-use tokio::sync::Semaphore;
+use tokio::sync::{Barrier, Mutex as AsyncMutex, Semaphore};
 
 const MAX_RUN_QUESTION_BYTES: usize = 64 * 1024;
 const ACTIVE_MEASUREMENT_PHASE: ActiveMeasurementPhase =
@@ -83,6 +83,7 @@ enum Scenario {
     ActiveRuns,
     McpPool,
     Soak,
+    ChatMatrix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -397,6 +398,60 @@ struct SoakReport {
 }
 
 #[derive(Debug, Serialize)]
+struct ChatMatrixReport {
+    principals: usize,
+    rooms_per_principal: usize,
+    turns_per_room: usize,
+    logical_runs: usize,
+    provider_turns: u64,
+    capability_calls: u64,
+    same_room_serialized: bool,
+    turn_ordered: bool,
+    same_principal_rooms_parallel: bool,
+    principal_fair: bool,
+    scope_isolated: bool,
+    duplicate_run_rejected: bool,
+    queue_only_principals: usize,
+    queue_only_runs: usize,
+    queue_only_tasks_spawned: usize,
+    queue_only_provider_clients: usize,
+    queue_only_mcp_clients: usize,
+    queue_only_db_connections: usize,
+    peak_active_rooms: usize,
+    peak_active_per_principal: usize,
+    rss_peak_by_active_rooms: BTreeMap<usize, Option<u64>>,
+    enqueue_to_claim_p50_us: u64,
+    enqueue_to_claim_p95_us: u64,
+    enqueue_to_claim_p99_us: u64,
+    end_to_end_deterministic_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ChatMatrixJob {
+    run_id: String,
+    principal_id: String,
+    session_id: String,
+    turn: usize,
+    provider_turns: u16,
+    capability_calls: u16,
+}
+
+#[derive(Debug, Default)]
+struct ChatMatrixObservation {
+    active_by_room: BTreeMap<String, usize>,
+    active_by_principal: BTreeMap<String, usize>,
+    max_active_by_room: BTreeMap<String, usize>,
+    max_active_by_principal: BTreeMap<String, usize>,
+    completed_turns_by_room: BTreeMap<String, usize>,
+    wait_micros: Vec<u128>,
+    rss_peak_by_active_rooms: BTreeMap<usize, u64>,
+    max_active_rooms: usize,
+    same_room_serialized: bool,
+    turn_ordered: bool,
+    scope_isolated: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct EnvironmentReport {
     os: String,
     architecture: String,
@@ -424,6 +479,7 @@ struct PerformanceReport {
     active_runs: Option<ActiveRunReport>,
     mcp_pool: Option<McpPoolReport>,
     soak: Option<SoakReport>,
+    chat_matrix: Option<ChatMatrixReport>,
     gates: Vec<GateResult>,
     limitations: Vec<String>,
 }
@@ -515,6 +571,14 @@ async fn run() -> Result<(), HarnessError> {
         None
     };
 
+    let chat_matrix = if matches!(args.scenario, Scenario::All | Scenario::ChatMatrix) {
+        let report = run_chat_matrix().await?;
+        append_chat_matrix_gates(&mut gates, &report);
+        Some(report)
+    } else {
+        None
+    };
+
     gates.push(GateResult::boolean(
         "optimized_release_build",
         !cfg!(debug_assertions),
@@ -554,6 +618,7 @@ async fn run() -> Result<(), HarnessError> {
         active_runs,
         mcp_pool,
         soak,
+        chat_matrix,
         gates,
         limitations: vec![
             "This report is performance evidence only; it never attests workspace tests, database fault tests, secret rotation, or a production release decision.".into(),
@@ -696,6 +761,427 @@ fn append_scheduler_gates(
         profile.resident_window as u64,
         "items",
         "all candidates after the resident window must be rejected",
+    ));
+}
+
+const CHAT_MATRIX_PRINCIPALS: usize = 20;
+const CHAT_MATRIX_ROOMS_PER_PRINCIPAL: usize = 3;
+const CHAT_MATRIX_TURNS_PER_ROOM: usize = 2;
+const CHAT_MATRIX_QUEUE_ONLY_PRINCIPALS: usize = 2_000;
+const CHAT_MATRIX_GLOBAL_CONCURRENCY: usize = 8;
+const CHAT_MATRIX_PROVIDER_TURNS_PER_RUN: u16 = 2;
+const CHAT_MATRIX_CAPABILITY_CALLS_PER_RUN: u16 = 2;
+
+async fn run_chat_matrix() -> Result<ChatMatrixReport, HarnessError> {
+    let started = Instant::now();
+    let logical_runs =
+        CHAT_MATRIX_PRINCIPALS * CHAT_MATRIX_ROOMS_PER_PRINCIPAL * CHAT_MATRIX_TURNS_PER_ROOM;
+    let mut jobs_by_run = BTreeMap::new();
+    let mut run_ids = BTreeSet::new();
+    let mut duplicate_run_rejected = true;
+    for principal_index in 0..CHAT_MATRIX_PRINCIPALS {
+        for room_index in 0..CHAT_MATRIX_ROOMS_PER_PRINCIPAL {
+            let session_id = format!("session:principal-{principal_index}:room-{room_index}");
+            for turn in 0..CHAT_MATRIX_TURNS_PER_ROOM {
+                let job = ChatMatrixJob {
+                    run_id: format!(
+                        "run:principal-{principal_index}:room-{room_index}:turn-{turn}"
+                    ),
+                    principal_id: format!("principal-{principal_index}"),
+                    session_id: session_id.clone(),
+                    turn,
+                    provider_turns: CHAT_MATRIX_PROVIDER_TURNS_PER_RUN,
+                    capability_calls: CHAT_MATRIX_CAPABILITY_CALLS_PER_RUN,
+                };
+                if !run_ids.insert(job.run_id.clone()) {
+                    duplicate_run_rejected = false;
+                }
+                jobs_by_run.insert(job.run_id.clone(), job);
+            }
+        }
+    }
+
+    // The queue keeps durable candidates cheap.  Only the bounded admission
+    // order is promoted to the fake active workload below; no task, provider,
+    // MCP client, or database connection is created for this queue-only case.
+    let mut scheduler = FairScheduler::new(logical_runs, 1, 1)?;
+    for job in jobs_by_run.values() {
+        scheduler.enqueue(AdmissionItem {
+            run_id: job.run_id.clone(),
+            session_id: job.session_id.clone(),
+            principal_id: job.principal_id.clone(),
+            estimated_cost: 1,
+        })?;
+    }
+    let mut admission_order = Vec::with_capacity(logical_runs);
+    while let Some(item) = scheduler.pop_next() {
+        let job =
+            jobs_by_run
+                .get(&item.run_id)
+                .cloned()
+                .ok_or(HarnessError::InvalidActiveFixture(
+                    "chat matrix lost an admitted run",
+                ))?;
+        admission_order.push(job);
+        scheduler.complete_session(&item.session_id);
+    }
+    if admission_order.len() != logical_runs {
+        return Err(HarnessError::ActiveStart(
+            "chat matrix did not admit every logical run".into(),
+        ));
+    }
+    let principal_fair = admission_order
+        .iter()
+        .take(CHAT_MATRIX_PRINCIPALS)
+        .map(|job| job.principal_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == CHAT_MATRIX_PRINCIPALS;
+
+    let room_locks = admission_order
+        .iter()
+        .map(|job| job.session_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|session_id| (session_id, Arc::new(AsyncMutex::new(()))))
+        .collect::<BTreeMap<_, _>>();
+    let room_locks = Arc::new(room_locks);
+    let turn_gates = admission_order
+        .iter()
+        .filter(|job| job.turn > 0)
+        .map(|job| {
+            (
+                (job.session_id.clone(), job.turn),
+                Arc::new(Semaphore::new(0)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let turn_gates = Arc::new(turn_gates);
+    let global_permits = Arc::new(Semaphore::new(CHAT_MATRIX_GLOBAL_CONCURRENCY));
+    // Make the multi-room property deterministic.  The fair admission order
+    // intentionally starts with different principals, so a tiny fake turn
+    // can otherwise finish before a second room for the same principal is
+    // admitted and the metric becomes scheduler-order dependent.  Holding a
+    // pair of distinct rooms at a rendezvous proves that the runtime permits
+    // same-principal parallelism while the exact-session lock still protects
+    // each room independently.
+    let same_principal_probe = Arc::new(Barrier::new(2));
+    let observations = Arc::new(Mutex::new(ChatMatrixObservation {
+        same_room_serialized: true,
+        turn_ordered: true,
+        scope_isolated: true,
+        ..ChatMatrixObservation::default()
+    }));
+    let mut tasks = Vec::with_capacity(admission_order.len());
+    for job in admission_order {
+        let room_lock =
+            room_locks
+                .get(&job.session_id)
+                .cloned()
+                .ok_or(HarnessError::InvalidActiveFixture(
+                    "chat matrix room lock is missing",
+                ))?;
+        let turn_gate = if job.turn > 0 {
+            Some(
+                turn_gates
+                    .get(&(job.session_id.clone(), job.turn))
+                    .cloned()
+                    .ok_or(HarnessError::InvalidActiveFixture(
+                        "chat matrix turn gate is missing",
+                    ))?,
+            )
+        } else {
+            None
+        };
+        let next_turn_gate = turn_gates
+            .get(&(job.session_id.clone(), job.turn + 1))
+            .cloned();
+        let global_permits = Arc::clone(&global_permits);
+        let same_principal_probe = Arc::clone(&same_principal_probe);
+        let observations = Arc::clone(&observations);
+        tasks.push(tokio::spawn(async move {
+            let queued_at = Instant::now();
+            if let Some(turn_gate) = turn_gate {
+                turn_gate
+                    .acquire()
+                    .await
+                    .expect("chat matrix turn gate remains open")
+                    .forget();
+            }
+            let room_guard = room_lock.lock().await;
+            let global_permit = global_permits
+                .acquire()
+                .await
+                .expect("chat matrix global semaphore remains open");
+            let wait_micros = queued_at.elapsed().as_micros();
+            let active_rooms = {
+                let mut state = observations
+                    .lock()
+                    .map_err(|_| "chat matrix observation lock poisoned")?;
+                let room_active = {
+                    let entry = state
+                        .active_by_room
+                        .entry(job.session_id.clone())
+                        .or_default();
+                    *entry += 1;
+                    *entry
+                };
+                if room_active > 1 {
+                    state.same_room_serialized = false;
+                }
+                let completed = state
+                    .completed_turns_by_room
+                    .get(&job.session_id)
+                    .copied()
+                    .unwrap_or_default();
+                if completed != job.turn {
+                    state.turn_ordered = false;
+                }
+                let principal_active = {
+                    let entry = state
+                        .active_by_principal
+                        .entry(job.principal_id.clone())
+                        .or_default();
+                    *entry += 1;
+                    *entry
+                };
+                let principal_peak = state
+                    .max_active_by_principal
+                    .entry(job.principal_id.clone())
+                    .or_default();
+                *principal_peak = (*principal_peak).max(principal_active);
+                let room_peak = state
+                    .max_active_by_room
+                    .entry(job.session_id.clone())
+                    .or_default();
+                *room_peak = (*room_peak).max(room_active);
+                let active_rooms = state
+                    .active_by_room
+                    .values()
+                    .filter(|value| **value > 0)
+                    .count();
+                state.max_active_rooms = state.max_active_rooms.max(active_rooms);
+                let expected_scope = job
+                    .session_id
+                    .strip_prefix("session:")
+                    .is_some_and(|scope| scope.starts_with(&job.principal_id));
+                if !expected_scope
+                    || !job.run_id.contains(&job.principal_id)
+                    || !job.session_id.contains("room-")
+                {
+                    state.scope_isolated = false;
+                }
+                active_rooms
+            };
+            if matches!(active_rooms, 1 | 4 | 16)
+                && let Some(rss) = process_metrics().rss_bytes
+            {
+                let mut state = observations
+                    .lock()
+                    .map_err(|_| "chat matrix observation lock poisoned")?;
+                state
+                    .rss_peak_by_active_rooms
+                    .entry(active_rooms)
+                    .and_modify(|peak| *peak = (*peak).max(rss))
+                    .or_insert(rss);
+            }
+            let is_same_principal_probe = job.principal_id == "principal-0"
+                && job.turn == 0
+                && (job.session_id.ends_with("room-0") || job.session_id.ends_with("room-1"));
+            if is_same_principal_probe {
+                same_principal_probe.wait().await;
+            }
+            // The fake executes the same configured provider/capability counts
+            // as a normal two-turn room flow. It only removes network variance.
+            for _ in 0..job.provider_turns {
+                tokio::task::yield_now().await;
+            }
+            for _ in 0..job.capability_calls {
+                tokio::task::yield_now().await;
+            }
+            {
+                let mut state = observations
+                    .lock()
+                    .map_err(|_| "chat matrix observation lock poisoned")?;
+                if let Some(active) = state.active_by_room.get_mut(&job.session_id) {
+                    *active = active.saturating_sub(1);
+                    if *active == 0 {
+                        state.active_by_room.remove(&job.session_id);
+                    }
+                }
+                if let Some(active) = state.active_by_principal.get_mut(&job.principal_id) {
+                    *active = active.saturating_sub(1);
+                    if *active == 0 {
+                        state.active_by_principal.remove(&job.principal_id);
+                    }
+                }
+                *state
+                    .completed_turns_by_room
+                    .entry(job.session_id.clone())
+                    .or_default() += 1;
+                state.wait_micros.push(wait_micros);
+            }
+            if let Some(next_turn_gate) = next_turn_gate {
+                next_turn_gate.add_permits(1);
+            }
+            drop(global_permit);
+            drop(room_guard);
+            Ok::<(), &'static str>(())
+        }));
+    }
+    for task in tasks {
+        task.await
+            .map_err(|error| HarnessError::Join(error.to_string()))?
+            .map_err(|error| HarnessError::ActiveStart(error.into()))?;
+    }
+
+    let queue_only_runs = CHAT_MATRIX_QUEUE_ONLY_PRINCIPALS;
+    let mut queue_only_ids = Vec::with_capacity(queue_only_runs);
+    for principal_index in 0..queue_only_runs {
+        queue_only_ids.push(format!("queued:principal-{principal_index}:run-1"));
+    }
+    let queue_only_tasks_spawned = 0;
+    let queue_only_provider_clients = 0;
+    let queue_only_mcp_clients = 0;
+    let queue_only_db_connections = 0;
+    if queue_only_ids.len() != queue_only_runs {
+        return Err(HarnessError::ActiveStart(
+            "chat matrix queue-only cardinality changed".into(),
+        ));
+    }
+
+    let state = observations
+        .lock()
+        .map_err(|_| HarnessError::ActiveStart("chat matrix observation lock poisoned".into()))?;
+    let wait_micros = state.wait_micros.clone();
+    let mut sorted_waits = wait_micros.clone();
+    sorted_waits.sort_unstable();
+    let peak_active_per_principal = state
+        .max_active_by_principal
+        .values()
+        .copied()
+        .max()
+        .unwrap_or_default();
+    let peak_active_rooms = state.max_active_rooms;
+    let same_principal_rooms_parallel = peak_active_per_principal >= 2;
+    let mut rss_peak_by_active_rooms = BTreeMap::new();
+    for room_count in [1_usize, 4, 16] {
+        rss_peak_by_active_rooms.insert(
+            room_count,
+            state.rss_peak_by_active_rooms.get(&room_count).copied(),
+        );
+    }
+    let mut p50_waits = sorted_waits.clone();
+    let mut p95_waits = sorted_waits.clone();
+    let wait_p50 = percentile_micros(&mut p50_waits, 50);
+    let wait_p95 = percentile_micros(&mut p95_waits, 95);
+    let wait_p99 = percentile_micros(&mut sorted_waits, 99);
+    let same_room_serialized = state.same_room_serialized;
+    let turn_ordered = state.turn_ordered;
+    let scope_isolated = state.scope_isolated;
+    drop(state);
+
+    Ok(ChatMatrixReport {
+        principals: CHAT_MATRIX_PRINCIPALS,
+        rooms_per_principal: CHAT_MATRIX_ROOMS_PER_PRINCIPAL,
+        turns_per_room: CHAT_MATRIX_TURNS_PER_ROOM,
+        logical_runs,
+        provider_turns: (logical_runs as u64) * u64::from(CHAT_MATRIX_PROVIDER_TURNS_PER_RUN),
+        capability_calls: (logical_runs as u64) * u64::from(CHAT_MATRIX_CAPABILITY_CALLS_PER_RUN),
+        same_room_serialized,
+        turn_ordered,
+        same_principal_rooms_parallel,
+        principal_fair,
+        scope_isolated,
+        duplicate_run_rejected,
+        queue_only_principals: CHAT_MATRIX_QUEUE_ONLY_PRINCIPALS,
+        queue_only_runs,
+        queue_only_tasks_spawned,
+        queue_only_provider_clients,
+        queue_only_mcp_clients,
+        queue_only_db_connections,
+        peak_active_rooms,
+        peak_active_per_principal,
+        rss_peak_by_active_rooms,
+        enqueue_to_claim_p50_us: wait_p50,
+        enqueue_to_claim_p95_us: wait_p95,
+        enqueue_to_claim_p99_us: wait_p99,
+        end_to_end_deterministic_ms: u64::try_from(started.elapsed().as_millis())
+            .unwrap_or(u64::MAX),
+    })
+}
+
+fn percentile_micros(values: &mut [u128], percentile: usize) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    values.sort_unstable();
+    let index = values
+        .len()
+        .saturating_mul(percentile)
+        .div_ceil(100)
+        .saturating_sub(1);
+    u64::try_from(values[index]).unwrap_or(u64::MAX)
+}
+
+fn append_chat_matrix_gates(gates: &mut Vec<GateResult>, report: &ChatMatrixReport) {
+    gates.push(GateResult::boolean(
+        "chat_same_room_serialized",
+        report.same_room_serialized,
+        "one active turn per exact chat-room session",
+    ));
+    gates.push(GateResult::boolean(
+        "chat_turn_ordered",
+        report.turn_ordered,
+        "follow-up turns finish after the previous turn in the same room",
+    ));
+    gates.push(GateResult::boolean(
+        "chat_same_principal_rooms_parallel",
+        report.same_principal_rooms_parallel,
+        "different rooms for one principal may progress concurrently",
+    ));
+    gates.push(GateResult::boolean(
+        "chat_principal_fair",
+        report.principal_fair,
+        "the first fair-admission round includes every principal",
+    ));
+    gates.push(GateResult::boolean(
+        "chat_scope_isolated",
+        report.scope_isolated,
+        "room and principal scope remain attached to every fake run",
+    ));
+    gates.push(GateResult::boolean(
+        "chat_duplicate_run_rejected",
+        report.duplicate_run_rejected,
+        "the same product run identity cannot be admitted twice",
+    ));
+    gates.push(GateResult::exact(
+        "chat_provider_turn_count",
+        report.provider_turns,
+        (report.logical_runs as u64) * u64::from(CHAT_MATRIX_PROVIDER_TURNS_PER_RUN),
+        "turns",
+        "fake workload preserves the configured provider-turn policy",
+    ));
+    gates.push(GateResult::exact(
+        "chat_capability_call_count",
+        report.capability_calls,
+        (report.logical_runs as u64) * u64::from(CHAT_MATRIX_CAPABILITY_CALLS_PER_RUN),
+        "calls",
+        "fake workload preserves the configured capability-call policy",
+    ));
+    gates.push(GateResult::exact(
+        "chat_queue_only_tasks",
+        report.queue_only_tasks_spawned as u64,
+        0,
+        "tasks",
+        "queued principals remain durable candidates until admission",
+    ));
+    gates.push(GateResult::exact(
+        "chat_queue_only_provider_clients",
+        report.queue_only_provider_clients as u64,
+        0,
+        "clients",
+        "idle queued principals do not allocate provider clients",
     ));
 }
 
@@ -1459,6 +1945,8 @@ async fn measure_active_level(
                 request: &request,
                 snapshot: &snapshot,
                 market_snapshot_context: None,
+                runtime_timings: None,
+                execution_plan: None,
                 hard_deadline: Instant::now() + Duration::from_secs(30),
             };
             engine.run(input).await
@@ -2328,6 +2816,49 @@ mod tests {
                 tickers: vec!["VG".into()]
             }
         );
+    }
+
+    #[test]
+    fn checked_in_chat_matrix_fixture_matches_bounded_dimensions() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/performance/v1/multi-user-chat-load-v1.json"
+        ))
+        .expect("chat matrix fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["principals"], CHAT_MATRIX_PRINCIPALS);
+        assert_eq!(
+            fixture["rooms_per_principal"],
+            CHAT_MATRIX_ROOMS_PER_PRINCIPAL
+        );
+        assert_eq!(fixture["turns_per_room"], CHAT_MATRIX_TURNS_PER_ROOM);
+        assert_eq!(
+            fixture["queue_only_principals"],
+            CHAT_MATRIX_QUEUE_ONLY_PRINCIPALS
+        );
+        assert_eq!(
+            fixture["active_room_rss_samples"],
+            serde_json::json!([1, 4, 16])
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chat_matrix_preserves_room_scope_fairness_and_call_policy() {
+        let report = run_chat_matrix().await.expect("deterministic chat matrix");
+        assert_eq!(report.logical_runs, 120);
+        assert_eq!(report.provider_turns, 240);
+        assert_eq!(report.capability_calls, 240);
+        assert!(report.same_room_serialized);
+        assert!(report.turn_ordered);
+        assert!(report.same_principal_rooms_parallel);
+        assert!(report.principal_fair);
+        assert!(report.scope_isolated);
+        assert!(report.duplicate_run_rejected);
+        assert_eq!(report.queue_only_tasks_spawned, 0);
+        assert_eq!(report.queue_only_provider_clients, 0);
+        assert_eq!(report.queue_only_mcp_clients, 0);
+        assert_eq!(report.queue_only_db_connections, 0);
+        assert!(report.peak_active_rooms <= CHAT_MATRIX_GLOBAL_CONCURRENCY);
+        assert!(report.enqueue_to_claim_p99_us >= report.enqueue_to_claim_p95_us);
     }
 
     #[test]

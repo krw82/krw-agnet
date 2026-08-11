@@ -505,6 +505,8 @@ where
             request: &request,
             snapshot: &snapshot,
             market_snapshot_context: None,
+            runtime_timings: None,
+            execution_plan: None,
             hard_deadline: deadline,
         })
         .await;

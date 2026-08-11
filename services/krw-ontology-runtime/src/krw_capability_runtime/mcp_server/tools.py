@@ -2820,6 +2820,20 @@ def _store(index_path: Path) -> Any:
     return open_ontology_store(index_path, routing="spine")
 
 
+def trusted_guru_light_company_context(*, ticker: str) -> dict[str, Any]:
+    """Return trusted neutral company orientation for the Guru runtime.
+
+    The caller supplies only the authenticated ticker. The ontology release
+    derives the company name, business description, activities, revenue
+    vocabulary, and filing availability; no user or model text is copied into
+    this projection.
+    """
+    normalized = str(ticker or "").strip().upper()
+    index = _runtime_global_spine_path()
+    with _store(index) as store:
+        return store.guru_light_company_context(ticker=normalized)
+
+
 def reset_mcp_runtime_caches() -> None:
     """Reset MCP process-local caches. Intended for tests and release restarts."""
     _STORE_POOL.reset()

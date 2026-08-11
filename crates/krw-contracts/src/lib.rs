@@ -74,6 +74,10 @@ const MARKET_SNAPSHOT_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/market-snapshot-request-v1.json"
 ));
+const GURU_QUERY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/guru-query-request-v1.json"
+));
 const NORMALIZED_CAPABILITY_RESULT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/normalized-capability-result-v1.json"
@@ -123,6 +127,9 @@ pub const COMPANY_CONTEXT_REQUEST_V1: &str = "company-context-request/v1";
 /// Compact request for timestamped advisory market context. The provider is
 /// image-owned; the model can only request the already trusted ticker.
 pub const MARKET_SNAPSHOT_REQUEST_V1: &str = "market-snapshot-request/v1";
+/// Empty model-authored trigger for a fixed-author Guru retrieval. The kernel
+/// owns the actual question, author, ticker, and orientation context.
+pub const GURU_QUERY_REQUEST_V1: &str = "guru-query-request/v1";
 pub const ONTOLOGY_TARGETED_QUERY_V1: &str = "ontology-targeted-query/v1";
 pub const ONTOLOGY_TRACE_INPUT_V1: &str = "ontology-trace-input/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1: &str = "normalized-capability-result/v1";
@@ -154,6 +161,8 @@ pub const COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680";
 pub const MARKET_SNAPSHOT_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:3bc99711dff7ab052a7c43177b05bf65fe4e706d8a5509eb8573425eacfe8425";
+pub const GURU_QUERY_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
     "sha256:4b19a78d66ff14ef967f10bd30789569eba0c7ceef34f6c280274042baf7de00";
 pub const SKILL_CONTENT_V1_SCHEMA_SHA256: &str =
@@ -223,6 +232,11 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: MARKET_SNAPSHOT_REQUEST_V1_SCHEMA_SHA256,
             schema: MARKET_SNAPSHOT_REQUEST_BYTES,
         }),
+        GURU_QUERY_REQUEST_V1 => Some(ContractDescriptor {
+            id: GURU_QUERY_REQUEST_V1,
+            schema_sha256: GURU_QUERY_REQUEST_V1_SCHEMA_SHA256,
+            schema: GURU_QUERY_REQUEST_BYTES,
+        }),
         ONTOLOGY_TARGETED_QUERY_V1 => Some(ContractDescriptor {
             id: ONTOLOGY_TARGETED_QUERY_V1,
             schema_sha256: ONTOLOGY_TARGETED_QUERY_V1_SCHEMA_SHA256,
@@ -283,6 +297,7 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(ONTOLOGY_COMPANY_CONTEXT_V1).expect("static contract"),
         contract(COMPANY_CONTEXT_REQUEST_V1).expect("static contract"),
         contract(MARKET_SNAPSHOT_REQUEST_V1).expect("static contract"),
+        contract(GURU_QUERY_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
         contract(NORMALIZED_CAPABILITY_RESULT_V1).expect("static contract"),
@@ -361,6 +376,7 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         ONTOLOGY_COMPANY_CONTEXT_V1 => validate_company_context_input(value),
         COMPANY_CONTEXT_REQUEST_V1 => validate_company_context_request(value),
         MARKET_SNAPSHOT_REQUEST_V1 => validate_market_snapshot_request(value),
+        GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
         STATE_OPERATION_OUTPUT_V1 => validate_state_operation_output(value),
@@ -1754,6 +1770,14 @@ pub enum ContractArtifactError {
     },
 }
 
+/// Validate the deliberately empty model trigger for the fixed-author Guru
+/// retrieval. Identity, scope, question, and all retrieval limits are owned
+/// by the kernel so they never become an LLM-authored tool surface.
+fn validate_guru_query_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, GURU_QUERY_REQUEST_V1)?;
+    exact_keys(request, &[], GURU_QUERY_REQUEST_V1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1768,7 +1792,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 58);
+        assert_eq!(descriptors().len(), 59);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()

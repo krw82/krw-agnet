@@ -32,6 +32,8 @@ guru_binding_keys=(
   krw_ontology_query_context
   krw_ontology_query
   krw_ontology_trace
+  krw_ontology_chain
+  krw_skill_local
   krw_guru_review_company_evidence
 )
 
@@ -110,7 +112,7 @@ for child_marker in \
   'max_children: 1' \
   'max_depth: 1' \
   'budget_inheritance: parent_reservation' \
-  'allowed_capabilities: [ontology.query_context, ontology.query, ontology.trace]'; do
+  'allowed_capabilities: [ontology.query_context]'; do
   test "$(rg -F -c "$child_marker" "$guru_spec" || true)" -eq 1 \
     || fail "Guru bounded child contract missing exact field: $child_marker"
 done
@@ -135,12 +137,13 @@ done
 
 guru_budget="$(sed -n '/profile_id: guru_company_advisor/,/profile_id: notebook_transform/p' "$repo_root/deployments/local/budget-registry.yaml")"
 for budget_marker in \
-  'max_capability_calls: 10' \
+  'max_capability_calls: 11' \
   'guru.query_context: 1' \
   'guru.company_brief: 2' \
   'ontology.query_context: 2' \
   'ontology.query: 2' \
   'ontology.trace: 1' \
+  'ontology.chain: 1' \
   'guru.review_company_evidence: 2'; do
   printf '%s' "$guru_budget" | rg -F -q -- "$budget_marker" \
     || fail "Guru deployment budget missing exact bound: $budget_marker"

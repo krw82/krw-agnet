@@ -58,20 +58,15 @@ const MAX_TIMEOUT: Duration = Duration::from_mins(2);
 const MAX_POOL_CONNECTIONS: usize = 64;
 const MAX_MIN_IDLE: usize = 8;
 
-/// Database transport security for the PostgreSQL adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Database transport security for the `PostgreSQL` adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PostgresTlsMode {
     /// Require certificate-verified TLS. This is the production default.
+    #[default]
     Require,
     /// Use a plain connection. Only use this with an isolated local Supabase
     /// CLI database; it must never be selected for a remote URL.
     Disable,
-}
-
-impl Default for PostgresTlsMode {
-    fn default() -> Self {
-        Self::Require
-    }
 }
 
 /// Non-secret deployment settings. `url_env` and `ca_pem_env` name secret
@@ -460,6 +455,12 @@ impl JsonProcedureExecutor for PostgresJsonExecutor {
                 let sqlstate = error
                     .as_db_error()
                     .map(|database_error| database_error.code().code().to_owned());
+                tracing::warn!(
+                    procedure = procedure.name(),
+                    sqlstate = ?sqlstate,
+                    error = ?error,
+                    "postgres agent procedure rejected request"
+                );
                 return Err(DatabaseFailure::redacted(sqlstate, format!("{error:?}")));
             }
             Err(_) => {

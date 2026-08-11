@@ -34,6 +34,8 @@ pub const SESSION_MEMORY_SNAPSHOT_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0005_session_memory_snapshot.sql");
 pub const FINAL_OUTPUT_READ_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0006_read_final_output.sql");
+pub const SESSION_MEMORY_RETENTION_MIGRATION_SQL: &str =
+    include_str!("../../../migrations/0016_session_memory_source_retention.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AgentV1Procedure {
@@ -58,6 +60,7 @@ pub enum AgentV1Procedure {
     ReadCommittedOutcome,
     ReadFinalOutput,
     ReapRetainedRuns,
+    RetireSessionMemory,
 }
 
 impl AgentV1Procedure {
@@ -84,6 +87,7 @@ impl AgentV1Procedure {
             Self::ReadCommittedOutcome => "agent_v1.read_committed_outcome",
             Self::ReadFinalOutput => "agent_v1.read_final_output",
             Self::ReapRetainedRuns => "agent_v1.reap_retained_runs",
+            Self::RetireSessionMemory => "agent_v1.retire_session_memory",
         }
     }
 
@@ -116,6 +120,7 @@ impl AgentV1Procedure {
             Self::ReadCommittedOutcome => "SELECT agent_v1.read_committed_outcome($1::jsonb)",
             Self::ReadFinalOutput => "SELECT agent_v1.read_final_output($1::jsonb)",
             Self::ReapRetainedRuns => "SELECT agent_v1.reap_retained_runs($1::jsonb)",
+            Self::RetireSessionMemory => "SELECT agent_v1.retire_session_memory($1::jsonb)",
         }
     }
 }
@@ -2203,6 +2208,7 @@ mod tests {
             "memory_revision",
             "memory_frontier_hash",
             "LIMIT v_limit",
+            "PRIMARY KEY (tenant_id, principal_id, session_id)",
             "REVOKE ALL ON TABLE agent_store.session_memory_deltas FROM PUBLIC",
             "REVOKE ALL ON FUNCTION agent_v1.read_session_memory(jsonb) FROM PUBLIC",
         ] {
@@ -2253,6 +2259,8 @@ mod tests {
             "ORDER BY r.queue_start_tag, r.queue_finish_tag,",
             "SET virtual_start_tag = GREATEST(virtual_start_tag, v_run.queue_start_tag)",
             "queue_start_tag=v_queue_start_tag,queue_finish_tag=v_queue_finish_tag",
+            "runs_one_active_per_session_idx",
+            "ON agent_store.runs (tenant_id, session_id)",
         ] {
             assert!(
                 INITIAL_MIGRATION_SQL.contains(required),
@@ -2271,5 +2279,28 @@ mod tests {
             RejectionKind::from_sqlstate("K1022"),
             Some(RejectionKind::FairQueueTagOverflow)
         );
+    }
+
+    #[test]
+    fn session_memory_retention_uses_hash_tombstones_and_trusted_retirement() {
+        for required in [
+            "CREATE TABLE agent_store.session_memory_sources",
+            "session_memory_frontiers_source_tombstone_fk",
+            "session_memory_deltas_source_tombstone_fk",
+            "session_memory_snapshots_checkpoint_tombstone_fk",
+            "CREATE FUNCTION agent_v1.retire_session_memory",
+            "product_hard_purge",
+            "session_memory_retirement_busy",
+            "retirement_mutation_conflict",
+            "session_memory_maintenance",
+            "ON DELETE RESTRICT",
+            "GRANT EXECUTE ON FUNCTION agent_v1.retire_session_memory(jsonb)",
+        ] {
+            assert!(
+                SESSION_MEMORY_RETENTION_MIGRATION_SQL.contains(required),
+                "missing session-memory retention contract: {required}"
+            );
+        }
+        assert!(!SESSION_MEMORY_RETENTION_MIGRATION_SQL.contains("DROP SCHEMA"));
     }
 }

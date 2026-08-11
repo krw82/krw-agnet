@@ -25,7 +25,7 @@ use krw_agent_persistence::daemon::{
 use krw_agent_persistence::{
     ActionFinalizationReceipt, ActionReceipt, ActionStage, FinalizeActionMutation,
 };
-use krw_agent_protocol::{BudgetUsage, ContentHash};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, BudgetUsage, ContentHash};
 use krw_agent_run_engine::{
     ActionIntent, DeliveryCertainty, DependencyFailure, DurableActionObservation, DurableEpisode,
     DurableFinal, DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous,
@@ -1665,8 +1665,20 @@ impl Persistence for DurableRunPersistence {
             )
         })?;
         let snapshot = guard.snapshot();
-        let outbox_payloads =
-            final_outbox_payloads(&self.finalization, &self.receipt.run_id, final_value);
+        let model_id = receipt_model_id(&self.receipt).map_err(|error| {
+            dependency_failure(
+                "final_model_id",
+                error,
+                false,
+                DeliveryCertainty::NotDispatched,
+            )
+        })?;
+        let outbox_payloads = final_outbox_payloads(
+            &self.finalization,
+            &self.receipt.run_id,
+            &model_id,
+            final_value,
+        );
         let response = self
             .store
             .commit_final(&FinalCommitRequest {
@@ -1753,6 +1765,7 @@ impl Persistence for DurableRunPersistence {
 fn final_outbox_payloads(
     policy: &FinalizationPolicy,
     run_id: &str,
+    model_id: &str,
     value: &DurableFinal,
 ) -> BTreeMap<String, Value> {
     let mut payloads = BTreeMap::new();
@@ -1775,11 +1788,32 @@ fn final_outbox_payloads(
                 "schema_version": 1,
                 "run_id": run_id,
                 "answer_bundle_hash": value.mutation.answer_bundle_hash,
+                "model_id": model_id,
                 "usage": value.usage,
             }),
         );
     }
     payloads
+}
+
+/// The model is read from the already admitted immutable claim rather than
+/// from mutable process configuration. This keeps billing tied to the exact
+/// provider release that executed the run, including after a GLM/DeepSeek
+/// rollout.
+fn receipt_model_id(
+    receipt: &krw_agent_persistence::agent_v1::ClaimReceipt,
+) -> Result<String, RuntimePersistenceError> {
+    let model_id = receipt
+        .immutable_snapshot
+        .get("execution")
+        .and_then(Value::as_object)
+        .and_then(|execution| execution.get("resolved_model"))
+        .and_then(Value::as_str)
+        .ok_or(RuntimePersistenceError::InvalidAbiReceipt)?;
+    if !ALLOWED_MODEL_IDS.contains(&model_id) {
+        return Err(RuntimePersistenceError::InvalidAbiReceipt);
+    }
+    Ok(model_id.to_owned())
 }
 
 fn settlement_payload(usage: &BudgetUsage) -> Value {
@@ -2084,6 +2118,7 @@ fn map_artifact_failure(error: ArtifactRepositoryError) -> DependencyFailure {
 }
 
 fn map_abi_failure(code: &'static str, error: &AgentV1Error, mutation: bool) -> DependencyFailure {
+    tracing::warn!(component = code, error = ?error, "agent persistence ABI call failed");
     let (retryable, delivery) = match &error {
         AgentV1Error::Database { .. } => (
             true,

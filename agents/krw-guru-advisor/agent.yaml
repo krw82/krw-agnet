@@ -3,8 +3,8 @@ kind: AgentSpec
 
 metadata:
   id: krw.guru-advisor.ko
-  version: 3.1.0
-  description: Direct-authored sealed Guru consultation program with five fixed author entrypoints.
+  version: 3.4.0
+  description: Sealed Guru consultation program with one philosophy-led tension and multi-objective company research.
 
 entrypoints:
   guru_ackman:
@@ -15,6 +15,7 @@ entrypoints:
     required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: ackman }
+    pinned_skills: [guru_ackman_style]
   guru_buffett:
     run_kind: guru_buffett
     locale: ko-KR
@@ -23,6 +24,7 @@ entrypoints:
     required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: buffett }
+    pinned_skills: [guru_buffett_style]
   guru_flatt:
     run_kind: guru_flatt
     locale: ko-KR
@@ -31,6 +33,7 @@ entrypoints:
     required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: flatt }
+    pinned_skills: [guru_flatt_style]
   guru_marks:
     run_kind: guru_marks
     locale: ko-KR
@@ -39,6 +42,7 @@ entrypoints:
     required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: marks }
+    pinned_skills: [guru_marks_style]
   guru_terry_smith:
     run_kind: guru_terry_smith
     locale: ko-KR
@@ -47,6 +51,7 @@ entrypoints:
     required_model_profile: glm_max
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: { fixed_guru_author: terry_smith }
+    pinned_skills: [guru_terry_smith_style]
 
 contracts:
   - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
@@ -59,6 +64,9 @@ contracts:
   - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
   - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
   - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - { id: guru-query-request/v1, schema_ref: canonical:krw-agent/guru-query-request-v1, content_hash: "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474", semantic_authority: krw-agent-run-engine }
+  - { id: skill-load/v1, schema_ref: canonical:krw-agent/skill-load-v1, content_hash: "sha256:4b19a78d66ff14ef967f10bd30789569eba0c7ceef34f6c280274042baf7de00", semantic_authority: krw-agent-image }
+  - { id: skill-content/v1, schema_ref: canonical:krw-agent/skill-content-v1, content_hash: "sha256:29e76200a214632bb215b6427f1308438f11adc6437cbad1ed466818f23ab55e", semantic_authority: krw-agent-image }
   - { id: krw-guru-query-context-input/v1, schema_ref: canonical:krw-guru/krw-guru-query-context-input-v1, content_hash: "sha256:bf71788a071e5baf0ced89dbbcb642ed17ebd5dcbcfd7e5faee1e13ba83b565b", semantic_authority: krw-guru-default-workflow }
   - { id: krw-guru-query-context-result/v1, schema_ref: canonical:krw-guru/krw-guru-query-context-result-v1, content_hash: "sha256:89e01f70750affbf3a1ff4e6bb62aadeb8879349d6155431116750475458665d", semantic_authority: krw-guru-default-workflow, max_items: 64 }
   - { id: krw-guru-research-pack/v1, schema_ref: canonical:krw-guru/krw-guru-research-pack-v1, content_hash: "sha256:cab1b5ce2a9b33caf4dd8955e47b53ab1ef98c21f61430cf5929876bb05c0c5b", semantic_authority: krw-guru-default-workflow, max_items: 128 }
@@ -78,24 +86,21 @@ roles:
   - { id: guru_retrieval, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval], deterministic: false }
   - { id: investigation_author, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval, investigation_brief], deterministic: false }
   - id: company_evidence_researcher
-    prompt_segments: [security_boundary, kernel_runtime, investigation_brief, guru_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, skill_catalog, company_evidence_research, investigation_brief, guru_analysis]
     deterministic: false
-    bounded_child:
-      max_children: 1
-      max_depth: 1
-      budget_inheritance: parent_reservation
-      reservation:
-        max_provider_turns: 10
-        max_capability_calls: 5
-        max_input_tokens: 60000
-        max_output_tokens: 8000
-        max_evidence_bytes: 6291456
-        capability_call_limits:
-          ontology.query_context: 2
-          ontology.query: 2
-          ontology.trace: 1
-      allowed_capabilities: [ontology.query_context, ontology.query, ontology.trace]
-  - { id: guru_composer, prompt_segments: [security_boundary, kernel_runtime, guru_analysis, guru_answer, author_style], deterministic: false }
+    # This is an ordinary research role inside the Guru workflow. It uses the
+    # parent run's normal budget and state context; it is not a bounded child.
+    # Evidence selection, countercase comparison, and chain interpretation are
+    # analyst work, so keep GLM thinking enabled with the same bounded ceiling
+    # as the ordinary company analyst.
+    execution: { max_output_tokens: 8192 }
+  - id: guru_composer
+    prompt_segments: [security_boundary, kernel_runtime, guru_analysis, guru_answer, author_style]
+    deterministic: false
+    # Final prose has no tools to select. Keep it direct like the ordinary
+    # company composer so GLM does not spend the answer turn on hidden
+    # thinking after the evidence review is already sealed.
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:
@@ -106,12 +111,27 @@ prompt_segments:
   - { id: guru_analysis, path: prompts/guru-analysis.md, stable_prefix: false, private: true }
   - { id: guru_answer, path: prompts/guru-answer.md, stable_prefix: false, private: true }
   - { id: author_style, path: prompts/author-style.md, stable_prefix: false, private: true }
+  - { id: guru_ackman_style, path: skills/guru-ackman-style/SKILL.md, stable_prefix: false, private: true }
+  - { id: guru_buffett_style, path: skills/guru-buffett-style/SKILL.md, stable_prefix: false, private: true }
+  - { id: guru_flatt_style, path: skills/guru-flatt-style/SKILL.md, stable_prefix: false, private: true }
+  - { id: guru_marks_style, path: skills/guru-marks-style/SKILL.md, stable_prefix: false, private: true }
+  - { id: guru_terry_smith_style, path: skills/guru-terry-smith-style/SKILL.md, stable_prefix: false, private: true }
+  - { id: company_evidence_research, path: skills/company-evidence-research/SKILL.md, stable_prefix: true, private: true, loadable: true }
+  - { id: guru_chain_interpretation, path: skills/guru-chain-interpretation/SKILL.md, stable_prefix: false, private: true, loadable: true }
+  - { id: guru_countercase_research, path: skills/guru-countercase-research/SKILL.md, stable_prefix: false, private: true, loadable: true }
+  - { id: guru_scenario_evidence, path: skills/guru-scenario-evidence/SKILL.md, stable_prefix: false, private: true, loadable: true }
+  - id: skill_catalog
+    skill_catalog: { skills_dirs: [skills] }
+    stable_prefix: true
+    private: true
 
 capabilities:
   - id: guru.query_context
     binding_key: krw_guru_query_context
     permission: read
     input_contract: krw-guru-query-context-input/v1
+    model_input_contract: guru-query-request/v1
+    input_derivation: { kind: sealed_guru_query_context_v1 }
     output_contracts: [krw-guru-query-context-result/v1, normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: guru_query_context_v1
@@ -148,6 +168,10 @@ capabilities:
     model_input_contract: research-proposal/v4
     provider_input_codec: { kind: single_field_envelope_v1, field: proposal }
     input_derivation: { kind: research_proposal_to_search_plan_v4 }
+    # The ordinary researcher reads the sealed GuruResearchFrame (one central
+    # tension plus its independent evidence needs) and emits the ordinary
+    # multi-objective ResearchProposal v4. The kernel then lowers that
+    # proposal; the model never receives or owns a physical SearchPlan.
     research_proposal_anchor: { kind: sealed_guru_investigation_brief_v1, source_capability: guru.company_brief }
     output_contracts: [research-state/v2, query-context-input-correction/v1, normalized-capability-result/v1]
     idempotency: canonical_args
@@ -193,7 +217,7 @@ capabilities:
       kind: sealed_guru_evidence_review_v1
       query_context_capability: guru.query_context
       company_brief_capability: guru.company_brief
-      evidence_capabilities: [ontology.query_context, ontology.query, ontology.trace]
+      evidence_capabilities: [ontology.query_context, ontology.query, ontology.trace, ontology.chain]
     output_contracts: [krw-guru-evidence-review-result/v1, krw-guru-input-correction/v1, normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: guru_evidence_review_v1
@@ -222,6 +246,38 @@ capabilities:
       require_any_of: [ticker]
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  - id: ontology.chain
+    binding_key: krw_ontology_chain
+    permission: read
+    # Chain is an object-centered follow-up, so it uses the already pinned
+    # trace envelope rather than the search envelope. The runtime keeps the
+    # returned relationship graph in provider context and records the root as
+    # supplemental evidence.
+    input_contract: ontology-trace-input/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: trace_lineage_v1
+    research_action:
+      kind: trace
+      estimate: { historical_success_lower_ppm: 700000, expected_duplicate_ppm: 50000, failure_risk_upper_ppm: 50000, expected_latency_ms: 500, expected_tokens: 300, expected_tool_cost_micros: 1500, expected_result_bytes: 262144 }
+      conflict_domain: research:ontology-chain
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: skill.load
+    binding_key: krw_skill_local
+    permission: read
+    input_contract: skill-load/v1
+    output_contracts: [skill-content/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: skill_content_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: true
+    prerequisites: []
 
 workflows:
   - id: guru_company_advisor_v1
@@ -240,11 +296,14 @@ workflows:
       - { id: author_company_plan, kind: plan, role_id: company_evidence_researcher, max_visits: 2 }
       - { id: validate_company_plan, kind: validate, max_visits: 2 }
       - { id: repair_company_plan, kind: plan, role_id: company_evidence_researcher, max_visits: 1 }
+      # Match the ordinary company-research loop: a second context pass is
+      # available only when the analyst names a new unresolved evidence need.
       - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
       - { id: ingest_company_evidence, kind: ingest, max_visits: 5 }
       - { id: assess_company_gaps, kind: assess, role_id: company_evidence_researcher, max_visits: 5 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
+      - { id: chain_selected, kind: capability, capability_id: ontology.chain, max_visits: 1 }
       - { id: author_agent_analysis, kind: plan, role_id: company_evidence_researcher, max_visits: 2 }
       - { id: validate_agent_analysis, kind: validate, max_visits: 2 }
       - { id: repair_review_analysis, kind: plan, role_id: company_evidence_researcher, max_visits: 1 }
@@ -281,12 +340,14 @@ workflows:
       - { from: ingest_company_evidence, on: ingested, to: assess_company_gaps }
       - { from: assess_company_gaps, on: precise_query_has_value, to: targeted_query }
       - { from: assess_company_gaps, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_company_gaps, on: selected_chain_has_value, to: chain_selected }
       - { from: assess_company_gaps, on: append_context_plan, to: query_context }
       - { from: assess_company_gaps, on: proposal_rejected, to: assess_company_gaps }
       - { from: assess_company_gaps, on: context_ready, to: author_agent_analysis }
       - { from: assess_company_gaps, on: no_positive_value_action, to: author_agent_analysis }
       - { from: targeted_query, on: evidence_observed, to: ingest_company_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_company_evidence }
+      - { from: chain_selected, on: evidence_observed, to: ingest_company_evidence }
       - { from: author_agent_analysis, on: analysis_ready, to: validate_agent_analysis }
       - { from: author_agent_analysis, on: proposal_contract_invalid, to: repair_review_analysis }
       - { from: validate_agent_analysis, on: invalid, to: repair_review_analysis }
@@ -307,7 +368,11 @@ planning_policy:
   expose_internal_brief: false
   query_context_first: true
   required_clause_min: 1
-  clause_max: 3
+  # One sealed Guru tension can fan out into independent metric, qualitative,
+  # countercase, and mechanism objectives. ResearchProposal v4 lowers those
+  # objectives into a minimum-sufficient plan; do not compress them
+  # into a fixed three-clause template.
+  clause_max: 12
   require_unique_clause_ids: true
   require_ticker_subset: true
   split_metric_and_qualitative_clauses: true
@@ -364,11 +429,13 @@ validators:
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
+      - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
       - { op: max_calls, capability_id: guru.review_company_evidence, max: 2, code: guru_evidence_review_limit }
       - { op: state_precedes, before: retrieve_guru_research_pack, after: seal_investigation_brief, code: guru_pack_before_seal }
       - { op: state_precedes, before: seal_investigation_brief, after: query_context, code: sealed_brief_before_company_research }
       - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_targeted_query }
       - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
+      - { op: state_precedes, before: query_context, after: chain_selected, code: context_before_chain }
       - { op: state_precedes, before: seal_investigation_brief, after: review_company_evidence, code: sealed_brief_before_review }
       - { op: state_precedes, before: query_context, after: review_company_evidence, code: company_evidence_before_review }
   - id: grounded_guru_answer

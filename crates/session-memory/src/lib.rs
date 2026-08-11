@@ -19,6 +19,10 @@ use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
 
+mod selection;
+
+pub use selection::SessionViewQuery;
+
 pub const SESSION_MEMORY_SCHEMA_VERSION: u16 = 3;
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
@@ -680,6 +684,136 @@ impl fmt::Debug for SessionMemoryCatalogV3 {
     }
 }
 
+struct ValidatedDeltaPlan {
+    delta_hash: ContentHash,
+    source_run_hash: ContentHash,
+    expected_frontier: ContentHash,
+    expected_source_lineage: ContentHash,
+    constraints: Vec<(String, UserConstraintV3, ContentHash, bool)>,
+    claims: Vec<(MemoryClaimV3, ContentHash)>,
+    goals: Vec<MemoryGoalV3>,
+}
+
+fn validate_delta_transition(
+    catalog: &SessionMemoryCatalogV3,
+    delta: &SessionMemoryDeltaV3,
+    source_run_hash: ContentHash,
+) -> Result<ValidatedDeltaPlan, MemoryError> {
+    let delta_hash = delta.content_hash()?;
+    let expected_frontier = next_frontier_hash(&catalog.frontier_hash, delta.revision, &delta_hash);
+    let expected_source_lineage = next_source_lineage_hash(
+        &catalog.source_lineage_hash,
+        delta.revision,
+        &source_run_hash,
+    );
+
+    let mut constraints = Vec::with_capacity(delta.constraints.len());
+    for constraint in &delta.constraints {
+        let fingerprint = constraint_fingerprint(constraint)?;
+        let replace_existing = match catalog.constraint_hashes.get(&constraint.constraint_id) {
+            Some(existing) if existing != &fingerprint => return Err(MemoryError::ConflictingId),
+            Some(_) => true,
+            None => false,
+        };
+        constraints.push((
+            constraint.constraint_id.clone(),
+            constraint.clone(),
+            fingerprint,
+            replace_existing,
+        ));
+    }
+
+    let mut staged_claim_fingerprints = BTreeMap::new();
+    let mut claims = Vec::with_capacity(delta.claims.len());
+    for claim in &delta.claims {
+        if catalog
+            .active_claim_fingerprints
+            .contains_key(&claim.memory_id)
+            || catalog.claims.contains_key(&claim.memory_id)
+            || staged_claim_fingerprints.contains_key(&claim.memory_id)
+        {
+            return Err(MemoryError::ConflictingId);
+        }
+        let fingerprint = claim_fingerprint(claim)?;
+        staged_claim_fingerprints.insert(claim.memory_id.clone(), fingerprint.clone());
+        claims.push((claim.clone(), fingerprint));
+    }
+
+    let mut staged_goal_ids = BTreeSet::new();
+    let mut goals = Vec::with_capacity(delta.unresolved_goals.len());
+    for goal in &delta.unresolved_goals {
+        if catalog.unresolved_goal_ids.contains(&goal.memory_id)
+            || catalog.unresolved_goals.contains_key(&goal.memory_id)
+            || !staged_goal_ids.insert(goal.memory_id.clone())
+        {
+            return Err(MemoryError::ConflictingId);
+        }
+        goals.push(goal.clone());
+    }
+
+    // Validate supersessions against a small staged fingerprint index. This
+    // preserves all the old lineage checks without copying the full claims
+    // map. Superseded claims are removed from the active set only on commit.
+    let fingerprint_for = |memory_id: &str| {
+        catalog
+            .active_claim_fingerprints
+            .get(memory_id)
+            .or_else(|| staged_claim_fingerprints.get(memory_id))
+    };
+    let mut superseded_ids = BTreeSet::new();
+    for supersession in &delta.supersessions {
+        let older =
+            fingerprint_for(&supersession.older_memory_id).ok_or(MemoryError::UnknownMemory)?;
+        let newer =
+            fingerprint_for(&supersession.newer_memory_id).ok_or(MemoryError::UnknownMemory)?;
+        if older != newer
+            || catalog
+                .claims
+                .get(&supersession.older_memory_id)
+                .is_some_and(|claim| claim.superseded_by.is_some())
+            || !superseded_ids.insert(supersession.older_memory_id.clone())
+        {
+            return Err(MemoryError::InvalidSupersession);
+        }
+    }
+
+    let mut active_ids = catalog
+        .active_claim_fingerprints
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    active_ids.extend(staged_claim_fingerprints.keys().cloned());
+    for id in &superseded_ids {
+        active_ids.remove(id);
+    }
+    let mut unresolved_ids = catalog.unresolved_goal_ids.clone();
+    unresolved_ids.extend(staged_goal_ids.iter().cloned());
+    for resolution in &delta.resolved_goals {
+        if !active_ids.contains(&resolution.resolving_memory_id)
+            || !unresolved_ids.remove(&resolution.goal_memory_id)
+        {
+            return Err(MemoryError::UnknownMemory);
+        }
+        if catalog
+            .unresolved_goals
+            .get(&resolution.goal_memory_id)
+            .is_some_and(|goal| goal.resolved_by.is_some())
+        {
+            return Err(MemoryError::ConflictingId);
+        }
+    }
+
+    Ok(ValidatedDeltaPlan {
+        delta_hash,
+        source_run_hash,
+        expected_frontier,
+        expected_source_lineage,
+        constraints,
+        claims,
+        goals,
+    })
+}
+
 impl SessionMemoryCatalogV3 {
     pub fn new(session_id: &str) -> Result<Self, MemoryError> {
         if !bounded_id(session_id) {
@@ -764,109 +898,58 @@ impl SessionMemoryCatalogV3 {
             return Err(MemoryError::Limit("catalog items"));
         }
 
-        let delta_hash = delta.content_hash()?;
-        let expected_frontier =
-            next_frontier_hash(&self.frontier_hash, delta.revision, &delta_hash);
-        let expected_source_lineage =
-            next_source_lineage_hash(&self.source_lineage_hash, delta.revision, &source_run_hash);
-        let mut candidate = self.clone();
-        candidate
-            .sources
+        let plan = validate_delta_transition(self, delta, source_run_hash)?;
+
+        // All fallible work is complete. The commit below mutates only the
+        // collections touched by this delta; it never clones the full catalog.
+        self.sources
             .insert(delta.source.run_id.clone(), delta.source.clone());
-        candidate
-            .recent_source_revision_index
-            .insert(source_run_hash.to_string(), delta.revision);
-        prune_recent_source_index(&mut candidate.recent_source_revision_index);
-        candidate.tickers.extend(delta.tickers.iter().cloned());
-        for constraint in &delta.constraints {
-            let fingerprint = constraint_fingerprint(constraint)?;
-            match candidate.constraint_hashes.get(&constraint.constraint_id) {
-                Some(existing) if existing != &fingerprint => {
-                    return Err(MemoryError::ConflictingId);
-                }
-                Some(_) => {
-                    candidate
-                        .constraints
-                        .insert(constraint.constraint_id.clone(), constraint.clone());
-                }
-                None => {
-                    candidate
-                        .constraint_hashes
-                        .insert(constraint.constraint_id.clone(), fingerprint);
-                    candidate
-                        .constraints
-                        .insert(constraint.constraint_id.clone(), constraint.clone());
-                }
+        self.recent_source_revision_index
+            .insert(plan.source_run_hash.to_string(), delta.revision);
+        prune_recent_source_index(&mut self.recent_source_revision_index);
+        self.tickers.extend(delta.tickers.iter().cloned());
+        for (constraint_id, constraint, fingerprint, replace_existing) in plan.constraints {
+            if !replace_existing {
+                self.constraint_hashes
+                    .insert(constraint_id.clone(), fingerprint);
             }
+            self.constraints.insert(constraint_id, constraint);
         }
-        for claim in &delta.claims {
-            if candidate
-                .active_claim_fingerprints
-                .contains_key(&claim.memory_id)
-                || candidate
-                    .claims
-                    .insert(claim.memory_id.clone(), claim.clone())
-                    .is_some()
-            {
-                return Err(MemoryError::ConflictingId);
-            }
-            candidate
-                .active_claim_fingerprints
-                .insert(claim.memory_id.clone(), claim_fingerprint(claim)?);
+        for (claim, fingerprint) in plan.claims {
+            self.active_claim_fingerprints
+                .insert(claim.memory_id.clone(), fingerprint);
+            self.claims.insert(claim.memory_id.clone(), claim);
         }
-        for goal in &delta.unresolved_goals {
-            if candidate.unresolved_goal_ids.contains(&goal.memory_id)
-                || candidate
-                    .unresolved_goals
-                    .insert(goal.memory_id.clone(), goal.clone())
-                    .is_some()
-            {
-                return Err(MemoryError::ConflictingId);
-            }
-            candidate.unresolved_goal_ids.insert(goal.memory_id.clone());
+        for goal in plan.goals {
+            self.unresolved_goal_ids.insert(goal.memory_id.clone());
+            self.unresolved_goals.insert(goal.memory_id.clone(), goal);
         }
         for supersession in &delta.supersessions {
-            apply_supersession(
-                &mut candidate.claims,
-                &mut candidate.active_claim_fingerprints,
-                supersession,
-            )?;
+            self.active_claim_fingerprints
+                .remove(&supersession.older_memory_id);
+            self.claims
+                .get_mut(&supersession.older_memory_id)
+                .expect("validated supersession older claim")
+                .superseded_by = Some(supersession.newer_memory_id.clone());
         }
         for resolution in &delta.resolved_goals {
-            if !candidate
-                .active_claim_fingerprints
-                .contains_key(&resolution.resolving_memory_id)
-            {
-                return Err(MemoryError::UnknownMemory);
-            }
-            if !candidate
-                .unresolved_goal_ids
-                .remove(&resolution.goal_memory_id)
-            {
-                return Err(MemoryError::UnknownMemory);
-            }
-            if let Some(goal) = candidate
-                .unresolved_goals
+            self.unresolved_goal_ids.remove(&resolution.goal_memory_id);
+            self.unresolved_goals
                 .get_mut(&resolution.goal_memory_id)
-            {
-                if goal.resolved_by.is_some() {
-                    return Err(MemoryError::ConflictingId);
-                }
-                goal.resolved_by = Some(resolution.resolving_memory_id.clone());
-            }
+                .expect("validated goal resolution")
+                .resolved_by = Some(resolution.resolving_memory_id.clone());
         }
-        candidate.recent_turns.push(delta.recent_turn.clone());
-        if candidate.recent_turns.len() > MAX_RECENT_TURNS {
-            let discard = candidate.recent_turns.len() - MAX_RECENT_TURNS;
-            candidate.recent_turns.drain(..discard);
+        self.recent_turns.push(delta.recent_turn.clone());
+        if self.recent_turns.len() > MAX_RECENT_TURNS {
+            let discard = self.recent_turns.len() - MAX_RECENT_TURNS;
+            self.recent_turns.drain(..discard);
         }
-        candidate.revision = delta.revision;
-        candidate.delta_hashes.push(delta_hash);
-        candidate.tail_source_run_hashes.push(source_run_hash);
-        candidate.frontier_hash = expected_frontier;
-        candidate.source_lineage_hash = expected_source_lineage;
-        candidate.validate()?;
-        *self = candidate;
+        self.revision = delta.revision;
+        self.delta_hashes.push(plan.delta_hash);
+        self.tail_source_run_hashes.push(plan.source_run_hash);
+        self.frontier_hash = plan.expected_frontier;
+        self.source_lineage_hash = plan.expected_source_lineage;
+        debug_assert!(self.validate().is_ok());
         Ok(())
     }
 
@@ -1077,67 +1160,118 @@ impl SessionMemoryCatalogV3 {
         question: &str,
         max_bytes: usize,
     ) -> Result<SessionMemoryViewV3, MemoryError> {
+        let query = SessionViewQuery {
+            question,
+            trusted_tickers: &[],
+        };
+        self.select_view_with_query(&query, max_bytes)
+    }
+
+    pub fn select_view_with_query(
+        &self,
+        query: &SessionViewQuery<'_>,
+        max_bytes: usize,
+    ) -> Result<SessionMemoryViewV3, MemoryError> {
         self.validate()?;
-        if !bounded_text(question, MAX_TEXT_BYTES)
+        if !bounded_text(query.question, MAX_TEXT_BYTES)
             || !(MIN_VIEW_BYTES..=MAX_SESSION_MEMORY_VIEW_BYTES).contains(&max_bytes)
         {
             return Err(MemoryError::Limit("view request"));
         }
-        let query_terms = terms(question);
-        let source_recency = self
-            .sources
-            .iter()
-            .map(|(run_id, source)| {
-                (
-                    run_id.as_str(),
-                    usize::try_from(source.revision).unwrap_or(usize::MAX),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        let query_terms = terms(query.question);
+        let source_revision = |run_id: &str| {
+            self.sources
+                .get(run_id)
+                .map(|source| source.revision)
+                .ok_or(MemoryError::InvalidLineage)
+        };
 
         let mut claims = self
             .claims
             .values()
             .filter(|claim| claim.superseded_by.is_none())
-            .map(|claim| {
-                let text = claim_search_text(claim);
-                let recency = source_recency
-                    .get(claim.source_run_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                (score(&query_terms, &terms(&text), recency), claim)
+            .filter_map(|claim| {
+                let revision = source_revision(&claim.source_run_id).ok()?;
+                let candidate = selection::rank_text(
+                    &query_terms,
+                    &claim_search_text(claim),
+                    query.trusted_tickers,
+                    self.revision,
+                    revision,
+                    0,
+                );
+                selection::is_relevant(candidate).then_some((candidate.score, claim))
             })
             .collect::<Vec<_>>();
-        claims.sort_by_key(|(score, claim)| (Reverse(*score), claim.memory_id.as_str()));
+        claims.sort_by_key(|(candidate_score, claim)| {
+            (Reverse(*candidate_score), claim.memory_id.as_str())
+        });
 
         let mut goals = self
             .unresolved_goals
             .values()
             .filter(|goal| goal.resolved_by.is_none())
-            .map(|goal| {
-                let recency = source_recency
-                    .get(goal.source_run_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                (
-                    score(&query_terms, &terms(&goal.text), recency).saturating_add(8),
-                    goal,
-                )
+            .filter_map(|goal| {
+                let revision = source_revision(&goal.source_run_id).ok()?;
+                let candidate = selection::rank_text(
+                    &query_terms,
+                    &goal.text,
+                    query.trusted_tickers,
+                    self.revision,
+                    revision,
+                    0,
+                );
+                selection::is_relevant(candidate).then_some((candidate.score, goal))
             })
             .collect::<Vec<_>>();
-        goals.sort_by_key(|(score, goal)| (Reverse(*score), goal.memory_id.as_str()));
+        goals.sort_by_key(|(candidate_score, goal)| {
+            (Reverse(*candidate_score), goal.memory_id.as_str())
+        });
 
-        let mut turns = self
+        let pinned_count = selection::TARGET_CONTINUITY_TURNS.min(self.recent_turns.len());
+        let pinned_start = self.recent_turns.len().saturating_sub(pinned_count);
+        let pinned_indices = (pinned_start..self.recent_turns.len()).collect::<BTreeSet<_>>();
+        let mut supplemental = self
             .recent_turns
             .iter()
             .enumerate()
-            .map(|(index, turn)| {
-                let searchable = format!("{} {}", turn.user_content, turn.answer_content);
-                (score(&query_terms, &terms(&searchable), index), turn)
+            .take(pinned_start)
+            .filter_map(|(index, turn)| {
+                let revision = source_revision(&turn.source_run_id).ok()?;
+                let candidate = selection::rank_text(
+                    &query_terms,
+                    &selection::turn_text(turn),
+                    query.trusted_tickers,
+                    self.revision,
+                    revision,
+                    index,
+                );
+                selection::is_relevant(candidate).then_some(candidate)
             })
             .collect::<Vec<_>>();
-        turns.sort_by_key(|(score, turn)| (Reverse(*score), turn.source_run_id.as_str()));
-
+        supplemental.sort_by_key(|candidate| {
+            (
+                Reverse(candidate.score),
+                Reverse(candidate.index),
+                self.recent_turns[candidate.index].source_run_id.as_str(),
+            )
+        });
+        let supplemental_limit = MAX_VIEW_TURNS.saturating_sub(pinned_indices.len());
+        let mut selected_indices = pinned_indices.clone();
+        selected_indices.extend(
+            supplemental
+                .into_iter()
+                .take(supplemental_limit)
+                .map(|candidate| candidate.index),
+        );
+        let selected_turns = selected_indices
+            .iter()
+            .map(|index| self.recent_turns[*index].clone())
+            .collect::<Vec<_>>();
+        let pinned_run_ids = pinned_indices
+            .iter()
+            .map(|index| self.recent_turns[*index].source_run_id.clone())
+            .collect::<BTreeSet<_>>();
         let selected_claims = claims
             .into_iter()
             .take(MAX_VIEW_CLAIMS)
@@ -1147,11 +1281,6 @@ impl SessionMemoryCatalogV3 {
             .into_iter()
             .take(MAX_VIEW_GOALS)
             .map(|(_, goal)| goal.clone())
-            .collect::<Vec<_>>();
-        let selected_turns = turns
-            .into_iter()
-            .take(MAX_VIEW_TURNS)
-            .map(|(_, turn)| turn.clone())
             .collect::<Vec<_>>();
         let source_ids = selected_claims
             .iter()
@@ -1191,7 +1320,12 @@ impl SessionMemoryCatalogV3 {
             unresolved_goals: selected_goals,
             recent_turns: selected_turns,
         };
-        shrink_view_to_fit(&mut view, max_bytes)?;
+        shrink_view_to_fit(
+            &mut view,
+            max_bytes,
+            &pinned_run_ids,
+            selection::MIN_CONTINUITY_TURNS.min(pinned_run_ids.len()),
+        )?;
         view.view_hash = view.compute_view_hash()?;
         view.validate(max_bytes)?;
         Ok(view)
@@ -1913,33 +2047,6 @@ pub fn deterministic_message_id(run_id: &str, role: &str) -> String {
     ContentHash::sha256(format!("memory-message/v2\0{run_id}\0{role}")).to_string()
 }
 
-fn apply_supersession(
-    claims: &mut BTreeMap<String, MemoryClaimV3>,
-    active_claim_fingerprints: &mut BTreeMap<String, ContentHash>,
-    supersession: &MemorySupersessionV3,
-) -> Result<(), MemoryError> {
-    if supersession.older_memory_id == supersession.newer_memory_id {
-        return Err(MemoryError::SupersessionCycle);
-    }
-    let older_fingerprint = active_claim_fingerprints
-        .get(&supersession.older_memory_id)
-        .ok_or(MemoryError::UnknownMemory)?;
-    let newer_fingerprint = active_claim_fingerprints
-        .get(&supersession.newer_memory_id)
-        .ok_or(MemoryError::UnknownMemory)?;
-    if older_fingerprint != newer_fingerprint {
-        return Err(MemoryError::InvalidSupersession);
-    }
-    active_claim_fingerprints.remove(&supersession.older_memory_id);
-    if let Some(older) = claims.get_mut(&supersession.older_memory_id) {
-        if older.superseded_by.is_some() {
-            return Err(MemoryError::InvalidSupersession);
-        }
-        older.superseded_by = Some(supersession.newer_memory_id.clone());
-    }
-    Ok(())
-}
-
 fn claim_fingerprint(claim: &MemoryClaimV3) -> Result<ContentHash, MemoryError> {
     #[derive(Serialize)]
     struct Fingerprint<'a> {
@@ -2247,22 +2354,26 @@ fn terms(text: &str) -> BTreeSet<String> {
     output
 }
 
-fn score(query: &BTreeSet<String>, candidate: &BTreeSet<String>, recency: usize) -> usize {
-    let lexical = query.intersection(candidate).count();
-    lexical
-        .saturating_mul(32)
-        .saturating_add(recency.min(4_096))
-        .saturating_add(1)
-}
-
-fn shrink_view_to_fit(view: &mut SessionMemoryViewV3, max_bytes: usize) -> Result<(), MemoryError> {
+fn shrink_view_to_fit(
+    view: &mut SessionMemoryViewV3,
+    max_bytes: usize,
+    pinned_run_ids: &BTreeSet<String>,
+    min_pinned_turns: usize,
+) -> Result<(), MemoryError> {
     loop {
         view.view_hash = empty_frontier_hash();
         if serde_jcs::to_vec(view)?.len() <= max_bytes {
             return Ok(());
         }
-        if !view.recent_turns.is_empty() {
-            view.recent_turns.pop();
+        if let Some(index) = view
+            .recent_turns
+            .iter()
+            .position(|turn| !pinned_run_ids.contains(&turn.source_run_id))
+        {
+            view.recent_turns.remove(index);
+        } else if view.recent_turns.len() > min_pinned_turns {
+            // Keep the newest turn(s) and discard the oldest pinned turn first.
+            view.recent_turns.remove(0);
         } else if !view.unresolved_goals.is_empty() {
             view.unresolved_goals.pop();
         } else if !view.claims.is_empty() {
@@ -2704,6 +2815,99 @@ mod tests {
         assert_eq!(view.view_hash, view.compute_view_hash().unwrap());
     }
 
+    fn markdown_catalog(rows: &[(&str, &str, &str)]) -> SessionMemoryCatalogV3 {
+        let mut catalog = SessionMemoryCatalogV3::new(SESSION_ID).unwrap();
+        for (revision, (run_id, user_content, rendered_answer)) in rows.iter().enumerate() {
+            let revision = u64::try_from(revision + 1).unwrap();
+            let ticker = if user_content.contains("AAPL") {
+                "AAPL"
+            } else if user_content.contains("MSFT") {
+                "MSFT"
+            } else {
+                "NVDA"
+            };
+            let tickers = vec![ticker.to_owned()];
+            let delta = completed_markdown_turn_delta(CompletedMarkdownTurnInputV3 {
+                session_id: SESSION_ID,
+                parent_frontier_hash: catalog.frontier_hash.clone(),
+                revision,
+                run_id,
+                final_commit_intent_hash: hash(&format!("{run_id}:intent")),
+                answer_bundle_hash: hash(&format!("{run_id}:bundle")),
+                final_output_hash: hash(rendered_answer),
+                user_content,
+                rendered_answer,
+                tickers: &tickers,
+                constraints: &[],
+                supersessions: &[],
+                resolved_goals: &[],
+            })
+            .unwrap();
+            catalog.apply_delta(&delta).unwrap();
+        }
+        catalog
+    }
+
+    #[test]
+    fn view_keeps_latest_four_turns_in_chronological_order() {
+        let rows = [
+            ("run:1", "첫 질문", "첫 답변"),
+            ("run:2", "두 번째 질문", "두 번째 답변"),
+            ("run:3", "세 번째 질문", "세 번째 답변"),
+            ("run:4", "네 번째 질문", "네 번째 답변"),
+            ("run:5", "다섯 번째 질문", "다섯 번째 답변"),
+            ("run:6", "여섯 번째 질문", "여섯 번째 답변"),
+        ];
+        let catalog = markdown_catalog(&rows);
+        let tickers = vec![String::from("AAPL")];
+        let query = SessionViewQuery {
+            question: "그중 가장 중요한 원인은?",
+            trusted_tickers: &tickers,
+        };
+        let view = catalog.select_view_with_query(&query, 256 * 1024).unwrap();
+        let ids = view
+            .recent_turns
+            .iter()
+            .map(|turn| turn.source_run_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["run:3", "run:4", "run:5", "run:6"]);
+    }
+
+    #[test]
+    fn trusted_ticker_breaks_ties_only_inside_the_same_session() {
+        let rows = [
+            (
+                "run:aapl-old",
+                "AAPL의 수익성과 현금흐름",
+                "AAPL 수익성 답변",
+            ),
+            ("run:msft-old", "MSFT의 사업 전략", "MSFT 사업 답변"),
+            ("run:3", "최근 질문 3", "최근 답변 3"),
+            ("run:4", "최근 질문 4", "최근 답변 4"),
+            ("run:5", "최근 질문 5", "최근 답변 5"),
+            ("run:6", "최근 질문 6", "최근 답변 6"),
+        ];
+        let catalog = markdown_catalog(&rows);
+        let tickers = vec![String::from("AAPL")];
+        let query = SessionViewQuery {
+            question: "이전 수익성과 비교해줘",
+            trusted_tickers: &tickers,
+        };
+        let view = catalog.select_view_with_query(&query, 256 * 1024).unwrap();
+        assert!(
+            view.recent_turns
+                .iter()
+                .any(|turn| turn.source_run_id == "run:aapl-old")
+        );
+        assert!(
+            !view
+                .recent_turns
+                .iter()
+                .any(|turn| turn.source_run_id == "run:msft-old")
+        );
+        assert_eq!(view.session_id_hash, ContentHash::sha256(SESSION_ID));
+    }
+
     #[test]
     fn view_tamper_and_cross_session_delta_fail_closed() {
         let mut catalog = SessionMemoryCatalogV3::new(SESSION_ID).unwrap();
@@ -2738,15 +2942,27 @@ mod tests {
             .unwrap()
             .memory_id
             .clone();
+        let delta = completed_markdown_turn_delta(CompletedMarkdownTurnInputV3 {
+            session_id: SESSION_ID,
+            parent_frontier_hash: catalog.frontier_hash.clone(),
+            revision: 2,
+            run_id: "run:worker-a:0003",
+            final_commit_intent_hash: hash("supersession-intent"),
+            answer_bundle_hash: hash("supersession-bundle"),
+            final_output_hash: hash("supersession-output"),
+            user_content: "AAPL의 최신 매출을 확인해줘.",
+            rendered_answer: "추가 확인이 필요합니다.",
+            tickers: &["AAPL".into()],
+            constraints: &[],
+            supersessions: &[MemorySupersessionV3 {
+                older_memory_id: older.clone(),
+                newer_memory_id: different,
+            }],
+            resolved_goals: &[],
+        })
+        .unwrap();
         assert!(matches!(
-            apply_supersession(
-                &mut catalog.claims,
-                &mut catalog.active_claim_fingerprints,
-                &MemorySupersessionV3 {
-                    older_memory_id: older.clone(),
-                    newer_memory_id: different,
-                },
-            ),
+            catalog.apply_delta(&delta),
             Err(MemoryError::InvalidSupersession)
         ));
         assert!(catalog.claims.contains_key(&older));

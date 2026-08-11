@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use krw_agent_bounded_child::ChildBudgetLimits;
-use krw_agent_contracts::{FINAL_MARKDOWN_V1, verify_pin};
+use krw_agent_contracts::{FINAL_MARKDOWN_V1, GURU_QUERY_REQUEST_V1, verify_pin};
 use krw_agent_protocol::{ContentHash, RunContextKind, RunContextV1};
 use krw_agent_state_artifact::{
     ArtifactGuard, ArtifactTransition, BuiltinHandler, ContractPin, StateNode, StateProgram,
@@ -376,6 +376,10 @@ pub enum InputDerivation {
     /// and leaves unsupported transport knobs absent, so the model only
     /// chooses a trusted ticker and optional retrieval filters.
     CompanyContextRequestV1,
+    /// Start a fixed-author Guru retrieval with an empty provider-visible
+    /// trigger. The kernel injects the immutable run question, fixed author,
+    /// and trusted singleton ticker before MCP dispatch.
+    SealedGuruQueryContextV1,
     /// The provider proposes evidence needs; the kernel deterministically
     /// constructs the private goal graph and minimum sufficient root
     /// `SearchPlan` before direct MCP dispatch.
@@ -508,7 +512,7 @@ impl CapabilityResultIngest {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
             }
             Self::TraceLineageV1 => {
-                "Retrieve source lineage only for an observed in-scope record. Use the pinned input schema and do not invent an object identifier."
+                "Retrieve source lineage or a bounded relationship chain only for an observed in-scope record. Use the pinned input schema and do not invent an object identifier."
             }
             Self::FrontFeedListItemsV1
             | Self::FrontFeedGetItemsV1
@@ -673,6 +677,7 @@ impl ProviderInputCodec {
     /// are lifted to the new root so the canonical contract's local `$ref`
     /// values retain their meaning inside the envelope.
     pub fn provider_parameters(&self, canonical_parameters: Value) -> Result<Value, ImageError> {
+        let canonical_parameters = expand_provider_root_schema(canonical_parameters)?;
         let canonical = canonical_parameters.as_object().ok_or_else(|| {
             ImageError::InvalidSpec("provider input contract schema must be an object".into())
         })?;
@@ -732,6 +737,42 @@ impl ProviderInputCodec {
             }
         }
     }
+}
+
+/// Some canonical contracts intentionally keep their reusable definition under
+/// `$defs` and make the document root only a local `$ref`. Several
+/// Anthropic-compatible tool callers (including GLM) do not reliably expose
+/// that indirection to the model, which can result in an empty `{}` tool
+/// argument despite a valid contract. Expand only a local root reference for
+/// the provider schema; the canonical contract bytes and runtime validation
+/// remain unchanged.
+fn expand_provider_root_schema(canonical_parameters: Value) -> Result<Value, ImageError> {
+    let Some(canonical) = canonical_parameters.as_object() else {
+        return Err(ImageError::InvalidSpec(
+            "provider input contract schema must be an object".into(),
+        ));
+    };
+    let Some(reference) = canonical.get("$ref").and_then(Value::as_str) else {
+        return Ok(canonical_parameters);
+    };
+    let Some(definition_name) = reference.strip_prefix("#/$defs/") else {
+        return Ok(canonical_parameters);
+    };
+    let Some(definitions) = canonical.get("$defs").and_then(Value::as_object) else {
+        return Ok(canonical_parameters);
+    };
+    let Some(definition) = definitions.get(definition_name).and_then(Value::as_object) else {
+        return Ok(canonical_parameters);
+    };
+    let mut expanded = definition.clone();
+    if let Some(schema) = canonical.get("$schema") {
+        expanded.insert("$schema".into(), schema.clone());
+    }
+    if let Some(identifier) = canonical.get("$id") {
+        expanded.insert("$id".into(), identifier.clone());
+    }
+    expanded.insert("$defs".into(), Value::Object(definitions.clone()));
+    Ok(Value::Object(expanded))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -821,14 +862,19 @@ impl CapabilitySpec {
     /// make the model violate its own tool schema.
     pub fn provider_tool_description(&self) -> &'static str {
         match &self.input_derivation {
+            InputDerivation::SealedGuruQueryContextV1 => {
+                "Start the fixed-author Guru research flow. Call this function with an empty object `{}` only. The kernel attaches the current user question, the host-selected Guru lens, and the authenticated company ticker. Do not provide an author, ticker, company context, limits, or a conclusion."
+            }
             InputDerivation::ResearchProposalToSearchPlanV4 => {
                 "Call this function with exactly one top-level `proposal` field. Its value is one complete ResearchProposal v4, not a SearchPlan. Each objective declares whether evidence is required now or deliberately deferred, its proof quality, interchangeable retrieval alternatives, and exactly one tagged semantic goal such as metric_time_series, metric_change, or qualitative_evidence. Do not create goal IDs, candidate IDs, graph dependencies, retrieval_query, tickers, universe, limits, clauses, comparison axes, calculation windows outside a metric_change goal, or MCP encoding: the kernel constructs and validates all of them. Mark only evidence that can materially change this answer as required; deferred objectives do not expand the initial plan."
             }
             InputDerivation::Identity
             | InputDerivation::CompanyContextRequestV1
-            | InputDerivation::SealedGuruCompanyBriefV1 { .. }
             | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
                 self.result_ingest.provider_tool_description()
+            }
+            InputDerivation::SealedGuruCompanyBriefV1 { .. } => {
+                "After guru.query_context, draft exactly one central company tension and call this function with one JSON object containing exactly these keys: question, guru_principle_ids, company_context_anchor_ids, hypothesis, counter_hypothesis, evidence_needed, strengthens_if, weakens_if, why_material, decision_role. Use arrays for the two ID fields and evidence_needed; copy principle reviewed_id and company anchor_id values verbatim from guru.query_context; set decision_role to main_tension. Do not call with an empty object, wrapper, ticker, author, proposal, or any extra field."
             }
         }
     }
@@ -2548,6 +2594,16 @@ pub fn validate_spec(spec: &AgentSpec) -> Result<(), ImageError> {
         .iter()
         .map(|prompt| prompt.id.as_str())
         .collect::<BTreeSet<_>>();
+    for entrypoint in spec.entrypoints.values() {
+        for pinned in &entrypoint.pinned_skills {
+            if !prompt_ids.contains(pinned.as_str()) {
+                return Err(ImageError::UnknownReference {
+                    kind: "pinned prompt segment",
+                    id: pinned.clone(),
+                });
+            }
+        }
+    }
     for role in &spec.roles {
         if role.deterministic && !role.execution.is_default() {
             return Err(ImageError::InvalidSpec(format!(
@@ -3032,11 +3088,25 @@ fn validate_capability_input_abi(
                     &capability.scope_binding,
                     CapabilityScopeBinding::TrustedTickerSet { .. }
                 )
-                && capability.prerequisites.len() == 1
-                && capability
-                    .prerequisites
-                    .first()
-                    .is_some_and(|id| id == "ontology.query_context")
+                // Company ontology orientation is a small, trusted-scope
+                // preflight. It intentionally precedes the first evidence
+                // proposal instead of depending on query_context.
+                && capability.prerequisites.is_empty()
+        }
+        InputDerivation::SealedGuruQueryContextV1 => {
+            capability.input_contract == "krw-guru-query-context-input/v1"
+                && capability.model_input_contract.as_deref() == Some(GURU_QUERY_REQUEST_V1)
+                && capability.research_proposal_anchor.is_none()
+                && capability.permission == Permission::Read
+                && capability.idempotency == IdempotencyPolicy::CanonicalArgs
+                && capability.result_ingest == CapabilityResultIngest::GuruQueryContextV1
+                && capability.retain_canonical_input
+                && capability.research_action.is_none()
+                && matches!(
+                    &capability.scope_binding,
+                    CapabilityScopeBinding::TrustedTickerSet { .. }
+                )
+                && capability.prerequisites.is_empty()
         }
         InputDerivation::ResearchProposalToSearchPlanV4 => {
             let valid_anchor = match &capability.research_proposal_anchor {
@@ -3155,6 +3225,7 @@ fn validate_capability_input_abi(
         ),
         InputDerivation::Identity
         | InputDerivation::CompanyContextRequestV1
+        | InputDerivation::SealedGuruQueryContextV1
         | InputDerivation::SealedGuruCompanyBriefV1 { .. }
         | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
             capability.provider_input_codec.is_canonical_root()
@@ -3225,6 +3296,7 @@ fn input_derivation_references(derivation: &InputDerivation, capability_id: &str
     match derivation {
         InputDerivation::Identity
         | InputDerivation::CompanyContextRequestV1
+        | InputDerivation::SealedGuruQueryContextV1
         | InputDerivation::ResearchProposalToSearchPlanV4 => false,
         InputDerivation::SealedGuruCompanyBriefV1 {
             query_context_capability,
@@ -4272,6 +4344,10 @@ mod tests {
             StateOperation::ModelDecision { output_mode, .. } => *output_mode,
             _ => panic!("{state_id} must be a model state"),
         };
+        assert_eq!(
+            mode("orient_company"),
+            ModelOutputMode::CapabilityOrWorkflowTransition
+        );
         assert_eq!(mode("author_plan"), ModelOutputMode::CapabilityCall);
         assert_eq!(
             mode("assess_obligations"),
@@ -4294,6 +4370,14 @@ mod tests {
             .unwrap();
         assert_eq!(planner.execution.reasoning, RoleReasoningMode::Direct);
         assert_eq!(planner.execution.max_output_tokens, Some(1024));
+        let orienter = image
+            .body
+            .roles
+            .iter()
+            .find(|role| role.id == "company_orienter")
+            .unwrap();
+        assert_eq!(orienter.execution.reasoning, RoleReasoningMode::Direct);
+        assert_eq!(orienter.execution.max_output_tokens, Some(512));
         assert_eq!(
             image.body.answer_policy.max_research_turn_tokens,
             Some(16384)
@@ -4338,7 +4422,7 @@ mod tests {
     }
 
     #[test]
-    fn company_context_is_a_narrow_advisory_follow_up_capability() {
+    fn company_context_is_a_narrow_preflight_orientation_capability() {
         let image = compile_agent_dir(agent_root()).unwrap();
         let capability = image
             .manifest
@@ -4362,8 +4446,7 @@ mod tests {
             CapabilityResultIngest::CompanyContextV1
         );
         assert!(capability.research_action.is_none());
-        assert_eq!(capability.prerequisites.len(), 1);
-        assert_eq!(capability.prerequisites[0], "ontology.query_context");
+        assert!(capability.prerequisites.is_empty());
         let guidance = capability.provider_tool_description();
         assert!(guidance.contains("orientation-only"));
         assert!(guidance.contains("never as factual support"));
@@ -4481,38 +4564,18 @@ mod tests {
     }
 
     #[test]
-    fn guru_company_researcher_has_one_non_recursive_parent_budget_child() {
+    fn guru_company_researcher_is_an_ordinary_thinking_research_role() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../agents/krw-guru-advisor");
-        let mut spec = parse_spec(&fs::read(root.join("agent.yaml")).unwrap()).unwrap();
-        validate_spec(&spec).expect("Guru child declaration is a valid bounded AgentSpec ABI");
-        let child = spec
+        let spec = parse_spec(&fs::read(root.join("agent.yaml")).unwrap()).unwrap();
+        validate_spec(&spec).expect("Guru research role is a valid AgentSpec");
+        let role = spec
             .roles
             .iter()
             .find(|role| role.id == "company_evidence_researcher")
-            .and_then(|role| role.bounded_child.as_ref())
-            .expect("typed company-evidence child");
-        assert_eq!(child.max_children, 1);
-        assert_eq!(child.max_depth, 1);
-        assert_eq!(
-            child.budget_inheritance,
-            ChildBudgetInheritance::ParentReservation
-        );
-        assert_eq!(
-            child.allowed_capabilities,
-            ["ontology.query_context", "ontology.query", "ontology.trace"]
-        );
-
-        spec.roles
-            .iter_mut()
-            .find(|role| role.id == "company_evidence_researcher")
-            .and_then(|role| role.bounded_child.as_mut())
-            .unwrap()
-            .max_children = 2;
-        assert!(matches!(
-            validate_spec(&spec),
-            Err(ImageError::InvalidSpec(message))
-                if message.contains("invalid bounded child policy")
-        ));
+            .expect("company-evidence research role");
+        assert!(role.bounded_child.is_none());
+        assert_eq!(role.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(role.execution.max_output_tokens, Some(8192));
     }
 
     #[test]
@@ -4564,6 +4627,7 @@ mod tests {
                     "ontology.query_context".into(),
                     "ontology.query".into(),
                     "ontology.trace".into(),
+                    "ontology.chain".into(),
                 ],
             }
         );

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "suite_id": "chat-session-followup-v1",
+  "suite_version": 1,
+  "chains": [
+    {
+      "chain_id": "aapl_pronoun_risk",
+      "steps": [
+        {"step_id": "initial", "session_action": "new", "ticker": "AAPL", "question": "애플의 성장 동력과 핵심 리스크를 조사해줘.", "evaluation_focus": ["initial_grounding"]},
+        {"step_id": "followup", "session_action": "continue", "ticker": "AAPL", "question": "그중 가장 큰 리스크는?", "evaluation_focus": ["pronoun_resolution", "same_session"]}
+      ]
+    },
+    {
+      "chain_id": "aapl_year_comparison",
+      "steps": [
+        {"step_id": "initial", "session_action": "new", "ticker": "AAPL", "question": "애플의 최근 매출과 영업이익 흐름을 조사해줘.", "evaluation_focus": ["period_grounding"]},
+        {"step_id": "followup", "session_action": "continue", "ticker": "AAPL", "question": "그 수치가 전년보다 좋아진 거야?", "evaluation_focus": ["numeric_referent", "period_continuity"]}
+      ]
+    },
+    {
+      "chain_id": "aapl_msft_comparison",
+      "steps": [
+        {"step_id": "aapl", "session_action": "new", "ticker": "AAPL", "question": "애플의 현금흐름 안정성을 조사해줘.", "evaluation_focus": ["aapl_cash_flow"]},
+        {"step_id": "msft", "session_action": "continue", "ticker": "MSFT", "question": "마이크로소프트의 현금흐름 안정성도 같은 기준으로 조사해줘.", "evaluation_focus": ["msft_cash_flow", "same_session"]},
+        {"step_id": "compare", "session_action": "continue", "ticker": "MSFT", "question": "두 회사 중 현금흐름은 어디가 더 안정적이야?", "evaluation_focus": ["multi_company_referent", "comparison"]}
+      ]
+    },
+    {
+      "chain_id": "cross_session_isolation",
+      "steps": [
+        {"step_id": "aapl_session", "session_action": "new", "ticker": "AAPL", "question": "애플의 공급망 리스크를 조사해줘.", "evaluation_focus": ["session_a"]},
+        {"step_id": "nvda_new_session", "session_action": "new", "ticker": "NVDA", "question": "그럼 가장 큰 위험은?", "evaluation_focus": ["session_b", "no_cross_session_leak"]}
+      ]
+    },
+    {
+      "chain_id": "resume_initial_session",
+      "steps": [
+        {"step_id": "aapl_initial", "session_action": "new", "ticker": "AAPL", "question": "애플의 핵심 위험과 밸류에이션 부담을 조사해줘.", "evaluation_focus": ["initial_session"]},
+        {"step_id": "msft_new", "session_action": "new", "ticker": "MSFT", "question": "마이크로소프트의 성장 동력을 조사해줘.", "evaluation_focus": ["intervening_session"]},
+        {"step_id": "aapl_resume", "session_action": "resume_initial", "ticker": "AAPL", "question": "아까 말한 위험이 밸류에이션에 어떤 영향을 줘?", "evaluation_focus": ["explicit_resume", "referent_recovery"]}
+      ]
+    },
+    {
+      "chain_id": "six_turn_continuity",
+      "steps": [
+        {"step_id": "business", "session_action": "new", "ticker": "AAPL", "question": "애플의 사업 구조를 간단히 조사해줘.", "evaluation_focus": ["business_model"]},
+        {"step_id": "services", "session_action": "continue", "ticker": "AAPL", "question": "그중 서비스 사업은 왜 중요한데?", "evaluation_focus": ["services_referent"]},
+        {"step_id": "margin", "session_action": "continue", "ticker": "AAPL", "question": "그게 전체 마진에는 어떤 영향을 줘?", "evaluation_focus": ["margin_causality"]},
+        {"step_id": "risk", "session_action": "continue", "ticker": "AAPL", "question": "그 논리를 깨뜨릴 수 있는 위험은 뭐야?", "evaluation_focus": ["countercase"]},
+        {"step_id": "valuation", "session_action": "continue", "ticker": "AAPL", "question": "그 위험까지 고려하면 현재 밸류에이션은 어떻게 봐야 해?", "evaluation_focus": ["valuation_impact"]},
+        {"step_id": "synthesis", "session_action": "continue", "ticker": "AAPL", "question": "앞의 논리를 종합해서 투자자가 확인할 지표를 우선순위로 정리해줘.", "evaluation_focus": ["four_turn_tail", "synthesis"]}
+      ]
+    }
+  ]
+}

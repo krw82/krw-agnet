@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "suite_id": "multi-user-chat-load-v1",
+  "principals": 20,
+  "rooms_per_principal": 3,
+  "turns_per_room": 2,
+  "queue_only_principals": 2000,
+  "global_active_concurrency": 8,
+  "provider_turns_per_run": 2,
+  "capability_calls_per_run": 2,
+  "active_room_rss_samples": [1, 4, 16],
+  "invariants": [
+    "same_room_serialized",
+    "different_rooms_same_principal_parallel",
+    "principal_fair_queue",
+    "scope_isolation",
+    "duplicate_run_id_idempotency",
+    "queue_only_has_no_tasks_or_clients"
+  ]
+}

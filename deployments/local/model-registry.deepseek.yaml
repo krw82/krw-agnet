@@ -1,0 +1,49 @@
+schema_version: 4
+registry_id: deepseek-local-2026-08
+models:
+  - model_id: deepseek-v4-flash
+    api_base: https://api.deepseek.com/anthropic
+    api_version: anthropic-messages-v1
+    max_context_tokens: 1000000
+    max_output_tokens: 384000
+    max_in_flight: 32
+    provider_wire_capabilities:
+      thinking:
+        supported: true
+        supports_tools: true
+        # The Anthropic compatibility accepts `any`/`tool`; this keeps a
+        # capability frontier from drifting into an avoidable free-text turn.
+        supports_tool_choice: true
+        # DeepSeek supports JSON Output on its native API. The Anthropic
+        # adapter keeps this semantic lane but intentionally omits the
+        # undocumented response_format field and relies on prompt + repair.
+        supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
+      non_thinking:
+        supported: true
+        supports_tools: true
+        supports_tool_choice: true
+        supports_json_object: true
+        supports_json_schema_output: false
+        supports_strict_tool_input: false
+      requires_thinking_block_replay: true
+      # DeepSeek may emit a thinking block followed directly by tool_use with
+      # an empty assistant content string. Only reasoning_content is required
+      # for replay in thinking mode.
+      requires_assistant_content_for_tool_calls: false
+profiles:
+  # Keep the AgentImage's logical profile ids stable; only the provider model
+  # and wire capability matrix change between test and production.
+  - profile_id: glm_high
+    model_id: deepseek-v4-flash
+    thinking: enabled
+    reasoning_effort: high
+  - profile_id: glm_max
+    model_id: deepseek-v4-flash
+    thinking: enabled
+    reasoning_effort: max
+  - profile_id: glm_direct
+    model_id: deepseek-v4-flash
+    thinking: disabled
+    reasoning_effort: null

@@ -452,16 +452,31 @@ fn prepare_globals(
     if profile_ids.len() != registry.profiles.len() || registry.profiles.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModelProfile);
     }
-    // Each provider admitted by this release must carry its complete
-    // high/max/direct profile triad. This permits a GLM-only deployment while
-    // retaining a fail-closed contract for every model that is present.
+    // Each provider admitted by this release must carry a complete
+    // high/max/direct profile triad. The historical `glm_*` ids are now
+    // logical execution slots shared by both provider registries so the same
+    // AgentImage can be used for GLM test runs and DeepSeek production runs.
+    // DeepSeek keeps accepting the historical `flash_*` ids for fixture and
+    // migration compatibility.
     let mut required_profiles = BTreeSet::new();
     if model_ids.contains(DEEPSEEK_MODEL_ID) {
-        required_profiles.extend([
+        let deepseek_flash_complete = [
             FLASH_DIRECT_PROFILE_ID,
             FLASH_HIGH_PROFILE_ID,
             FLASH_MAX_PROFILE_ID,
-        ]);
+        ]
+        .iter()
+        .all(|profile_id| profile_ids.contains(profile_id));
+        let deepseek_logical_complete = [
+            GLM_DIRECT_PROFILE_ID,
+            GLM_HIGH_PROFILE_ID,
+            GLM_MAX_PROFILE_ID,
+        ]
+        .iter()
+        .all(|profile_id| profile_ids.contains(profile_id));
+        if !deepseek_flash_complete && !deepseek_logical_complete {
+            return Err(ConfigError::ModelProfileInventoryMismatch);
+        }
     }
     if model_ids.contains(GLM_MODEL_ID) {
         required_profiles.extend([
@@ -1213,24 +1228,14 @@ fn validate_deepseek_model_profile(
     profile: &ModelExecutionProfile,
     model: &ModelDescriptor,
 ) -> Result<(), ConfigError> {
-    let exact_profile = match profile.profile_id.as_str() {
-        FLASH_HIGH_PROFILE_ID => {
+    // `glm_*` is the shared logical profile vocabulary used by the checked-in
+    // AgentImages. `flash_*` remains accepted for older DeepSeek fixtures.
+    let exact_profile =
+        profile_semantics(&profile.profile_id).is_some_and(|(thinking, reasoning_effort)| {
             profile.model_id == DEEPSEEK_MODEL_ID
-                && profile.thinking == ThinkingMode::Enabled
-                && profile.reasoning_effort == Some(ReasoningEffort::High)
-        }
-        FLASH_MAX_PROFILE_ID => {
-            profile.model_id == DEEPSEEK_MODEL_ID
-                && profile.thinking == ThinkingMode::Enabled
-                && profile.reasoning_effort == Some(ReasoningEffort::Max)
-        }
-        FLASH_DIRECT_PROFILE_ID => {
-            profile.model_id == DEEPSEEK_MODEL_ID
-                && profile.thinking == ThinkingMode::Disabled
-                && profile.reasoning_effort.is_none()
-        }
-        _ => false,
-    };
+                && profile.thinking == thinking
+                && profile.reasoning_effort == reasoning_effort
+        });
     if model.model_id != DEEPSEEK_MODEL_ID
         || !model
             .provider_wire_capabilities
@@ -1247,27 +1252,19 @@ fn validate_glm_model_profile(
     profile: &ModelExecutionProfile,
     model: &ModelDescriptor,
 ) -> Result<(), ConfigError> {
-    // Mirror of the DeepSeek profile contract, but for GLM-5.2. The three
-    // semantic shapes (high/max/direct) are identical to DeepSeek's so that
-    // the runtime can swap providers without redefining reasoning budgets.
-    let exact_profile = match profile.profile_id.as_str() {
-        GLM_HIGH_PROFILE_ID => {
+    // Mirror of the DeepSeek profile contract, but only the shared `glm_*`
+    // slots are admitted for a GLM registry. This keeps the public image
+    // contract stable while preventing a provider-specific alias from being
+    // silently reused for the wrong model.
+    let exact_profile =
+        matches!(
+            profile.profile_id.as_str(),
+            GLM_HIGH_PROFILE_ID | GLM_MAX_PROFILE_ID | GLM_DIRECT_PROFILE_ID
+        ) && profile_semantics(&profile.profile_id).is_some_and(|(thinking, reasoning_effort)| {
             profile.model_id == GLM_MODEL_ID
-                && profile.thinking == ThinkingMode::Enabled
-                && profile.reasoning_effort == Some(ReasoningEffort::High)
-        }
-        GLM_MAX_PROFILE_ID => {
-            profile.model_id == GLM_MODEL_ID
-                && profile.thinking == ThinkingMode::Enabled
-                && profile.reasoning_effort == Some(ReasoningEffort::Max)
-        }
-        GLM_DIRECT_PROFILE_ID => {
-            profile.model_id == GLM_MODEL_ID
-                && profile.thinking == ThinkingMode::Disabled
-                && profile.reasoning_effort.is_none()
-        }
-        _ => false,
-    };
+                && profile.thinking == thinking
+                && profile.reasoning_effort == reasoning_effort
+        });
     if model.model_id != GLM_MODEL_ID
         || !model
             .provider_wire_capabilities
@@ -1278,6 +1275,19 @@ fn validate_glm_model_profile(
         return Err(ConfigError::InvalidModelProfile(profile.profile_id.clone()));
     }
     Ok(())
+}
+
+fn profile_semantics(profile_id: &str) -> Option<(ThinkingMode, Option<ReasoningEffort>)> {
+    match profile_id {
+        FLASH_HIGH_PROFILE_ID | GLM_HIGH_PROFILE_ID => {
+            Some((ThinkingMode::Enabled, Some(ReasoningEffort::High)))
+        }
+        FLASH_MAX_PROFILE_ID | GLM_MAX_PROFILE_ID => {
+            Some((ThinkingMode::Enabled, Some(ReasoningEffort::Max)))
+        }
+        FLASH_DIRECT_PROFILE_ID | GLM_DIRECT_PROFILE_ID => Some((ThinkingMode::Disabled, None)),
+        _ => None,
+    }
 }
 
 fn validate_versions(

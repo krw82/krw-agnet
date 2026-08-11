@@ -6,7 +6,8 @@ use krw_agent_contracts::{
     KRW_GURU_EVIDENCE_REVIEW_INPUT_V1, KRW_GURU_EVIDENCE_REVIEW_RESULT_V1,
     KRW_GURU_INPUT_CORRECTION_V1, KRW_GURU_QUERY_CONTEXT_INPUT_V1,
     KRW_GURU_QUERY_CONTEXT_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1,
-    build_company_research_context, build_evidence_review_input, research_pack_identity,
+    build_company_research_context, build_evidence_review_input,
+    enrich_guru_query_input_with_result_context, research_pack_identity,
     validate_company_brief_input_identity, validate_company_brief_result_linkage,
     validate_evidence_review_exchange, validate_evidence_review_input_origin,
     validate_guru_company_search_plan, validate_guru_query_exchange, validate_value,
@@ -62,8 +63,9 @@ impl GuruMapping {
 
 #[derive(Debug, Clone)]
 struct CommittedGuruQuery {
-    /// The bounded request retains the normalized light company context but
-    /// not the potentially 2 MiB `ResearchPack` result.
+    /// The physical request is enriched only after the trusted Guru result
+    /// supplies the neutral light company context. It retains neither a
+    /// model-authored context nor the potentially 2 MiB `ResearchPack`.
     input: Value,
     research_pack_identity: String,
 }
@@ -261,8 +263,12 @@ impl GuruRunState {
                 })?;
                 let identity = research_pack_identity(pack)
                     .map_err(|error| reject("guru_pack_invalid", format!("{error:?}")))?;
+                let enriched_input = enrich_guru_query_input_with_result_context(
+                    arguments, payload,
+                )
+                .map_err(|error| reject("guru_query_context_invalid", format!("{error:?}")))?;
                 self.query = Some(CommittedGuruQuery {
-                    input: arguments.clone(),
+                    input: enriched_input,
                     research_pack_identity: identity,
                 });
             }

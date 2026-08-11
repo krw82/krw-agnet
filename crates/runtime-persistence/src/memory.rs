@@ -11,7 +11,8 @@ use krw_agent_persistence::agent_v1::ReadSessionMemoryResponse;
 use krw_agent_protocol::{ContentHash, SessionMemoryCarrierV3};
 use krw_session_memory::{
     MAX_SESSION_MEMORY_SNAPSHOT_BYTES, MAX_SESSION_MEMORY_VIEW_BYTES, SessionMemoryCatalogV3,
-    SessionMemoryDeltaV3, SessionMemorySnapshotV3, empty_frontier_hash, empty_source_lineage_hash,
+    SessionMemoryDeltaV3, SessionMemorySnapshotV3, SessionViewQuery, empty_frontier_hash,
+    empty_source_lineage_hash,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -265,6 +266,17 @@ impl SessionMemoryPageAccumulator {
     }
 
     pub fn finish(self, question: &str) -> Result<ResolvedSessionMemory, MemoryResolutionError> {
+        let query = SessionViewQuery {
+            question,
+            trusted_tickers: &[],
+        };
+        self.finish_with_query(&query)
+    }
+
+    pub fn finish_with_query(
+        self,
+        query: &SessionViewQuery<'_>,
+    ) -> Result<ResolvedSessionMemory, MemoryResolutionError> {
         if !self.complete {
             return Err(MemoryResolutionError::Incomplete);
         }
@@ -306,7 +318,7 @@ impl SessionMemoryPageAccumulator {
             None
         } else {
             let view = provider_catalog
-                .select_view(question, MAX_SESSION_MEMORY_VIEW_BYTES)
+                .select_view_with_query(query, MAX_SESSION_MEMORY_VIEW_BYTES)
                 .map_err(|_| MemoryResolutionError::InvalidView)?;
             let canonical_view = serde_json::to_value(&view)?;
             let view_hash = ContentHash::sha256(serde_jcs::to_vec(&canonical_view)?);

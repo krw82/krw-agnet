@@ -173,6 +173,21 @@ pub struct BudgetUsage {
     /// Cumulative wall-clock time spent inside phase compaction.
     #[serde(default)]
     pub compact_total_ms: u64,
+    /// Time waiting for a model concurrency slot, excluding the model call.
+    #[serde(default)]
+    pub provider_queue_wait_ms: u64,
+    /// Time spent reconstructing and validating same-room session context.
+    #[serde(default)]
+    pub session_memory_total_ms: u64,
+    /// Time spent in the best-effort market preflight.
+    #[serde(default)]
+    pub market_preflight_ms: u64,
+    /// Time spent assembling and canonicalizing a provider prompt.
+    #[serde(default)]
+    pub prompt_build_total_ms: u64,
+    /// Time spent awaiting durable episode/run-state checkpoints.
+    #[serde(default)]
+    pub checkpoint_total_ms: u64,
 }
 
 impl BudgetUsage {
@@ -346,7 +361,7 @@ pub struct ProviderWireCapabilities {
 }
 
 impl ProviderWireCapabilities {
-    /// DeepSeek's compatibility profile is represented by explicit facts
+    /// `DeepSeek`'s compatibility profile is represented by explicit facts
     /// rather than scattered provider-specific conditionals. YAML must still
     /// carry this full matrix; this constant is used for validation and
     /// deterministic compatibility fixtures only.
@@ -355,8 +370,10 @@ impl ProviderWireCapabilities {
             thinking: ProviderWireModeCapabilities {
                 supported: true,
                 supports_tools: true,
-                // DeepSeek V4 thinking rejects the `tool_choice` parameter.
-                supports_tool_choice: false,
+                // DeepSeek's Anthropic compatibility accepts `any`/`tool`;
+                // emitting the semantic requirement avoids a free-text turn
+                // when the workflow is at a capability frontier.
+                supports_tool_choice: true,
                 supports_json_object: true,
                 supports_json_schema_output: false,
                 supports_strict_tool_input: false,
@@ -364,16 +381,16 @@ impl ProviderWireCapabilities {
             non_thinking: ProviderWireModeCapabilities {
                 supported: true,
                 supports_tools: true,
-                // Native DeepSeek V4 Flash rejects `tool_choice` in direct
-                // mode as well. A semantic tool requirement belongs to the
-                // kernel contract, not to an assumed provider wire feature.
-                supports_tool_choice: false,
+                supports_tool_choice: true,
                 supports_json_object: true,
                 supports_json_schema_output: false,
                 supports_strict_tool_input: false,
             },
             requires_thinking_block_replay: true,
-            requires_assistant_content_for_tool_calls: true,
+            // DeepSeek's thinking-mode tool-call examples allow an empty
+            // assistant content field; the reasoning/thinking block is the
+            // replay requirement, not visible assistant text.
+            requires_assistant_content_for_tool_calls: false,
         }
     }
 
@@ -403,9 +420,11 @@ impl ProviderWireCapabilities {
                 supports_json_schema_output: false,
                 supports_strict_tool_input: false,
             },
-            // GLM-5.2 emits a thinking block during thinking but does NOT emit
-            // assistant content alongside tool_calls (unlike DeepSeek V4).
-            requires_thinking_block_replay: true,
+            // GLM-5.2 may omit the thinking block on tool-only turns even when
+            // thinking is enabled. The run engine still injects a bounded
+            // wire-only replay placeholder before a later request, but the
+            // provider episode itself must not be rejected for this omission.
+            requires_thinking_block_replay: false,
             requires_assistant_content_for_tool_calls: false,
         }
     }
@@ -1313,7 +1332,7 @@ mod tests {
         assert_eq!(glm_profile.model_id, "glm-5.2");
         assert_eq!(glm_model.model_id, "glm-5.2");
         assert!(
-            glm_model
+            !glm_model
                 .provider_wire_capabilities
                 .requires_thinking_block_replay
         );
@@ -1448,6 +1467,11 @@ mod tests {
             provider_total_ms: 18_200,
             capability_total_ms: 9_400,
             compact_total_ms: 250,
+            provider_queue_wait_ms: 120,
+            session_memory_total_ms: 34,
+            market_preflight_ms: 8,
+            prompt_build_total_ms: 75,
+            checkpoint_total_ms: 19,
         };
         let encoded = serde_json::to_string(&usage).unwrap();
         let decoded: BudgetUsage = serde_json::from_str(&encoded).unwrap();
@@ -1472,6 +1496,11 @@ mod tests {
         assert_eq!(decoded.provider_total_ms, 0);
         assert_eq!(decoded.capability_total_ms, 0);
         assert_eq!(decoded.compact_total_ms, 0);
+        assert_eq!(decoded.provider_queue_wait_ms, 0);
+        assert_eq!(decoded.session_memory_total_ms, 0);
+        assert_eq!(decoded.market_preflight_ms, 0);
+        assert_eq!(decoded.prompt_build_total_ms, 0);
+        assert_eq!(decoded.checkpoint_total_ms, 0);
         assert_eq!(decoded.capability_calls, 4);
     }
 }

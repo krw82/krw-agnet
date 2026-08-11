@@ -13,9 +13,12 @@ krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_state=${KRW_AGENT_LOCAL_STATE_DIR:-"$krw_root/.local/agent-gateway"}
 krw_logs="$krw_state/logs"
 krw_pid_file="$krw_state/dev-stack.pid"
+krw_lock_dir="$krw_state/dev-stack.lock"
+krw_postgres_marker="$krw_state/postgres-lifecycle"
 krw_log_file="$krw_logs/dev-stack.log"
 krw_gateway_port=${KRW_AGENT_GATEWAY_PORT:-4318}
 krw_health_url=${KRW_AGENT_LOCAL_GATEWAY_HEALTH_URL:-"http://127.0.0.1:$krw_gateway_port/healthz"}
+krw_provider=${KRW_AGENT_PROVIDER:-glm}
 krw_start_script="$krw_root/scripts/start_local_agent_gateway_stack.sh"
 krw_cargo_bin=${KRW_AGENT_CARGO_BIN:-cargo}
 if [[ "$krw_cargo_bin" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
@@ -30,6 +33,11 @@ if [[ "$krw_cargo_bin" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
   fi
 fi
 krw_cargo_dir=$(CDPATH= cd -- "$(dirname -- "$krw_cargo_bin")" 2>/dev/null && pwd || printf '.')
+
+case "$krw_provider" in
+  glm|deepseek) ;;
+  *) printf 'KRW_AGENT_PROVIDER must be glm or deepseek\n' >&2; exit 2 ;;
+esac
 
 usage() {
   cat >&2 <<'EOF'
@@ -52,6 +60,28 @@ EOF
 ensure_state() {
   mkdir -p "$krw_state" "$krw_logs"
   chmod 700 "$krw_state" "$krw_logs"
+  if [[ ! -f "$krw_postgres_marker" ]]; then
+    printf 'persistent\n' >"$krw_postgres_marker"
+    chmod 600 "$krw_postgres_marker"
+  fi
+}
+
+acquire_stack_lock() {
+  if mkdir "$krw_lock_dir" 2>/dev/null; then
+    printf '%s\n' "$$" >"$krw_lock_dir/pid"
+    trap 'rm -rf "$krw_lock_dir"' EXIT
+    return 0
+  fi
+  local lock_pid=''
+  [[ -f "$krw_lock_dir/pid" ]] && lock_pid=$(<"$krw_lock_dir/pid") || true
+  if [[ -n "$lock_pid" && "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    printf 'another dev-stack operation is already running (pid=%s)\n' "$lock_pid" >&2
+    return 1
+  fi
+  rm -rf "$krw_lock_dir"
+  mkdir "$krw_lock_dir"
+  printf '%s\n' "$$" >"$krw_lock_dir/pid"
+  trap 'rm -rf "$krw_lock_dir"' EXIT
 }
 
 read_pid() {
@@ -87,8 +117,29 @@ agentd_ready() {
   pgrep -f -- "$krw_root/target/debug/krw-agentd --image-dir" >/dev/null 2>&1
 }
 
+provider_matches() {
+  local pid command
+  # macOS `pgrep -af` returns only PIDs on some versions, so obtain the
+  # command line through `ps` for each matched daemon instead of treating the
+  # pgrep output as portable text.
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+    if [[ "$command" == *"--provider $krw_provider"* ]]; then
+      return 0
+    fi
+    # Older stacks predate the explicit selector and always used the
+    # canonical GLM registry. Treat that exact compatibility command as GLM
+    # only; a DeepSeek selection still requires an explicit restart.
+    if [[ "$krw_provider" == glm && "$command" == *"/deployments/local/model-registry.yaml"* ]]; then
+      return 0
+    fi
+  done < <(pgrep -f -- "$krw_root/target/debug/krw-agentd --image-dir" 2>/dev/null || true)
+  return 1
+}
+
 stack_ready() {
-  gateway_ready && agentd_ready
+  gateway_ready && agentd_ready && provider_matches
 }
 
 binaries_ready() {
@@ -109,6 +160,7 @@ wait_for_gateway() {
 
 start_stack() {
   ensure_state
+  acquire_stack_lock || return 1
   local skip_prepare=0
   local start_arg
   for start_arg in "$@"; do
@@ -122,6 +174,10 @@ start_stack() {
     if stack_ready; then
       printf 'dev stack already ready: %s\n' "$krw_health_url"
       return 0
+    fi
+    if gateway_ready && agentd_ready && ! provider_matches; then
+      printf 'dev stack is running with another provider; run down before switching to %s\n' "$krw_provider" >&2
+      return 1
     fi
     if gateway_ready; then
       printf 'Gateway is up but krw-agentd is absent; refusing to reuse a stale stack\n' >&2
@@ -140,9 +196,13 @@ start_stack() {
   # Reuse a healthy Gateway instead of launching a second set of processes on
   # the same ports. It is intentionally treated as externally supervised, so
   # `down` will never terminate it.
-  if gateway_ready && agentd_ready; then
+  if gateway_ready && agentd_ready && provider_matches; then
     printf 'existing externally supervised Gateway is ready: %s\n' "$krw_health_url"
     return 0
+  fi
+  if gateway_ready && agentd_ready; then
+    printf 'external Gateway is running with another provider; stop it before selecting %s\n' "$krw_provider" >&2
+    return 1
   fi
   if gateway_ready; then
     printf 'Gateway is up but krw-agentd is absent; stop the stale external stack before retrying\n' >&2
@@ -150,7 +210,11 @@ start_stack() {
   fi
 
   if [[ -f "$krw_pid_file" ]]; then
-    rm -f "$krw_pid_file"
+    local stale_pid=''
+    stale_pid=$(<"$krw_pid_file") || true
+    if [[ ! "$stale_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$stale_pid" 2>/dev/null; then
+      rm -f "$krw_pid_file"
+    fi
   fi
   if (( skip_prepare == 0 )) && [[ "${KRW_AGENT_SKIP_PREPARE:-0}" != 1 ]]; then
     prepare_binaries
@@ -201,8 +265,10 @@ stop_stack() {
   local pid
   pid=$(read_pid) || {
     rm -f "$krw_pid_file"
-    if gateway_ready && agentd_ready; then
+    if gateway_ready && agentd_ready && provider_matches; then
       printf 'external dev stack is still serving; leaving it running\n'
+    elif gateway_ready && agentd_ready; then
+      printf 'external dev stack is serving another provider; leaving it untouched\n'
     elif gateway_ready; then
       printf 'stale external Gateway is still serving; leaving it untouched\n'
     else
@@ -251,10 +317,13 @@ show_status() {
     fi
   else
     printf 'supervisor=stopped\n'
-    if gateway_ready && agentd_ready; then
+    if gateway_ready && agentd_ready && provider_matches; then
       printf 'gateway=ready (external supervisor) url=%s\n' "$krw_health_url"
       printf 'agentd=ready (external supervisor)\n'
       return 0
+    elif gateway_ready && agentd_ready; then
+      printf 'gateway=ready but provider differs from selected %s\n' "$krw_provider"
+      return 1
     elif gateway_ready; then
       printf 'gateway=ready but agentd=missing_or_stopped (stale external stack)\n'
       return 1

@@ -2,7 +2,7 @@
 
 상태: **준비됨, 웹앱에는 아직 mount하지 않음.**
 
-`krw-agent run`과 미래 웹앱은 `DeepSeek` SDK나 MCP를 직접 호출하지 않는다. 둘 다
+`krw-agent run`과 미래 웹앱은 provider SDK나 MCP를 직접 호출하지 않는다. 둘 다
 호스트가 소유하는 작은 Agent Gateway에 **질문 intent만** 보내고, Gateway가 이미 있는
 `@krw-agent/host` adapter로 immutable enqueue claim을 만든다.
 
@@ -16,7 +16,7 @@ Agent Gateway (authenticated server only)
 PostgreSQL agent_v1.enqueue_run
     ▼
 krw-agentd
-    │ DeepSeek Flash + pooled immutable ontology MCP
+    │ Selected GLM test or DeepSeek production lane + pooled immutable ontology MCP
     ▼
 atomic final + host outbox
     ▼
@@ -26,7 +26,7 @@ Gateway status / existing product SSE
 따라서 Gateway는 **모델 실행기나 두 번째 agent runtime이 아니다.** 다음을 절대 하지
 않는다.
 
-- `DEEPSEEK_API_KEY`를 읽거나 DeepSeek API를 호출하지 않음
+- `GLM_API_KEY`/`DEEPSEEK_API_KEY`를 읽거나 어느 provider API도 직접 호출하지 않음
 - MCP 주소·credential·release를 browser/CLI request에서 받지 않음
 - browser/CLI JSON에서 tenant, principal, run, immutable claim, session-memory carrier를 받지 않음
 - `agent_store` table을 직접 읽거나 arbitrary SQL을 실행하지 않음
@@ -42,10 +42,10 @@ Gateway + `@krw-agent/host`는 이 둘을 분리한다.
 - 웹앱 서버는 인증·세션 ownership·과금 reservation·product presentation을 소유한다.
 - `@krw-agent/host`는 서버 안에서 안전한 intent를 hash-bound `agent_v1.enqueue_run` 요청으로
   만든다.
-- `krw-agentd`는 queue에서 claim한 뒤에만 DeepSeek와 MCP를 실행한다.
+- `krw-agentd`는 queue에서 claim한 뒤에만 선택된 provider와 MCP를 실행한다.
 - browser와 CLI는 같은 작은 HTTP 계약만 안다.
 
-`@krw-agent/host`가 여기서 말하는 SDK다. **DeepSeek SDK는 웹앱에 넣지 않는다.**
+`@krw-agent/host`가 여기서 말하는 SDK다. **provider SDK/키는 웹앱에 넣지 않는다.**
 
 ## v1 HTTP 계약
 

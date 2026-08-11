@@ -396,8 +396,9 @@ impl CapabilityCatalog {
 }
 
 /// Compile the sealed Guru evidence boundary from `AgentImage` declarations.
-/// The role and capability IDs are intentionally never inferred from their
-/// names: the review derivation is the source of truth for the child tool set.
+/// The review derivation is the source of truth for the evidence tool set.
+/// Guru may run this policy in the ordinary parent workflow; a bounded child
+/// is optional and, when present, is checked as an additional allowlist.
 fn compile_guru_runtime_policy(
     image: &AgentImageManifest,
     descriptors: &BTreeMap<String, CapabilityDescriptor>,
@@ -415,6 +416,7 @@ fn compile_guru_runtime_policy(
                 } => Some(evidence_capabilities),
                 InputDerivation::Identity
                 | InputDerivation::CompanyContextRequestV1
+                | InputDerivation::SealedGuruQueryContextV1
                 | InputDerivation::ResearchProposalToSearchPlanV4
                 | InputDerivation::SealedGuruCompanyBriefV1 { .. } => None,
             },
@@ -437,18 +439,26 @@ fn compile_guru_runtime_policy(
         .roles
         .iter()
         .filter(|role| role.bounded_child.is_some());
-    let role = child_roles
-        .next()
-        .ok_or(CatalogError::InvalidGuruChildPolicy)?;
-    if child_roles.next().is_some() || role.deterministic {
-        return Err(CatalogError::InvalidGuruChildPolicy);
-    }
-    let child = role
-        .bounded_child
-        .as_ref()
-        .ok_or(CatalogError::InvalidGuruChildPolicy)?;
-    if child.allowed_capabilities.as_slice() != evidence_capabilities.as_slice() {
-        return Err(CatalogError::InvalidGuruChildPolicy);
+    let evidence_capability_ids = evidence_capabilities.iter().collect::<BTreeSet<_>>();
+    if let Some(role) = child_roles.next() {
+        if child_roles.next().is_some() || role.deterministic {
+            return Err(CatalogError::InvalidGuruChildPolicy);
+        }
+        // A bounded researcher may intentionally expose a strict subset of
+        // the evidence capabilities. It must never gain a capability outside
+        // the sealed review set, while the review derivation may still retain
+        // the complete evidence union for parent-side follow-up.
+        let child = role
+            .bounded_child
+            .as_ref()
+            .ok_or(CatalogError::InvalidGuruChildPolicy)?;
+        if child
+            .allowed_capabilities
+            .iter()
+            .any(|capability_id| !evidence_capability_ids.contains(capability_id))
+        {
+            return Err(CatalogError::InvalidGuruChildPolicy);
+        }
     }
     for capability_id in *evidence_capabilities {
         let Some(descriptor) = descriptors.get(capability_id) else {
@@ -2147,27 +2157,20 @@ mod tests {
     }
 
     #[test]
-    fn guru_catalog_rejects_any_child_abi_drift() {
-        let mut image = compile_agent_dir(root().join("agents/krw-guru-advisor"))
+    fn guru_catalog_accepts_an_ordinary_research_role_without_child_abi() {
+        let image = compile_agent_dir(root().join("agents/krw-guru-advisor"))
             .expect("compile Guru AgentImage")
             .manifest;
         let role = image
             .body
             .roles
-            .iter_mut()
+            .iter()
             .find(|role| role.id == "company_evidence_researcher")
             .expect("company evidence role");
-        role.bounded_child
-            .as_mut()
-            .expect("typed child declaration")
-            .allowed_capabilities[2] = "guru.query_context".into();
-        image.content_hash =
-            ContentHash::sha256(serde_jcs::to_vec(&image.body).expect("canonical image body"));
+        assert!(role.bounded_child.is_none());
         let runtime = fixture_runtime(&image);
-        assert!(matches!(
-            CapabilityCatalog::compile(&image, runtime),
-            Err(CatalogError::InvalidGuruChildPolicy)
-        ));
+        CapabilityCatalog::compile(&image, runtime)
+            .expect("ordinary Guru role must compile without a child ABI");
     }
 
     #[tokio::test]

@@ -783,6 +783,33 @@ class OntologyStore:
             payload["warnings"] = ["no_company_topics_found"]
         return payload
 
+    def guru_light_company_context(
+        self,
+        *,
+        ticker: str,
+        company_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Build neutral company orientation for the fixed Guru workflow.
+
+        This projection is intentionally smaller than ``company_context``. It
+        carries identity and business vocabulary only; current performance,
+        valuation, and investment conclusions remain filing-research output.
+        """
+        normalized_ticker = str(ticker or "").strip().upper()
+        profiles = self._topic_map_objects(
+            ticker=normalized_ticker,
+            object_types=("CompanyBusinessProfile",),
+            document_types=None,
+            periods=None,
+            limit=3,
+        )
+        return build_guru_light_company_context(
+            ticker=normalized_ticker,
+            company_name=company_name,
+            profiles=profiles,
+            documents=self.list_documents(ticker=normalized_ticker),
+        )
+
     def query_context(
         self,
         *,
@@ -8605,6 +8632,121 @@ def _string_values(value: Any) -> list[str]:
             output.extend(_string_values(item))
         return output
     return [str(value)] if str(value).strip() else []
+
+
+def build_guru_light_company_context(
+    *,
+    ticker: str,
+    company_name: str | None = None,
+    profiles: Sequence[Mapping[str, Any]] = (),
+    documents: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Return the bounded, neutral context accepted by GuruLightCompanyContext."""
+    normalized_ticker = str(ticker or "").strip().upper()
+    profile = next(
+        (dict(candidate) for candidate in profiles if isinstance(candidate, Mapping)),
+        {},
+    )
+    normalized_name = _guru_context_text(
+        company_name or profile.get("company_name") or normalized_ticker,
+        max_chars=512,
+    ) or normalized_ticker
+    sector = _guru_context_text(profile.get("sector"), max_chars=256)
+    description = _guru_context_text(profile.get("business_model_summary"), max_chars=8_000)
+    if not description:
+        description = (
+            "현재 인덱스에서 확인된 중립적 사업 설명이 없습니다. "
+            "사업 구조와 주요 수익원은 제출 문서에서 확인해야 합니다."
+        )
+    activities = _guru_context_list(
+        profile.get("primary_business_activities"),
+        max_items=6,
+        max_chars=1_000,
+    )
+    products = _guru_context_list(
+        profile.get("primary_revenue_sources"),
+        max_items=8,
+        max_chars=1_000,
+    )
+    revenue_logic = None
+    if products:
+        revenue_logic = _guru_context_text(
+            "인덱스에 기록된 주요 수익원: " + "; ".join(products),
+            max_chars=4_000,
+        )
+    anchors: list[dict[str, str]] = [
+        {
+            "anchor_id": "business_description",
+            "kind": "business_description",
+            "text": _guru_context_text(description, max_chars=4_000),
+        }
+    ]
+    anchors.extend(
+        {
+            "anchor_id": f"primary_activity_{index}",
+            "kind": "primary_activity",
+            "text": activity,
+        }
+        for index, activity in enumerate(activities, start=1)
+    )
+    anchors.extend(
+        {
+            "anchor_id": f"product_{index}",
+            "kind": "product",
+            "text": product,
+        }
+        for index, product in enumerate(products, start=1)
+    )
+    if revenue_logic:
+        anchors.append(
+            {"anchor_id": "revenue_logic", "kind": "revenue_logic", "text": revenue_logic}
+        )
+    if sector:
+        anchors.append({"anchor_id": "sector", "kind": "sector", "text": sector})
+
+    document_rows = [document for document in documents if isinstance(document, Mapping)]
+    has_annual_baseline = any(
+        str(document.get("document_type") or "").strip().upper() == "10-K"
+        for document in document_rows
+    )
+    return {
+        "format": "krw-guru-light-company-context/v1",
+        "ticker": normalized_ticker,
+        "company_name": normalized_name,
+        "sector": sector or None,
+        "industry": None,
+        "business_description": description,
+        "primary_activities": activities,
+        "products_or_segments": products,
+        "revenue_logic": revenue_logic,
+        "context_anchors": anchors[:16],
+        "filing_availability": {
+            "has_current_filing": bool(document_rows),
+            "has_annual_baseline": has_annual_baseline,
+        },
+    }
+
+
+def _guru_context_text(value: Any, *, max_chars: int) -> str:
+    if value is None:
+        return ""
+    normalized = " ".join(str(value).split())
+    return normalized[:max_chars].strip()
+
+
+def _guru_context_list(value: Any, *, max_items: int, max_chars: int) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in _string_values(value):
+        text = _guru_context_text(item, max_chars=max_chars)
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        values.append(text)
+        if len(values) >= max_items:
+            break
+    return values
 
 
 def _object_metrics(obj: dict[str, Any]) -> list[str]:

@@ -3,6 +3,7 @@ set -euo pipefail
 
 krw_env_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_env_file="$krw_env_root/.env.local"
+krw_env_provider=${KRW_AGENT_PROVIDER:-glm}
 
 krw_env_scope=agent
 if [[ "${1:-}" == "--market-sidecar" ]]; then
@@ -17,6 +18,14 @@ krw_env_inherited_market_store_key=${KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY:
 # agentd, image-build, or provider processes.
 unset GLM_API_KEY DEEPSEEK_API_KEY FMP_API_KEY \
   KRW_MARKET_SNAPSHOT_STORE_URL KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY
+
+case "$krw_env_provider" in
+  glm|deepseek) ;;
+  *)
+    printf 'KRW_AGENT_PROVIDER must be glm or deepseek\n' >&2
+    exit 2
+    ;;
+esac
 
 if [[ $# -eq 0 ]]; then
   printf 'usage: %s [--market-sidecar] command [argument ...]\n' "$0" >&2
@@ -37,6 +46,8 @@ fi
 
 krw_env_glm_key=''
 krw_env_glm_seen=false
+krw_env_deepseek_key=''
+krw_env_deepseek_seen=false
 krw_env_fmp_key=''
 krw_env_fmp_seen=false
 krw_env_market_store_url=''
@@ -83,18 +94,25 @@ while IFS= read -r krw_env_line || [[ -n "$krw_env_line" ]]; do
     krw_env_market_store_key_seen=true
     continue
   fi
-  # Older local files can retain a DeepSeek key from a previous provider
-  # configuration. Keep that file format compatible, but deliberately do not
-  # read or export it: this runtime launches GLM only.
   if [[ "$krw_env_line" =~ ^DEEPSEEK_API_KEY=([^[:space:]#]+)$ ]]; then
+    if [[ "$krw_env_deepseek_seen" == true ]]; then
+      printf 'local secret file defines DEEPSEEK_API_KEY more than once\n' >&2
+      exit 2
+    fi
+    krw_env_deepseek_key=${BASH_REMATCH[1]}
+    krw_env_deepseek_seen=true
     continue
   fi
-  printf 'local secret file may contain GLM_API_KEY, optional FMP/store credentials, and an ignored legacy DEEPSEEK_API_KEY only\n' >&2
+  printf 'local secret file may contain GLM_API_KEY, DEEPSEEK_API_KEY, optional FMP/store credentials\n' >&2
   exit 2
 done < "$krw_env_file"
 
-if [[ "$krw_env_glm_seen" != true || -z "$krw_env_glm_key" ]]; then
-  printf 'local secret file has no usable GLM_API_KEY\n' >&2
+if [[ "$krw_env_scope" == agent && "$krw_env_provider" == glm && ( "$krw_env_glm_seen" != true || -z "$krw_env_glm_key" ) ]]; then
+  printf 'local secret file has no usable GLM_API_KEY for the selected provider\n' >&2
+  exit 2
+fi
+if [[ "$krw_env_scope" == agent && "$krw_env_provider" == deepseek && ( "$krw_env_deepseek_seen" != true || -z "$krw_env_deepseek_key" ) ]]; then
+  printf 'local secret file has no usable DEEPSEEK_API_KEY for the selected provider\n' >&2
   exit 2
 fi
 if [[ "$krw_env_market_store_url_seen" != "$krw_env_market_store_key_seen" ]]; then
@@ -126,8 +144,11 @@ if [[ "$1" == cargo ]] && ! command -v cargo >/dev/null 2>&1; then
   unset krw_env_cargo krw_env_cargo_dir krw_env_candidate
 fi
 
-if [[ "$krw_env_scope" == agent && "$krw_env_glm_seen" == true && -n "$krw_env_glm_key" ]]; then
+if [[ "$krw_env_scope" == agent && "$krw_env_provider" == glm && "$krw_env_glm_seen" == true && -n "$krw_env_glm_key" ]]; then
   export GLM_API_KEY="$krw_env_glm_key"
+fi
+if [[ "$krw_env_scope" == agent && "$krw_env_provider" == deepseek && "$krw_env_deepseek_seen" == true && -n "$krw_env_deepseek_key" ]]; then
+  export DEEPSEEK_API_KEY="$krw_env_deepseek_key"
 fi
 if [[ "$krw_env_scope" == market_sidecar ]]; then
   if [[ "$krw_env_fmp_seen" == true && -n "$krw_env_fmp_key" ]]; then
@@ -143,7 +164,8 @@ if [[ "$krw_env_scope" == market_sidecar ]]; then
     export KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY="$krw_env_inherited_market_store_key"
   fi
 fi
-unset krw_env_scope krw_env_glm_key krw_env_glm_seen krw_env_fmp_key krw_env_fmp_seen \
+unset krw_env_scope krw_env_provider krw_env_glm_key krw_env_glm_seen \
+  krw_env_deepseek_key krw_env_deepseek_seen krw_env_fmp_key krw_env_fmp_seen \
   krw_env_market_store_url krw_env_market_store_url_seen \
   krw_env_market_store_key krw_env_market_store_key_seen \
   krw_env_inherited_fmp_key krw_env_inherited_market_store_url krw_env_inherited_market_store_key

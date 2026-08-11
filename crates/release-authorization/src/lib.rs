@@ -3,13 +3,13 @@
 //! A content hash proves integrity only after a caller already knows which
 //! bytes to trust. This crate adds a small, canonical Ed25519 authorization
 //! envelope that binds the daemon's resolved public descriptor, release set,
-//! exact runtime/kernel version, and the only permitted physical model.
+//! exact runtime/kernel version, and one permitted physical model lane.
 //! Private key material is deliberately accepted only as caller-owned bytes;
 //! it is never stored in an authorization, descriptor, or trust registry.
 
 use std::collections::BTreeSet;
 
-use krw_agent_protocol::{ContentHash, GLM_MODEL_ID, PublicReleaseDescriptor};
+use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, PublicReleaseDescriptor};
 use ring::rand::SystemRandom;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
@@ -129,6 +129,19 @@ pub fn verify_for_descriptor(
     }
     if payload.kernel_version != context.kernel_version {
         return Err(ReleaseAuthorizationError::KernelVersionMismatch);
+    }
+    // A signed model lane is useful only when it is also present in the exact
+    // descriptor being admitted. Empty descriptors are retained for offline
+    // unit fixtures; every live release descriptor contains entrypoints and is
+    // therefore bound to the authorization model here as well as in agentd's
+    // selected-registry assertion.
+    if !descriptor.entries.is_empty()
+        && !descriptor
+            .entries
+            .iter()
+            .any(|entry| entry.execution.resolved_model == payload.model_id)
+    {
+        return Err(ReleaseAuthorizationError::ModelMismatch);
     }
     if payload.sequence < trust.minimum_sequence {
         return Err(ReleaseAuthorizationError::SequenceDowngrade);
@@ -254,7 +267,7 @@ fn validate_payload(
         .map_err(|_| ReleaseAuthorizationError::InvalidContentHash)?;
     validate_version(&payload.runtime_version, "runtime version")?;
     validate_version(&payload.kernel_version, "kernel version")?;
-    if payload.model_id != GLM_MODEL_ID {
+    if !ALLOWED_MODEL_IDS.contains(&payload.model_id.as_str()) {
         return Err(ReleaseAuthorizationError::ModelMismatch);
     }
     Ok(())
@@ -349,7 +362,7 @@ pub enum ReleaseAuthorizationError {
     InvalidSequence,
     #[error("authorization lifetime is invalid")]
     InvalidAuthorizationLifetime,
-    #[error("authorization model is not exact DeepSeek Flash")]
+    #[error("authorization model is not an admitted provider model")]
     ModelMismatch,
     #[error("trust registry has an invalid key count")]
     TrustKeyCount,
@@ -389,7 +402,7 @@ pub enum ReleaseAuthorizationError {
 
 #[cfg(test)]
 mod tests {
-    use krw_agent_protocol::PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION;
+    use krw_agent_protocol::{GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION};
     use ring::rand::SystemRandom;
     use ring::signature::Ed25519KeyPair;
 

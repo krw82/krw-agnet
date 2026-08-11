@@ -1013,6 +1013,7 @@ mod tests {
                 "market.snapshot",
                 "ontology.query",
                 "ontology.trace",
+                "ontology.chain",
                 "skill.load",
             ])
         );
@@ -1046,11 +1047,14 @@ mod tests {
         let review = planner
             .for_request(&request, "author_agent_analysis")
             .unwrap();
-        assert_eq!(review.capability_schemas.len(), 1);
-        assert_eq!(
-            review.capability_schemas[0].input_contract_id,
-            "krw-guru-agent-evidence-analysis/v1"
-        );
+        assert_eq!(review.capability_schemas.len(), 2);
+        let review_contracts = review
+            .capability_schemas
+            .iter()
+            .map(|schema| schema.input_contract_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(review_contracts.contains("krw-guru-agent-evidence-analysis/v1"));
+        assert!(review_contracts.contains("skill-load/v1"));
     }
 
     #[test]

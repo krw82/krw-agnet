@@ -12,6 +12,9 @@
 //! its image-bound checkpoint is the sole workflow authority during recovery.
 
 mod bounded_child;
+pub mod timings;
+
+pub use timings::{RuntimeStageTimingSnapshot, RuntimeStageTimings};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -27,18 +30,21 @@ use krw_agent_bounded_child::{
 };
 use krw_agent_contracts::{
     ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1, DISPLAY_PLAN_V2,
-    DisplayPlanV2, GuruCompanyBriefResult, KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1,
-    KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1,
-    KRW_FILING_METADATA_V1, KRW_FILING_READ_DOCUMENT_RESULT_V1, KRW_FILING_READ_SECTION_RESULT_V1,
-    KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1, KRW_FORM4_TRANSACTIONS_RESULT_V1,
-    KRW_GURU_COMPANY_BRIEF_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1,
-    NOTEBOOK_TRANSFORM_V2, NotebookTransformInputV1, NotebookTransformV2,
-    QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2,
-    ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
+    DisplayPlanV2, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult, KRW_FEED_CONTEXT_V2,
+    KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_RESULT_V1,
+    KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1, KRW_FILING_READ_DOCUMENT_RESULT_V1,
+    KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1,
+    KRW_FORM4_TRANSACTIONS_RESULT_V1, KRW_GURU_COMPANY_BRIEF_RESULT_V1,
+    KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1, NORMALIZED_CAPABILITY_RESULT_V1,
+    NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2, NotebookTransformInputV1,
+    NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4,
+    RESEARCH_STATE_V2, ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
     ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1,
     build_company_brief_input, build_company_research_context, build_evidence_review_input,
-    contract as canonical_contract, research_proposal_v4_repair_directive,
-    validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
+    compile_guru_research_frame, contract as canonical_contract,
+    enrich_guru_query_input_with_result_context, normalize_guru_agent_evidence_analysis,
+    research_proposal_v4_repair_directive, validate_display_plan_linkage,
+    validate_notebook_linkage, validate_routing_linkage,
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
 use krw_agent_evidence::{
@@ -62,16 +68,17 @@ use krw_agent_persistence::{
 use krw_agent_protocol::GLM_MODEL_ID;
 use krw_agent_protocol::{
     ALLOWED_MODEL_IDS, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash,
-    DeploymentBinding, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
-    ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, is_canonical_ticker,
-    provider_tool_name,
+    DEEPSEEK_MODEL_ID, DeploymentBinding, PROTOCOL_VERSION, ProviderWireCapabilities,
+    ReasoningEffort, ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode,
+    is_canonical_ticker, provider_tool_name,
 };
 #[cfg(feature = "http")]
 use krw_agent_provider_wire::ProviderClient;
 use krw_agent_provider_wire::{
-    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, OutputConfig, ProviderEpisodeV1,
-    ProviderMessage, ProviderToolDefinition, RequestMetadata, ResponseFormat, ThinkingConfig,
-    ToolCallKind, ToolChoice, ToolResultMessage, WireError, provider_request_footprint,
+    ContentBlock, EpisodeContext, MessageRole, MessagesRequest, OutputConfig,
+    PreparedMessagesRequest, ProviderEpisodeV1, ProviderMessage, ProviderToolDefinition,
+    RequestMetadata, ResponseFormat, ThinkingConfig, ToolCallKind, ToolChoice, ToolResultMessage,
+    WireError, provider_request_footprint,
 };
 use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
@@ -171,6 +178,14 @@ pub trait Provider: fmt::Debug + Send + Sync {
         request: &MessagesRequest,
         context: &EpisodeContext,
     ) -> Result<ProviderEpisodeV1, DependencyFailure>;
+
+    async fn complete_prepared(
+        &self,
+        prepared: &PreparedMessagesRequest<'_>,
+        context: &EpisodeContext,
+    ) -> Result<ProviderEpisodeV1, DependencyFailure> {
+        self.complete(prepared.request(), context).await
+    }
 }
 
 #[cfg(feature = "http")]
@@ -185,6 +200,30 @@ impl Provider for ProviderClient {
             .await
             .map_err(|error| {
                 let is_glm = request.model == GLM_MODEL_ID;
+                let (retryable, delivery) = if is_glm {
+                    classify_glm_failure(&error)
+                } else {
+                    classify_deepseek_failure(&error)
+                };
+                let code = if is_glm {
+                    glm_failure_code(&error)
+                } else {
+                    deepseek_failure_code(&error)
+                };
+                let diagnostic = format!("{error:?}");
+                DependencyFailure::redacted(code, diagnostic, retryable, delivery)
+            })
+    }
+
+    async fn complete_prepared(
+        &self,
+        prepared: &PreparedMessagesRequest<'_>,
+        context: &EpisodeContext,
+    ) -> Result<ProviderEpisodeV1, DependencyFailure> {
+        self.complete_stream_prepared(prepared, context)
+            .await
+            .map_err(|error| {
+                let is_glm = prepared.request().model == GLM_MODEL_ID;
                 let (retryable, delivery) = if is_glm {
                     classify_glm_failure(&error)
                 } else {
@@ -1732,9 +1771,95 @@ pub struct RunInput<'a> {
     /// valuation orientation. It is deliberately outside the durable evidence
     /// ledger and is bound into every provider prompt receipt when present.
     pub market_snapshot_context: Option<&'a TrustedMarketSnapshot>,
+    /// Per-run diagnostic accumulator shared with the provider wrapper and
+    /// persistence adapter. It is never used for admission or correctness.
+    pub runtime_timings: Option<Arc<RuntimeStageTimings>>,
+    /// Immutable image-scoped workflow/context compilation. Production
+    /// release catalogs provide this so a question-only run does not rebuild
+    /// the same plan; `None` remains available for isolated test fixtures.
+    pub execution_plan: Option<Arc<CompiledExecutionPlan>>,
     /// Usually the lease deadline.  The request budget deadline is enforced
     /// independently, and the earlier of the two always wins.
     pub hard_deadline: Instant,
+}
+
+/// Immutable work derived from an exact image entrypoint. It contains no
+/// question, member, room, or provider response and is therefore safe to
+/// share across runs that use the same release entrypoint.
+#[derive(Debug, Clone)]
+pub struct CompiledExecutionPlan {
+    image_hash: ContentHash,
+    run_kind: String,
+    locale: String,
+    program: Arc<ProgramRuntime>,
+    context_planner: Arc<ContextPlanner>,
+}
+
+impl CompiledExecutionPlan {
+    pub fn compile(
+        image: &LoadedImage,
+        run_kind: impl Into<String>,
+        locale: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        let run_kind = run_kind.into();
+        let locale = locale.into();
+        let program = ProgramRuntime::compile_entrypoint(&image.manifest, &run_kind, &locale)?;
+        let context_planner = ContextPlanner::compile(image)?;
+        Self::from_parts(image, run_kind, locale, program, Arc::new(context_planner))
+    }
+
+    pub fn compile_with_context(
+        image: &LoadedImage,
+        run_kind: impl Into<String>,
+        locale: impl Into<String>,
+        context_planner: Arc<ContextPlanner>,
+    ) -> Result<Self, EngineError> {
+        let run_kind = run_kind.into();
+        let locale = locale.into();
+        let program = ProgramRuntime::compile_entrypoint(&image.manifest, &run_kind, &locale)?;
+        Self::from_parts(image, run_kind, locale, program, context_planner)
+    }
+
+    fn from_parts(
+        image: &LoadedImage,
+        run_kind: impl Into<String>,
+        locale: impl Into<String>,
+        program: ProgramRuntime,
+        context_planner: Arc<ContextPlanner>,
+    ) -> Result<Self, EngineError> {
+        let run_kind = run_kind.into();
+        let locale = locale.into();
+        if program.image_hash != image.content_hash
+            || context_planner.image_hash() != &image.content_hash
+        {
+            return Err(EngineError::InvalidInput("compiled plan image mismatch"));
+        }
+        Ok(Self {
+            image_hash: image.content_hash.clone(),
+            run_kind,
+            locale,
+            program: Arc::new(program),
+            context_planner,
+        })
+    }
+
+    pub fn validate_for(
+        &self,
+        image: &LoadedImage,
+        request: &RunRequest,
+    ) -> Result<(), EngineError> {
+        if self.image_hash != image.content_hash
+            || self.run_kind != request.run_kind
+            || self.locale != request.locale
+        {
+            return Err(EngineError::InvalidInput("compiled plan scope mismatch"));
+        }
+        Ok(())
+    }
+
+    fn parts(&self) -> (Arc<ProgramRuntime>, Arc<ContextPlanner>) {
+        (Arc::clone(&self.program), Arc::clone(&self.context_planner))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1892,6 +2017,34 @@ struct RecoveredExecution {
     child: Option<ChildExecutionReceipt>,
 }
 
+/// Local progressive-disclosure results that may be shown to a bounded child
+/// on its next provider turn. This is deliberately separate from
+/// `ActiveRun.messages`: the latter can contain the parent's transcript and is
+/// never allowed to cross the child boundary. These entries are derived only
+/// from loadable prompt blobs in the immutable AgentImage.
+const MAX_BOUNDED_CHILD_SKILL_CONTEXT_BYTES: usize = 256 * 1024;
+
+struct ChildSkillBody {
+    skill_id: String,
+    body: String,
+}
+
+#[derive(Default)]
+struct ChildSkillContext {
+    loaded: Vec<ChildSkillBody>,
+    deferred_tool_calls: usize,
+    bytes: usize,
+}
+
+impl Drop for ChildSkillContext {
+    fn drop(&mut self) {
+        for skill in &mut self.loaded {
+            skill.skill_id.zeroize();
+            skill.body.zeroize();
+        }
+    }
+}
+
 impl<P, C, S> RunEngine<P, C, S>
 where
     P: Provider,
@@ -1929,8 +2082,18 @@ where
     async fn run_inner(&self, input: RunInput<'_>) -> Result<RunOutcome, EngineError> {
         validate_input(&input, &self.config)?;
         evaluate_admission_rules(input.image, input.request)?;
-        let program = ProgramRuntime::compile(input.image, input.request)?;
-        let context_planner = ContextPlanner::compile(input.image)?;
+        let (program, context_planner) = if let Some(plan) = input.execution_plan.as_ref() {
+            plan.validate_for(input.image, input.request)?;
+            plan.parts()
+        } else {
+            (
+                Arc::new(ProgramRuntime::compile(
+                    &input.image.manifest,
+                    input.request,
+                )?),
+                Arc::new(ContextPlanner::compile(input.image)?),
+            )
+        };
         let started = Instant::now();
         let budget_deadline = started
             .checked_add(Duration::from_millis(input.request.budget.deadline_ms))
@@ -1963,6 +2126,7 @@ where
             program,
             context_planner,
             session_memory,
+            input.runtime_timings.clone(),
         )?;
         state.enter_initial_model_state()?;
         let recovered_execution = self
@@ -1979,6 +2143,11 @@ where
                 continue;
             }
             let child_policy = bounded_child::current_policy(input.image, &state)?;
+            if child_policy.is_none() {
+                // Do not carry image-owned child skill bodies into the parent
+                // or a later ordinary phase.
+                state.clear_child_skill_context();
+            }
             let child_inputs = child_policy
                 .as_ref()
                 .map(|policy| bounded_child::prepare_inputs(policy, &state))
@@ -2004,6 +2173,7 @@ where
             }
             state.reserve_provider_turn()?;
             let turn_span = tracing::info_span!("turn", turn = state.usage.provider_turns);
+            let prompt_t0 = Instant::now();
             let built = turn_span.in_scope(|| -> Result<_, EngineError> {
                 tracing::debug!("provider turn began");
                 let messages = if child_policy.is_some() {
@@ -2022,6 +2192,7 @@ where
                         &state,
                         policy,
                         inputs,
+                        &state.child_skill_context,
                         &usage,
                     )?;
                 }
@@ -2032,11 +2203,15 @@ where
                 )?;
                 Ok(built)
             })?;
+            if let Some(timings) = input.runtime_timings.as_ref() {
+                timings.add_prompt_build(prompt_t0.elapsed());
+            }
             let _ = turn_span;
             let constraint_mode = built.constraint_mode;
             let episode_context = built.episode_context;
             let request = built.request;
-            let request_hash = ContentHash::sha256(serde_jcs::to_vec(&request)?);
+            let prepared_request = PreparedMessagesRequest::new(&request)?;
+            let request_hash = prepared_request.request_hash().clone();
             if let (Some(inputs), Some(receipt)) = (&child_inputs, child_receipt.as_ref())
                 && receipt.stage == krw_agent_bounded_child::ChildStage::Reserved
             {
@@ -2068,7 +2243,8 @@ where
                 let provider_outcome = dependency_call(
                     deadline,
                     "provider",
-                    self.provider.complete(&request, &episode_context),
+                    self.provider
+                        .complete_prepared(&prepared_request, &episode_context),
                 )
                 .await;
                 let provider_ms = elapsed_millis(provider_t0);
@@ -2278,28 +2454,12 @@ where
 
             match resolve_local_skill_load(&episode, &state.tool_definitions, input.image) {
                 Ok(Some(resolution)) => {
-                    state.append_assistant(&episode);
-                    for (tool_call_id, result) in resolution.loaded {
-                        state.append_tool_result(&tool_call_id, &result.provider_content)?;
-                    }
-                    // A model can batch a progressive-disclosure load with a
-                    // research call.  Local skill loading is intentionally
-                    // handled before the statechart, so defer the other calls
-                    // with a normal tool result and let the next turn issue
-                    // them after it has received the skill body.  This keeps
-                    // multiple skill loads useful without authorizing an
-                    // unscoped skill capability as an MCP action.
-                    for tool_call_id in resolution.deferred_tool_call_ids {
-                        state.append_tool_result(
-                            &tool_call_id,
-                            &serde_json::json!({
-                                "schema_version": 1,
-                                "status": "not_dispatched",
-                                "reason_code": "skill_load_completed_before_other_calls",
-                                "contains_evidence": false,
-                            }),
-                        )?;
-                    }
+                    apply_local_skill_load_resolution(
+                        &mut state,
+                        &episode,
+                        &resolution,
+                        child_policy.is_some(),
+                    )?;
                     state.check_conversation_limit(self.config.max_conversation_bytes)?;
                     self.checkpoint_active_state(&identity, &state, deadline)
                         .await?;
@@ -2355,9 +2515,32 @@ where
             // single-action even though an ordinary research assessment may
             // offer a value-ranked decision set.
             if child_policy.is_some() && prepared.len() != 1 {
-                return Err(EngineError::WorkflowResolution {
+                let error = EngineError::WorkflowResolution {
                     outcome: "exactly one bounded child capability action",
-                });
+                };
+                // GLM can legally emit parallel tool_use blocks for an
+                // ordinary assessment. A bounded child has no parent
+                // transcript in which to acknowledge the unselected blocks,
+                // so turn this recoverable provider decision into a repair
+                // turn instead of failing the whole research run.
+                let Some(directive) = model_recovery_directive(&error) else {
+                    return Err(error);
+                };
+                if recovered
+                    .as_ref()
+                    .is_some_and(|pending| pending.has_action_receipt)
+                {
+                    return Err(EngineError::RecoveryArtifactMismatch(
+                        "recovered bounded child batch has an action receipt",
+                    ));
+                }
+                if !state.recover_model_decision(input.image, &episode, directive)? {
+                    return Err(error);
+                }
+                state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                self.checkpoint_active_state(&identity, &state, deadline)
+                    .await?;
+                continue;
             }
             let decision = match state.decide_research_dispatch(&prepared) {
                 Ok(decision) => decision,
@@ -2743,6 +2926,11 @@ where
                 state.usage.provider_total_ms = declared.usage.provider_total_ms;
                 state.usage.capability_total_ms = declared.usage.capability_total_ms;
                 state.usage.compact_total_ms = declared.usage.compact_total_ms;
+                state.usage.provider_queue_wait_ms = declared.usage.provider_queue_wait_ms;
+                state.usage.session_memory_total_ms = declared.usage.session_memory_total_ms;
+                state.usage.market_preflight_ms = declared.usage.market_preflight_ms;
+                state.usage.prompt_build_total_ms = declared.usage.prompt_build_total_ms;
+                state.usage.checkpoint_total_ms = declared.usage.checkpoint_total_ms;
                 if declared.schema_version != ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION {
                     return Err(EngineError::RecoveryStateMismatch);
                 }
@@ -2833,6 +3021,9 @@ where
         child_receipt: Option<&ChildExecutionReceipt>,
     ) -> Result<(), EngineError> {
         let child_policy = bounded_child::current_policy(input.image, state)?;
+        if child_policy.is_none() {
+            state.clear_child_skill_context();
+        }
         let child_inputs = child_policy
             .as_ref()
             .map(|policy| bounded_child::prepare_inputs(policy, state))
@@ -2853,7 +3044,15 @@ where
             (&child_policy, &child_inputs, child_receipt)
         {
             let usage = bounded_child::usage(receipt, state)?;
-            bounded_child::isolate_request(&mut built, input.image, state, policy, inputs, &usage)?;
+            bounded_child::isolate_request(
+                &mut built,
+                input.image,
+                state,
+                policy,
+                inputs,
+                &state.child_skill_context,
+                &usage,
+            )?;
         }
         state.record_prompt_assembly(
             built.tool_definitions,
@@ -2924,6 +3123,18 @@ where
                 return state.check_conversation_limit(self.config.max_conversation_bytes);
             }
         };
+
+        if let Some(resolution) =
+            resolve_local_skill_load(&episode, &state.tool_definitions, input.image)?
+        {
+            apply_local_skill_load_resolution(
+                state,
+                &episode,
+                &resolution,
+                child_policy.is_some(),
+            )?;
+            return state.check_conversation_limit(self.config.max_conversation_bytes);
+        }
 
         match output {
             ProviderOutputDisposition::TypedJson | ProviderOutputDisposition::Markdown => {
@@ -3224,12 +3435,17 @@ where
             state_hash,
             state_bytes,
         };
-        dependency_call(
+        let checkpoint_t0 = Instant::now();
+        let result = dependency_call(
             deadline,
             "persistence.checkpoint_run_state",
             self.persistence.checkpoint_run_state(&durable),
         )
-        .await
+        .await;
+        if let Some(timings) = state.runtime_timings.as_ref() {
+            timings.add_checkpoint(checkpoint_t0.elapsed());
+        }
+        result
     }
 
     async fn execute_action(
@@ -3679,7 +3895,7 @@ where
                 (output, None, content.to_owned())
             }
             ModelOutputMode::TypedJson => {
-                let output: Value = match serde_json::from_str(content) {
+                let output: Value = match parse_typed_json_content(content) {
                     Ok(output) => output,
                     Err(error)
                         if constraint_mode != ProviderConstraintMode::JsonSchema
@@ -3750,7 +3966,21 @@ where
                     answer_ir.as_ref(),
                     &state.ledger,
                 )?;
-                (output, answer_ir, rendered_content)
+                // `bind_kernel_goal_ids` may normalize kernel-owned linkage
+                // after the model response is parsed. Persist that normalized
+                // AnswerIR as the canonical output too, otherwise the final
+                // answer hash and the session-memory hash would disagree at
+                // the durable commit boundary.
+                let normalized_output = match &answer_ir {
+                    Some(answer_ir) => serde_json::to_value(answer_ir)?,
+                    // Product runs such as routing, notebook, and display
+                    // planning intentionally do not produce AnswerIR. Keep
+                    // their already-validated typed payload as the state
+                    // artifact instead of serializing `None` to `null` and
+                    // failing the product contract at the commit boundary.
+                    None => output.clone(),
+                };
+                (normalized_output, answer_ir, rendered_content)
             }
             _ => {
                 return Err(EngineError::WorkflowResolution {
@@ -3838,6 +4068,10 @@ where
         self.guard_control(identity, deadline).await?;
 
         let execution = execution.transition(ExecutionEvent::BeginCommit)?;
+        // Fold non-authoritative per-run timing counters into the final
+        // usage projection exactly once. They never affect admission, budget,
+        // or replay decisions.
+        state.merge_runtime_timings();
         let evidence_ledger_hash = ContentHash::sha256(serde_jcs::to_vec(&state.ledger)?);
         let evidence_ids = state
             .ledger
@@ -4083,6 +4317,42 @@ fn resolve_local_skill_load(
     }))
 }
 
+fn apply_local_skill_load_resolution(
+    state: &mut ActiveRun,
+    episode: &ProviderEpisodeV1,
+    resolution: &LocalSkillLoadResolution,
+    child: bool,
+) -> Result<(), EngineError> {
+    if child {
+        // A child receives only immutable skill bodies through its dedicated
+        // sealed context. The parent's transcript and model-authored prose do
+        // not become child messages, and deferred external calls are simply
+        // re-proposed on the next child turn if still useful.
+        return state.retain_child_skill_context(resolution);
+    }
+
+    state.append_assistant(episode);
+    for (tool_call_id, result) in &resolution.loaded {
+        state.append_tool_result(tool_call_id, &result.provider_content)?;
+    }
+    // A model can batch a progressive-disclosure load with a research call.
+    // Local skill loading is handled before the statechart, so defer the other
+    // calls with a normal tool result and let the next turn issue them after it
+    // has received the skill body.
+    for tool_call_id in &resolution.deferred_tool_call_ids {
+        state.append_tool_result(
+            tool_call_id,
+            &serde_json::json!({
+                "schema_version": 1,
+                "status": "not_dispatched",
+                "reason_code": "skill_load_completed_before_other_calls",
+                "contains_evidence": false,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
 /// Resolve a `skill.load` input locally from the immutable image blob store.
 /// The body is returned as provider-visible content; no evidence ledger entry
 /// is produced and no MCP round trip occurs.
@@ -4171,9 +4441,18 @@ struct ProgramRuntime {
 
 impl ProgramRuntime {
     fn compile(image: &AgentImageManifest, request: &RunRequest) -> Result<Self, EngineError> {
-        let mut entrypoints = image.body.entrypoints.values().filter(|entrypoint| {
-            entrypoint.run_kind == request.run_kind && entrypoint.locale == request.locale
-        });
+        Self::compile_entrypoint(image, &request.run_kind, &request.locale)
+    }
+
+    fn compile_entrypoint(
+        image: &AgentImageManifest,
+        run_kind: &str,
+        locale: &str,
+    ) -> Result<Self, EngineError> {
+        let mut entrypoints =
+            image.body.entrypoints.values().filter(|entrypoint| {
+                entrypoint.run_kind == run_kind && entrypoint.locale == locale
+            });
         let entrypoint = entrypoints
             .next()
             .ok_or(EngineError::InvalidInput("no matching image entrypoint"))?;
@@ -4380,6 +4659,10 @@ struct AcceptedActionCommitment<'a> {
 
 struct ActiveRun {
     messages: Vec<RunEngineMessage>,
+    /// Child-only progressive-disclosure context. Kept out of `messages` so
+    /// the parent's transcript cannot be smuggled into a bounded child, and
+    /// the loaded body cannot leak back when the child returns.
+    child_skill_context: ChildSkillContext,
     usage: BudgetUsage,
     limits: BudgetLimits,
     capability_calls: BTreeMap<String, u16>,
@@ -4389,10 +4672,10 @@ struct ActiveRun {
     accepted_actions: Vec<AcceptedActionRef>,
     ledger: EvidenceLedger,
     calculations: BTreeMap<String, Calculation>,
-    program: ProgramRuntime,
+    program: Arc<ProgramRuntime>,
     interpreter: StateInterpreter,
     artifact_validator: ArtifactValidator,
-    context_planner: ContextPlanner,
+    context_planner: Arc<ContextPlanner>,
     session_memory: Option<PreparedSessionMemory>,
     compacted_context: Option<PreparedCompactedContext>,
     tool_definitions: Vec<ProviderToolDefinition>,
@@ -4403,6 +4686,7 @@ struct ActiveRun {
     state_trace: Vec<String>,
     research_planner: ResearchPlanner,
     derived_ticker_scope: Option<DerivedTickerScope>,
+    runtime_timings: Option<Arc<RuntimeStageTimings>>,
 }
 
 /// Scope derived from a committed, typed capability result. It is deliberately
@@ -4621,9 +4905,10 @@ impl Drop for ActiveRun {
 impl ActiveRun {
     fn new(
         limits: BudgetLimits,
-        program: ProgramRuntime,
-        context_planner: ContextPlanner,
+        program: Arc<ProgramRuntime>,
+        context_planner: Arc<ContextPlanner>,
         session_memory: Option<PreparedSessionMemory>,
+        runtime_timings: Option<Arc<RuntimeStageTimings>>,
     ) -> Result<Self, EngineError> {
         let interpreter = StateInterpreter::new(program.typed_program.clone())?;
         let initial_state = program
@@ -4632,6 +4917,7 @@ impl ActiveRun {
             .clone();
         Ok(Self {
             messages: Vec::new(),
+            child_skill_context: ChildSkillContext::default(),
             usage: BudgetUsage::default(),
             limits,
             capability_calls: BTreeMap::new(),
@@ -4657,7 +4943,35 @@ impl ActiveRun {
             state_trace: vec![initial_state],
             research_planner: ResearchPlanner::new(ScoringWeights::default())?,
             derived_ticker_scope: None,
+            runtime_timings,
         })
+    }
+
+    fn merge_runtime_timings(&mut self) {
+        let Some(timings) = &self.runtime_timings else {
+            return;
+        };
+        let snapshot = timings.snapshot();
+        self.usage.provider_queue_wait_ms = self
+            .usage
+            .provider_queue_wait_ms
+            .saturating_add(snapshot.provider_queue_wait_ms);
+        self.usage.session_memory_total_ms = self
+            .usage
+            .session_memory_total_ms
+            .saturating_add(snapshot.session_memory_total_ms);
+        self.usage.market_preflight_ms = self
+            .usage
+            .market_preflight_ms
+            .saturating_add(snapshot.market_preflight_ms);
+        self.usage.prompt_build_total_ms = self
+            .usage
+            .prompt_build_total_ms
+            .saturating_add(snapshot.prompt_build_total_ms);
+        self.usage.checkpoint_total_ms = self
+            .usage
+            .checkpoint_total_ms
+            .saturating_add(snapshot.checkpoint_total_ms);
     }
 
     fn enter_initial_model_state(&mut self) -> Result<(), EngineError> {
@@ -6136,6 +6450,79 @@ impl ActiveRun {
             .push(RunEngineMessage::from_assistant(episode.assistant.clone()));
     }
 
+    /// Retain only the image-owned bodies returned by local `skill.load` for a
+    /// bounded child. Model prose, reasoning, and any other tool result are
+    /// intentionally discarded at this boundary. The next child request gets
+    /// these bodies through `bounded_child::isolate_request`, never through the
+    /// parent conversation transcript.
+    fn retain_child_skill_context(
+        &mut self,
+        resolution: &LocalSkillLoadResolution,
+    ) -> Result<(), EngineError> {
+        for (_, result) in &resolution.loaded {
+            let object = result
+                .provider_content
+                .as_object()
+                .ok_or(EngineError::Invariant("skill.load result is not an object"))?;
+            let skill_id = object
+                .get("skill_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(EngineError::Invariant("skill.load result has no skill_id"))?;
+            let body = object
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or(EngineError::Invariant("skill.load result has no content"))?;
+            // Re-loading the same immutable blob does not add context or spend
+            // more prompt bytes. This also keeps repeated model calls bounded.
+            if self
+                .child_skill_context
+                .loaded
+                .iter()
+                .any(|loaded| loaded.skill_id == skill_id)
+            {
+                continue;
+            }
+            let added_bytes = skill_id
+                .len()
+                .checked_add(body.len())
+                .ok_or(EngineError::CounterOverflow("child skill context bytes"))?;
+            let total = self
+                .child_skill_context
+                .bytes
+                .checked_add(added_bytes)
+                .ok_or(EngineError::CounterOverflow("child skill context bytes"))?;
+            if total > MAX_BOUNDED_CHILD_SKILL_CONTEXT_BYTES {
+                return Err(EngineError::SizeLimit {
+                    resource: "bounded_child_skill_context",
+                    observed: total,
+                    limit: MAX_BOUNDED_CHILD_SKILL_CONTEXT_BYTES,
+                });
+            }
+            self.child_skill_context.loaded.push(ChildSkillBody {
+                skill_id: skill_id.to_owned(),
+                body: body.to_owned(),
+            });
+            self.child_skill_context.bytes = total;
+        }
+        self.child_skill_context.deferred_tool_calls = self
+            .child_skill_context
+            .deferred_tool_calls
+            .checked_add(resolution.deferred_tool_call_ids.len())
+            .ok_or(EngineError::CounterOverflow("child deferred skill calls"))?;
+        Ok(())
+    }
+
+    fn clear_child_skill_context(&mut self) {
+        for skill in &mut self.child_skill_context.loaded {
+            skill.skill_id.zeroize();
+            skill.body.zeroize();
+        }
+        self.child_skill_context.loaded.clear();
+        self.child_skill_context.deferred_tool_calls = 0;
+        self.child_skill_context.bytes = 0;
+    }
+
     fn append_workflow_transition_result(
         &mut self,
         episode: &ProviderEpisodeV1,
@@ -6457,6 +6844,41 @@ fn answer_error_code(error: &EngineError) -> &'static str {
     }
 }
 
+/// GLM's JSON-object mode guarantees an object-oriented response, but the
+/// Anthropic-compatible endpoint can still wrap that object in a Markdown
+/// fence or a short explanatory prefix. Keep the canonical schema validation
+/// strict while accepting only a recoverable JSON object from that wrapper.
+/// No prose is interpreted as an answer: the extracted value still goes
+/// through the pinned contract and evidence-linkage validators below.
+fn parse_typed_json_content(content: &str) -> Result<Value, serde_json::Error> {
+    let trimmed = content.trim();
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```JSON"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|body| body.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    if let Ok(value) = serde_json::from_str(unfenced) {
+        return Ok(value);
+    }
+
+    if let (Some(start), Some(end)) = (unfenced.find('{'), unfenced.rfind('}')) {
+        if start <= end {
+            if let Ok(value) = serde_json::from_str(&unfenced[start..=end]) {
+                return Ok(value);
+            }
+        }
+    }
+
+    // Preserve the original serde error for the normal repair/error taxonomy.
+    serde_json::from_str(trimmed)
+}
+
 fn validate_typed_output(
     input: &RunInput<'_>,
     state: &ActiveRun,
@@ -6468,7 +6890,10 @@ fn validate_typed_output(
     validate_fixed_guru_author_payload(selected_entrypoint(input.image, input.request)?, output)?;
 
     let answer_ir = if contract.id == ANSWER_IR_V1 {
-        let answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
+        let mut answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
+        bind_kernel_goal_ids(&mut answer_ir, state);
+        normalize_answer_calculation_lineage(&mut answer_ir, state);
+        normalize_answer_section_headings(&mut answer_ir, &answer_policy(input.image));
         validate_calculations(&answer_ir, &state.calculations)?;
         validate_answer(&answer_ir, &state.ledger, &answer_policy(input.image))
             .map_err(|issues| EngineError::AnswerValidation(issue_codes(&issues)))?;
@@ -6531,6 +6956,86 @@ fn validate_kernel_goal_bindings(answer: &AnswerIr, state: &ActiveRun) -> Result
         Ok(())
     } else {
         Err(EngineError::AnswerValidation(codes.into_iter().collect()))
+    }
+}
+
+/// Goal aliases are kernel-owned linkage, not model-authored content. The
+/// composer may leave `goal_ids` empty (or repeat stale aliases from an older
+/// tool result); bind every grounded claim to the immutable goal set after
+/// deserialization and before validation. This keeps final-answer generation
+/// from failing on opaque planner identifiers while preserving the invariant
+/// that no unknown goal can be committed.
+fn bind_kernel_goal_ids(answer: &mut AnswerIr, state: &ActiveRun) {
+    let Some(projection) = state.research_planner.intent_projection() else {
+        return;
+    };
+    let goal_ids = projection
+        .graph
+        .goals()
+        .map(|goal| goal.goal_id.clone())
+        .collect::<Vec<_>>();
+    if goal_ids.is_empty() {
+        return;
+    }
+    for claim in &mut answer.claims {
+        if claim.kind != krw_agent_evidence::ClaimKind::Uncertainty {
+            claim.goal_ids = goal_ids.clone();
+        }
+    }
+}
+
+/// A composer can mention a plausible calculation identifier that was never
+/// emitted by the evidence capabilities. Never let that model-owned lineage
+/// become a final-answer failure or a trusted calculation: retain only exact
+/// calculations committed by the kernel, clear unknown references, and
+/// downgrade a now-unlinked numeric claim to a grounded fact. The evidence
+/// validator still requires real evidence for that fact.
+fn normalize_answer_calculation_lineage(answer: &mut AnswerIr, state: &ActiveRun) {
+    answer.calculations.retain(|calculation| {
+        state.calculations.get(&calculation.calculation_id) == Some(calculation)
+    });
+    for claim in &mut answer.claims {
+        claim
+            .calculation_ids
+            .retain(|calculation_id| state.calculations.contains_key(calculation_id));
+        claim
+            .counter_evidence_ids
+            .retain(|evidence_id| state.ledger.active(evidence_id).is_some());
+        if claim.kind == krw_agent_evidence::ClaimKind::Number && claim.calculation_ids.is_empty() {
+            claim.kind = krw_agent_evidence::ClaimKind::Fact;
+        }
+        if claim.kind == krw_agent_evidence::ClaimKind::Interpretation
+            && claim.counter_evidence_ids.is_empty()
+        {
+            claim.kind = krw_agent_evidence::ClaimKind::Fact;
+        }
+    }
+}
+
+/// Keep model-authored section labels user-facing and single-line. A heading
+/// is presentation metadata, so a malformed label should not discard an
+/// otherwise grounded answer; fall back to a small safe label only when the
+/// model supplied an empty, oversized, or internal-only value.
+fn normalize_answer_section_headings(answer: &mut AnswerIr, policy: &AnswerPolicy) {
+    const FALLBACKS: [&str; 4] = ["결론", "근거", "반대 신호", "확인 조건"];
+    for (index, section) in answer.sections.iter_mut().enumerate() {
+        let normalized = section
+            .heading
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let contains_internal = policy
+            .forbidden_terms
+            .iter()
+            .any(|term| normalized.to_lowercase().contains(&term.to_lowercase()));
+        if normalized.is_empty() || normalized.len() > 80 || contains_internal {
+            section.heading = FALLBACKS.get(index).map_or_else(
+                || format!("핵심 판단 {}", index + 1),
+                |value| (*value).to_owned(),
+            );
+        } else {
+            section.heading = normalized;
+        }
     }
 }
 
@@ -6916,12 +7421,240 @@ fn assemble_guru_company_brief(
 ) -> Result<Value, EngineError> {
     let (query_input, query_result) =
         committed_retained_capability_input(state, query_context_capability, owner_capability)?;
+    let query_input =
+        enrich_guru_query_input_with_result_context(&query_input, &query_result.provider_content)
+            .map_err(|error| {
+            tracing::warn!(
+                capability = owner_capability,
+                stage = "enrich_query_context",
+                error_code = guru_contract_error_code(&error),
+                "Guru company-brief input derivation rejected committed query context"
+            );
+            EngineError::CapabilityInputDerivation(owner_capability.into())
+        })?;
     let research_pack = query_result
         .provider_content
         .get("research_pack")
-        .ok_or_else(|| EngineError::CapabilityInputDerivation(owner_capability.into()))?;
-    build_company_brief_input(&query_input, research_pack, draft)
-        .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))
+        .ok_or_else(|| {
+            tracing::warn!(
+                capability = owner_capability,
+                stage = "research_pack",
+                "Guru company-brief input derivation found no committed research pack"
+            );
+            EngineError::CapabilityInputDerivation(owner_capability.into())
+        })?;
+    match build_company_brief_input(&query_input, research_pack, draft) {
+        Ok(arguments) => attach_guru_query_result_context(
+            arguments,
+            &query_result.provider_content,
+            owner_capability,
+        ),
+        Err(error)
+            if matches!(
+                &error,
+                krw_agent_contracts::ContractValueError::Semantic(contract)
+                    if *contract == KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1
+            ) =>
+        {
+            let context = query_input
+                .get("company_context")
+                .ok_or_else(|| EngineError::CapabilityInputDerivation(owner_capability.into()))?;
+            let Some(repaired) = repair_guru_draft_linkage(draft, research_pack, context) else {
+                tracing::warn!(
+                    capability = owner_capability,
+                    stage = "build_company_brief_input",
+                    error_code = guru_contract_error_code(&error),
+                    "Guru company-brief draft could not be linked to committed IDs"
+                );
+                return Err(EngineError::ModelProposalRejected(
+                    ModelProposalRejection::generic("guru_company_brief_draft_unlinked"),
+                ));
+            };
+            tracing::warn!(
+                capability = owner_capability,
+                stage = "repair_guru_draft_linkage",
+                "Guru draft IDs were narrowed to committed principle and context IDs"
+            );
+            build_company_brief_input(&query_input, research_pack, &repaired)
+                .map_err(|repair_error| {
+                    tracing::warn!(
+                        capability = owner_capability,
+                        stage = "build_company_brief_input_after_repair",
+                        error_code = guru_contract_error_code(&repair_error),
+                        "Guru company-brief draft remained invalid after deterministic ID repair"
+                    );
+                    EngineError::CapabilityInputDerivation(owner_capability.into())
+                })
+                .and_then(|arguments| {
+                    attach_guru_query_result_context(
+                        arguments,
+                        &query_result.provider_content,
+                        owner_capability,
+                    )
+                })
+        }
+        Err(error) => {
+            tracing::warn!(
+                capability = owner_capability,
+                stage = "build_company_brief_input",
+                error_code = guru_contract_error_code(&error),
+                "Guru company-brief input derivation rejected trusted or malformed input"
+            );
+            Err(EngineError::CapabilityInputDerivation(
+                owner_capability.into(),
+            ))
+        }
+    }
+}
+
+/// The canonical brief input accepts either the compact ResearchPack or the
+/// complete query-context result.  The Guru MCP's company-brief adapter needs
+/// the complete envelope to carry `research_status` and
+/// `selected_author_keys` into its response, so preserve the committed result
+/// while keeping the model-authored draft and all other fields unchanged.
+fn attach_guru_query_result_context(
+    arguments: Value,
+    query_result: &Value,
+    capability: &str,
+) -> Result<Value, EngineError> {
+    let mut object = arguments
+        .as_object()
+        .cloned()
+        .ok_or_else(|| EngineError::CapabilityInputDerivation(capability.to_owned()))?;
+    object.insert("guru_query_context".into(), query_result.clone());
+    let enriched = Value::Object(object);
+    validate_canonical_value("krw-guru-company-brief-input/v1", &enriched).map_err(|error| {
+        tracing::warn!(
+            capability,
+            stage = "attach_query_result_context",
+            error = ?error,
+            "Guru company-brief input rejected the committed query-context envelope"
+        );
+        EngineError::CapabilityInputDerivation(capability.to_owned())
+    })?;
+    Ok(enriched)
+}
+
+/// Keep model-authored reasoning intact while preventing a provider from
+/// inventing the opaque IDs that link it to the committed Guru pack/context.
+/// Only exact IDs already present in trusted artifacts survive; if the model
+/// supplied no valid ID, the first committed ID is a deterministic fallback.
+fn repair_guru_draft_linkage(draft: &Value, pack: &Value, context: &Value) -> Option<Value> {
+    let mut object = draft.as_object()?.clone();
+    let selected_principles = pack
+        .get("selected_lenses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|lens| lens.get("reviewed_id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let trusted_anchors = context
+        .get("context_anchors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|anchor| anchor.get("anchor_id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if selected_principles.is_empty() || trusted_anchors.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    for (field, allowed) in [
+        ("guru_principle_ids", selected_principles.as_slice()),
+        ("company_context_anchor_ids", trusted_anchors.as_slice()),
+    ] {
+        let supplied = object
+            .get(field)
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|value| allowed.iter().any(|candidate| candidate == value))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let repaired = if supplied.is_empty() {
+            vec![allowed[0].clone()]
+        } else {
+            supplied
+        };
+        let current = object.get(field).and_then(Value::as_array);
+        let differs = current.is_none_or(|values| {
+            values
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()
+                .is_none_or(|values| {
+                    values != repaired.iter().map(String::as_str).collect::<Vec<_>>()
+                })
+        });
+        if differs {
+            object.insert(
+                field.to_string(),
+                Value::Array(repaired.into_iter().map(Value::String).collect()),
+            );
+            changed = true;
+        }
+    }
+    if let Some(values) = object
+        .get_mut("evidence_needed")
+        .and_then(Value::as_array_mut)
+        && values.len() > 3
+    {
+        values.truncate(3);
+        changed = true;
+    }
+    changed.then_some(Value::Object(object))
+}
+
+fn guru_contract_error_code(error: &krw_agent_contracts::ContractValueError) -> &'static str {
+    match error {
+        krw_agent_contracts::ContractValueError::UnknownContract(_) => "unknown_contract",
+        krw_agent_contracts::ContractValueError::Shape(_) => "shape_invalid",
+        krw_agent_contracts::ContractValueError::Semantic(_) => "semantic_invalid",
+        krw_agent_contracts::ContractValueError::Limit(_) => "limit_exceeded",
+        krw_agent_contracts::ContractValueError::Json(_) => "serialization_invalid",
+    }
+}
+
+/// Lower the empty provider-visible Guru trigger to the physical retrieval
+/// request. The model cannot select a Guru, ticker, company context, or
+/// retrieval knobs: the selected entrypoint and authenticated run scope own
+/// all of them.
+fn assemble_guru_query_context(
+    proposed: &Value,
+    request: &RunRequest,
+    entrypoint: &EntrypointSpec,
+) -> Result<Value, EngineError> {
+    validate_canonical_value(GURU_QUERY_REQUEST_V1, proposed).map_err(|_| {
+        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+            "guru_query_request_invalid",
+        ))
+    })?;
+    let author =
+        entrypoint
+            .constants
+            .fixed_guru_author
+            .ok_or(EngineError::CapabilityInputDerivation(
+                "guru.query_context fixed author".into(),
+            ))?;
+    let ticker = match request.context.trusted_tickers() {
+        [ticker] if is_canonical_ticker(ticker) => ticker,
+        _ => {
+            return Err(EngineError::RunScopeViolation(
+                "Guru query context requires exactly one canonical trusted ticker",
+            ));
+        }
+    };
+    Ok(serde_json::json!({
+        "question": request.question,
+        "author_keys": [author.as_str()],
+        "ticker": ticker,
+    }))
 }
 
 /// Lower the small provider-authored orientation request to the physical MCP
@@ -6956,16 +7689,18 @@ fn assemble_company_context_request(proposed: &Value) -> Result<Value, EngineErr
     Ok(Value::Object(physical))
 }
 
-fn assemble_guru_evidence_review(
+fn guru_evidence_review_sources(
     state: &ActiveRun,
-    analysis: &Value,
     query_context_capability: &str,
     company_brief_capability: &str,
     evidence_capabilities: &[String],
     owner_capability: &str,
-) -> Result<Value, EngineError> {
-    let (query_input, _) =
+) -> Result<(Value, Value, Value), EngineError> {
+    let (query_input, query_result) =
         committed_retained_capability_input(state, query_context_capability, owner_capability)?;
+    let query_input =
+        enrich_guru_query_input_with_result_context(&query_input, &query_result.provider_content)
+            .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))?;
     let (brief_action, brief_result) = accepted_action_result(state, company_brief_capability)?;
     let brief = brief_result
         .provider_content
@@ -7007,7 +7742,27 @@ fn assemble_guru_evidence_review(
     }
     let research_context = build_company_research_context(brief, &evidence_results)
         .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))?;
-    build_evidence_review_input(&query_input, brief, &research_context, analysis)
+    Ok((query_input, brief.clone(), research_context))
+}
+
+fn assemble_guru_evidence_review(
+    state: &ActiveRun,
+    analysis: &Value,
+    query_context_capability: &str,
+    company_brief_capability: &str,
+    evidence_capabilities: &[String],
+    owner_capability: &str,
+) -> Result<Value, EngineError> {
+    let (query_input, brief, research_context) = guru_evidence_review_sources(
+        state,
+        query_context_capability,
+        company_brief_capability,
+        evidence_capabilities,
+        owner_capability,
+    )?;
+    let analysis = normalize_guru_agent_evidence_analysis(&brief, &research_context, analysis)
+        .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))?;
+    build_evidence_review_input(&query_input, &brief, &research_context, &analysis)
         .map_err(|_| EngineError::CapabilityInputDerivation(owner_capability.into()))
 }
 
@@ -7040,13 +7795,19 @@ fn resolve_research_proposal_question(
                     capability.id
                 ))
             })?;
-            if brief.questions.len() != 1 {
-                return Err(EngineError::CapabilityInputDerivation(format!(
-                    "{} sealed investigation question cardinality",
+            let brief_value = serde_json::to_value(brief).map_err(|_| {
+                EngineError::CapabilityInputDerivation(format!(
+                    "{} sealed investigation frame serialization",
                     capability.id
-                )));
-            }
-            let question = brief.questions[0].question.trim();
+                ))
+            })?;
+            let frame = compile_guru_research_frame(&brief_value).map_err(|_| {
+                EngineError::CapabilityInputDerivation(format!(
+                    "{} sealed investigation frame",
+                    capability.id
+                ))
+            })?;
+            let question = frame.question.trim();
             if question.is_empty() {
                 return Err(EngineError::CapabilityInputDerivation(format!(
                     "{} sealed investigation question empty",
@@ -7076,6 +7837,14 @@ fn assemble_capability_arguments(
         }),
         InputDerivation::CompanyContextRequestV1 => {
             assemble_company_context_request(proposed).map(|arguments| {
+                AssembledCapabilityArguments {
+                    arguments,
+                    research_intent_receipt: None,
+                }
+            })
+        }
+        InputDerivation::SealedGuruQueryContextV1 => {
+            assemble_guru_query_context(proposed, request, entrypoint).map(|arguments| {
                 AssembledCapabilityArguments {
                     arguments,
                     research_intent_receipt: None,
@@ -7288,6 +8057,39 @@ fn prepare_calls(
             .image
             .resolve_capability_model_input_contract(capability)?;
         normalize_provider_model_input(&model_input.id, &mut proposed_arguments);
+        // Question/object identifiers in a Guru evidence analysis are opaque
+        // links to kernel-owned artifacts.  Normalize them against the
+        // committed brief/context before the model-input guard runs so a
+        // harmless ID or verdict mismatch does not open a recovery loop inside
+        // the bounded child.  The reasoning prose remains model-authored.
+        if capability.id == "guru.review_company_evidence"
+            && let InputDerivation::SealedGuruEvidenceReviewV1 {
+                query_context_capability,
+                company_brief_capability,
+                evidence_capabilities,
+            } = &capability.input_derivation
+        {
+            let (_, brief, research_context) = guru_evidence_review_sources(
+                state,
+                query_context_capability,
+                company_brief_capability,
+                evidence_capabilities,
+                &capability.id,
+            )?;
+            let before = proposed_arguments.clone();
+            proposed_arguments = normalize_guru_agent_evidence_analysis(
+                &brief,
+                &research_context,
+                &proposed_arguments,
+            )
+            .map_err(|_| EngineError::CapabilityInputDerivation(capability.id.clone()))?;
+            if proposed_arguments != before {
+                tracing::warn!(
+                    capability = %capability.id,
+                    "normalized Guru evidence analysis linkage before review"
+                );
+            }
+        }
         let frontier_schema = current_context
             .capability_schemas
             .iter()
@@ -7311,17 +8113,43 @@ fn prepare_calls(
         model_capability.model_input_contract = None;
         model_capability.provider_input_codec = krw_agent_image::ProviderInputCodec::default();
         model_capability.input_derivation = InputDerivation::Identity;
-        contract_guard
-            .validate_arguments(&model_capability, binding, &proposed_arguments)
-            .map_err(|failure| {
-                model_input_rejection_code(&failure).map_or_else(
-                    || EngineError::Dependency {
-                        component: "contract_guard.model_input",
-                        failure,
-                    },
-                    EngineError::ModelProposalRejected,
-                )
-            })?;
+        if let Err(failure) =
+            contract_guard.validate_arguments(&model_capability, binding, &proposed_arguments)
+        {
+            // Keep the diagnostic bounded and structural: model/user/evidence
+            // values never enter ordinary logs, while field names make a
+            // provider-shape mismatch repairable without exposing content.
+            let keys = proposed_arguments
+                .as_object()
+                .map(|object| object.keys().take(32).cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            tracing::warn!(
+                capability = %capability.id,
+                model_input_contract = %model_input.id,
+                failure_code = %failure.code,
+                key_count = keys.len(),
+                keys = ?keys,
+                "model capability input rejected"
+            );
+            let rejection = if capability.id == "guru.company_brief"
+                && proposed_arguments
+                    .as_object()
+                    .is_some_and(|object| object.is_empty())
+            {
+                Some(ModelProposalRejection::generic(
+                    "guru_company_brief_input_empty",
+                ))
+            } else {
+                model_input_rejection_code(&failure)
+            };
+            return Err(rejection.map_or_else(
+                || EngineError::Dependency {
+                    component: "contract_guard.model_input",
+                    failure,
+                },
+                EngineError::ModelProposalRejected,
+            ));
+        }
         let assembled = assemble_capability_arguments(
             capability,
             state,
@@ -7623,6 +8451,46 @@ fn violation_to_detail(violation: &ResearchProposalViolation) -> RecoveryDetailV
 fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirective> {
     match error {
         EngineError::ModelProposalRejected(rejection) => {
+            if rejection.code() == "guru_company_brief_input_empty" {
+                return Some(ModelRecoveryDirective::with_detail(
+                    rejection.code(),
+                    rejection.repair_mode(),
+                    RecoveryDetailV1 {
+                        schema_version: 1,
+                        field: "/".to_string(),
+                        offending_value: "{}".to_string(),
+                        valid_alternatives: vec![
+                            "question".to_string(),
+                            "guru_principle_ids".to_string(),
+                            "company_context_anchor_ids".to_string(),
+                            "hypothesis".to_string(),
+                            "counter_hypothesis".to_string(),
+                            "evidence_needed".to_string(),
+                            "strengthens_if".to_string(),
+                            "weakens_if".to_string(),
+                            "why_material".to_string(),
+                            "decision_role".to_string(),
+                        ],
+                        hint: "Submit one non-empty object with exactly these ten keys. Use arrays for guru_principle_ids, company_context_anchor_ids, and evidence_needed; copy the IDs from guru.query_context; set decision_role to main_tension. Do not resubmit {} or add a wrapper.".to_string(),
+                    },
+                ));
+            }
+            if rejection.code() == "guru_company_brief_draft_unlinked" {
+                return Some(ModelRecoveryDirective::with_detail(
+                    rejection.code(),
+                    rejection.repair_mode(),
+                    RecoveryDetailV1 {
+                        schema_version: 1,
+                        field: "/guru_principle_ids or /company_context_anchor_ids".to_string(),
+                        offending_value: "an ID not present in the committed Guru context".to_string(),
+                        valid_alternatives: vec![
+                            "copy selected_lenses[*].reviewed_id verbatim".to_string(),
+                            "copy company_context.context_anchors[*].anchor_id verbatim".to_string(),
+                        ],
+                        hint: "Keep the same ten-key draft shape, but replace every principle and anchor ID with an exact ID returned by guru.query_context. Do not invent, shorten, hash, or rename IDs; use one to three evidence_needed strings and decision_role main_tension.".to_string(),
+                    },
+                ));
+            }
             let detail = rejection.violation().map(violation_to_detail);
             match detail {
                 Some(d) => Some(ModelRecoveryDirective::with_detail(
@@ -7710,6 +8578,7 @@ fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirectiv
                 *outcome,
                 "non-research capability decision batch"
                     | "mixed research capability decision batch"
+                    | "exactly one bounded child capability action"
             ) =>
         {
             Some(ModelRecoveryDirective::replace(
@@ -8546,6 +9415,29 @@ fn build_provider_request(
             "provider max_tokens exceeds pinned context capacity",
         ));
     }
+    // DeepSeek's Anthropic compatibility ignores `thinking.budget_tokens` for
+    // effort selection. Its documented control is output_config.effort. GLM
+    // keeps the existing JSON-object path and does not receive this field.
+    let base_output_config = wire_output.output_config;
+    let output_config = match (
+        input.snapshot.resolved_model == DEEPSEEK_MODEL_ID,
+        turn_policy.reasoning_effort,
+        base_output_config,
+    ) {
+        (true, Some(effort), Some(config)) => Some(config.with_effort(effort)),
+        (true, Some(effort), None) => Some(OutputConfig::effort(effort)),
+        (_, _, config) => config,
+    };
+    // DeepSeek's Anthropic compatibility documents `output_config.effort` but
+    // does not advertise the OpenAI `response_format` field on this endpoint.
+    // Keep the semantic JSON lane and local repair/contract validation, but do
+    // not send an undocumented field to production. GLM retains its native
+    // JSON-object request field.
+    let response_format = if input.snapshot.resolved_model == DEEPSEEK_MODEL_ID {
+        None
+    } else {
+        wire_output.response_format
+    };
     let request = MessagesRequest {
         model: input.snapshot.resolved_model.clone(),
         messages: wire_messages,
@@ -8553,8 +9445,8 @@ fn build_provider_request(
         max_tokens,
         tools: tool_definitions.clone(),
         tool_choice: wire_output.tool_choice,
-        output_config: wire_output.output_config,
-        response_format: wire_output.response_format,
+        output_config,
+        response_format,
         thinking: ThinkingConfig {
             kind: turn_policy.thinking,
             // Anthropic requires `budget_tokens < max_tokens` and enforces a
@@ -8635,8 +9527,41 @@ fn split_system_and_convert_messages(
     if let Some(user) = trusted_user {
         wire_messages.push(user.to_provider_message_for_serialization());
     }
-    for message in &transcript {
-        wire_messages.push(message.to_provider_message_for_serialization());
+    // Anthropic requires all results for one assistant tool-use turn to be
+    // adjacent blocks in a single user message. The internal transcript keeps
+    // one Tool entry per action for deterministic receipts, so coalesce only
+    // consecutive tool entries at this wire boundary. This is especially
+    // important for DeepSeek's Anthropic compatibility, which rejects the
+    // equivalent sequence of multiple consecutive user messages with 400.
+    let mut index = 0;
+    while index < transcript.len() {
+        if matches!(transcript[index], RunEngineMessage::Tool { .. }) {
+            let mut blocks = Vec::new();
+            while index < transcript.len() {
+                let RunEngineMessage::Tool {
+                    tool_call_id,
+                    content,
+                } = &transcript[index]
+                else {
+                    break;
+                };
+                blocks.push(
+                    ToolResultMessage {
+                        tool_call_id: tool_call_id.clone(),
+                        content: content.clone(),
+                    }
+                    .into_content_block(),
+                );
+                index += 1;
+            }
+            wire_messages.push(ProviderMessage {
+                role: MessageRole::User,
+                content: blocks,
+            });
+        } else {
+            wire_messages.push(transcript[index].to_provider_message_for_serialization());
+            index += 1;
+        }
     }
     Ok((system_prompt, wire_messages, transcript))
 }
@@ -10420,6 +11345,12 @@ mod tests {
             .clone()
     }
 
+    fn guru_query_context_result() -> Value {
+        let mut result = guru_contract_value("krw-guru-query-context-result/v1");
+        result["company_context"] = guru_contract_value("krw-guru-light-company-context/v1");
+        result
+    }
+
     fn front_contract_value(contract_id: &str) -> Value {
         let vectors: Value = serde_json::from_slice(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -11602,6 +12533,8 @@ mod tests {
                 request: &self.request,
                 snapshot: &self.snapshot,
                 market_snapshot_context: None,
+                runtime_timings: None,
+                execution_plan: None,
                 hard_deadline: Instant::now() + Duration::from_secs(5),
             }
         }
@@ -11956,11 +12889,12 @@ mod tests {
             ("ontology.query_context".into(), 2),
             ("ontology.query".into(), 2),
             ("ontology.trace".into(), 1),
+            ("ontology.chain".into(), 1),
             ("guru.review_company_evidence".into(), 2),
         ]);
         let budget = BudgetLimits {
             max_provider_turns: 16,
-            max_capability_calls: 10,
+            max_capability_calls: 11,
             max_replans: 4,
             max_repairs: 2,
             max_input_tokens: 100_000,
@@ -11976,7 +12910,7 @@ mod tests {
             principal_id: "principal-guru-child".into(),
             run_kind: "guru_buffett".into(),
             locale: "ko-KR".into(),
-            question: "애플 서비스 사업의 수익 지속성을 버핏 관점에서 점검해줘".into(),
+            question: "Assess Apple through a durable-earnings lens.".into(),
             requested_model: GLM_MODEL_ID.into(),
             model_profile: "glm_max".into(),
             budget: budget.clone(),
@@ -12396,14 +13330,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guru_bounded_child_runs_isolated_and_returns_only_durable_typed_artifacts() {
+    async fn guru_company_researcher_uses_parent_research_loop() {
         let fixture = guru_fixture();
         let script = VecDeque::from([
-            research_tool_call(
-                "guru-query",
-                "guru.query_context",
-                &guru_contract_value("krw-guru-query-context-input/v1"),
-            ),
+            research_tool_call("guru-query", "guru.query_context", &serde_json::json!({})),
             research_tool_call(
                 "company-brief",
                 "guru.company_brief",
@@ -12419,7 +13349,7 @@ mod tests {
             guru_final_answer_message(),
         ]);
         let results = VecDeque::from([
-            guru_contract_value("krw-guru-query-context-result/v1"),
+            guru_query_context_result(),
             guru_contract_value("krw-guru-company-brief-result/v1"),
             guru_research_state(),
             guru_contract_value("krw-guru-evidence-review-result/v1"),
@@ -12437,111 +13367,34 @@ mod tests {
                 )
             });
         assert_eq!(outcome.final_status, FinalStatus::Committed);
-        let child = rig
-            .persistence
-            .state
-            .lock()
-            .unwrap()
-            .child
-            .clone()
-            .expect("durable child receipt");
-        assert_eq!(child.stage, krw_agent_bounded_child::ChildStage::Completed);
-        assert_eq!(
-            child.allowed_capabilities,
-            ["ontology.query_context", "ontology.query", "ontology.trace"]
-        );
-        assert_eq!(
-            child
-                .output
-                .as_ref()
-                .map(|output| output.contract_id.as_str()),
-            Some("krw-guru-agent-evidence-analysis/v1")
-        );
-        let receipt_bytes = serde_jcs::to_vec(&child).unwrap();
-        let receipt_text = String::from_utf8(receipt_bytes).unwrap();
-        assert!(!receipt_text.contains("transcript"));
-        assert!(!receipt_text.contains("reasoning_content"));
+        assert!(rig.persistence.state.lock().unwrap().child.is_none());
 
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 6);
-        for request in &requests[2..5] {
-            assert_eq!(request.messages.len(), WIRE_TRUSTED_PREFIX_MESSAGE_COUNT);
-            let isolated_wire = serde_jcs::to_vec(request).unwrap();
-            assert!(
-                !isolated_wire
-                    .windows(b"complete reasoning for guru-query".len())
-                    .any(|window| window == b"complete reasoning for guru-query")
-            );
-            assert!(
-                !isolated_wire
-                    .windows(b"complete reasoning for company-brief".len())
-                    .any(|window| window == b"complete reasoning for company-brief")
-            );
-            let user = provider_message_content(&request.messages[0]);
-            assert!(user.starts_with("KRW_BOUNDED_CHILD_INPUT_V1"));
-            let tools = request
-                .tools
-                .iter()
-                .map(|definition| definition.name().to_owned())
-                .collect::<BTreeSet<String>>();
-            let mut allowed = [
-                "ontology.query_context",
-                "ontology.query",
-                "ontology.trace",
-                "guru.review_company_evidence",
-            ]
-            .into_iter()
-            .map(provider_tool_name)
-            .collect::<BTreeSet<String>>();
-            // This kernel-owned control is local-only; it is not a child
-            // capability and cannot widen the sealed child authority.
-            allowed.insert(WORKFLOW_TRANSITION_TOOL_NAME.into());
-            assert!(
-                tools.is_subset(&allowed),
-                "tools={tools:?} allowed={allowed:?}"
-            );
-            assert!(!tools.contains(provider_tool_name("guru.query_context").as_str()));
-            assert!(!tools.contains(provider_tool_name("guru.company_brief").as_str()));
-        }
-        assert!(
-            !provider_message_content(&requests[0].messages[0])
-                .starts_with("KRW_BOUNDED_CHILD_INPUT_V1")
-        );
-        assert!(
-            !provider_message_content(&requests[5].messages[0])
-                .starts_with("KRW_BOUNDED_CHILD_INPUT_V1")
-        );
-        assert_eq!(
-            requests[5].messages.len(),
-            WIRE_TRUSTED_PREFIX_MESSAGE_COUNT
-        );
-        let resumed_parent_wire =
-            String::from_utf8(serde_jcs::to_vec(&requests[5].messages).unwrap()).unwrap();
-        assert!(resumed_parent_wire.contains("verified-compacted-context"));
-        for retained in [
-            b"complete reasoning for guru-query".as_slice(),
-            b"complete reasoning for company-brief".as_slice(),
+        let all_tools = requests
+            .iter()
+            .flat_map(|request| request.tools.iter().map(|definition| definition.name()))
+            .collect::<BTreeSet<&str>>();
+        for capability in [
+            "ontology.query_context",
+            "ontology.query",
+            "ontology.trace",
+            "ontology.chain",
+            "skill.load",
+            "guru.review_company_evidence",
         ] {
             assert!(
-                !resumed_parent_wire
-                    .as_bytes()
-                    .windows(retained.len())
-                    .any(|window| window == retained),
-                "a settled parent phase must retain evidence, not raw reasoning"
+                all_tools.contains(provider_tool_name(capability).as_str()),
+                "ordinary Guru research loop did not advertise {capability}: {all_tools:?}"
             );
         }
-        for child_only_reasoning in [
-            b"bounded reasoning for context_ready".as_slice(),
-            b"complete reasoning for company-context".as_slice(),
-            b"complete reasoning for child-return".as_slice(),
-        ] {
+        assert_eq!(requests[2].thinking.kind, ThinkingMode::Enabled);
+        for request in requests.iter() {
+            let wire = serde_jcs::to_vec(request).unwrap();
             assert!(
-                !resumed_parent_wire
-                    .as_bytes()
-                    .windows(child_only_reasoning.len())
-                    .any(|window| window == child_only_reasoning),
-                "child-only reasoning leaked into parent transcript: {}",
-                String::from_utf8_lossy(child_only_reasoning)
+                !wire
+                    .windows(b"KRW_BOUNDED_CHILD_INPUT_V1".len())
+                    .any(|window| { window == b"KRW_BOUNDED_CHILD_INPUT_V1" })
             );
         }
         drop(requests);
@@ -12564,46 +13417,7 @@ mod tests {
             validate_canonical_value(contract_id, &physical).unwrap();
             assert_eq!(physical["ticker"], "AAPL");
         }
-        let checkpoints = persisted
-            .run_state_history
-            .iter()
-            .map(|durable| {
-                serde_json::from_slice::<ActiveRunCheckpoint>(&durable.state_bytes).unwrap()
-            })
-            .collect::<Vec<_>>();
-        let parent_boundary = checkpoints
-            .iter()
-            .position(|checkpoint| {
-                checkpoint
-                    .completed_capabilities
-                    .contains("guru.company_brief")
-            })
-            .expect("parent checkpoint immediately before the child");
-        let boundary = &checkpoints[parent_boundary];
-        for checkpoint in &checkpoints[parent_boundary..] {
-            assert_eq!(checkpoint.conversation_hash, boundary.conversation_hash);
-            assert_eq!(
-                checkpoint.compacted_context_hash,
-                boundary.compacted_context_hash
-            );
-            assert_eq!(checkpoint.compaction_receipts, boundary.compaction_receipts);
-        }
         drop(persisted);
-
-        let log = rig.log.lock().unwrap();
-        let reserved = log
-            .iter()
-            .position(|event| event == "child_reserved")
-            .unwrap();
-        let invoked = log
-            .iter()
-            .position(|event| event == "child_invoked")
-            .unwrap();
-        let completed = log
-            .iter()
-            .position(|event| event == "child_completed")
-            .unwrap();
-        assert!(reserved < invoked && invoked < completed);
     }
 
     #[tokio::test]
@@ -15398,6 +16212,17 @@ mod tests {
             classify_deepseek_failure(&WireError::MissingMessageStop),
             (true, DeliveryCertainty::MayHaveDispatched)
         );
+    }
+
+    #[test]
+    fn typed_json_parser_accepts_only_recoverable_json_wrappers() {
+        let value = parse_typed_json_content("```json\n{\"ok\":true}\n```").unwrap();
+        assert_eq!(value, serde_json::json!({"ok": true}));
+
+        let value = parse_typed_json_content("Here is the object:\n{\"ok\":true}").unwrap();
+        assert_eq!(value, serde_json::json!({"ok": true}));
+
+        assert!(parse_typed_json_content("Here is only prose.").is_err());
     }
 
     #[test]

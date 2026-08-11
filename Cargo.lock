@@ -1099,6 +1099,7 @@ dependencies = [
 name = "krw-agent-provider-wire"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures-util",
  "krw-agent-protocol",
  "reqwest",

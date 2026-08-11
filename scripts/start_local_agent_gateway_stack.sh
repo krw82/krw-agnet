@@ -13,7 +13,12 @@ krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_state=${KRW_AGENT_LOCAL_STATE_DIR:-"$krw_root/.local/agent-gateway"}
 krw_release_root=${KRW_AGENT_LOCAL_ONTOLOGY_RELEASE_ROOT:-~/krw-ontology-data/releases/prod/current}
 krw_database_mode=${KRW_AGENT_DATABASE_MODE:-local}
+krw_postgres_lifecycle=${KRW_AGENT_POSTGRES_LIFECYCLE:-persistent}
 krw_supabase_project_dir=${KRW_AGENT_SUPABASE_PROJECT_DIR:-}
+krw_provider=${KRW_AGENT_PROVIDER:-glm}
+krw_agent_packages=(krw-ontology krw-guru-advisor)
+krw_deployment_binding_source="$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml"
+krw_model_registry="$krw_root/deployments/local/model-registry.$krw_provider.yaml"
 # Source ontology root for build-time metric prose codegen. The Rust build
 # reads `ontology/schema/metric_dictionary.yaml` from here so metric
 # natural-language phrases stay in sync with the ontology without a parallel
@@ -28,6 +33,7 @@ krw_daemon_pid=''
 krw_proxy_pid=''
 krw_capability_pid=''
 krw_pg_started=false
+krw_postgres_marker="$krw_state/postgres-lifecycle"
 krw_database_url=''
 krw_database_ca_file=''
 krw_database_tls_mode=require
@@ -41,6 +47,23 @@ case "$krw_database_mode" in
     exit 2
     ;;
 esac
+case "$krw_postgres_lifecycle" in
+  persistent|ephemeral) ;;
+  *) printf 'KRW_AGENT_POSTGRES_LIFECYCLE must be persistent or ephemeral\n' >&2; exit 2 ;;
+esac
+case "$krw_provider" in
+  glm)
+    krw_provider_model_id=glm-5.2
+    ;;
+  deepseek)
+    krw_provider_model_id=deepseek-v4-flash
+    ;;
+  *) printf 'KRW_AGENT_PROVIDER must be glm or deepseek\n' >&2; exit 2 ;;
+esac
+[[ -f "$krw_model_registry" ]] || {
+  printf 'provider model registry is missing: %s\n' "$krw_model_registry" >&2
+  exit 2
+}
 
 for krw_value in "$krw_gateway_port" "$krw_pg_port" "$krw_capability_port" "$krw_tls_port"; do
   [[ "$krw_value" =~ ^[0-9]+$ ]] && (( krw_value >= 1 && krw_value <= 65535 )) || {
@@ -69,6 +92,8 @@ done
 mkdir -p "$krw_state" "$krw_state/logs" "$krw_state/images" "$krw_state/artifacts"
 chmod 700 "$krw_state" "$krw_state/logs" "$krw_state/images" "$krw_state/artifacts"
 umask 077
+printf '%s\n' "$krw_postgres_lifecycle" >"$krw_postgres_marker"
+chmod 600 "$krw_postgres_marker"
 
 krw_secrets="$krw_state/secrets.env"
 if [[ ! -f "$krw_secrets" ]]; then
@@ -90,7 +115,9 @@ cleanup() {
   for krw_pid in "$krw_gateway_pid" "$krw_daemon_pid" "$krw_proxy_pid" "$krw_capability_pid"; do
     [[ -n "$krw_pid" ]] && wait "$krw_pid" 2>/dev/null
   done
-  # PostgreSQL stays up across restarts; do not stop it here.
+  if [[ "$krw_postgres_lifecycle" == ephemeral && "$krw_database_mode" == local && "$krw_pg_started" == true ]]; then
+    /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -m fast -w stop >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -121,6 +148,7 @@ if [[ "$krw_database_mode" == local ]]; then
     /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
       -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
       -w start >/dev/null
+    krw_pg_started=true
   fi
   if ! PGSSLMODE=verify-ca PGSSLROOTCERT="$krw_state_abs/ca.pem" \
       /opt/homebrew/bin/psql -X -h 127.0.0.1 -p "$krw_pg_port" -d postgres -tAc "select 1" >/dev/null 2>&1; then
@@ -129,6 +157,7 @@ if [[ "$krw_database_mode" == local ]]; then
     /opt/homebrew/bin/pg_ctl -D "$krw_state_abs/postgres" -l "$krw_state_abs/logs/postgres.log" \
       -o "-F -p $krw_pg_port -h 127.0.0.1 -c ssl=on -c ssl_cert_file='$krw_state_abs/server.pem' -c ssl_key_file='$krw_state_abs/server.key'" \
       -w start >/dev/null
+    krw_pg_started=true
   fi
 
   # Bootstrap the inert retention role before applying the agent migrations.
@@ -188,16 +217,19 @@ mkdir -p "$krw_cache_root"
 chmod 700 "$krw_cache_root"
 krw_prepare_fingerprint=$(python3 - \
   "$krw_root/agents/krw-ontology" \
-  "$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml" \
-  "$krw_root/deployments/local/model-registry.yaml" \
+  "$krw_root/agents/krw-guru-advisor" \
+  "$krw_deployment_binding_source" \
+  "$krw_model_registry" \
   "$krw_root/deployments/local/budget-registry.yaml" \
+  "$krw_root/target/debug/krw-agent" \
+  "$krw_root/target/debug/krw-agentd" \
   "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
 import hashlib
 import pathlib
 import sys
 
-paths = [pathlib.Path(value) for value in sys.argv[1:4]]
-identity = sys.argv[4:]
+paths = [pathlib.Path(value) for value in sys.argv[1:8]]
+identity = sys.argv[8:]
 digest = hashlib.sha256()
 
 for value in identity:
@@ -224,7 +256,7 @@ krw_cache_dir="$krw_cache_root/$krw_prepare_fingerprint"
 mkdir -p "$krw_cache_dir"
 chmod 700 "$krw_cache_dir"
 
-python3 - "$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
+python3 - "$krw_deployment_binding_source" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
 import pathlib, sys
 import json
 source, output, endpoint_output, build, schema, release = sys.argv[1:]
@@ -272,19 +304,30 @@ curl --fail --silent --cacert "$krw_state/ca.pem" "https://127.0.0.1:$krw_tls_po
 
 krw_agent_bin="$krw_root/target/debug/krw-agent"
 krw_agentd_bin="$krw_root/target/debug/krw-agentd"
-krw_image_dir="$krw_cache_dir/image"
-if [[ -d "$krw_image_dir" && -f "$krw_image_dir/manifest.json" ]]; then
-  if "$krw_agent_bin" image verify "$krw_image_dir" >/dev/null 2>&1; then
-    printf 'reusing prepared agent image: %s\n' "$krw_prepare_fingerprint"
-  else
-    krw_quarantine="$krw_cache_dir/image-invalid-$(date +%s)-$$"
-    mv "$krw_image_dir" "$krw_quarantine"
-    "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
-    printf 'rebuilt invalid prepared agent image: %s\n' "$krw_prepare_fingerprint"
+krw_image_root="$krw_cache_dir/images"
+mkdir -p "$krw_image_root"
+krw_image_dirs=()
+krw_image_rebuilt=false
+for krw_agent_package in "${krw_agent_packages[@]}"; do
+  krw_image_dir="$krw_image_root/$krw_agent_package"
+  if [[ -d "$krw_image_dir" && -f "$krw_image_dir/manifest.json" ]] &&
+      "$krw_agent_bin" image verify "$krw_image_dir" >/dev/null 2>&1; then
+    krw_image_dirs+=("$krw_image_dir")
+    continue
   fi
+  if [[ -e "$krw_image_dir" ]]; then
+    krw_quarantine="$krw_image_root/${krw_agent_package}.invalid-$(date +%s)-$$"
+    mv "$krw_image_dir" "$krw_quarantine"
+  fi
+  "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" image build \
+    --out "$krw_image_dir" "$krw_root/agents/$krw_agent_package" >/dev/null
+  krw_image_dirs+=("$krw_image_dir")
+  krw_image_rebuilt=true
+done
+if [[ "$krw_image_rebuilt" == true ]]; then
+  printf 'prepared agent images (ontology + Guru): %s\n' "$krw_prepare_fingerprint"
 else
-  "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" image build --out "$krw_image_dir" "$krw_root/agents/krw-ontology" >/dev/null
-  printf 'built prepared agent image: %s\n' "$krw_prepare_fingerprint"
+  printf 'reusing prepared agent images (ontology + Guru): %s\n' "$krw_prepare_fingerprint"
 fi
 krw_database_user=$(id -un)
 export KRW_ONTOLOGY_MCP_URL="https://127.0.0.1:$krw_tls_port/mcp/"
@@ -292,9 +335,13 @@ export KRW_ONTOLOGY_READY_URL="https://127.0.0.1:$krw_tls_port/healthz"
 export KRW_ONTOLOGY_CA_PEM="$(< "$krw_state/ca.pem")"
 krw_descriptor="$krw_cache_dir/public-release.json"
 krw_release_authorization="$krw_cache_dir/release-authorization.json"
+krw_image_args=()
+for krw_image_dir in "${krw_image_dirs[@]}"; do
+  krw_image_args+=(--image-dir "$krw_image_dir")
+done
 "$krw_root/scripts/with_local_env.sh" "$krw_agentd_bin" \
-  --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
-  --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
+  "${krw_image_args[@]}" --deployment-binding "$krw_state/deployment-binding.yaml" \
+  --model-registry "$krw_model_registry" --provider "$krw_provider" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
   --endpoint-registry "$krw_state/endpoint-registry.yaml" --check \
   --public-release-descriptor-output "$krw_descriptor" >/dev/null
 
@@ -322,6 +369,7 @@ else
   "$krw_root/scripts/with_local_env.sh" "$krw_agent_bin" release sign \
     --descriptor "$krw_descriptor" --private-key "$krw_state/release-private.pk8" --key-id local-dev-v1 --sequence 1 \
     --issued-at-unix-seconds "$krw_now" --expires-at-unix-seconds "$krw_expiry" --runtime-version 0.1.0 --kernel-version 0.1.0 \
+    --model-id "$krw_provider_model_id" \
     --out "$krw_new_authorization" >/dev/null
   mv -f "$krw_new_authorization" "$krw_release_authorization"
   printf 'signed prepared release authorization: %s\n' "$krw_prepare_fingerprint"
@@ -343,8 +391,8 @@ export KRW_DEBUG_MCP_ARGS="${KRW_DEBUG_MCP_ARGS:-}"
 # Run the pre-built agentd binary directly (not via cargo run) so the log
 # stays clean and the process is a simple child of this script.
 "$krw_root/scripts/with_local_env.sh" "$krw_agentd_bin" \
-    --image-dir "$krw_image_dir" --deployment-binding "$krw_state/deployment-binding.yaml" \
-    --model-registry "$krw_root/deployments/local/model-registry.yaml" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
+    "${krw_image_args[@]}" --deployment-binding "$krw_state/deployment-binding.yaml" \
+    --model-registry "$krw_model_registry" --provider "$krw_provider" --budget-registry "$krw_root/deployments/local/budget-registry.yaml" \
     --endpoint-registry "$krw_state/endpoint-registry.yaml" --release-authorization "$krw_release_authorization" \
     --release-trust-registry "$krw_state/release-trust-registry.json" --runtime-version 0.1.0 --worker-id local-agentd \
     "${krw_agentd_database_args[@]}" \

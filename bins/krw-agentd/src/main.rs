@@ -20,7 +20,9 @@ use krw_agent_persistence::metrics;
 use krw_agent_persistence::postgres::{
     PostgresJsonExecutor, PostgresPoolOptions, PostgresTlsMode, ProcessEnvironmentDatabaseSecrets,
 };
-use krw_agent_protocol::{DeploymentBinding, ModelRegistry, PublicReleaseDescriptor};
+use krw_agent_protocol::{
+    DEEPSEEK_MODEL_ID, DeploymentBinding, GLM_MODEL_ID, ModelRegistry, PublicReleaseDescriptor,
+};
 use krw_agent_release_authorization::{
     ReleaseAuthorizationError, VerificationContext, parse_canonical_authorization,
     parse_canonical_trust_registry, verify_for_descriptor,
@@ -56,6 +58,21 @@ enum DatabaseTlsModeArg {
     Disable,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProviderArg {
+    Glm,
+    Deepseek,
+}
+
+impl ProviderArg {
+    const fn model_id(self) -> &'static str {
+        match self {
+            Self::Glm => GLM_MODEL_ID,
+            Self::Deepseek => DEEPSEEK_MODEL_ID,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "krw-agentd", version, about = "Machine-wide KRW Agent daemon")]
 struct Args {
@@ -67,6 +84,10 @@ struct Args {
     deployment_binding: PathBuf,
     #[arg(long)]
     model_registry: PathBuf,
+    /// Optional fail-closed provider label for the selected registry. The
+    /// registry itself remains the immutable source of model/profile facts.
+    #[arg(long, value_enum)]
+    provider: Option<ProviderArg>,
     #[arg(long)]
     budget_registry: PathBuf,
     #[arg(long)]
@@ -171,6 +192,10 @@ enum StartupError {
     ReleaseImageCount,
     #[error("release authorization and trust registry must be supplied together")]
     ReleaseAuthorizationPair,
+    #[error("model registry does not match the selected provider")]
+    ProviderRegistryMismatch,
+    #[error("release authorization model does not match the selected model registry")]
+    ReleaseAuthorizationModelMismatch,
     #[error("live daemon requires a signed release authorization")]
     MissingReleaseAuthorization,
     #[error("release authorization artifact is unsafe or unreadable")]
@@ -229,6 +254,11 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let images = load_image_set(&args.image_dirs)?;
     let binding: DeploymentBinding = load_yaml(&args.deployment_binding)?;
     let models: ModelRegistry = load_yaml(&args.model_registry)?;
+    if let Some(provider) = args.provider {
+        if models.models.len() != 1 || models.models[0].model_id != provider.model_id() {
+            return Err(StartupError::ProviderRegistryMismatch.into());
+        }
+    }
     let budgets: BudgetRegistry = load_yaml(&args.budget_registry)?;
     let endpoints: EndpointRegistry = load_yaml(&args.endpoint_registry)?;
     let releases = resolve_release_set(
@@ -246,7 +276,11 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
-    verify_release_authorization(&args, &descriptor)?;
+    verify_release_authorization_for_model(
+        &args,
+        &descriptor,
+        models.models.first().map(|model| model.model_id.as_str()),
+    )?;
     if let Some(output) = &args.public_release_descriptor_output {
         export_public_release_descriptor(output, &descriptor)?;
         info!(
@@ -420,9 +454,18 @@ fn validate_image_dir_count(image_dirs: &[PathBuf]) -> Result<(), StartupError> 
 /// admitting claims. Check/database-check modes can omit both artifacts for
 /// authoring diagnostics, but if either is supplied they must prove the exact
 /// descriptor the daemon just resolved. Live mode cannot omit them.
+#[cfg_attr(not(test), allow(dead_code))]
 fn verify_release_authorization(
     args: &Args,
     descriptor: &PublicReleaseDescriptor,
+) -> Result<(), StartupError> {
+    verify_release_authorization_for_model(args, descriptor, None)
+}
+
+fn verify_release_authorization_for_model(
+    args: &Args,
+    descriptor: &PublicReleaseDescriptor,
+    expected_model_id: Option<&str>,
 ) -> Result<(), StartupError> {
     let (authorization_path, trust_registry_path) = match (
         args.release_authorization.as_deref(),
@@ -455,6 +498,9 @@ fn verify_release_authorization(
             now_unix_seconds,
         },
     )?;
+    if expected_model_id.is_some_and(|model_id| authorization.payload.model_id != model_id) {
+        return Err(StartupError::ReleaseAuthorizationModelMismatch);
+    }
     info!(
         key_id = %authorization.payload.key_id,
         sequence = authorization.payload.sequence,
