@@ -7,8 +7,10 @@ import {
   type ReadFinalOutputResponse,
   type ReadFinalProjectionResponse,
   type ReadTerminalTraceResponse,
+  type SessionMemoryRetirementInput,
+  type SessionMemoryRetirementResponse,
 } from "./contracts.js";
-import { isContentHash, type JsonObject } from "./json.js";
+import { canonicalHash, isContentHash, type JsonObject } from "./json.js";
 import {
   validatePreparedCancelRun,
   validatePreparedEnqueueRun,
@@ -54,6 +56,56 @@ export class HostAgentClient {
       prepared.agent_request,
     );
     return parseCancelResponse(response, prepared.ownership.run_id);
+  }
+
+  /**
+   * Permanently retires one room's agent context after the product has
+   * authenticated a hard-purge lifecycle event. This server-side method does
+   * not accept browser history or soft-delete signals.
+   */
+  async retireSessionMemory(
+    input: SessionMemoryRetirementInput,
+  ): Promise<SessionMemoryRetirementResponse> {
+    validateBoundedIdentifier(input.mutationId, "mutation_id");
+    validateBoundedIdentifier(input.tenantId, "tenant_id");
+    validateBoundedIdentifier(input.principalId, "principal_id");
+    validateBoundedIdentifier(input.sessionId, "session_id");
+    if (!isContentHash(input.lifecycleReceiptHash)) {
+      throw new ContractViolation("invalid_lifecycle_receipt_hash");
+    }
+    const request: JsonObject = {
+      abi_version: AGENT_V1_ABI_VERSION,
+      mutation_id: input.mutationId,
+      tenant_id: input.tenantId,
+      principal_id: input.principalId,
+      session_id: input.sessionId,
+      lifecycle_receipt_hash: input.lifecycleReceiptHash,
+      reason_code: "product_hard_purge",
+    };
+    const response = await this.transport.execute(
+      "agent_v1.retire_session_memory",
+      { ...request, mutation_hash: canonicalHash({
+        procedure: "agent_v1.retire_session_memory",
+        request,
+      }) },
+    );
+    const object = exactObject(response, [
+      "outcome",
+      "tenant_id",
+      "principal_id",
+      "session_id",
+      "lifecycle_receipt_hash",
+    ]);
+    if (
+      object.outcome !== "retired" ||
+      object.tenant_id !== input.tenantId ||
+      object.principal_id !== input.principalId ||
+      object.session_id !== input.sessionId ||
+      object.lifecycle_receipt_hash !== input.lifecycleReceiptHash
+    ) {
+      throw new ContractViolation("retirement_response_identity_mismatch");
+    }
+    return object as unknown as SessionMemoryRetirementResponse;
   }
 
   async readCommittedOutcome(

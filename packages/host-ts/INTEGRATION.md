@@ -6,6 +6,23 @@ This is a no-application integration kit. It prepares the contracts and
 adapters a future web host can import; it does not change web routes, workers,
 package manifests, Supabase migrations, or deployment configuration.
 
+The product chat database remains the source of truth for members, chat-room
+rows, titles/previews, messages, soft deletion, pagination, and reconnect. The
+agent receives the exact product identity tuple and does not maintain a second
+production chat sidebar/history store:
+
+```text
+auth.users.id       -> principal_id
+chat_sessions.id    -> session_id
+agent_runs.id       -> run_id (and daemon run_id)
+product/deployment  -> tenant_id
+```
+
+`packages/host-ts/src/local-gateway.ts` is a loopback development adapter only.
+Its `krw_gateway_local` tables contain CLI ownership metadata, not product
+messages or chat-room titles, and must not be used as the web application's
+session list.
+
 The trust boundary is:
 
 ```text
@@ -42,7 +59,7 @@ const release = await loadPinnedReleaseArtifact({
 The loader rejects symlinks, non-regular or group/world-writable files,
 non-canonical JSON, secrets/endpoints, artifact drift, duplicate routes,
 protocol/profile mismatches, and anything except the exact physical model
-`glm-5.2`. Rotate the descriptor by replacing the deployment artifact
+`glm-5.2` or `deepseek-v4-flash`. Rotate the descriptor by replacing the deployment artifact
 and restarting the host; never reread it per request.
 
 Protocol compatibility is fail-closed:
@@ -54,7 +71,7 @@ Protocol compatibility is fail-closed:
 | Immutable claim | `7` |
 | Release descriptor | `3` |
 | Session-memory carrier | `3` only |
-| Provider model | `glm-5.2` only |
+| Provider model | `glm-5.2` or `deepseek-v4-flash` |
 | Provider API | `anthropic-messages-v1` |
 | Profiles | `glm_high`, `glm_max`, `glm_direct` |
 

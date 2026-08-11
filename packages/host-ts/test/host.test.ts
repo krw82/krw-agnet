@@ -225,6 +225,34 @@ test("enqueue claim is exact, hash-bound and contains no provider injection surf
   });
 });
 
+test("the host admits the DeepSeek production lane from the daemon descriptor", () => {
+  const base = descriptor();
+  const entry = base.entries[0];
+  assert(entry);
+  const deepseek = {
+    ...base,
+    entries: [
+      {
+        ...entry,
+        execution: {
+          ...entry.execution,
+          requested_model: "deepseek-v4-flash",
+          resolved_model: "deepseek-v4-flash",
+          provider_max_context_tokens: 1_000_000,
+          provider_wire_capabilities: {
+            ...entry.execution.provider_wire_capabilities,
+            requires_thinking_block_replay: true,
+            requires_assistant_content_for_tool_calls: false,
+          },
+        },
+      },
+    ],
+  } as PublicReleaseDescriptor;
+  const built = buildEnqueueRunRequest(deepseek, input());
+  assert.equal(built.immutable_snapshot.request.requested_model, "deepseek-v4-flash");
+  assert.equal(built.immutable_snapshot.execution.provider_max_context_tokens, 1_000_000);
+});
+
 test("model and profile tampering are rejected", () => {
   const aliased = descriptor();
   const entry = aliased.entries[0];

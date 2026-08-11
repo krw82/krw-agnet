@@ -1,5 +1,7 @@
 import {
+  ALLOWED_MODEL_IDS,
   GLM_MODEL_ID,
+  type AllowedModelId,
   type OutboxReceipt,
 } from "./contracts.js";
 import type { HostAgentClient } from "./client.js";
@@ -120,12 +122,18 @@ export interface BillingUsageV1 extends JsonObject {
   readonly provider_total_ms?: number;
   readonly capability_total_ms?: number;
   readonly compact_total_ms?: number;
+  readonly provider_queue_wait_ms?: number;
+  readonly session_memory_total_ms?: number;
+  readonly market_preflight_ms?: number;
+  readonly prompt_build_total_ms?: number;
+  readonly checkpoint_total_ms?: number;
 }
 
 export interface AnswerBillingMetadataV1 extends JsonObject {
   readonly schema_version: 1;
   readonly run_id: string;
   readonly answer_bundle_hash: ContentHash;
+  readonly model_id: AllowedModelId;
   readonly usage: BillingUsageV1;
 }
 
@@ -168,7 +176,7 @@ export interface AnswerPresentationProjectionV1 extends ProjectionCommandBaseV1 
 
 export interface AnswerBillingProjectionV1 extends ProjectionCommandBaseV1 {
   readonly kind: "answer_billing";
-  readonly model_id: typeof GLM_MODEL_ID;
+  readonly model_id: AllowedModelId;
   readonly billing: AnswerBillingMetadataV1;
 }
 
@@ -258,7 +266,7 @@ export function createProductProjectionHandlers(
       const command: AnswerBillingProjectionV1 = {
         ...commandBase(event, claim),
         kind: "answer_billing",
-        model_id: GLM_MODEL_ID,
+        model_id: billing.model_id,
         billing,
       };
       validateApplyReceipt(await consumers.applyAnswerBilling(command), command);
@@ -388,24 +396,29 @@ export function parseAnswerBilling(event: OutboxReceipt): AnswerBillingMetadataV
   if (event.event_kind !== "answer.billing") {
     throw new ContractViolation("answer_billing_wrong_event_kind");
   }
-  const payload = exactObject(event.payload, [
+  const payload = exactObjectWithOptional(event.payload, [
     "schema_version",
     "run_id",
     "answer_bundle_hash",
     "usage",
-  ]);
+  ], ["model_id"]);
   if (payload.schema_version !== 1) throw new ContractViolation("answer_billing_version");
   assertRunId(payload.run_id, event.run_id);
+  const modelId = payload.model_id === undefined ? GLM_MODEL_ID : payload.model_id;
+  if (!ALLOWED_MODEL_IDS.includes(modelId as string)) {
+    throw new ContractViolation("billing_model_not_allowlisted");
+  }
   return {
     schema_version: 1,
     run_id: event.run_id,
     answer_bundle_hash: requireHash(payload.answer_bundle_hash, "answer_bundle_hash"),
+    model_id: modelId as AllowedModelId,
     usage: parseBillingUsage(payload.usage),
   };
 }
 
 function parseBillingUsage(value: unknown): BillingUsageV1 {
-  const usage = exactObject(value, [
+  const usage = exactObjectWithOptional(value, [
     "provider_turns",
     "capability_calls",
     "replans",
@@ -413,8 +426,17 @@ function parseBillingUsage(value: unknown): BillingUsageV1 {
     "input_tokens",
     "output_tokens",
     "evidence_bytes",
+  ], [
+    "provider_total_ms",
+    "capability_total_ms",
+    "compact_total_ms",
+    "provider_queue_wait_ms",
+    "session_memory_total_ms",
+    "market_preflight_ms",
+    "prompt_build_total_ms",
+    "checkpoint_total_ms",
   ]);
-  return {
+  const parsed = {
     provider_turns: boundedInteger(usage.provider_turns, 0, 65_535, "provider_turns"),
     capability_calls: boundedInteger(usage.capability_calls, 0, 65_535, "capability_calls"),
     replans: boundedInteger(usage.replans, 0, 255, "replans"),
@@ -428,6 +450,27 @@ function parseBillingUsage(value: unknown): BillingUsageV1 {
       "evidence_bytes",
     ),
   };
+  const diagnostics: Record<string, number> = {};
+  for (const field of [
+    "provider_total_ms",
+    "capability_total_ms",
+    "compact_total_ms",
+    "provider_queue_wait_ms",
+    "session_memory_total_ms",
+    "market_preflight_ms",
+    "prompt_build_total_ms",
+    "checkpoint_total_ms",
+  ] as const) {
+    if (field in usage) {
+      diagnostics[field] = boundedInteger(
+        usage[field],
+        0,
+        Number.MAX_SAFE_INTEGER,
+        field,
+      );
+    }
+  }
+  return { ...parsed, ...diagnostics } as BillingUsageV1;
 }
 
 async function resolveAuthority(
@@ -580,6 +623,25 @@ function exactObject(value: unknown, keys: readonly string[]): Record<string, un
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new ContractViolation("unknown_or_missing_projection_field");
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactObjectWithOptional(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || !isJsonValue(value)) {
+    throw new ContractViolation("expected_exact_json_object");
+  }
+  const allowed = new Set([...required, ...optional]);
+  const actual = Object.keys(value);
+  if (
+    required.some((key) => !actual.includes(key)) ||
+    actual.some((key) => !allowed.has(key))
+  ) {
     throw new ContractViolation("unknown_or_missing_projection_field");
   }
   return value as Record<string, unknown>;

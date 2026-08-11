@@ -2,9 +2,9 @@
  * Framework-neutral preparation for the narrow public Agent Gateway surface.
  *
  * A web route authenticates the caller and creates the server-owned IDs first.
- * This helper then converts only `{ question, ticker }` into the existing
- * immutable enqueue contract. It deliberately exposes no model, capability,
- * release, budget, ownership, or session-memory input to the caller.
+ * This helper then converts only `{ question, ticker, advisor_lens? }` into the
+ * existing immutable enqueue contract. It deliberately exposes no model,
+ * capability, release, budget, ownership, or session-memory input to the caller.
  */
 import {
   prepareEnqueueRun,
@@ -18,11 +18,23 @@ import { ContractViolation, validateRunContext } from "./validation.js";
 const GATEWAY_SCHEMA_VERSION = 1 as const;
 const MAX_QUESTION_BYTES = 64 * 1024;
 
+/** Public Guru choices. The host maps these to sealed AgentSpec run kinds. */
+export type GatewayAdvisorLens = "ackman" | "buffett" | "flatt" | "marks" | "terry_smith";
+
+const GURU_RUN_KIND_BY_LENS: Readonly<Record<GatewayAdvisorLens, string>> = {
+  ackman: "guru_ackman",
+  buffett: "guru_buffett",
+  flatt: "guru_flatt",
+  marks: "guru_marks",
+  terry_smith: "guru_terry_smith",
+};
+
 /** Browser/CLI body for the company-research-only v1 Gateway route. */
 export interface GatewayCompanyResearchRequestV1 extends JsonObject {
   readonly schema_version: typeof GATEWAY_SCHEMA_VERSION;
   readonly question: string;
   readonly ticker: string;
+  readonly advisor_lens?: GatewayAdvisorLens;
 }
 
 /**
@@ -47,7 +59,9 @@ export async function prepareGatewayCompanyResearch(
   const request = parseGatewayCompanyResearchRequest(input.request);
   const intent: EnqueueRunIntentV1 = {
     mutation_id: input.mutation_id,
-    run_kind: "company_research",
+    run_kind: request.advisor_lens
+      ? GURU_RUN_KIND_BY_LENS[request.advisor_lens]
+      : "company_research",
     locale: "ko-KR",
     question: request.question,
     context: { kind: "company_ticker_set", tickers: [request.ticker] },
@@ -65,7 +79,11 @@ export function parseGatewayCompanyResearchRequest(
   value: unknown,
 ): GatewayCompanyResearchRequestV1 {
   if (!isPlainObject(value)) throw new ContractViolation("gateway_request_object");
-  exactKeys(value, ["schema_version", "question", "ticker"]);
+  allowedKeys(
+    value,
+    ["schema_version", "question", "ticker", "advisor_lens"],
+    ["schema_version", "question", "ticker"],
+  );
   if (value.schema_version !== GATEWAY_SCHEMA_VERSION) {
     throw new ContractViolation("gateway_request_schema_version");
   }
@@ -80,19 +98,39 @@ export function parseGatewayCompanyResearchRequest(
   if (typeof value.ticker !== "string") {
     throw new ContractViolation("gateway_request_ticker");
   }
+  const advisorLens = value.advisor_lens;
+  if (advisorLens !== undefined && !isGatewayAdvisorLens(advisorLens)) {
+    throw new ContractViolation("gateway_request_advisor_lens");
+  }
   const context = { kind: "company_ticker_set" as const, tickers: [value.ticker] };
   validateRunContext(context);
-  return Object.freeze({
+  const parsed: GatewayCompanyResearchRequestV1 = {
     schema_version: GATEWAY_SCHEMA_VERSION,
     question: value.question,
     ticker: value.ticker,
-  });
+    ...(advisorLens === undefined ? {} : { advisor_lens: advisorLens }),
+  };
+  return Object.freeze(parsed);
 }
 
-function exactKeys(value: JsonObject, expected: readonly string[]): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+function isGatewayAdvisorLens(value: unknown): value is GatewayAdvisorLens {
+  return (
+    typeof value === "string" &&
+    Object.hasOwn(GURU_RUN_KIND_BY_LENS, value)
+  );
+}
+
+function allowedKeys(
+  value: JsonObject,
+  allowed: readonly string[],
+  required: readonly string[],
+): void {
+  const allowedSet = new Set(allowed);
+  const actual = Object.keys(value);
+  if (actual.some((key) => !allowedSet.has(key))) {
+    throw new ContractViolation("gateway_request_unknown_or_missing_field");
+  }
+  if (required.some((key) => !Object.hasOwn(value, key))) {
     throw new ContractViolation("gateway_request_unknown_or_missing_field");
   }
 }

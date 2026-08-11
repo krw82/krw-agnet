@@ -3,8 +3,9 @@
  *
  * It is deliberately separate from the web app: the browser is not mounted
  * here.  The service accepts the public v1 CLI contract, owns a tiny local
- * session/run registry, calls only fixed `agent_v1` procedures through the
- * host adapter, and exposes committed final Markdown only after atomic final.
+ * development-only session/run registry, calls only fixed `agent_v1` procedures
+ * through the host adapter, and exposes committed final Markdown only after
+ * atomic final. It is not the product chat-room/history service.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -547,6 +548,7 @@ async function main(): Promise<void> {
     }
   });
   server.listen(settings.port, settings.host, () => {
+    process.stdout.write("KRW Agent Gateway mode=development_only product_session_store=false\n");
     process.stdout.write(`KRW Agent Gateway listening on http://${settings.host}:${settings.port}${API_PREFIX}\n`);
   });
   const shutdown = () => server.close(() => pool.end().finally(() => process.exit(0)));

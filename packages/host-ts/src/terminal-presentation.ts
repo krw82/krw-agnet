@@ -26,6 +26,12 @@ export interface PublicRunUsage extends JsonObject {
   readonly billable_tokens: number;
   readonly provider_total_ms: number;
   readonly capability_total_ms: number;
+  readonly compact_total_ms?: number;
+  readonly provider_queue_wait_ms?: number;
+  readonly session_memory_total_ms?: number;
+  readonly market_preflight_ms?: number;
+  readonly prompt_build_total_ms?: number;
+  readonly checkpoint_total_ms?: number;
 }
 
 export type RetryCategory =
@@ -67,7 +73,7 @@ export function projectPublicRunUsage(value: JsonValue): PublicRunUsage {
     ? "output_only" as const
     : "complete" as const;
   const billableTokens = tokenUsageStatus === "output_only" ? outputTokens : totalTokens;
-  return {
+  const result = {
     provider_turns: providerTurns,
     capability_calls: capabilityCalls,
     repairs,
@@ -79,6 +85,20 @@ export function projectPublicRunUsage(value: JsonValue): PublicRunUsage {
     provider_total_ms: providerTotalMs,
     capability_total_ms: capabilityTotalMs,
   };
+  const diagnostics: Record<string, number> = {};
+  for (const field of [
+    "compact_total_ms",
+    "provider_queue_wait_ms",
+    "session_memory_total_ms",
+    "market_preflight_ms",
+    "prompt_build_total_ms",
+    "checkpoint_total_ms",
+  ] as const) {
+    if (field in value) {
+      diagnostics[field] = nonnegativeCounter(value[field], field);
+    }
+  }
+  return { ...result, ...diagnostics } as PublicRunUsage;
 }
 
 /**

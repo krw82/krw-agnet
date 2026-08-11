@@ -1,6 +1,9 @@
 import {
   ALLOWED_MODEL_IDS,
   CLAIM_SCHEMA_VERSION,
+  DEEPSEEK_MAX_CONTEXT_TOKENS,
+  DEEPSEEK_MODEL_ID,
+  DEEPSEEK_PROVIDER_API_VERSION,
   GLM_MAX_CONTEXT_TOKENS,
   GLM_PROVIDER_API_VERSION,
   KRW_PROTOCOL_VERSION,
@@ -32,6 +35,16 @@ const GLM_PROFILE_POLICY = {
   glm_direct: { thinking: "disabled", reasoning_effort: null },
 } as const;
 const MODEL_PROFILE_POLICY = GLM_PROFILE_POLICY;
+const MODEL_WIRE_POLICY = {
+  ["glm-5.2"]: {
+    provider_api_version: GLM_PROVIDER_API_VERSION,
+    max_context_tokens: GLM_MAX_CONTEXT_TOKENS,
+  },
+  [DEEPSEEK_MODEL_ID]: {
+    provider_api_version: DEEPSEEK_PROVIDER_API_VERSION,
+    max_context_tokens: DEEPSEEK_MAX_CONTEXT_TOKENS,
+  },
+} as const;
 
 export class ContractViolation extends Error {
   constructor(readonly code: string) {
@@ -262,10 +275,14 @@ function validateReleaseEntrypoint(value: PublicReleaseEntrypoint): void {
   if (execution.requested_model !== execution.resolved_model) {
     throw new ContractViolation("silent_model_alias");
   }
-  if (execution.provider_api_version !== GLM_PROVIDER_API_VERSION) {
+  const modelWirePolicy = MODEL_WIRE_POLICY[execution.requested_model as keyof typeof MODEL_WIRE_POLICY];
+  if (
+    modelWirePolicy === undefined ||
+    execution.provider_api_version !== modelWirePolicy.provider_api_version
+  ) {
     throw new ContractViolation("provider_api_version");
   }
-  if (execution.provider_max_context_tokens !== GLM_MAX_CONTEXT_TOKENS) {
+  if (execution.provider_max_context_tokens !== modelWirePolicy.max_context_tokens) {
     throw new ContractViolation("provider_context_capacity");
   }
   validateProviderWireCapabilities(execution.provider_wire_capabilities);

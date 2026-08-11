@@ -1,15 +1,26 @@
 {
   "name": "@krw-agent/host",
-  "version": "0.0.0-private",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "INTEGRATION.md"
+  ],
   "dependencies": {
     "pg": "8.21.0"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "gateway:local": "tsx src/local-gateway.ts"

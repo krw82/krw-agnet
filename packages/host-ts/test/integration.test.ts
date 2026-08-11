@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -192,6 +192,16 @@ function existingAnswerIntent(): EnqueueRunIntentV1 {
   };
 }
 
+function questionOnlyIntent(mutationId: string, question: string): EnqueueRunIntentV1 {
+  return {
+    mutation_id: mutationId,
+    run_kind: "router",
+    locale: "ko-KR",
+    question,
+    context: { kind: "question_only" },
+  };
+}
+
 test("frontier-v2 transition is pinned to the Rust cross-language vector", () => {
   assert.equal(
     sessionMemoryFrontierHash(hash("1"), 7, hash("2")),
@@ -240,6 +250,73 @@ test("safe enqueue materializes existing answer and leaves memory to the fenced 
   assert.equal(Object.isFrozen(prepared), true);
   assert.equal(Object.isFrozen(prepared.agent_request), true);
   validatePreparedEnqueueRun(prepared);
+});
+
+test("product chat bindings preserve member, room, and run identity across retries", async () => {
+  const fixture = JSON.parse(
+    await readFile(
+      new URL("../../../fixtures/product-chat/v1/multi-user-chat-bindings.json", import.meta.url),
+      "utf8",
+    ),
+  ) as {
+    schema_version: number;
+    suite_id: string;
+    cases: Array<{
+      case_id: string;
+      tenant_id: string;
+      principal_id: string;
+      session_id: string;
+      run_ids: string[];
+    }>;
+  };
+  assert.equal(fixture.schema_version, 1);
+  assert.equal(fixture.suite_id, "multi-user-chat-bindings-v1");
+  assert.equal(fixture.cases.length, 3);
+
+  for (const [caseIndex, binding] of fixture.cases.entries()) {
+    assert.ok(binding.tenant_id.length > 0);
+    assert.match(binding.principal_id, /^[0-9a-f-]{36}$/);
+    assert.match(binding.session_id, /^[0-9a-f-]{36}$/);
+    const firstRunId = binding.run_ids[0];
+    assert.ok(firstRunId);
+    const boundOwnership: AuthenticatedRunOwnershipV1 = {
+      schema_version: 1,
+      tenant_id: binding.tenant_id,
+      principal_id: binding.principal_id,
+      session_id: binding.session_id,
+      run_id: firstRunId,
+    };
+    const intent = questionOnlyIntent(
+      `binding-${caseIndex}-mutation`,
+      `채팅방 ${binding.session_id}의 후속 리서치`,
+    );
+    const prepared = await prepareEnqueueRun({
+      artifact: artifact(descriptor("question_only")),
+      ownership: boundOwnership,
+      intent,
+      materializers: rejectingMaterializers(),
+    });
+    validatePreparedEnqueueRun(prepared);
+    const request = prepared.agent_request;
+    assert.equal(request.tenant_id, boundOwnership.tenant_id);
+    assert.equal(request.principal_id, boundOwnership.principal_id);
+    assert.equal(request.session_id, boundOwnership.session_id);
+    assert.equal(request.run_id, boundOwnership.run_id);
+    assert.equal(request.immutable_snapshot.request.tenant_id, boundOwnership.tenant_id);
+    assert.equal(request.immutable_snapshot.request.principal_id, boundOwnership.principal_id);
+    assert.equal(request.immutable_snapshot.request.session_id, boundOwnership.session_id);
+    assert.equal(request.immutable_snapshot.request.run_id, boundOwnership.run_id);
+    assert.equal(request.immutable_snapshot.request.session_memory, null);
+
+    const retried = await prepareEnqueueRun({
+      artifact: artifact(descriptor("question_only")),
+      ownership: boundOwnership,
+      intent,
+      materializers: rejectingMaterializers(),
+    });
+    assert.equal(retried.preparation_hash, prepared.preparation_hash);
+    assert.deepEqual(retried.agent_request, prepared.agent_request);
+  }
 });
 
 test("client intent cannot inject a canonical answer or session-memory carrier", async () => {

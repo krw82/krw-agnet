@@ -7,14 +7,23 @@ export const KRW_PROTOCOL_VERSION = 7 as const;
 export const CLAIM_SCHEMA_VERSION = 7 as const;
 export const RELEASE_DESCRIPTOR_SCHEMA_VERSION = 3 as const;
 export const SESSION_MEMORY_CARRIER_SCHEMA_VERSION = 3 as const;
-export const GLM_PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
+export const PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
+/** Backwards-compatible name for callers that still describe the test lane. */
+export const GLM_PROVIDER_API_VERSION = PROVIDER_API_VERSION;
+export const DEEPSEEK_PROVIDER_API_VERSION = PROVIDER_API_VERSION;
 export const GLM_MODEL_ID = "glm-5.2" as const;
+export const DEEPSEEK_MODEL_ID = "deepseek-v4-flash" as const;
 export const GLM_MAX_CONTEXT_TOKENS = 204_800 as const;
-export const ALLOWED_MODEL_IDS: readonly string[] = [GLM_MODEL_ID] as const;
+export const DEEPSEEK_MAX_CONTEXT_TOKENS = 1_000_000 as const;
+export const ALLOWED_MODEL_IDS: readonly string[] = [GLM_MODEL_ID, DEEPSEEK_MODEL_ID] as const;
+export type AllowedModelId = typeof GLM_MODEL_ID | typeof DEEPSEEK_MODEL_ID;
 
 export type ThinkingMode = "enabled" | "disabled";
 export type ReasoningEffort = "high" | "max";
-export type GlmModelProfile = "glm_high" | "glm_max" | "glm_direct";
+/** Logical execution slots shared by the GLM test and DeepSeek production registries. */
+export type ModelProfile = "glm_high" | "glm_max" | "glm_direct";
+/** Compatibility alias retained for existing host integrations. */
+export type GlmModelProfile = ModelProfile;
 
 export interface ProviderWireModeCapabilities extends JsonObject {
   readonly supported: boolean;
@@ -117,8 +126,10 @@ export interface PinnedExecutionContract extends JsonObject {
   readonly model_profile: string;
   readonly requested_model: string;
   readonly resolved_model: string;
-  readonly provider_api_version: typeof GLM_PROVIDER_API_VERSION;
-  readonly provider_max_context_tokens: typeof GLM_MAX_CONTEXT_TOKENS;
+  readonly provider_api_version: typeof PROVIDER_API_VERSION;
+  readonly provider_max_context_tokens:
+    | typeof GLM_MAX_CONTEXT_TOKENS
+    | typeof DEEPSEEK_MAX_CONTEXT_TOKENS;
   readonly provider_wire_capabilities: ProviderWireCapabilities;
   readonly thinking: ThinkingMode;
   readonly reasoning_effort: ReasoningEffort | null;
@@ -153,7 +164,7 @@ export interface PublicReleaseEntrypoint extends JsonObject {
   readonly run_kind: string;
   readonly locale: string;
   readonly agent_image_hash: ContentHash;
-  readonly model_profile: GlmModelProfile;
+  readonly model_profile: ModelProfile;
   readonly scope: EntrypointScopeV1;
   readonly execution: PinnedExecutionContract;
 }
@@ -220,6 +231,22 @@ export interface CancelRunResponse {
   readonly fencing_token: number;
   readonly run_version: number;
   readonly cancel_generation: number;
+}
+
+export interface SessionMemoryRetirementInput {
+  readonly mutationId: string;
+  readonly tenantId: string;
+  readonly principalId: string;
+  readonly sessionId: string;
+  readonly lifecycleReceiptHash: ContentHash;
+}
+
+export interface SessionMemoryRetirementResponse {
+  readonly outcome: "retired";
+  readonly tenant_id: string;
+  readonly principal_id: string;
+  readonly session_id: string;
+  readonly lifecycle_receipt_hash: ContentHash;
 }
 
 export interface ReadCommittedOutcomeInput {
