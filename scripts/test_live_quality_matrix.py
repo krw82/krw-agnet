@@ -124,6 +124,28 @@ class TerminalActionTraceTest(unittest.TestCase):
         self.assertIsNone(usage)
         self.assertEqual(retry["category"], "data_connection")
 
+    def test_accepts_additive_runtime_timing_usage_fields(self) -> None:
+        usage = {
+            "provider_turns": 3,
+            "capability_calls": 2,
+            "repairs": 1,
+            "input_tokens": 0,
+            "output_tokens": 800,
+            "total_tokens": 800,
+            "token_usage_status": "output_only",
+            "billable_tokens": 800,
+            "provider_total_ms": 1_000,
+            "capability_total_ms": 120,
+            "compact_total_ms": 15,
+            "provider_queue_wait_ms": 0,
+            "session_memory_total_ms": 2,
+            "market_preflight_ms": 3,
+            "prompt_build_total_ms": 4,
+            "checkpoint_total_ms": 5,
+        }
+        validated = quality.validate_usage(usage)
+        self.assertEqual(validated["checkpoint_total_ms"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

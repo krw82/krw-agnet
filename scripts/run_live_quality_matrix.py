@@ -437,7 +437,7 @@ def validate_status(
 
 
 def validate_usage(value: Any) -> dict[str, Any]:
-    fields = {
+    required_fields = {
         "provider_turns",
         "capability_calls",
         "repairs",
@@ -449,9 +449,27 @@ def validate_usage(value: Any) -> dict[str, Any]:
         "provider_total_ms",
         "capability_total_ms",
     }
-    numeric_fields = fields - {"token_usage_status"}
-    if not isinstance(value, dict) or set(value) != fields:
+    # The Gateway's credit-facing usage contract gained optional runtime
+    # timing counters after this runner was first written. Keep the core
+    # accounting fields strict, while accepting those additive counters so a
+    # valid terminal response is not misclassified as a transport failure.
+    optional_timing_fields = {
+        "compact_total_ms",
+        "provider_queue_wait_ms",
+        "session_memory_total_ms",
+        "market_preflight_ms",
+        "prompt_build_total_ms",
+        "checkpoint_total_ms",
+    }
+    allowed_fields = required_fields | optional_timing_fields
+    if (
+        not isinstance(value, dict)
+        or not required_fields.issubset(value)
+        or not set(value).issubset(allowed_fields)
+    ):
         raise GatewayProblem("usage_shape_invalid")
+    fields = set(value)
+    numeric_fields = fields - {"token_usage_status"}
     if any(type(value[key]) is not int or value[key] < 0 for key in numeric_fields):
         raise GatewayProblem("usage_value_invalid")
     if value["total_tokens"] != value["input_tokens"] + value["output_tokens"]:
