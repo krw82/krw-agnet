@@ -19,6 +19,11 @@ import stat
 import sys
 from typing import Any
 
+# This verifier runs inside an immutable release bundle. Importing the helper
+# module must not create a new __pycache__ file after the manifest was sealed;
+# otherwise the verifier would make its own inventory stale while checking it.
+sys.dont_write_bytecode = True
+
 from release_provider import RELEASE_SCHEMA_VERSION, model_for_provider
 
 SCHEMA_VERSION = RELEASE_SCHEMA_VERSION
