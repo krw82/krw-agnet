@@ -7,6 +7,7 @@ set -euo pipefail
 
 krw_release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_output_root=
+krw_capability_release_root=${KRW_CAPABILITY_RELEASE_ROOT:-"$HOME/krw-ontology-data/releases/prod/current"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +45,19 @@ fi
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 
+[[ "$krw_capability_release_root" = /* && -d "$krw_capability_release_root" ]] || {
+  printf 'KRW_CAPABILITY_RELEASE_ROOT must be an existing absolute ontology data release directory\n' >&2
+  exit 1
+}
+command -v uv >/dev/null 2>&1 || {
+  printf 'dual provider release requires uv to package the canonical capability runtime\n' >&2
+  exit 1
+}
+command -v rsync >/dev/null 2>&1 || {
+  printf 'dual provider release requires rsync to package the canonical capability runtime\n' >&2
+  exit 1
+}
+
 krw_parent=$(dirname -- "$krw_output_root")
 mkdir -p -- "$krw_parent"
 krw_staging=$(mktemp -d "$krw_parent/.krw-dual-release.XXXXXX")
@@ -53,7 +67,7 @@ trap 'if [[ "$krw_cleanup" == true ]]; then rm -rf -- "$krw_staging"; fi' EXIT
 
 install -d -m 0755 "$krw_common/bin" "$krw_common/images" \
   "$krw_common/migrations" "$krw_common/docs" "$krw_common/host-ts" \
-  "$krw_common/packaging"
+  "$krw_common/packaging" "$krw_common/capability-runtime"
 
 cargo build --locked --profile production -p krw-agent -p krw-agentd
 install -m 0755 target/production/krw-agent "$krw_common/bin/krw-agent"
@@ -76,11 +90,33 @@ install -m 0644 packages/host-ts/package.json packages/host-ts/package-lock.json
   "$krw_common/host-ts/"
 cp -R packages/host-ts/src packages/host-ts/test "$krw_common/host-ts/"
 cp -R packaging/systemd packaging/launchd packaging/local-mcp-gateways "$krw_common/packaging/"
+install -m 0755 packaging/launchd/krw-capabilityd-start-local \
+  "$krw_common/packaging/launchd/krw-capabilityd-start-local"
+install -m 0755 packaging/launchd/install-local-mac-capabilityd-release.sh \
+  "$krw_common/packaging/launchd/install-local-mac-capabilityd-release.sh"
 install -m 0644 packaging/README.md packaging/release-trust-registry.example.json \
   "$krw_common/packaging/"
 install -m 0755 scripts/verify_standalone_release.py "$krw_common/packaging/"
 install -m 0644 scripts/release_provider.py scripts/write_dual_provider_evidence_index.py \
   "$krw_common/packaging/"
+
+# The read-only ontology/Guru capability service is part of the sealed Agent
+# release.  It is copied as a non-editable Python environment so launchd never
+# imports the mutable source checkout at runtime.  The identity is derived
+# from the exact admitted ontology data release and later pinned by the Rust
+# deployment binding.
+rsync -a --delete \
+  --exclude '.venv' --exclude '.pytest_cache' --exclude '.ruff_cache' --exclude '__pycache__' \
+  services/krw-ontology-runtime/ "$krw_common/capability-runtime/"
+(
+  cd "$krw_common/capability-runtime"
+  PYTHONDONTWRITEBYTECODE=1 uv sync --frozen --no-dev --no-editable >/dev/null
+  KRW_ONTOLOGY_ENV=prod \
+  KRW_ONTOLOGY_RELEASE_ROOT="$krw_capability_release_root" \
+  PYTHONDONTWRITEBYTECODE=1 \
+    .venv/bin/python -m krw_capability_runtime --print-identity > identity.json
+)
+chmod 0644 "$krw_common/capability-runtime/identity.json"
 
 krw_commit=$(git rev-parse HEAD)
 krw_tree=$(git rev-parse HEAD^{tree})

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Launch the sealed canonical capability runtime.  This deliberately accepts
+# only the small market-data/operator environment; provider and database
+# credentials never enter this process.
+
+usage() {
+  printf '%s\n' 'usage: krw-capabilityd-start-local --env-file /absolute/capabilityd.env'
+}
+
+env_file=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      env_file=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ "$env_file" == /* && -f "$env_file" && ! -L "$env_file" ]] || {
+  echo 'krw-capabilityd launcher: operator environment file is missing or unsafe' >&2
+  exit 1
+}
+[[ "${KRW_AGENT_CURRENT_DIR:-}" == /* && -L "$KRW_AGENT_CURRENT_DIR" && -d "$KRW_AGENT_CURRENT_DIR" ]] || {
+  echo 'krw-capabilityd launcher: current release symlink is unavailable' >&2
+  exit 1
+}
+
+runtime="$KRW_AGENT_CURRENT_DIR/capability-runtime"
+identity_file="$runtime/identity.json"
+python_bin="$runtime/.venv/bin/python"
+[[ -f "$identity_file" && ! -L "$identity_file" && -x "$python_bin" && ! -L "$python_bin" ]] || {
+  echo 'krw-capabilityd launcher: sealed capability runtime is unavailable' >&2
+  exit 1
+}
+
+# Parse a closed, sourceable-free key-value file.  The values are returned as
+# JSON so shell metacharacters in a market credential can never be evaluated.
+settings=$(python3 - "$env_file" "$identity_file" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+env_path = pathlib.Path(sys.argv[1])
+identity_path = pathlib.Path(sys.argv[2])
+allowed = {
+    "KRW_ONTOLOGY_RELEASE_ROOT",
+    "KRW_CAPABILITYD_PORT",
+    "FMP_API_KEY",
+    "KRW_MARKET_SNAPSHOT_STORE_URL",
+    "KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY",
+}
+values = {}
+for raw in env_path.read_text(encoding="utf-8").splitlines():
+    if not raw or raw.lstrip().startswith("#"):
+        continue
+    if "=" not in raw:
+        raise SystemExit("capabilityd environment has an invalid line")
+    key, value = raw.split("=", 1)
+    if key not in allowed or key in values or not value or "\x00" in value:
+        raise SystemExit("capabilityd environment has an unsupported value")
+    values[key] = value
+root = values.get("KRW_ONTOLOGY_RELEASE_ROOT")
+if not root or not pathlib.Path(root).is_absolute() or not pathlib.Path(root).is_dir():
+    raise SystemExit("capabilityd environment has no valid ontology release root")
+port = values.get("KRW_CAPABILITYD_PORT", "19432")
+if not re.fullmatch(r"[0-9]+", port) or not 1024 <= int(port) <= 65535:
+    raise SystemExit("capabilityd environment has an invalid listener port")
+if bool(values.get("KRW_MARKET_SNAPSHOT_STORE_URL")) != bool(values.get("KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY")):
+    raise SystemExit("capabilityd market store requires both URL and credential")
+identity = json.loads(identity_path.read_text(encoding="utf-8"))
+for field in ("build_id", "tool_schema_sha256", "release_manifest_sha256"):
+    if not isinstance(identity.get(field), str) or not identity[field]:
+        raise SystemExit("sealed capability identity is invalid")
+result = {
+    "release_root": root,
+    "port": port,
+    "fmp_api_key": values.get("FMP_API_KEY", ""),
+    "market_store_url": values.get("KRW_MARKET_SNAPSHOT_STORE_URL", ""),
+    "market_store_key": values.get("KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY", ""),
+    "build_id": identity["build_id"],
+    "tool_schema": identity["tool_schema_sha256"],
+    "release_manifest": identity["release_manifest_sha256"],
+}
+print(json.dumps(result, separators=(",", ":")))
+PY
+)
+[[ -n "$settings" && "$settings" != *$'\n'* ]] || {
+  echo 'krw-capabilityd launcher: capability environment parsing failed' >&2
+  exit 1
+}
+
+read_setting() {
+  python3 - "$1" "$settings" <<'PY'
+import json
+import sys
+value = json.loads(sys.argv[2]).get(sys.argv[1], "")
+if not isinstance(value, str) or "\n" in value or "\r" in value:
+    raise SystemExit(1)
+print(value, end="")
+PY
+}
+
+export KRW_ONTOLOGY_ENV=prod
+export KRW_ONTOLOGY_RELEASE_ROOT="$(read_setting release_root)"
+export KRW_CAPABILITYD_HOST=127.0.0.1
+export KRW_CAPABILITYD_PORT="$(read_setting port)"
+export KRW_CAPABILITYD_EXPECTED_BUILD_ID="$(read_setting build_id)"
+export KRW_CAPABILITYD_EXPECTED_TOOL_SCHEMA_SHA256="$(read_setting tool_schema)"
+export KRW_CAPABILITYD_EXPECTED_RELEASE_MANIFEST_SHA256="$(read_setting release_manifest)"
+export PYTHONDONTWRITEBYTECODE=1
+
+for pair in \
+  'FMP_API_KEY fmp_api_key' \
+  'KRW_MARKET_SNAPSHOT_STORE_URL market_store_url' \
+  'KRW_MARKET_SNAPSHOT_STORE_SERVICE_ROLE_KEY market_store_key'; do
+  name=${pair%% *}
+  key=${pair#* }
+  value=$(read_setting "$key")
+  if [[ -n "$value" ]]; then
+    export "$name=$value"
+  fi
+done
+
+exec "$python_bin" -m krw_capability_runtime
