@@ -1566,6 +1566,36 @@ fn extract_json_tool_payload(
         let mut parsed = parsed.map_err(|error| reject("mcp_text_json", format!("{error:?}")))?;
         let structured = object.remove("structuredContent");
         let payload = if let Some(mut structured) = structured {
+            // Some Streamable HTTP MCP implementations serialize an otherwise
+            // standard structured result as {"result":"<json>"}, while
+            // retaining the canonical JSON in the sole text item.  Treat that
+            // exact one-field wrapper as a transport representation, not a
+            // second semantic result.  The decoded value still has to agree
+            // byte-for-byte after RFC 8785 canonicalization below; any other
+            // wrapper or any disagreement remains fail-closed.
+            if let Some(mut wrapped) = structured
+                .as_object()
+                .filter(|object| object.len() == 1)
+                .and_then(|object| object.get("result"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                if wrapped.len() > MAX_MCP_PAYLOAD_BYTES {
+                    wrapped.zeroize();
+                    scrub_json(&mut parsed);
+                    scrub_json(&mut structured);
+                    return Err(reject(
+                        "mcp_structured_result_limit",
+                        "wrapped structured result exceeds the fixed payload bound",
+                    ));
+                }
+                let decoded: Result<Value, _> = serde_json::from_str(&wrapped);
+                wrapped.zeroize();
+                structured = decoded.map_err(|error| {
+                    scrub_json(&mut parsed);
+                    reject("mcp_structured_result_json", format!("{error:?}"))
+                })?;
+            }
             let text_jcs = match serde_jcs::to_vec(&parsed) {
                 Ok(bytes) => Zeroizing::new(bytes),
                 Err(error) => {
@@ -2504,6 +2534,26 @@ mod tests {
             .expect_err("dual payload mismatch must fail");
         assert_eq!(failure.code, "mcp_dual_payload_mismatch");
         assert_eq!(failure.delivery, DeliveryCertainty::NotDispatched);
+    }
+
+    #[tokio::test]
+    async fn wrapped_structured_result_is_accepted_only_when_semantically_identical() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let (plan, state) = fixture_plan_and_state();
+        let mut result = envelope(&state, false);
+        result["structuredContent"] = serde_json::json!({
+            "result": serde_jcs::to_string(&state).expect("canonical payload")
+        });
+        let transport = FakeTransport::new([result]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
+
+        let result = runtime
+            .invoke(&invocation(&catalog, "ontology.query_context", plan))
+            .await
+            .expect("equivalent wrapped structured payload");
+        assert_eq!(result.provider_content, state);
     }
 
     #[tokio::test]
