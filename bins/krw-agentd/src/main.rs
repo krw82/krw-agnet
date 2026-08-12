@@ -281,11 +281,6 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         &ProcessEnvironment,
         ValidationMode::Production,
     )?;
-    let providers = DeepSeekProviderCatalog::compile_release_set_with_idle(
-        &releases,
-        args.provider_max_idle_per_host,
-    )?;
-    let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
     verify_release_authorization_for_model(
         &args,
@@ -302,8 +297,8 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     info!(
-        release_set_hash = %release_catalog.release_set_hash(),
-        images = release_catalog.len(),
+        release_set_hash = %descriptor.release_set_hash,
+        images = descriptor.entries.len(),
         "immutable agent release set loaded"
     );
     for release in releases.releases() {
@@ -330,6 +325,16 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+
+    // Descriptor authoring and database ABI diagnostics must validate only
+    // immutable configuration. Provider credentials are deliberately needed
+    // only when this process can execute a live claim; otherwise a missing
+    // inactive-provider key would block sealing the other provider's release.
+    let providers = DeepSeekProviderCatalog::compile_release_set_with_idle(
+        &releases,
+        args.provider_max_idle_per_host,
+    )?;
+    let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
 
     if args.max_active_runs == 0 || args.max_active_runs > MAX_ACTIVE_RUNS {
         return Err(StartupError::ActiveRunLimit.into());
