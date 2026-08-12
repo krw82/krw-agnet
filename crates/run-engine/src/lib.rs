@@ -8369,7 +8369,8 @@ fn prepare_calls(
             input.request,
             entrypoint,
         )?;
-        let arguments = assembled.arguments;
+        let mut arguments = assembled.arguments;
+        normalize_physical_capability_arguments(&capability.id, &mut arguments);
         if !arguments.is_object() {
             return Err(EngineError::ToolArgumentsMustBeObject(
                 capability.id.clone(),
@@ -8559,6 +8560,24 @@ fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
             goal.insert("kind".to_string(), Value::String(kind.to_string()));
         }
     }
+}
+
+/// Remove presentation controls that the physical MCP descriptor intentionally
+/// owns.  The canonical targeted-query and trace contracts retain these
+/// optional fields for compatibility with older images, but the current
+/// Streamable HTTP runtime hides them from its closed input model.  Keeping
+/// this normalization at the kernel/transport boundary means an older or
+/// provider-authored response-format hint cannot turn an otherwise valid read
+/// into an `invalid_tool_input` failure.
+fn normalize_physical_capability_arguments(capability_id: &str, value: &mut Value) {
+    if !matches!(capability_id, "ontology.query" | "ontology.trace") {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.remove("response_format");
+    object.remove("response_detail");
 }
 
 /// Maps only model-controlled canonical input failures to a repairable,
@@ -11531,6 +11550,32 @@ mod tests {
         assert_eq!(physical["limit_topics"], 4);
         assert_eq!(physical["include_internal_ids"], false);
         assert!(physical.get("response_format").is_none());
+    }
+
+    #[test]
+    fn physical_ontology_reads_drop_hidden_presentation_controls() {
+        let mut query = serde_json::json!({
+            "ticker": "AAPL",
+            "topic": "revenue",
+            "limit": 2,
+            "response_format": "json",
+            "response_detail": "full"
+        });
+        normalize_physical_capability_arguments("ontology.query", &mut query);
+        assert_eq!(query["ticker"], "AAPL");
+        assert!(query.get("response_format").is_none());
+        assert!(query.get("response_detail").is_none());
+
+        let mut trace = serde_json::json!({
+            "object_id": "object-1",
+            "response_format": "json"
+        });
+        normalize_physical_capability_arguments("ontology.trace", &mut trace);
+        assert!(trace.get("response_format").is_none());
+
+        let mut context = serde_json::json!({"response_format": "json"});
+        normalize_physical_capability_arguments("ontology.query_context", &mut context);
+        assert!(context.get("response_format").is_some());
     }
 
     #[test]
