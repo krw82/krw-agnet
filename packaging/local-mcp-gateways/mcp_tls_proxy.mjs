@@ -145,7 +145,7 @@ function syntheticReady(req, res) {
       host: config.upstream.host,
       port: config.upstream.port,
       method: "GET",
-      path: "/readyz",
+      path: config.upstreamReadinessPath ?? "/readyz",
       headers: forwardedHeaders(req.headers),
       timeout: config.upstream.timeoutMs ?? 65000,
     },

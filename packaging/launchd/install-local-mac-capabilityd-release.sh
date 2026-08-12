@@ -294,7 +294,12 @@ if not isinstance(config, dict) or not isinstance(config.get("listen"), dict) or
 config.update({
     "service": "krw-capabilityd",
     "upstream": {"host": "127.0.0.1", "port": int(port), "timeoutMs": 65000},
-    "normalizeReadiness": False,
+    # The canonical capability runtime exposes /healthz.  The TLS gateway
+    # contract exposes /readyz to the Rust/front verifiers, so always enable
+    # the small readiness translation here instead of depending on a mutable
+    # operator config default.
+    "normalizeReadiness": True,
+    "upstreamReadinessPath": "/healthz",
     "checkUpstreamReady": True,
     "protocolVersion": identity["protocol_version"],
     "buildId": identity["build_id"],
@@ -321,11 +326,11 @@ PY
 wait_for_ready() {
   deadline=$(( $(date +%s) + 45 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
-    if curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/healthz" \
-      | python3 -c '
+    response=$(curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/healthz" 2>/dev/null || true)
+    if [ -n "$response" ] && python3 -c '
 import json, sys
 expected = json.load(open(sys.argv[1], encoding="utf-8"))
-actual = json.load(sys.stdin)
+actual = json.loads(sys.stdin.read())
 for source, target in (
     ("build_id", "build_id"),
     ("tool_schema_sha256", "tool_schema_sha256"),
@@ -337,7 +342,7 @@ for source, target in (
         raise SystemExit(1)
 if actual.get("ok") is not True:
     raise SystemExit(1)
-' "$IDENTITY"
+' "$IDENTITY" <<<"$response"
     then
       return 0
     fi
