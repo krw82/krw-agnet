@@ -39,8 +39,17 @@ done
 
 runtime="$KRW_AGENT_CURRENT_DIR/capability-runtime"
 identity_file="$runtime/identity.json"
-python_bin="$runtime/.venv/bin/python"
-[[ -f "$identity_file" && ! -L "$identity_file" && -x "$python_bin" && ! -L "$python_bin" ]] || {
+materialized_runtime=${KRW_AGENT_CAPABILITY_RUNTIME_DIR:-}
+[[ "$materialized_runtime" == /* && -d "$materialized_runtime" && ! -L "$materialized_runtime" ]] || {
+  echo 'krw-capabilityd launcher: materialized capability runtime is unavailable' >&2
+  exit 1
+}
+python_bin="$materialized_runtime/.venv/bin/python"
+# The immutable release contains a regular-file archive.  Its extracted
+# virtual environment may contain Python's normal relative interpreter links;
+# the archive and extraction path are validated by the installer before this
+# launcher is ever started.
+[[ -f "$identity_file" && ! -L "$identity_file" && -x "$python_bin" ]] || {
   echo 'krw-capabilityd launcher: sealed capability runtime is unavailable' >&2
   exit 1
 }

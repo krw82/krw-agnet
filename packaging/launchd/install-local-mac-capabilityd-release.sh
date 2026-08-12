@@ -49,6 +49,7 @@ STATE_DIR="$INSTALL_ROOT/deploy-state/capabilityd-$RELEASE_ID"
 CURRENT="$INSTALL_ROOT/current"
 CAPABILITY_ENV="$OPERATOR_ROOT/runtime/capabilityd.env"
 GATEWAY_CONFIG="$OPERATOR_ROOT/config/runtime/ontology-tls.json"
+MATERIALIZED_RUNTIME="$STATE_DIR/runtime"
 
 [[ -f "$CAPABILITY_ENV" && ! -L "$CAPABILITY_ENV" ]] || fail 'Capability runtime environment is missing or unsafe'
 [[ -f "$GATEWAY_CONFIG" && ! -L "$GATEWAY_CONFIG" ]] || fail 'Ontology gateway config is missing or unsafe'
@@ -89,12 +90,126 @@ PY
   [[ "$BUNDLE" = "$expected" && -d "$BUNDLE" && ! -L "$BUNDLE" ]] || fail 'Current Agent release does not match the requested sealed bundle'
   RUNTIME="$BUNDLE/capability-runtime"
   IDENTITY="$RUNTIME/identity.json"
+  RUNTIME_ARCHIVE="$RUNTIME/capability-runtime.venv.tar.gz"
   STARTER="$BUNDLE/packaging/launchd/krw-capabilityd-start-local"
-  [[ -f "$IDENTITY" && ! -L "$IDENTITY" && -x "$STARTER" && ! -L "$STARTER" && -x "$RUNTIME/.venv/bin/python" ]] \
+  [[ -f "$IDENTITY" && ! -L "$IDENTITY" && -f "$RUNTIME_ARCHIVE" && ! -L "$RUNTIME_ARCHIVE" && -x "$STARTER" && ! -L "$STARTER" ]] \
     || fail 'Sealed canonical capability runtime is incomplete'
 }
 
+validate_runtime_archive() {
+  python3 - "$RUNTIME_ARCHIVE" <<'PY'
+import pathlib
+import posixpath
+import tarfile
+import sys
+
+archive_path = pathlib.Path(sys.argv[1])
+if archive_path.stat().st_size <= 0 or archive_path.stat().st_size > 4 * 1024**3:
+    raise SystemExit("capability runtime archive is outside the allowed size bound")
+
+members = []
+with tarfile.open(archive_path, mode="r:gz") as archive:
+    for member in archive.getmembers():
+        name = member.name
+        path = pathlib.PurePosixPath(name)
+        if not name or path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+            raise SystemExit("capability runtime archive has an unsafe path")
+        if path.parts[0] not in {".venv", ".python"}:
+            raise SystemExit("capability runtime archive has an unexpected root")
+        if member.isdev() or member.isfifo() or member.ischr() or member.isblk():
+            raise SystemExit("capability runtime archive has an unsupported entry")
+        if member.issym() or member.islnk():
+            target = member.linkname
+            if not target or pathlib.PurePosixPath(target).is_absolute():
+                raise SystemExit("capability runtime archive has an unsafe link")
+            resolved = pathlib.PurePosixPath(posixpath.normpath(str(path.parent / target)))
+            if not resolved.parts or resolved.parts[0] not in {".venv", ".python"} or any(part == ".." for part in resolved.parts):
+                raise SystemExit("capability runtime archive link escapes the virtual environment")
+        elif not member.isdir() and not member.isfile():
+            raise SystemExit("capability runtime archive has an unsupported entry")
+        members.append(member)
+
+if not members or len(members) > 100000:
+    raise SystemExit("capability runtime archive entry count is invalid")
+PY
+}
+
+safe_remove_runtime_staging() {
+  case "$1" in
+    "$STATE_DIR"/.runtime-staging.*) [ -d "$1" ] && rm -rf -- "$1" ;;
+    *) fail 'Refusing to remove an unexpected capability runtime staging directory' ;;
+  esac
+}
+
+safe_remove_materialized_runtime() {
+  case "$1" in
+    "$STATE_DIR"/runtime) [ -d "$1" ] && rm -rf -- "$1" ;;
+    *) fail 'Refusing to remove an unexpected materialized capability runtime' ;;
+  esac
+}
+
+rewrite_runtime_home() {
+  python3 - "$MATERIALIZED_RUNTIME/.venv/pyvenv.cfg" "$MATERIALIZED_RUNTIME/.python/bin" <<'PY'
+import os
+import pathlib
+import sys
+import tempfile
+
+path = pathlib.Path(sys.argv[1])
+home = sys.argv[2]
+lines = path.read_text(encoding="utf-8").splitlines()
+replaced = 0
+rewritten = []
+for line in lines:
+    if line.startswith("home = "):
+        rewritten.append(f"home = {home}")
+        replaced += 1
+    else:
+        rewritten.append(line)
+if replaced != 1:
+    raise SystemExit("materialized capability runtime has an invalid pyvenv configuration")
+fd, temporary = tempfile.mkstemp(prefix=".pyvenv.", dir=path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(rewritten) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+
+materialize_runtime() {
+  [ ! -e "$MATERIALIZED_RUNTIME" ] || fail 'Capability runtime state already exists for this release'
+  validate_runtime_archive
+  runtime_staging=$(mktemp -d "$STATE_DIR/.runtime-staging.XXXXXX")
+  if ! tar -xzf "$RUNTIME_ARCHIVE" -C "$runtime_staging"; then
+    safe_remove_runtime_staging "$runtime_staging"
+    fail 'Capability runtime archive extraction failed'
+  fi
+  if [[ ! -d "$runtime_staging/.venv" || -L "$runtime_staging/.venv" || ! -d "$runtime_staging/.python" || -L "$runtime_staging/.python" || ! -x "$runtime_staging/.venv/bin/python" ]]; then
+    safe_remove_runtime_staging "$runtime_staging"
+    fail 'Capability runtime archive did not materialize a usable Python environment'
+  fi
+  mv -- "$runtime_staging" "$MATERIALIZED_RUNTIME"
+  if ! rewrite_runtime_home || ! "$MATERIALIZED_RUNTIME/.venv/bin/python" -c 'import krw_capability_runtime' >/dev/null; then
+    safe_remove_materialized_runtime "$MATERIALIZED_RUNTIME"
+    fail 'Capability runtime archive cannot import the canonical capability service'
+  fi
+}
+
+xml_escape_path() {
+  case "$1" in *'&'*|*'<'*|*'>'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  printf '%s' "$1"
+}
+
 write_plist() {
+  for value in "$CAPABILITY_ENV" "$LOG_DIR" "$INSTALL_ROOT/current" "$MATERIALIZED_RUNTIME"; do
+    xml_escape_path "$value" >/dev/null || fail 'Launchd path contains an unsupported XML character'
+  done
   temporary=$(mktemp "${PLIST}.XXXXXX")
   cat > "$temporary" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -108,6 +223,10 @@ write_plist() {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>2</integer>
+  <key>EnvironmentVariables</key><dict>
+    <key>KRW_AGENT_CURRENT_DIR</key><string>$INSTALL_ROOT/current</string>
+    <key>KRW_AGENT_CAPABILITY_RUNTIME_DIR</key><string>$MATERIALIZED_RUNTIME</string>
+  </dict>
   <key>WorkingDirectory</key><string>$INSTALL_ROOT</string>
   <key>StandardOutPath</key><string>$LOG_DIR/krw-capabilityd.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/krw-capabilityd.err.log</string>
@@ -179,7 +298,7 @@ wait_for_ready() {
   deadline=$(( $(date +%s) + 45 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
     if curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/readyz" \
-      | python3 - "$IDENTITY" <<'PY'
+      | python3 -c '
 import json, sys
 expected = json.load(open(sys.argv[1], encoding="utf-8"))
 actual = json.load(sys.stdin)
@@ -194,7 +313,7 @@ for source, target in (
         raise SystemExit(1)
 if actual.get("ok") is not True:
     raise SystemExit(1)
-PY
+' "$IDENTITY"
     then
       return 0
     fi
@@ -238,6 +357,7 @@ case "$MODE" in
       exit "$status"
     }
     trap rollback_on_error EXIT INT TERM
+    materialize_runtime
     verify_identity_and_materialize_gateway
     launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
     write_plist

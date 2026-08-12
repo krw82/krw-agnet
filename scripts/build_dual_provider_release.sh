@@ -57,6 +57,10 @@ command -v rsync >/dev/null 2>&1 || {
   printf 'dual provider release requires rsync to package the canonical capability runtime\n' >&2
   exit 1
 }
+command -v tar >/dev/null 2>&1 || {
+  printf 'dual provider release requires tar to package the canonical capability runtime\n' >&2
+  exit 1
+}
 
 krw_parent=$(dirname -- "$krw_output_root")
 mkdir -p -- "$krw_parent"
@@ -101,22 +105,76 @@ install -m 0644 scripts/release_provider.py scripts/write_dual_provider_evidence
   "$krw_common/packaging/"
 
 # The read-only ontology/Guru capability service is part of the sealed Agent
-# release.  It is copied as a non-editable Python environment so launchd never
-# imports the mutable source checkout at runtime.  The identity is derived
-# from the exact admitted ontology data release and later pinned by the Rust
+# release.  Its non-editable Python environment is archived as one regular
+# file: the release verifier correctly rejects live symbolic links, while a
+# normal Python virtual environment requires interpreter links.  The local
+# capability installer validates and materializes this archive outside the
+# immutable release before launchd starts it.  The identity is derived from
+# the exact admitted ontology data release and later pinned by the Rust
 # deployment binding.
 rsync -a --delete \
   --exclude '.venv' --exclude '.pytest_cache' --exclude '.ruff_cache' --exclude '__pycache__' \
   services/krw-ontology-runtime/ "$krw_common/capability-runtime/"
 (
   cd "$krw_common/capability-runtime"
-  PYTHONDONTWRITEBYTECODE=1 uv sync --frozen --no-dev --no-editable >/dev/null
+  PYTHONDONTWRITEBYTECODE=1 uv venv --relocatable --link-mode copy .venv >/dev/null
+  PYTHONDONTWRITEBYTECODE=1 uv sync --frozen --no-dev --no-editable --link-mode copy >/dev/null
+  krw_base_python=$(python3 -c 'import os; print(os.path.realpath(".venv/bin/python"))')
+  krw_base_root=$(dirname -- "$(dirname -- "$krw_base_python")")
+  [[ "$krw_base_python" = /* && -x "$krw_base_python" && -d "$krw_base_root" && ! -L "$krw_base_root" ]] || {
+    printf 'canonical capability runtime has no safe base Python distribution\n' >&2
+    exit 1
+  }
+  rsync -a --delete "$krw_base_root/" .python/
+  [[ -L .venv/bin/python ]] || {
+    printf 'canonical capability virtual environment has an unexpected Python launcher\n' >&2
+    exit 1
+  }
+  rm -- .venv/bin/python
+  ln -s "../../.python/bin/$(basename -- "$krw_base_python")" .venv/bin/python
+  python3 - .venv/pyvenv.cfg "$PWD/.python/bin" <<'PY'
+import os
+import pathlib
+import sys
+import tempfile
+
+path = pathlib.Path(sys.argv[1])
+home = sys.argv[2]
+lines = path.read_text(encoding="utf-8").splitlines()
+replaced = 0
+rewritten = []
+for line in lines:
+    if line.startswith("home = "):
+        rewritten.append(f"home = {home}")
+        replaced += 1
+    else:
+        rewritten.append(line)
+if replaced != 1:
+    raise SystemExit("canonical capability virtual environment has an invalid pyvenv configuration")
+fd, temporary = tempfile.mkstemp(prefix=".pyvenv.", dir=path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(rewritten) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
   KRW_ONTOLOGY_ENV=prod \
   KRW_ONTOLOGY_RELEASE_ROOT="$krw_capability_release_root" \
   PYTHONDONTWRITEBYTECODE=1 \
     .venv/bin/python -m krw_capability_runtime --print-identity > identity.json
+  COPYFILE_DISABLE=1 tar -czf capability-runtime.venv.tar.gz .venv .python
+  rm -r -- .venv .python
 )
 chmod 0644 "$krw_common/capability-runtime/identity.json"
+if find "$krw_common/capability-runtime" -type l -print -quit | grep -q .; then
+  printf 'canonical capability release payload contains an unsupported symbolic link\n' >&2
+  exit 1
+fi
 
 krw_commit=$(git rev-parse HEAD)
 krw_tree=$(git rev-parse HEAD^{tree})
