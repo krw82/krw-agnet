@@ -35,7 +35,17 @@ const hopByHop = new Set([
 function forwardedHeaders(headers) {
   const output = {};
   for (const [key, value] of Object.entries(headers)) {
-    if (!hopByHop.has(key.toLowerCase()) && key.toLowerCase() !== "host") output[key] = value;
+    // The client origin describes the TLS-facing gateway, not the loopback
+    // HTTP upstream. Forwarding it unchanged makes strict MCP servers compare
+    // an HTTPS origin against their own HTTP listener and reject valid calls.
+    // The gateway remains the only public protocol boundary: the original
+    // Origin is accepted on the incoming HTTPS request but is deliberately
+    // not propagated across this scheme/authority transition.
+    if (
+      !hopByHop.has(key.toLowerCase())
+      && key.toLowerCase() !== "host"
+      && key.toLowerCase() !== "origin"
+    ) output[key] = value;
   }
   output.host = `${config.upstream.host}:${config.upstream.port}`;
   return output;
