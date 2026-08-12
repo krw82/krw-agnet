@@ -85,10 +85,14 @@ fi
 
 case "${KRW_AGENT_PROVIDER:-}" in
   glm)
-    [[ -n "${GLM_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: GLM credential is missing' >&2; exit 1; }
+    if [[ -z "$mode" ]]; then
+      [[ -n "${GLM_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: GLM credential is missing' >&2; exit 1; }
+    fi
     ;;
   deepseek)
-    [[ -n "${DEEPSEEK_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: DeepSeek credential is missing' >&2; exit 1; }
+    if [[ -z "$mode" ]]; then
+      [[ -n "${DEEPSEEK_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: DeepSeek credential is missing' >&2; exit 1; }
+    fi
     ;;
   *)
     echo 'krw-agentd local launcher: invalid provider' >&2

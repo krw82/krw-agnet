@@ -20,7 +20,12 @@ case "$krw_provider" in
   deepseek) krw_model='deepseek-v4-flash'; krw_key=${DEEPSEEK_API_KEY:-} ;;
   *) echo 'krw-agentd: invalid KRW_AGENT_PROVIDER' >&2; exit 2 ;;
 esac
-[[ -n "$krw_key" ]] || { echo 'krw-agentd: provider credential is missing' >&2; exit 1; }
+# `--check` and `--database-check` only validate the sealed descriptor and
+# database ABI; neither path constructs a provider client. Requiring the
+# selected provider key here would make an offline GLM release unverifiable.
+if ((${#krw_mode_args[@]} == 0)); then
+  [[ -n "$krw_key" ]] || { echo 'krw-agentd: provider credential is missing' >&2; exit 1; }
+fi
 [[ -L "$krw_current" && -d "$krw_current" ]] || { echo 'krw-agentd: current release is not an atomic symlink' >&2; exit 1; }
 [[ -x "$krw_current/bin/krw-agentd" ]] || { echo 'krw-agentd: daemon binary is missing' >&2; exit 1; }
 [[ -f "$krw_current/deployments/model-registry.yaml" ]] || { echo 'krw-agentd: model registry is missing' >&2; exit 1; }
