@@ -51,6 +51,14 @@ function forwardedHeaders(headers) {
   return output;
 }
 
+function upstreamPath(req) {
+  const configured = config.upstreamMcpPath;
+  if (!configured) return req.url;
+  const [pathname, query] = req.url.split("?", 2);
+  if (pathname !== "/mcp" && pathname !== "/mcp/") return req.url;
+  return query ? `${configured}?${query}` : configured;
+}
+
 function statelessAttestation() {
   if (config.toolSessionReuse !== "attested-stateless-v1") return null;
   // The keys are already RFC 8785/JCS lexical order and all values are
@@ -113,7 +121,7 @@ function upstreamRequest(req, res, body = null) {
       host: config.upstream.host,
       port: config.upstream.port,
       method: req.method,
-      path: req.url,
+      path: upstreamPath(req),
       headers: forwardedHeaders(req.headers),
       timeout: config.upstream.timeoutMs ?? 65000,
     },

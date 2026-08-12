@@ -34,12 +34,8 @@ def _listener_setting() -> tuple[str, int, HttpTransportConfig]:
         raise RuntimeError("KRW_CAPABILITYD_PORT must be an integer") from error
     if not 1 <= port <= 65_535:
         raise RuntimeError("KRW_CAPABILITYD_PORT must be within 1..65535")
-    raw_idle = os.getenv("KRW_CAPABILITYD_SESSION_IDLE_SECONDS", "300").strip()
-    try:
-        config = HttpTransportConfig(session_idle_seconds=float(raw_idle))
-        config.validate()
-    except ValueError as error:
-        raise RuntimeError("KRW_CAPABILITYD_SESSION_IDLE_SECONDS is outside the allowed range") from error
+    config = HttpTransportConfig()
+    config.validate()
     return host, port, config
 
 

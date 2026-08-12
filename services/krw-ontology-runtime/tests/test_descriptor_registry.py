@@ -163,10 +163,9 @@ def test_streamable_http_protocol_and_tools_list_match_the_declared_bundle() -> 
         initialized_body = initialized.json()["result"]
         assert initialized_body["protocolVersion"] == "2025-06-18"
         assert initialized_body["serverInfo"]["version"] == identity.build_id
-        session_id = initialized.headers["mcp-session-id"]
         tools = client.post(
             "/mcp",
-            headers={**headers, "mcp-session-id": session_id},
+            headers=headers,
             json={
                 "jsonrpc": "2.0",
                 "id": "tools-list-1",

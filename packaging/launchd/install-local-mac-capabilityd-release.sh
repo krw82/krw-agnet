@@ -294,6 +294,9 @@ if not isinstance(config, dict) or not isinstance(config.get("listen"), dict) or
 config.update({
     "service": "krw-capabilityd",
     "upstream": {"host": "127.0.0.1", "port": int(port), "timeoutMs": 65000},
+    # Starlette mounts the streamable MCP app at /mcp/; normalize the
+    # loopback hop once so the TLS boundary never forwards a 307 redirect.
+    "upstreamMcpPath": "/mcp/",
     # The canonical capability runtime exposes /healthz.  The TLS gateway
     # contract exposes /readyz to the Rust/front verifiers, so always enable
     # the small readiness translation here instead of depending on a mutable

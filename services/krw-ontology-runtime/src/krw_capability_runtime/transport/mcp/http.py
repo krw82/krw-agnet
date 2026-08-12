@@ -1,17 +1,15 @@
-"""Local Streamable HTTP transport for the shared capability daemon.
+"""Local stateless Streamable HTTP transport for the shared capability daemon.
 
 The ontology runtime owns one process-wide registry, lane limiter, and opened
-release.  HTTP MCP sessions are bounded transport state only; they never own
-their own ontology store or Python worker pool.  This module intentionally
-uses the low-level MCP server object from :mod:`server` directly.
+release.  The capability gateway advertises an attested stateless MCP contract,
+so the upstream transport must have the same semantics: no per-client session
+table and no session timeout that can invalidate a later tool call.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -24,26 +22,11 @@ from krw_capability_runtime.transport.mcp.server import create_server
 
 _MCP_PATH = "/mcp"
 _HEALTH_PATH = "/healthz"
-_DEFAULT_SESSION_IDLE_SECONDS = 300.0
-_MIN_SESSION_IDLE_SECONDS = 30.0
-_MAX_SESSION_IDLE_SECONDS = 3_600.0
-
-
-@dataclass(frozen=True)
 class HttpTransportConfig:
-    """Closed non-secret configuration for the local HTTP MCP listener."""
-
-    session_idle_seconds: float = _DEFAULT_SESSION_IDLE_SECONDS
+    """Closed non-secret configuration kept for the stable constructor API."""
 
     def validate(self) -> None:
-        if not (
-            _MIN_SESSION_IDLE_SECONDS
-            <= self.session_idle_seconds
-            <= _MAX_SESSION_IDLE_SECONDS
-        ):
-            raise ValueError(
-                "session_idle_seconds must stay within the bounded local MCP range"
-            )
+        return None
 
 
 def create_http_app(
@@ -52,11 +35,11 @@ def create_http_app(
     identity: CapabilityServiceIdentity,
     config: HttpTransportConfig | None = None,
 ) -> Starlette:
-    """Create a stateful, bounded Streamable HTTP MCP application.
+    """Create the shared stateless Streamable HTTP MCP application.
 
     ``StreamableHTTPSessionManager`` is instantiated exactly once per ASGI app
-    and entered through the ASGI lifespan.  The manager shares the registry
-    and never creates a separate ontology runtime per MCP session.
+    and entered through the ASGI lifespan.  Stateless mode shares the registry
+    without creating a per-request MCP session table.
     """
 
     resolved_registry = registry
@@ -66,8 +49,7 @@ def create_http_app(
     manager = StreamableHTTPSessionManager(
         server,
         json_response=True,
-        stateless=False,
-        session_idle_timeout=resolved_config.session_idle_seconds,
+        stateless=True,
     )
 
     @asynccontextmanager
