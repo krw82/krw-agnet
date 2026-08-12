@@ -58,7 +58,11 @@ source "$overlay_file"
 set +a
 
 if [[ -z "${KRW_AGENT_DATABASE_URL:-}" ]]; then
-  KRW_AGENT_DATABASE_URL=${AGENT_V1_DATABASE_URL:-${AGENT_V1_OUTBOX_DATABASE_URL:-${SUPABASE_DB_URL:-}}}
+  # The established Mac worker runtime owns one TLS PostgreSQL URL for its
+  # LISTEN loop.  Rust Agent V1 must reuse that exact Supabase connection when
+  # its dedicated aliases have not been materialized yet; otherwise a normal
+  # cutover can fail merely because the same credential has a legacy name.
+  KRW_AGENT_DATABASE_URL=${AGENT_V1_DATABASE_URL:-${AGENT_V1_OUTBOX_DATABASE_URL:-${AGENT_QUEUE_LISTEN_DATABASE_URL:-${SUPABASE_DB_URL:-}}}}
   export KRW_AGENT_DATABASE_URL
 fi
 [[ "$KRW_AGENT_DATABASE_URL" == postgres://* || "$KRW_AGENT_DATABASE_URL" == postgresql://* ]] || {

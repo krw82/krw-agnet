@@ -44,20 +44,30 @@ if [[ -n "${KRW_AGENT_METRICS_BIND:-}" ]]; then
   krw_metrics_args=(--metrics-bind "$KRW_AGENT_METRICS_BIND")
 fi
 
-exec "$krw_current/bin/krw-agentd" \
-  "${krw_images[@]}" \
-  --deployment-binding "$krw_current/deployments/deployment-binding.yaml" \
-  --model-registry "$krw_current/deployments/model-registry.yaml" \
-  --provider "$krw_provider" \
-  --budget-registry "$krw_current/deployments/budget-registry.yaml" \
-  --endpoint-registry "$krw_current/deployments/endpoint-registry.yaml" \
-  --release-authorization "$krw_current/release-authorization.json" \
-  --release-trust-registry "$krw_current/release-trust-registry.json" \
-  --database-tls-mode require \
-  --database-ca-pem-env "${KRW_AGENT_DATABASE_CA_PEM_ENV:-KRW_AGENT_DATABASE_CA_PEM}" \
-  --worker-id "${KRW_AGENT_WORKER_ID:-krw-agentd-node-a}" \
-  --artifact-root "${KRW_AGENT_ARTIFACT_ROOT:-/var/lib/krw-agent/artifacts}" \
-  --max-active-runs "${KRW_AGENT_MAX_ACTIVE_RUNS:-16}" \
-  --mcp-pool-entries "${KRW_AGENT_MCP_POOL_ENTRIES:-64}" \
-  "${krw_metrics_args[@]}" \
-  "${krw_mode_args[@]}"
+krw_exec_args=(
+  "${krw_images[@]}"
+  --deployment-binding "$krw_current/deployments/deployment-binding.yaml"
+  --model-registry "$krw_current/deployments/model-registry.yaml"
+  --provider "$krw_provider"
+  --budget-registry "$krw_current/deployments/budget-registry.yaml"
+  --endpoint-registry "$krw_current/deployments/endpoint-registry.yaml"
+  --release-authorization "$krw_current/release-authorization.json"
+  --release-trust-registry "$krw_current/release-trust-registry.json"
+  --database-tls-mode require
+  --database-ca-pem-env "${KRW_AGENT_DATABASE_CA_PEM_ENV:-KRW_AGENT_DATABASE_CA_PEM}"
+  --worker-id "${KRW_AGENT_WORKER_ID:-krw-agentd-node-a}"
+  --artifact-root "${KRW_AGENT_ARTIFACT_ROOT:-/var/lib/krw-agent/artifacts}"
+  --max-active-runs "${KRW_AGENT_MAX_ACTIVE_RUNS:-16}"
+  --mcp-pool-entries "${KRW_AGENT_MCP_POOL_ENTRIES:-64}"
+)
+# Bash treats an empty array expansion as an unset variable under `set -u`.
+# Add optional groups only when present so `--check` remains a valid startup
+# path even when the metrics listener is intentionally disabled.
+if ((${#krw_metrics_args[@]})); then
+  krw_exec_args+=("${krw_metrics_args[@]}")
+fi
+if ((${#krw_mode_args[@]})); then
+  krw_exec_args+=("${krw_mode_args[@]}")
+fi
+
+exec "$krw_current/bin/krw-agentd" "${krw_exec_args[@]}"
