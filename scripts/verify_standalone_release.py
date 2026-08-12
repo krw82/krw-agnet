@@ -54,7 +54,11 @@ def open_regular_file(path: pathlib.Path, maximum_bytes: int) -> int:
         raise ValueError("bundle file is unreadable or unsafe") from error
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0 or metadata.st_size > maximum_bytes:
+        # Empty regular files are valid release inputs (for example Python
+        # package markers such as ``__init__.py``).  Safety comes from the
+        # file type, no-follow open, bounded size, and manifest hash—not from
+        # requiring a non-empty payload.
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum_bytes:
             raise ValueError("bundle file is outside the allowed byte bound")
     except BaseException:
         os.close(descriptor)
@@ -167,7 +171,7 @@ def verify_bundle(root: pathlib.Path) -> dict[str, Any]:
         previous = relative
         declared.add(relative)
         size = entry.get("bytes")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size > MAX_FILE_BYTES:
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0 or size > MAX_FILE_BYTES:
             raise ValueError("release manifest file size is invalid")
         if not valid_hash(entry.get("content_hash")):
             raise ValueError("release manifest file hash is invalid")
