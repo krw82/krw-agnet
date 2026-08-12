@@ -132,6 +132,14 @@ PY
 python3 scripts/test_dual_provider_release.py \
   --staging-root "$krw_staging" --expect-sealed false >/dev/null
 
+# Another invocation can create the output directory while this build is
+# compiling. `mv staging existing-directory` would silently nest the complete
+# release below that directory, so re-check immediately before the atomic
+# publish step and leave the existing candidate untouched.
+if [[ -e "$krw_output_root" ]]; then
+  printf 'release output appeared during build: %s\n' "$krw_output_root" >&2
+  exit 1
+fi
 mv -- "$krw_staging" "$krw_output_root"
 krw_cleanup=false
 printf 'dual provider release candidates built: %s\n' "$krw_output_root"
