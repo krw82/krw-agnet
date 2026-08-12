@@ -53,6 +53,10 @@ set -a
 # with mode 0600 and carries no provider credential or database URL.
 # shellcheck disable=SC1090
 source "$env_file"
+# A sourceable operator environment may finish by disabling `allexport`.
+# Re-enable it explicitly before loading the generated overlay so the selected
+# immutable release path and provider reach the delegated wrapper process.
+set -a
 # shellcheck disable=SC1090
 source "$overlay_file"
 set +a
