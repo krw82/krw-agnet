@@ -1,6 +1,6 @@
 # KRW Agent 현행 구현 기준
 
-작성일: 2026-08-03  
+작성일: 2026-08-12
 상태: **ACTIVE IMPLEMENTATION AUTHORITY**
 
 이 문서는 현재 무엇을 만들고 있으며 어떤 결정이 확정됐는지를 기록한다. 오래된 architecture,
@@ -44,10 +44,13 @@ Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 �
 
 ### Runtime and provider
 
-- production target은 service-account/OS-user 범위의 machine-wide Rust daemon이다.
-- provider wire는 Anthropic Messages 계약을 사용한다. 현재 live provider 검증과 quality run은
-  GLM-5.2만 사용하고, 실서비스는 동일한 하네스의 `deepseek-v4-flash` lane으로 전환할 수
-  있다. DeepSeek live 호출은 아직 이 검증 세션에서 수행하지 않는다.
+- production target은 기존 Claude plugin worker와 같은 이 Mac의 user-level `launchd` Rust daemon이다.
+- provider wire는 Anthropic Messages 계약을 사용한다. GLM-5.2와
+  `deepseek-v4-flash`를 각각 exact registry/model lane으로 생성·검증할 수 있으며,
+  한 queue에서는 한 provider만 admission한다. GLM은 staging/quality lane,
+  DeepSeek는 service lane으로 선택할 수 있지만 hot-swap은 하지 않는다. 현재 이
+  개발 세션에서는 실제 provider network 호출과 production activation은 아직 하지
+  않았다.
 - 물리 model/profile은 immutable registry에서 exact-match로 검증하며 alias와 silent fallback은 startup에서 거절한다.
 - model ID는 deployment registry에서 정확히 allowlist하며 alias, silent fallback과 provider 자동 매핑을
   허용하지 않는다.
@@ -82,6 +85,19 @@ Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 �
 - AgentImage에 URL, key, 사용자 ID, DB table 의미를 넣지 않는다.
 - 온톨로지 검색 엔진 자체를 Rust로 재작성하지 않는다.
 
+### Dual-provider release status (2026-08-12)
+
+- `scripts/build_dual_provider_release.sh`가 Rust binary와 8개 AgentImage를 한 번만
+  만들고, 동일한 공통 bytes를 `glm`/`deepseek` bundle로 분리한다.
+- provider별 `prepare → seal → finalize`와 exact physical model 검사가 구현되어
+  있다. DeepSeek bundle을 GLM bundle로 조용히 대체하거나 alias로 fallback할 수 없다.
+- front는 provider별로 다시 빌드하지 않고, 선택한 sealed descriptor와 이 Mac의
+  `~/.local/share/krw-agent/current` atomic symlink로 provider를 고른다. GCP에는
+  public descriptor와 hash만 전달된다.
+- offline manifest/evidence/budget/front contract 검증은 통과했다. 실제 clean release,
+  운영 endpoint·서명·DB/TLS 입력, GLM/DeepSeek live acceptance와 canary는 운영 gate로
+  남아 있다.
+
 ### Compatibility and recovery
 
 - legacy plugin importer, legacy executor, dual runtime과 legacy session migration을 만들지 않는다.
@@ -107,7 +123,7 @@ Static AgentImage release set + global DeploymentBinding/Budget/Model registries
 ClaimReceipt.agent_image_hash + RunRequest
   └─ ResolvedExecutionSnapshot
        └─ Rust Agent Kernel
-            ├─ GLM-5.2 direct HTTPS/SSE (live)
+            ├─ selected GLM-5.2 or deepseek-v4-flash HTTPS/SSE lane (live)
             ├─ bounded scheduler and budgets
             ├─ durable provider/action receipts
             └─ pooled MCP
@@ -156,6 +172,10 @@ ClaimReceipt.agent_image_hash + RunRequest
   Z.AI가 실제 지원하는 `response_format.type=json_object`를 전면 사용하고, canonical schema는
   trusted prompt + kernel local validation으로 계속 검증한다. Anthropic `output_config.json_schema`
   및 strict tool-input은 문서화·admission 근거가 부족해 비활성으로 유지한다.
+  GLM이 `ResearchProposal v4`의 tagged goal `kind`를 생략해도 완전한 필드 집합으로
+  의미가 하나로 결정되는 경우에만 kernel이 해당 discriminator를 보완한다(qualitative,
+  metric observation/change). 필드가 혼합되거나 불명확하면 기존 recovery loop가
+  그대로 수정 요청을 보내며, objective 분할이나 사용자 범위를 대신 결정하지 않는다.
   Claude Agent SDK, subprocess, compatibility API는 runtime dependency가 아니다.
 - pooled Streamable HTTP MCP는 `run-scoped` 또는 readiness+initialize가 증명한
   `attested-stateless-v1` 세션만 사용한다. pool key는 principal/release/fingerprint를 분리하고,
@@ -172,9 +192,11 @@ ClaimReceipt.agent_image_hash + RunRequest
 - capability의 authenticated input scope와 typed result projection은 `AgentImage`의 closed
   `scope_binding`/`result_ingest` declaration으로 고정된다. capability 이름을 비교하는 transport 또는
   evidence-mapping fallback은 허용하지 않는다.
-- Guru는 부모 transcript와 분리된 depth-1/child-1 durable child receipt를 사용하며, child에는 정확히
-  세 개의 read-only ontology capability만 허용한다. sealed brief/author/context/evidence linkage가
-  recovery 때도 다시 검증된다.
+- Guru의 `company_evidence_researcher`는 별도 SDK subprocess나 제한된 하위 에이전트가 아니라 일반
+  회사 리서치 역할이다. 하나의 workflow 안에서 sealed Guru brief를 기준으로 회사 ontology의
+  `query_context → query/trace/chain → evidence assessment` loop를 사용하고, 결과는
+  `guru.review_company_evidence`의 typed review를 거쳐 composer로 전달된다. 따라서 Guru도 일반
+  회사 리서치처럼 필요한 스킬을 여러 개 로드하고, 질문의 영향·반례·연결고리를 자율적으로 확장한다.
 
 ### Kernel, persistence, session memory
 
@@ -190,7 +212,7 @@ ClaimReceipt.agent_image_hash + RunRequest
   audit rebuild, bounded question-conditioned view를 사용한다. snapshot checkpoint도 owner/fence/run-version
   mutation이고 실제 PostgreSQL integration test로 검증된다.
 
-### CLI·future host Gateway preparation
+### CLI·host Gateway·front integration
 
 - `krw-agent run`은 provider/MCP/agent DB를 직접 우회하는 별도 실행기가 아니다. authenticated
   Agent Gateway에 question+ticker와 optional session ID만 보내는 typed HTTP client이며, gateway token은
@@ -201,9 +223,14 @@ ClaimReceipt.agent_image_hash + RunRequest
 - 같은 session의 후속 질문은 새 run으로 queue에 들어간다. DB active-run constraint가 session당 하나의
   turn만 실행하게 하고, 다음 turn의 fenced worker가 마지막 atomic final 뒤의 bounded SessionMemory v3를
   읽는다. direct Markdown은 conversation context일 뿐 새 사실의 authority가 아니다.
-- 아직 `krw-ontology-front`에 Gateway route, authenticated ownership resolver, product answer projection,
-  SSE wiring을 mount하지 않았다. HTTP contract와 CLI client만 준비된 상태다. 상세 계약은
-  [`AGENT_GATEWAY.md`](AGENT_GATEWAY.md)에 있다.
+- `krw-ontology-front`의 `/api/chat/run` route가 authenticated user/tenant/session ownership을
+  확인하고, 회사 질문은 `company_research`, 티커 없는 질문은 `wide_research`로 typed context를
+  만들어 `@krw-agent/host`의 Rust Gateway queue에 넣는다. 같은 `session_id`의 후속 질문은 같은
+  채팅방의 새 run으로 이어지고, `agent-v1-outbox`가 durable final을 제품 메시지로 투영한다.
+  enqueue 실패도 질문을 저장한 뒤 같은 방에서 재시도하라는 terminal 안내로 끝나므로 영구 pending이
+  되지 않는다. SSE/reconnect와 release descriptor/provider readiness는 front runtime이 소유한다.
+  상세 계약은 [`AGENT_GATEWAY.md`](AGENT_GATEWAY.md)와 front의
+  `src/app/api/chat/run/route.ts`에 있다.
 
 ### Evidence, final output, release
 
@@ -217,12 +244,14 @@ ClaimReceipt.agent_image_hash + RunRequest
   expiry/key revocation/minimum sequence rollback guard, live daemon startup authorization이 구현돼 있다.
   서명 authorization은 descriptor, release set, runtime/kernel version, model을 함께 묶는다.
 
-### 로컬에서 실행한 검증
+### 과거 로컬 검증 기록 (2026-08-09)
 
 2026-08-09 현재 구현 검증은 `cargo check --workspace --all-targets --locked`와 rustfmt 검사까지
 통과했다. GLM-5.2 live admission probe에서 baseline, JSON mode, strict transition-tool input이
 모두 수락됐다. TypedJson의 GLM JSON mode는 활성화했고, JSON Schema output은 provider contract
-미지원으로 계속 비활성이다. DeepSeek live 호출은 하지 않았다.
+미지원으로 계속 비활성이다. 당시에는 운영 안전 정책상 DeepSeek live 호출을 하지 않았다. 현재
+provider-neutral Gateway runner와 dual-provider release gate는 GLM/DeepSeek 각각의 sealed
+descriptor를 요구하며, 실제 network acceptance는 운영 자격증명과 승인된 환경에서만 수행한다.
 
 - quality suite manifest의 stale vertical-slice run-request hash를 현재 fixture 바이트와 정합화했다.
 - 세 deterministic `quality replay` 케이스는 모두 score 100으로 통과했다.
@@ -291,11 +320,18 @@ fixture나 가짜 receipt로 대체하지 않는다.
 4. 같은 모델·질문·tool budget에서 기존 topology 대비 품질/numeric/citation 회귀와 end-to-end latency,
    throughput, process-tree memory 비교
 5. 2 vCPU/4 GiB 6시간 churn 및 production topology 7일 soak evidence
-6. 사용자가 허용할 때만 `krw-ontology-front` host에 integration kit, DB role, outbox consumer를 실제
-   wiring하고 service를 설치
+6. production `krw-ontology-front` image에 검증된 host package와 outbox worker를 설치하고,
+   target DB role·migration·service supervisor를 실제 환경에 적용
 
-따라서 지금 코드는 webapp에 적용되지 않은 준비 완료 상태이며, 위 외부 evidence가 없다는 이유로
-production-ready라고 주장하지 않는다.
+`krw-ontology-front`의 로컬/dev wiring은 이미 `/api/chat/run` → pinned host enqueue →
+`agent-v1-outbox` → 같은 `session_id`의 후속질문 경로로 연결되어 있다. 다만 위 외부 evidence가
+없는 상태에서 production-ready라고 주장하지 않는다.
+
+Front의 `agent-v1-outbox` 컨테이너 healthcheck는 이제 단순 worker 파일 존재가 아니라
+최근 성공한 DB/outbox pass heartbeat를 확인한다. projection 실패나 ACK 실패가 발생하면
+`degraded` 상태로 닫혀, worker가 살아 있기만 한 상태에서 production admission이 열리지 않는다.
+worker가 재시작할 때도 먼저 `degraded/starting` heartbeat를 기록하므로 이전 프로세스의
+최근 `ready` 파일을 새 프로세스의 성공으로 오인하지 않는다.
 
 ## 7. 수정 방법
 
@@ -329,9 +365,8 @@ AgentSpec과 prompt source 수정으로 끝나야 한다.
 
 ## 9. 현재 안전 차단
 
-DeepSeek live 호출은 운영 전 별도 승인된 환경에서만 수행하며, 이 검증 세션에서는 GLM-5.2
-고정 probe/quality만 허용한다. provider 전환은 `KRW_AGENT_PROVIDER`와 immutable registry를
-함께 바꾸는 bounded restart이며, hot switch가 아니다.
+DeepSeek live 호출과 production admission은 별도 승인된 환경에서만 수행한다. provider 전환은
+`KRW_AGENT_PROVIDER`와 immutable registry를 함께 바꾸는 bounded restart이며, hot switch가 아니다.
 새 key는 secret manager 또는 process environment를 통해서만 주입하고 source, image, fixture, log와
 debug bundle에는 저장하지 않는다.
 

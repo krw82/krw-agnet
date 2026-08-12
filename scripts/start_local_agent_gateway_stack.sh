@@ -125,6 +125,23 @@ trap cleanup EXIT INT TERM
 # already-running Supabase CLI project. The two modes share the same Rust
 # Postgres ABI and migration runner; only startup/transport setup differs.
 krw_state_abs=$(CDPATH= cd -- "$krw_state" && pwd)
+# The capability sidecar is always served through the local TLS proxy, even
+# when PostgreSQL is supplied by Supabase.  Keep its CA/certificate lifecycle
+# independent from the database mode so the shared-DB development stack has
+# the same pinned MCP transport as the local-Postgres mode.
+if [[ ! -f "$krw_state_abs/ca.pem" || ! -f "$krw_state_abs/server.pem" || ! -f "$krw_state_abs/server.key" ]]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 30 \
+    -config "$krw_root/scripts/live_e2e_openssl.cnf" -extensions certificate_authority_extensions \
+    -keyout "$krw_state_abs/ca.key" -out "$krw_state_abs/ca.pem" >/dev/null 2>&1
+  openssl req -new -newkey rsa:2048 -nodes -sha256 \
+    -config "$krw_root/scripts/live_e2e_openssl.cnf" -reqexts request_extensions \
+    -keyout "$krw_state_abs/server.key" -out "$krw_state_abs/server.csr" >/dev/null 2>&1
+  openssl x509 -req -sha256 -days 30 -in "$krw_state_abs/server.csr" \
+    -CA "$krw_state_abs/ca.pem" -CAkey "$krw_state_abs/ca.key" -CAcreateserial \
+    -extfile "$krw_root/scripts/live_e2e_openssl.cnf" -extensions server_certificate_extensions \
+    -out "$krw_state_abs/server.pem" >/dev/null 2>&1
+  chmod 600 "$krw_state_abs/ca.key" "$krw_state_abs/server.key"
+fi
 if [[ "$krw_database_mode" == local ]]; then
   if [[ ! -f "$krw_state_abs/postgres/PG_VERSION" ]]; then
     /opt/homebrew/bin/initdb -A trust -D "$krw_state_abs/postgres" >"$krw_state_abs/logs/initdb.log"
@@ -407,6 +424,39 @@ import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["release_set_hash"])
 PY
 )
+# Keep the front-end's immutable release pin in a separate, generated file.
+# A new local stack prepares a new image and descriptor, so a checked-in pin
+# would otherwise leave the UI enqueueing runs that the new daemon cannot
+# claim.  The file is mode 0600: it contains the local DB URL for development
+# in addition to the allowlisted release settings, and is never packaged.
+krw_frontend_env="$krw_state_abs/frontend.env"
+python3 - "$krw_frontend_env" "$krw_descriptor" "$krw_descriptor_hash" "$krw_release_set_hash" "$krw_database_url" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+values = {
+    "KRW_AGENT_BACKEND_MODE": "rust",
+    "KRW_AGENT_PROVIDER": os.environ.get("KRW_AGENT_PROVIDER", "glm"),
+    "KRW_AGENT_ADMISSION_MODE": "open",
+    "KRW_RUNTIME_ENVIRONMENT": "dev",
+    "KRW_AGENT_TENANT_ID": "local_tenant",
+    "KRW_AGENT_RELEASE_DESCRIPTOR_PATH": sys.argv[2],
+    "KRW_AGENT_RELEASE_ARTIFACT_HASH": sys.argv[3],
+    "KRW_AGENT_RELEASE_SET_HASH": sys.argv[4],
+    "AGENT_V1_DATABASE_URL": sys.argv[5],
+}
+if any("\n" in value or "\r" in value or "\0" in value for value in values.values()):
+    raise SystemExit("invalid_frontend_runtime_env")
+temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+temporary.write_text(
+    "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
+    encoding="utf-8",
+)
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+PY
 export KRW_AGENT_GATEWAY_HOST=127.0.0.1 KRW_AGENT_GATEWAY_PORT="$krw_gateway_port"
 export KRW_AGENT_GATEWAY_TENANT_ID=local_tenant KRW_AGENT_GATEWAY_PRINCIPAL_ID=local_principal
 export KRW_AGENT_GATEWAY_DATABASE_URL="$KRW_AGENT_DATABASE_URL"

@@ -14,7 +14,8 @@ from verify_standalone_release import SCHEMA_VERSION, canonical_bytes, content_h
 
 
 class StandaloneReleaseManifestTest(unittest.TestCase):
-    def build_bundle(self, root: pathlib.Path) -> pathlib.Path:
+    def build_bundle(self, root: pathlib.Path, provider: str = "glm") -> pathlib.Path:
+        model = "glm-5.2" if provider == "glm" else "deepseek-v4-flash"
         binary = root / "bin" / "krw-agent"
         binary.parent.mkdir()
         binary.write_bytes(b"deterministic test binary")
@@ -29,7 +30,8 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
             "schema_version": SCHEMA_VERSION,
             "git_commit": "a" * 40,
             "git_tree": "b" * 40,
-            "physical_models": ["glm-5.2"],
+            "provider_id": provider,
+            "physical_models": [model],
             "files": files,
         }
         manifest["manifest_hash"] = content_hash(canonical_bytes(manifest))
@@ -55,8 +57,8 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
                     "a" * 40,
                     "--git-tree",
                     "b" * 40,
-                    "--model",
-                    "glm-5.2",
+                    "--provider",
+                    "glm",
                 ],
                 check=False,
                 capture_output=True,
@@ -65,6 +67,51 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = verify_bundle(root)
             self.assertEqual(report["file_count"], 1)
+            self.assertEqual(report["provider_id"], "glm")
+
+    def test_writer_and_verifier_support_deepseek(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            binary = root / "bin" / "krw-agent"
+            binary.parent.mkdir()
+            binary.write_bytes(b"deepseek writer inventory input")
+            writer = pathlib.Path(__file__).with_name("write_release_manifest.py")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(writer),
+                    "--root",
+                    str(root),
+                    "--git-commit",
+                    "a" * 40,
+                    "--git-tree",
+                    "b" * 40,
+                    "--provider",
+                    "deepseek",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = verify_bundle(root)
+            self.assertEqual(report["provider_id"], "deepseek")
+            self.assertEqual(report["physical_models"], ["deepseek-v4-flash"])
+
+    def test_provider_model_mismatch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self.build_bundle(root, provider="deepseek")
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["physical_models"] = ["glm-5.2"]
+            body = {key: value for key, value in manifest.items() if key != "manifest_hash"}
+            manifest["manifest_hash"] = content_hash(canonical_bytes(body))
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8"
+            )
+            with self.assertRaises(ValueError):
+                verify_bundle(root)
 
     def test_verified_bundle_rejects_tampered_or_extra_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -20,6 +20,7 @@ use serde_json::Value;
 
 const ENABLE_ENV: &str = "KRW_LIVE_E2E_EPISODE_AUDIT";
 const RECOVERY_STATE_AUDIT_ENV: &str = "KRW_LIVE_E2E_RECOVERY_STATE_AUDIT";
+const ARTIFACT_KEY_ENV: &str = "KRW_LIVE_E2E_ARTIFACT_KEY_HEX";
 const QUESTION: &str = "AAPL의 매출 추이를 최근 10-K 공시 근거로 간단히 설명해줘";
 
 fn repository_root() -> PathBuf {
@@ -28,6 +29,23 @@ fn repository_root() -> PathBuf {
 
 fn required(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("{name} is required when {ENABLE_ENV}=1"))
+}
+
+/// The live local stack creates a random artifact key. Keep it out of test
+/// source and require an explicit, opt-in operator value whenever this audit
+/// reads encrypted state. Nothing prints the value or its derived bytes.
+fn live_artifact_key() -> [u8; 32] {
+    let encoded = required(ARTIFACT_KEY_ENV);
+    if encoded.len() != 64 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        panic!("{ARTIFACT_KEY_ENV} must be 64 hexadecimal characters");
+    }
+    let mut key = [0_u8; 32];
+    for (index, slot) in key.iter_mut().enumerate() {
+        let offset = index * 2;
+        *slot = u8::from_str_radix(&encoded[offset..offset + 2], 16)
+            .expect("validated artifact key hex");
+    }
+    key
 }
 
 fn initial_plan_code(error: &InitialPlanError) -> &'static str {
@@ -45,6 +63,7 @@ fn initial_plan_code(error: &InitialPlanError) -> &'static str {
             "proposal_lowering_invalid"
         }
         InitialPlanError::PlanTooLarge => "proposal_plan_too_large",
+        InitialPlanError::AppendClauseLimit => "proposal_append_plan_capacity_reached",
         InitialPlanError::SearchPlanContract => "compiled_search_plan_invalid",
         InitialPlanError::Receipt => "proposal_receipt_invalid",
         InitialPlanError::Canonicalization => "proposal_canonicalization_failed",
@@ -90,9 +109,9 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
         root,
         MasterKeyring::new(
             1,
-            [VersionedMasterKey::new(1, [0x5A; 32]).expect("ephemeral audit key")],
+            [VersionedMasterKey::new(1, live_artifact_key()).expect("live audit key")],
         )
-        .expect("ephemeral audit keyring"),
+        .expect("live audit keyring"),
         ArtifactStoreConfig {
             max_plaintext_bytes: 16 * 1024 * 1024,
             ..ArtifactStoreConfig::default()

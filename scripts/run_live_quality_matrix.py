@@ -48,6 +48,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from release_provider import PROVIDER_MODELS, validate_public_descriptor
+
 
 MAX_CORPUS_BYTES = 2 * 1024 * 1024
 MAX_GATEWAY_RESPONSE_BYTES = 256 * 1024
@@ -79,6 +81,7 @@ class QualityCase:
     ticker: str
     question: str
     evaluation_focus: tuple[str, ...]
+    session_group: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,6 +122,12 @@ def parse_args() -> argparse.Namespace:
             "KRW_AGENT_GATEWAY_URL", "http://127.0.0.1:4318/v1/agent"
         ),
         help="existing Agent Gateway base URL",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=tuple(sorted(PROVIDER_MODELS)),
+        default=os.environ.get("KRW_AGENT_PROVIDER", "glm"),
+        help="provider lane already loaded by the Gateway (default: KRW_AGENT_PROVIDER or glm)",
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -201,11 +210,17 @@ def load_cases(path: Path) -> tuple[dict[str, Any], list[QualityCase]]:
     cases: list[QualityCase] = []
     seen: set[str] = set()
     for item in corpus["cases"]:
-        if not isinstance(item, dict) or set(item) != {
+        if not isinstance(item, dict) or not {
             "case_id",
             "ticker",
             "question",
             "evaluation_focus",
+        }.issubset(item) or set(item) - {
+            "case_id",
+            "ticker",
+            "question",
+            "evaluation_focus",
+            "session_group",
         }:
             raise RunnerError("quality corpus case has an unexpected shape")
         case_id = item["case_id"]
@@ -238,7 +253,13 @@ def load_cases(path: Path) -> tuple[dict[str, Any], list[QualityCase]]:
             )
         ):
             raise RunnerError(f"quality corpus evaluation_focus is invalid: {case_id}")
-        cases.append(QualityCase(case_id, ticker, question, tuple(focus)))
+        session_group = item.get("session_group")
+        if session_group is not None and (
+            not isinstance(session_group, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", session_group)
+        ):
+            raise RunnerError(f"quality corpus session_group is invalid: {case_id}")
+        cases.append(QualityCase(case_id, ticker, question, tuple(focus), session_group))
     if not cases:
         raise RunnerError("quality corpus has no cases")
     return corpus, cases
@@ -647,6 +668,7 @@ def planned_result(case: QualityCase) -> dict[str, Any]:
         "ticker": case.ticker,
         "question_original": case.question,
         "evaluation_focus": list(case.evaluation_focus),
+        "session_group": case.session_group,
         "status": "planned",
         "answer_markdown": None,
         "execution_trace": {
@@ -683,6 +705,7 @@ def run_case(
     timeout_seconds: int,
     poll_seconds: float,
     report_root: Path,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     started_at = now_utc()
     started = time.monotonic()
@@ -693,14 +716,23 @@ def run_case(
     status_path = case_dir / "terminal-response.json"
     trace_path = case_dir / "terminal-trace-response.json"
     try:
+        if session_id is None:
+            submit_url = f"{gateway_url}/runs"
+        else:
+            if not SESSION_ID_RE.fullmatch(session_id):
+                raise GatewayProblem("session_identity_invalid")
+            submit_url = f"{gateway_url}/sessions/{session_id}/runs"
         submitted = gateway_json(
             "POST",
-            f"{gateway_url}/runs",
+            submit_url,
             token,
             {"schema_version": 1, "question": case.question, "ticker": case.ticker},
         )
         write_private_json(submit_path, submitted)
-        session_id, run_id, _ = validate_submit(submitted)
+        submitted_session_id, run_id, _ = validate_submit(submitted)
+        if session_id is not None and submitted_session_id != session_id:
+            raise GatewayProblem("session_identity_mismatch")
+        session_id = submitted_session_id
         deadline = time.monotonic() + timeout_seconds
         terminal: dict[str, Any] | None = None
         while time.monotonic() < deadline:
@@ -732,6 +764,7 @@ def run_case(
             "ticker": case.ticker,
             "question_original": case.question,
             "evaluation_focus": list(case.evaluation_focus),
+            "session_group": case.session_group,
             "status": "completed" if state == "final" else "terminal_non_final",
             "answer_markdown": answer,
             "execution_trace": {
@@ -764,6 +797,7 @@ def run_case(
             "ticker": case.ticker,
             "question_original": case.question,
             "evaluation_focus": list(case.evaluation_focus),
+            "session_group": case.session_group,
             "status": "transport_failed",
             "answer_markdown": None,
             "execution_trace": {
@@ -809,52 +843,91 @@ def main() -> int:
     corpus, all_cases = load_cases(args.corpus)
     selected = select_cases(all_cases, args)
     report_root = private_report_dir(args.report_dir)
+    lane: dict[str, object] = {
+        "provider_id": args.provider,
+        "physical_model": PROVIDER_MODELS[args.provider],
+    }
     if args.dry_run:
         results = [planned_result(case) for case in selected]
     else:
         gateway_url = normalized_gateway_url(args.gateway_url)
         token = require_gateway_token()
+        descriptor_path = os.environ.get("KRW_AGENT_RELEASE_DESCRIPTOR_PATH", "").strip()
+        descriptor_hash = os.environ.get("KRW_AGENT_RELEASE_ARTIFACT_HASH", "").strip()
+        release_set_hash = os.environ.get("KRW_AGENT_RELEASE_SET_HASH", "").strip()
+        if not descriptor_path or not descriptor_hash or not release_set_hash:
+            raise RunnerError("provider release pins are required for live quality runs")
+        try:
+            lane = validate_public_descriptor(
+                Path(descriptor_path),
+                args.provider,
+                expected_artifact_hash=descriptor_hash,
+                expected_release_set_hash=release_set_hash,
+            )
+        except (OSError, ValueError) as error:
+            raise RunnerError(f"provider release lane is invalid: {error}") from error
         results_by_id: dict[str, dict[str, Any]] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallelism) as executor:
-            futures = {
-                executor.submit(
-                    run_case,
-                    case,
+
+        # Cases in one session_group are deliberately serialized so the
+        # second question can use the exact session returned by the first.
+        # Independent rooms remain parallel and therefore retain the normal
+        # multi-user quality/throughput coverage.
+        grouped: dict[str, list[QualityCase]] = {}
+        for case in selected:
+            grouped.setdefault(case.session_group or f"case:{case.case_id}", []).append(case)
+
+        def run_group(group: list[QualityCase]) -> list[dict[str, Any]]:
+            group_results: list[dict[str, Any]] = []
+            session_id: str | None = None
+            for item in group:
+                result = run_case(
+                    item,
                     gateway_url,
                     token,
                     args.timeout_seconds,
                     args.poll_seconds,
                     report_root,
-                ): case.case_id
-                for case in selected
+                    session_id=session_id,
+                )
+                group_results.append(result)
+                observed = result.get("execution_trace", {}).get("session_id")
+                if isinstance(observed, str) and SESSION_ID_RE.fullmatch(observed):
+                    session_id = observed
+            return group_results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallelism) as executor:
+            futures = {
+                executor.submit(run_group, group): group
+                for group in grouped.values()
             }
             for future in concurrent.futures.as_completed(futures):
-                case_id = futures[future]
+                group = futures[future]
                 try:
-                    results_by_id[case_id] = future.result()
+                    for result in future.result():
+                        results_by_id[result["case_id"]] = result
                 except Exception:
                     # A worker bug is kept content-free and cannot suppress
                     # other independent runs or the final report.
-                    case = next(item for item in selected if item.case_id == case_id)
-                    failed_result = {
-                        **planned_result(case),
-                        "status": "runner_failed",
-                        "quality": {
-                            "transport_verdict": "failed",
-                            "research_quality_verdict": "not_assessable",
-                            "required_focus": list(case.evaluation_focus),
-                            "reason": "Runner worker failed before a usable Gateway receipt.",
-                        },
-                    }
-                    failed_dir = report_root / "cases" / case_id
-                    failed_dir.mkdir(mode=0o700, exist_ok=True)
-                    question_path = failed_dir / "question.txt"
-                    if not question_path.exists():
-                        write_private_text(question_path, case.question + "\n")
-                    result_path = failed_dir / "result.json"
-                    if not result_path.exists():
-                        write_private_json(result_path, failed_result)
-                    results_by_id[case_id] = failed_result
+                    for case in group:
+                        failed_result = {
+                            **planned_result(case),
+                            "status": "runner_failed",
+                            "quality": {
+                                "transport_verdict": "failed",
+                                "research_quality_verdict": "not_assessable",
+                                "required_focus": list(case.evaluation_focus),
+                                "reason": "Runner worker failed before a usable Gateway receipt.",
+                            },
+                        }
+                        failed_dir = report_root / "cases" / case.case_id
+                        failed_dir.mkdir(mode=0o700, exist_ok=True)
+                        question_path = failed_dir / "question.txt"
+                        if not question_path.exists():
+                            write_private_text(question_path, case.question + "\n")
+                        result_path = failed_dir / "result.json"
+                        if not result_path.exists():
+                            write_private_json(result_path, failed_result)
+                        results_by_id[case.case_id] = failed_result
         results = [results_by_id[case.case_id] for case in selected]
 
     completed = sum(item["status"] == "completed" for item in results)
@@ -864,6 +937,13 @@ def main() -> int:
         "kind": "krw-agent-live-quality-matrix/v1",
         "generated_at": now_utc(),
         "mode": "dry_run" if args.dry_run else "live_gateway_reuse",
+        "provider_id": lane["provider_id"],
+        "physical_model": lane["physical_model"],
+        "release": {
+            key: lane[key]
+            for key in ("descriptor_artifact_hash", "release_set_hash", "entry_count")
+            if key in lane
+        },
         "corpus": {
             "path": str(args.corpus.resolve()),
             "suite_id": corpus["suite_id"],

@@ -2,7 +2,41 @@
 set -euo pipefail
 
 krw_release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-krw_release_output=${1:-}
+krw_provider=
+krw_release_output=
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --provider)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--provider requires glm or deepseek' >&2; exit 2; }
+      krw_provider=$2
+      shift 2
+      ;;
+    --output)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--output requires an absolute directory' >&2; exit 2; }
+      krw_release_output=$2
+      shift 2
+      ;;
+    --help|-h)
+      printf 'usage: %s --provider glm|deepseek --output /absolute/new/output-directory\n' "$0"
+      exit 0
+      ;;
+    *)
+      if [[ -z "$krw_release_output" ]]; then
+        krw_release_output=$1
+        shift
+      else
+        printf 'unexpected argument: %s\n' "$1" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+case "$krw_provider" in
+  glm|deepseek) ;;
+  *) printf 'usage: %s --provider glm|deepseek --output /absolute/new/output-directory\n' "$0" >&2; exit 2 ;;
+esac
 
 if [[ -z "$krw_release_output" || "$krw_release_output" != /* ]]; then
   printf 'usage: %s /absolute/new/output-directory\n' "$0" >&2
@@ -64,10 +98,21 @@ while IFS= read -r krw_agent_package; do
 done < <(awk -F '\t' '!/^#/ && NF { print $1 }' agents/fixtures/entrypoints.tsv | LC_ALL=C sort -u)
 
 install -m 0644 migrations/*.sql "$krw_release_staging/migrations/"
-install -m 0644 deployments/local/*.yaml "$krw_release_staging/deployments/"
+install -m 0755 scripts/apply_migrations.sh "$krw_release_staging/apply_migrations.sh"
+# Production templates are copied into the unsigned candidate. Task 4
+# resolves their placeholders and creates the final sealed candidate.
+install -m 0644 deployments/prod/budget-registry.yaml \
+  "$krw_release_staging/deployments/budget-registry.yaml"
+install -m 0644 "deployments/prod/model-registry.$krw_provider.yaml" \
+  "$krw_release_staging/deployments/model-registry.yaml"
+install -m 0644 deployments/prod/deployment-binding.krw-ontology.example.yaml \
+  "$krw_release_staging/deployments/deployment-binding.example.yaml"
+install -m 0644 deployments/prod/endpoint-registry.example.yaml \
+  "$krw_release_staging/deployments/endpoint-registry.example.yaml"
 install -m 0644 README.md TODOS.md "$krw_release_staging/docs/"
 install -m 0644 docs/IMPLEMENTATION_STATUS.md docs/POSTGRES_RUNTIME.md \
-  docs/PERFORMANCE_RELEASE_GATES.md docs/RELEASE_AUTHORIZATION.md "$krw_release_staging/docs/"
+  docs/PERFORMANCE_RELEASE_GATES.md docs/RELEASE_AUTHORIZATION.md \
+  docs/DUAL_PROVIDER_PRODUCTION_RUNBOOK.md "$krw_release_staging/docs/"
 install -m 0644 packages/host-ts/package.json packages/host-ts/package-lock.json \
   packages/host-ts/tsconfig.json packages/host-ts/README.md packages/host-ts/INTEGRATION.md \
   "$krw_release_staging/host-ts/"
@@ -76,6 +121,8 @@ cp -R packaging/systemd packaging/launchd "$krw_release_staging/packaging/"
 install -m 0644 packaging/README.md packaging/release-trust-registry.example.json \
   "$krw_release_staging/packaging/"
 install -m 0755 scripts/verify_standalone_release.py "$krw_release_staging/packaging/"
+install -m 0644 scripts/release_provider.py scripts/write_dual_provider_evidence_index.py \
+  "$krw_release_staging/packaging/"
 
 krw_release_commit=$(git rev-parse HEAD)
 krw_release_tree=$(git rev-parse HEAD^{tree})
@@ -83,7 +130,7 @@ python3 scripts/write_release_manifest.py \
   --root "$krw_release_staging" \
   --git-commit "$krw_release_commit" \
   --git-tree "$krw_release_tree" \
-  --model glm-5.2
+  --provider "$krw_provider"
 python3 scripts/verify_standalone_release.py --root "$krw_release_staging"
 
 chmod -R a-w "$krw_release_staging/images" "$krw_release_staging/migrations"

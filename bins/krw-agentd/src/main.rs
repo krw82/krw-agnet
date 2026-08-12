@@ -12,7 +12,9 @@ use krw_agent_artifact_store::{
 };
 use krw_agent_capability_runtime::{McpToolTransport, PooledMcpTransport};
 use krw_agent_image::load_image_set;
-use krw_agent_persistence::agent_v1::{AgentV1Client, AgentV1Procedure, JsonProcedureExecutor};
+use krw_agent_persistence::agent_v1::{
+    AgentV1Client, AgentV1Procedure, HeartbeatDaemonRequest, JsonProcedureExecutor,
+};
 use krw_agent_persistence::daemon::{
     AgentV1Store, ClaimedRunExecutor, RecoveryArtifactStore, RunSupervisor, RunWorkerConfig,
 };
@@ -25,7 +27,7 @@ use krw_agent_protocol::{
 };
 use krw_agent_release_authorization::{
     ReleaseAuthorizationError, VerificationContext, parse_canonical_authorization,
-    parse_canonical_trust_registry, verify_for_descriptor,
+    parse_canonical_trust_registry, public_descriptor_hash, verify_for_descriptor,
 };
 use krw_agent_runtime_config::{
     BudgetRegistry, EndpointRegistry, MAX_RELEASE_IMAGES, ProcessEnvironment, ValidationMode,
@@ -48,6 +50,8 @@ const RECOVERY_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ACTIVE_RUNS: usize = 64;
 const MASTER_KEY_BYTES: usize = 32;
 const MAX_DESCRIPTOR_WRITE_ATTEMPTS: u64 = 16;
+const DAEMON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const DAEMON_HEARTBEAT_TTL_MS: u64 = 90_000;
 const MAX_RELEASE_AUTHORIZATION_ARTIFACT_BYTES: u64 = 64 * 1024;
 static DESCRIPTOR_STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -69,6 +73,13 @@ impl ProviderArg {
         match self {
             Self::Glm => GLM_MODEL_ID,
             Self::Deepseek => DEEPSEEK_MODEL_ID,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Glm => "glm",
+            Self::Deepseek => "deepseek",
         }
     }
 }
@@ -327,6 +338,17 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .worker_id
         .clone()
         .ok_or(StartupError::MissingLiveSetting("worker_id"))?;
+    let provider = args
+        .provider
+        .ok_or(StartupError::MissingLiveSetting("provider"))?;
+    let daemon_heartbeat = HeartbeatDaemonRequest {
+        daemon_id: worker_id.clone(),
+        provider: provider.label().into(),
+        descriptor_artifact_hash: public_descriptor_hash(&descriptor)?,
+        release_set_hash: descriptor.release_set_hash.clone(),
+        runtime_version: args.runtime_version.clone(),
+        heartbeat_ttl_ms: DAEMON_HEARTBEAT_TTL_MS,
+    };
     let retention_worker_id = worker_id.clone();
     let artifact_root = args
         .artifact_root
@@ -376,6 +398,23 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
+    // The daemon owns this receipt directly. It is emitted only after every
+    // local queue/executor component has been constructed, and before any
+    // browser can enqueue a customer run. The retired Claude/plugin worker is
+    // not in this control path.
+    let initial_daemon_heartbeat = client.execute(&daemon_heartbeat).await?;
+    if !initial_daemon_heartbeat.ready {
+        return Err("daemon heartbeat was not accepted".into());
+    }
+    info!(
+        daemon_id = %daemon_heartbeat.daemon_id,
+        provider = %daemon_heartbeat.provider,
+        descriptor_artifact_hash = %daemon_heartbeat.descriptor_artifact_hash,
+        release_set_hash = %daemon_heartbeat.release_set_hash,
+        heartbeat_expires_at = %initial_daemon_heartbeat.heartbeat_expires_at,
+        "local Rust daemon published direct readiness heartbeat"
+    );
+
     info!(
         max_active_runs = args.max_active_runs,
         database_max_connections = args.database_max_connections,
@@ -391,6 +430,13 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         signal_shutdown.cancel();
     });
+    let daemon_heartbeat_task = {
+        let heartbeat_client = Arc::clone(&client);
+        let heartbeat_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            run_daemon_heartbeat(heartbeat_client, daemon_heartbeat, heartbeat_shutdown).await;
+        })
+    };
     let cleanup_task = if args.retention_days > 0 {
         let cleanup_client = Arc::clone(&client);
         let cleanup_shutdown = shutdown.clone();
@@ -433,6 +479,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(task) = metrics_task {
         task.abort();
     }
+    daemon_heartbeat_task.abort();
     result?;
     let pool_stats = mcp_pool.stats().await;
     info!(
@@ -825,6 +872,40 @@ async fn run_retention_reaper(
                     "row retention reaper sweep failed; will retry next tick"
                 );
             }
+        }
+    }
+}
+
+/// Keep a small, release-bound liveness record fresh in the shared database.
+/// Failure is deliberately non-fatal after startup: the existing receipt
+/// expires within 90 seconds, so the web host closes admission safely while
+/// the daemon keeps retrying instead of abandoning work already in flight.
+async fn run_daemon_heartbeat(
+    client: Arc<AgentV1Client<PostgresJsonExecutor>>,
+    request: HeartbeatDaemonRequest,
+    shutdown: CancellationToken,
+) {
+    use tokio::time::{MissedTickBehavior, interval};
+
+    let mut ticker = interval(DAEMON_HEARTBEAT_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Startup already published the first receipt. Consume the immediate
+    // interval tick so normal operation begins at the 30-second cadence.
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            _ = ticker.tick() => {}
+        }
+        if shutdown.is_cancelled() {
+            break;
+        }
+        if let Err(error) = client.execute(&request).await {
+            warn!(
+                daemon_id = %request.daemon_id,
+                diagnostic = %error,
+                "direct daemon heartbeat failed; web admission will close when the previous receipt expires"
+            );
         }
     }
 }

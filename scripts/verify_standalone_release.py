@@ -3,9 +3,9 @@
 
 The bundle writer records hashes, but an operator also needs a fail-closed
 reader before installing a directory from removable media or an artifact
-store.  This verifier accepts no network input and rejects symlinks, missing
+store. This verifier accepts no network input and rejects symlinks, missing
 or extra files, non-canonical manifest hashes, unsafe paths, and every model
-other than the exact physical DeepSeek Flash model.
+other than the exact model admitted for the bundle's closed provider id.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ import stat
 import sys
 from typing import Any
 
+from release_provider import RELEASE_SCHEMA_VERSION, model_for_provider
 
-SCHEMA_VERSION = "krw-standalone-release/v1"
-MODEL_ID = "glm-5.2"
+SCHEMA_VERSION = RELEASE_SCHEMA_VERSION
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
 
@@ -123,13 +123,18 @@ def verify_bundle(root: pathlib.Path) -> dict[str, Any]:
         "schema_version",
         "git_commit",
         "git_tree",
+        "provider_id",
         "physical_models",
         "files",
         "manifest_hash",
     }
     if set(manifest) != allowed or manifest.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("release manifest schema is invalid")
-    if manifest.get("physical_models") != [MODEL_ID]:
+    provider = manifest.get("provider_id")
+    if not isinstance(provider, str):
+        raise ValueError("bundle provider policy is invalid")
+    expected_model = model_for_provider(provider)
+    if manifest.get("physical_models") != [expected_model]:
         raise ValueError("bundle physical model policy is invalid")
     for identifier in (manifest.get("git_commit"), manifest.get("git_tree")):
         if (
@@ -175,7 +180,8 @@ def verify_bundle(root: pathlib.Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "manifest_hash": expected_manifest_hash,
         "file_count": len(declared),
-        "physical_models": [MODEL_ID],
+        "provider_id": provider,
+        "physical_models": [expected_model],
     }
 
 

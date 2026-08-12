@@ -19,11 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-// Keep the physical context bounded, but leave enough room for a complex
-// question to append one focused follow-up plan after the initial read.
-// Twelve clauses made otherwise valid multi-objective GLM plans fail as soon
-// as a 9-clause initial plan needed a small second pass.
-const MAX_SELECTED_CLAUSES: usize = 18;
+// This is the immutable `search-plan/v2` clause bound. A follow-up may use
+// only the remaining slots in the already accepted root plan; it must never
+// construct a larger plan and defer the failure to contract validation.
+const MAX_SELECTED_CLAUSES: usize = 12;
 const MAX_EXACT_SEARCH_NODES: usize = 65_536;
 const RESEARCH_INTENT_RECEIPT_SCHEMA_VERSION: u16 = 1;
 
@@ -402,6 +401,8 @@ pub enum InitialPlanError {
     UncoverableGoal,
     #[error("minimum sufficient plan exceeds the canonical SearchPlan clause bound")]
     PlanTooLarge,
+    #[error("a follow-up plan has no remaining canonical SearchPlan clause capacity")]
+    AppendClauseLimit,
     #[error("compiled initial SearchPlan is not a valid canonical contract")]
     SearchPlanContract,
     #[error("research intent receipt violates durable invariants")]
@@ -435,6 +436,13 @@ fn lower_research_proposal(
     scope: InitialPlanScope<'_>,
 ) -> Result<ResearchIntent, InitialPlanError> {
     let user_span = bounded_question_anchor(scope.question)?;
+    // `comparison_axes` is plan-wide in the ontology contract. Once any
+    // required objective asks for a temporal calculation, every required
+    // metric clause must name a calculation window as well. Reuse a window
+    // explicitly declared by the proposal instead of letting a valid mixed
+    // raw-value + growth request fail at the MCP boundary.
+    let shared_temporal_window = required_temporal_window(&proposal.objectives)
+        .or_else(|| temporal_window_from_prior_plan(scope.prior_plan));
     let mut goals = Vec::new();
     let mut seen_goal_ids = BTreeSet::new();
     let mut comparison_axes = BTreeSet::new();
@@ -456,19 +464,16 @@ fn lower_research_proposal(
         if !seen_goal_ids.insert(goal_id.clone()) {
             continue;
         }
-        let lowered = lower_goal(&objective.goal);
-        // Metric clauses are emitted as qualitative (no wire-level metric
-        // identity), so any numeric comparison axis would trigger the MCP
-        // validator's "numeric comparison_axes require explicit clause
-        // metrics" rule. The metric goal kinds produce "value",
-        // "growth_rate", and "absolute_change" — all numeric. Skip all of
-        // them and rely on "directness" as the universal coverage axis.
-        if !matches!(
-            lowered.comparison_axis,
-            "value" | "growth_rate" | "absolute_change" | "difference"
-        ) {
-            comparison_axes.insert(lowered.comparison_axis.to_owned());
+        let mut lowered = lower_goal(&objective.goal);
+        let calculation_required = lowered.calculation_window.is_some();
+        if !lowered.metrics.is_empty() && lowered.calculation_window.is_none() {
+            lowered.calculation_window = shared_temporal_window;
         }
+        // Preserve the semantic axis on the physical SearchPlan. Numeric
+        // axes are valid only when their clause carries a canonical metric;
+        // `search_plan_clause` below emits that identity together with the
+        // corresponding scope and calculation window.
+        comparison_axes.insert(lowered.comparison_axis.to_owned());
         comparison_axes.insert("directness".to_owned());
         goals.push(IntentGoal {
             goal_id: goal_id.clone(),
@@ -477,7 +482,10 @@ fn lower_research_proposal(
             required: true,
             dependencies: Vec::new(),
             directness: objective.directness,
-            calculation_required: lowered.calculation_window.is_some(),
+            // A raw observation remains an observation goal even when its
+            // physical clause carries the shared window required by the
+            // ontology's plan-wide temporal-axis rule.
+            calculation_required,
         });
         for alternative in objective.alternatives {
             let semantic_terms = if lowered.metrics.is_empty() {
@@ -563,6 +571,68 @@ fn lower_research_proposal(
         goals,
         candidate_clauses,
     })
+}
+
+fn required_temporal_window(objectives: &[ResearchProposalObjective]) -> Option<CalculationWindow> {
+    // Prefer YoY deterministically when the proposal mixes YoY and QoQ
+    // objectives. The selected value is only a contract-completeness field
+    // for otherwise raw metric clauses; each actual change objective retains
+    // its own declared window.
+    let mut has_period_over_period = false;
+    for objective in objectives {
+        if !matches!(objective.priority, ResearchProposalPriority::Required) {
+            continue;
+        }
+        let ResearchProposalGoal::MetricChange { window, .. } = &objective.goal else {
+            continue;
+        };
+        if matches!(window, CalculationWindow::YearOverYear) {
+            return Some(CalculationWindow::YearOverYear);
+        }
+        has_period_over_period = true;
+    }
+    has_period_over_period.then_some(CalculationWindow::PeriodOverPeriod)
+}
+
+/// An append preserves the accepted root plan and its plan-wide comparison
+/// axes. When that root already asks for a temporal calculation, the ontology
+/// requires every newly appended required metric clause to carry a window too.
+/// Reuse only a window already present on the accepted plan; never invent one
+/// from the follow-up's prose.
+fn temporal_window_from_prior_plan(prior_plan: Option<&Value>) -> Option<CalculationWindow> {
+    let prior = prior_plan?.as_object()?;
+    let has_temporal_axis = prior
+        .get("comparison_axes")
+        .and_then(Value::as_array)
+        .is_some_and(|axes| {
+            axes.iter()
+                .any(|axis| matches!(axis.as_str(), Some("absolute_change") | Some("growth_rate")))
+        });
+    if !has_temporal_axis {
+        return None;
+    }
+
+    let clauses = prior.get("clauses")?.as_array()?;
+    let mut has_period_over_period = false;
+    for clause in clauses {
+        let is_required_metric = clause
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && clause
+                .get("metrics")
+                .and_then(Value::as_array)
+                .is_some_and(|metrics| !metrics.is_empty());
+        if !is_required_metric {
+            continue;
+        }
+        match clause.get("calculation_window").and_then(Value::as_str) {
+            Some("year_over_year") => return Some(CalculationWindow::YearOverYear),
+            Some("period_over_period") => has_period_over_period = true,
+            _ => {}
+        }
+    }
+    has_period_over_period.then_some(CalculationWindow::PeriodOverPeriod)
 }
 
 /// Opaque, deterministic identities prevent model-owned ordering and ID
@@ -838,7 +908,7 @@ fn compile_lowered_research_intent(
             return Err(InitialPlanError::DuplicateClause);
         }
         if clauses.len().saturating_add(appended_clauses.len()) > MAX_SELECTED_CLAUSES {
-            return Err(InitialPlanError::PlanTooLarge);
+            return Err(InitialPlanError::AppendClauseLimit);
         }
         clauses.extend(appended_clauses);
         next
@@ -1320,57 +1390,20 @@ fn search_plan_clause(
         tickers.to_vec(),
         std::iter::once(candidate.retrieval_query.clone()),
     )?;
-    // Metric clauses are emitted as qualitative clauses driven by natural
-    // filing language rather than structured metric identity.
-    //
-    // The ontology retrieval index has two clause paths:
-    //   * metric identity — requires a matching `MetricObservation` with a
-    //     complete lineage and is far stricter than filing prose;
-    //   * qualitative prose — matches `required_concepts` against filing text
-    //     and reliably returns strong-grade evidence.
-    // Empirically a clause carrying both a natural filing phrase and a metric
-    // identifier is scored against the metric-identity path first, so it is
-    // reported as `direct_evidence_missing` / `metric_calculation_unavailable`
-    // even when the prose path has ample evidence.
-    //
-    // To use the reliable prose path for metric clauses, the structured metric
-    // identity fields (`metrics`, `metric_dimensions`, `metric_scope`,
-    // `calculation_window`) are omitted from the wire payload, and the metric's
-    // natural-language filing phrase is injected into `required_concepts`. The
-    // ontology treats a clause without `metrics` as qualitative, which requires
-    // at least one `required_concepts` entry, so the prose form satisfies both
-    // the contract and the retrieval index. Canonical machine identifiers stay
-    // on the candidate for internal tracking and canonical hashing.
-    let has_metrics = !candidate.metrics.is_empty();
-    let mut required_concepts = candidate.required_concepts.clone();
-    if has_metrics {
-        for metric in &candidate.metrics {
-            let prose = metric_as_prose(metric);
-            if !prose.is_empty() {
-                let normalized = prose.to_string();
-                if !required_concepts
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(&normalized))
-                {
-                    required_concepts.push(normalized);
-                }
-            }
-        }
-    }
-    let metric_fields = if has_metrics {
-        json!({})
-    } else {
-        json!({
-            "metrics": candidate.metrics,
-            "metric_dimensions": candidate.metric_dimensions,
-            "metric_scope": candidate.metric_scope.as_search_plan(),
-            "calculation_window": candidate.calculation_window.map(CalculationWindow::as_search_plan),
-        })
-    };
+    // A metric clause must remain a pure metric clause on the wire. Its
+    // natural-language filing phrase is still present in `retrieval_query`,
+    // while the canonical metric identity lets the ontology select the actual
+    // reported observations and their calculation lineage.
+    let metric_fields = json!({
+        "metrics": candidate.metrics,
+        "metric_dimensions": candidate.metric_dimensions,
+        "metric_scope": candidate.metric_scope.as_search_plan(),
+        "calculation_window": candidate.calculation_window.map(CalculationWindow::as_search_plan),
+    });
     let mut clause = json!({
         "clause_id": candidate.candidate_id,
         "retrieval_query": retrieval_query,
-        "required_concepts": required_concepts,
+        "required_concepts": candidate.required_concepts,
         "required_predicates": candidate.required_predicates,
         "required": true,
         "tickers": tickers,
@@ -1539,18 +1572,20 @@ mod tests {
         let plan = compile_research_proposal(&proposal, company_scope(question))
             .unwrap()
             .search_plan;
-        // Metric clauses omit structured metric identity fields from the wire
-        // payload; retrieval is driven by natural-language concepts.
-        assert!(
-            plan["clauses"][0].get("metrics").is_none()
-                || plan["clauses"][0]["metrics"] == Value::Null
-        );
-        // The metric's natural filing phrase is injected into required_concepts
-        // so the qualitative-prose retrieval path can match it in the 10-K.
+        // A metric clause must preserve its canonical identity on the wire.
+        // The ontology uses it to select reportable observations rather than
+        // merely nearby filing prose.
+        assert_eq!(plan["clauses"][0]["metrics"], json!(["revenue"]));
         assert_eq!(
-            plan["clauses"][0]["required_concepts"],
-            json!(["revenue net_sales sales"])
+            plan["clauses"][0]["metric_dimensions"],
+            json!(["geography"])
         );
+        assert_eq!(plan["clauses"][0]["metric_scope"], json!("dimensioned"));
+        assert_eq!(
+            plan["clauses"][0]["calculation_window"],
+            json!("year_over_year")
+        );
+        assert_eq!(plan["clauses"][0]["required_concepts"], json!([]));
         assert_eq!(plan["clauses"][0]["required_predicates"], json!([]));
         assert!(
             plan["clauses"][0].get("retrieval_query").is_some(),
@@ -1576,25 +1611,181 @@ mod tests {
         let plan = compile_research_proposal(&proposal, company_scope(question))
             .unwrap()
             .search_plan;
-        assert_eq!(plan["comparison_axes"], json!(["directness"]));
-        // Metric clauses omit structured metric identity fields from the wire
-        // payload; the natural-language retrieval_query drives retrieval.
-        assert!(
-            plan["clauses"][0].get("metrics").is_none()
-                || plan["clauses"][0]["metrics"] == Value::Null
-        );
+        assert_eq!(plan["comparison_axes"], json!(["directness", "value"]));
+        assert_eq!(plan["clauses"][0]["metrics"], json!(["revenue"]));
+        assert_eq!(plan["clauses"][0]["required_concepts"], json!([]));
         assert!(
             plan["clauses"][0].get("calculation_window").is_none()
                 || plan["clauses"][0]["calculation_window"] == Value::Null
         );
+        validate_value(SEARCH_PLAN_V2, &plan).unwrap();
+    }
+
+    #[test]
+    fn temporal_axis_gives_every_required_metric_clause_a_window() {
+        // The ontology validates temporal comparison axes at the whole-plan
+        // level. A proposal can legitimately ask for both raw observations
+        // and a YoY calculation, but that still requires a window on every
+        // metric clause in the resulting physical plan.
+        let question = "Show AAPL revenue values and year-over-year growth.";
+        let mut proposal = proposal();
+        proposal["objectives"][0] = json!({
+            "priority":"required",
+            "alternatives":[{"terms":["AAPL", "revenue"]}],
+            "directness":"direct_required",
+            "object_types":[],
+            "goal": {
+                "kind":"metric_observation",
+                "metric":"revenue",
+                "metric_dimensions":[]
+            }
+        });
+        proposal["objectives"].as_array_mut().unwrap().push(json!({
+            "priority":"required",
+            "alternatives":[{"terms":["AAPL", "revenue growth"]}],
+            "directness":"direct_required",
+            "object_types":[],
+            "goal": {
+                "kind":"metric_change",
+                "metric":"revenue",
+                "metric_dimensions":[],
+                "change":"growth_rate",
+                "window":"year_over_year"
+            }
+        }));
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
         assert!(
-            !plan["comparison_axes"]
+            plan["comparison_axes"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|axis| matches!(axis.as_str(), Some("growth_rate" | "absolute_change")))
+                .any(|axis| axis == "growth_rate")
         );
-        validate_value(SEARCH_PLAN_V2, &plan).unwrap();
+        assert!(plan["clauses"].as_array().unwrap().iter().all(|clause| {
+            clause["metrics"]
+                .as_array()
+                .is_some_and(|metrics| !metrics.is_empty())
+                && clause["calculation_window"] == "year_over_year"
+        }));
+    }
+
+    #[test]
+    fn append_to_temporal_plan_gives_raw_metric_the_existing_window() {
+        // A later evidence pass inherits the accepted root SearchPlan. The
+        // ontology evaluates temporal axes across that complete plan, so a
+        // newly appended raw metric must use the already-declared window.
+        // Without this, the append fails at the ontology boundary even though
+        // both the earlier plan and the new research objective are valid.
+        let question = "Explain why AAPL revenue growth accelerated in 2025.";
+        let mut initial = proposal();
+        initial["objectives"][0] = json!({
+            "priority":"required",
+            "alternatives":[{"terms":["AAPL", "revenue growth"]}],
+            "directness":"direct_required",
+            "object_types":[],
+            "goal": {
+                "kind":"metric_change",
+                "metric":"revenue",
+                "metric_dimensions":[],
+                "change":"growth_rate",
+                "window":"year_over_year"
+            }
+        });
+        let prior_plan = compile_research_proposal(&initial, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        let mut follow_up = proposal();
+        follow_up["objectives"][0] = json!({
+            "priority":"required",
+            "alternatives":[{"terms":["AAPL", "Products Services revenue"]}],
+            "directness":"direct_preferred",
+            "object_types":[],
+            "goal": {
+                "kind":"metric_observation",
+                "metric":"segment_revenue",
+                "metric_dimensions":["Products", "Services"]
+            }
+        });
+
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["AAPL".into()],
+        };
+        let appended = compile_research_proposal(
+            &follow_up,
+            InitialPlanScope {
+                question,
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 1,
+                prior_plan: Some(&prior_plan),
+            },
+        )
+        .expect("a raw metric can be appended to a valid temporal plan")
+        .search_plan;
+
+        let clauses = appended["clauses"].as_array().unwrap();
+        assert_eq!(clauses.len(), 2);
+        assert_eq!(clauses[1]["metrics"], json!(["segment_revenue"]));
+        assert_eq!(clauses[1]["calculation_window"], json!("year_over_year"));
+        validate_value(SEARCH_PLAN_V2, &appended).unwrap();
+    }
+
+    #[test]
+    fn append_that_exceeds_the_canonical_clause_limit_is_reported_before_contract_validation() {
+        // `search-plan/v2` permits at most twelve clauses.  A follow-up must
+        // therefore get a precise, repairable capacity error rather than build
+        // an invalid thirteen-clause plan and surface a generic contract error.
+        let question = "Compare AAPL revenue, mix, cost, margin, and cash generation.";
+        let objective = |term: String| {
+            json!({
+                "priority":"required",
+                "alternatives":[{"terms":["AAPL", term.clone()]}],
+                "directness":"direct_preferred",
+                "object_types":[],
+                "goal": {
+                    "kind":"qualitative_evidence",
+                    "concepts":[term],
+                    "predicates":[]
+                }
+            })
+        };
+
+        let mut initial = proposal();
+        initial["objectives"] = Value::Array(
+            (0..9)
+                .map(|index| objective(format!("initial evidence {index}")))
+                .collect(),
+        );
+        let prior_plan = compile_research_proposal(&initial, company_scope(question))
+            .expect("nine initial clauses fit the canonical SearchPlan")
+            .search_plan;
+        assert_eq!(prior_plan["clauses"].as_array().map_or(0, Vec::len), 9);
+
+        let mut follow_up = proposal();
+        follow_up["objectives"] = Value::Array(
+            (0..4)
+                .map(|index| objective(format!("follow-up evidence {index}")))
+                .collect(),
+        );
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["AAPL".into()],
+        };
+        let result = compile_research_proposal(
+            &follow_up,
+            InitialPlanScope {
+                question,
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 1,
+                prior_plan: Some(&prior_plan),
+            },
+        );
+
+        assert!(matches!(result, Err(InitialPlanError::AppendClauseLimit)));
     }
 
     #[test]
@@ -1646,23 +1837,15 @@ mod tests {
             .search_plan;
         let clauses = plan["clauses"].as_array().unwrap();
         assert_eq!(clauses.len(), 2);
-        // The metric clause omits `metrics` from the wire payload; identify it
-        // by the absence of qualitative predicates instead.
         let metric_clause = clauses
             .iter()
-            .find(|clause| {
-                clause["required_predicates"] == json!([]) && clause.get("metrics").is_none()
-            })
-            .expect("one pure revenue metric clause without wire metric fields");
+            .find(|clause| clause["metrics"] == json!(["revenue"]))
+            .expect("one pure revenue metric clause with its canonical metric identity");
         let qualitative_clause = clauses
             .iter()
             .find(|clause| clause["required_predicates"] == json!(["drives"]))
             .expect("one qualitative relationship clause");
-        // The metric's natural filing phrase is injected into required_concepts.
-        assert_eq!(
-            metric_clause["required_concepts"],
-            json!(["revenue net_sales sales"])
-        );
+        assert_eq!(metric_clause["required_concepts"], json!([]));
         assert_eq!(metric_clause["required_predicates"], json!([]));
         assert!(
             metric_clause.get("retrieval_query").is_some(),

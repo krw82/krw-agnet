@@ -10,6 +10,8 @@ import os
 import pathlib
 import tempfile
 
+from release_provider import RELEASE_SCHEMA_VERSION, model_for_provider
+
 
 def sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -20,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", required=True, type=pathlib.Path)
     parser.add_argument("--git-commit", required=True)
     parser.add_argument("--git-tree", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--provider", required=True, choices=("glm", "deepseek"))
     return parser.parse_args()
 
 
@@ -29,8 +31,7 @@ def main() -> None:
     root = args.root.resolve()
     if not root.is_dir() or root == pathlib.Path("/") or root.is_symlink():
         raise SystemExit("bundle root must be a real non-root directory")
-    if args.model != "glm-5.2":
-        raise SystemExit("standalone bundle supports only glm-5.2")
+    model = model_for_provider(args.provider)
     files = []
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         if not path.is_file() or path.is_symlink() or path.name == "release-manifest.json":
@@ -44,10 +45,11 @@ def main() -> None:
             }
         )
     manifest = {
-        "schema_version": "krw-standalone-release/v1",
+        "schema_version": RELEASE_SCHEMA_VERSION,
         "git_commit": args.git_commit,
         "git_tree": args.git_tree,
-        "physical_models": [args.model],
+        "provider_id": args.provider,
+        "physical_models": [model],
         "files": files,
     }
     body = json.dumps(

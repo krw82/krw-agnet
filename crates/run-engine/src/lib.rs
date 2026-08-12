@@ -2489,6 +2489,19 @@ where
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    if child_policy.is_none()
+                        && is_append_context_plan_capacity_rejection(&error)
+                        && state.stop_at_append_context_plan_capacity(
+                            input.image,
+                            &episode,
+                            episode_hash.clone(),
+                        )?
+                    {
+                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                        self.checkpoint_active_state(&identity, &state, deadline)
+                            .await?;
+                        continue;
+                    }
                     let Some(directive) = model_recovery_directive(&error) else {
                         return Err(error);
                     };
@@ -3214,6 +3227,16 @@ where
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
+                if child_policy.is_none()
+                    && is_append_context_plan_capacity_rejection(&error)
+                    && state.stop_at_append_context_plan_capacity(
+                        input.image,
+                        &episode,
+                        recovered.episode_hash.clone(),
+                    )?
+                {
+                    return state.check_conversation_limit(self.config.max_conversation_bytes);
+                }
                 let Some(directive) = model_recovery_directive(&error) else {
                     return Err(error);
                 };
@@ -5251,18 +5274,31 @@ impl ActiveRun {
         &self,
         image: &AgentImageManifest,
     ) -> Result<bool, EngineError> {
-        let Some(reserve) = image.body.answer_policy.final_output_reserve_tokens else {
-            return Ok(false);
-        };
-        let minimum_research_turn = image
-            .body
-            .answer_policy
-            .minimum_research_turn_tokens
-            .unwrap_or_default();
-        let finalization_threshold = reserve
-            .checked_add(minimum_research_turn)
-            .ok_or(EngineError::CounterOverflow("final_output_reserve"))?;
-        Ok(self.remaining_output_tokens()? <= finalization_threshold)
+        if let Some(reserve) = image.body.answer_policy.final_output_reserve_tokens {
+            let minimum_research_turn = image
+                .body
+                .answer_policy
+                .minimum_research_turn_tokens
+                .unwrap_or_default();
+            let finalization_threshold = reserve
+                .checked_add(minimum_research_turn)
+                .ok_or(EngineError::CounterOverflow("final_output_reserve"))?;
+            if self.remaining_output_tokens()? <= finalization_threshold {
+                return Ok(true);
+            }
+        }
+
+        // A workflow can legitimately spend several model turns selecting and
+        // checking evidence. Once only one provider turn remains, preserve it
+        // for the answer-producing composer instead of attempting another
+        // research/assessment decision that can only end in a budget failure.
+        // This is an image-declared fallback, never a kernel-invented answer:
+        // it activates only when the current state is not already a composer.
+        let remaining_provider_turns = self
+            .limits
+            .max_provider_turns
+            .saturating_sub(self.usage.provider_turns);
+        Ok(remaining_provider_turns == 1 && !self.current_operation_emits_answer(image)?)
     }
 
     fn apply_typed_artifact(
@@ -5395,11 +5431,8 @@ impl ActiveRun {
         facts: &Value,
         provider_episode_hash: ContentHash,
     ) -> Result<(), EngineError> {
-        if !matches!(
-            self.interpreter.current_operation()?,
-            StateOperation::ModelDecision { .. }
-        ) || event.is_empty()
-        {
+        let current = self.current_state()?;
+        if !matches!(current.operation, StateOperation::ModelDecision { .. }) || event.is_empty() {
             return Err(EngineError::InvalidWorkflowControl);
         }
         if !self.event_has_remaining_target(event, facts)? {
@@ -5700,6 +5733,80 @@ impl ActiveRun {
             return Ok(false);
         };
         self.finalize_for_output_reserve(image, &provider_episode_hash)
+    }
+
+    /// A second `query_context` proposal can be semantically valid yet have no
+    /// room in the immutable root `SearchPlan`.  This is a kernel-known
+    /// physical capacity boundary, not a question-specific model mistake.
+    /// When the workflow explicitly offers a stop edge to an answer-producing
+    /// state, preserve the already admitted evidence and finish the run rather
+    /// than spending the final repair turns on a plan that can never fit.
+    fn stop_at_append_context_plan_capacity(
+        &mut self,
+        image: &AgentImageManifest,
+        episode: &ProviderEpisodeV1,
+        provider_episode_hash: ContentHash,
+    ) -> Result<bool, EngineError> {
+        let [call] = episode.assistant.tool_calls.as_slice() else {
+            return Ok(false);
+        };
+        if call.function.name.as_str() != provider_tool_name("ontology.query_context") {
+            return Ok(false);
+        }
+        if !matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision { .. }
+        ) {
+            return Ok(false);
+        }
+
+        let facts = serde_json::json!({
+            "stop_reason": "context_plan_capacity_reached",
+            "admitted_evidence_available": !self.ledger.is_empty(),
+        });
+        if !self.event_has_remaining_target("no_positive_value_action", &facts)? {
+            return Ok(false);
+        }
+        let answer_contract = ContractPin::canonical(&image.body.answer_policy.internal_format)?;
+        let event = match self.unique_available_transition_event(
+            Some("no_positive_value_action"),
+            &facts,
+            |state| {
+                matches!(
+                    &state.operation,
+                    StateOperation::ModelDecision {
+                        output_mode: ModelOutputMode::TypedJson | ModelOutputMode::Markdown,
+                        output_contracts,
+                        ..
+                    } if output_contracts.contains(&answer_contract)
+                )
+            },
+            "append context capacity finalization",
+        ) {
+            Ok(event) => event,
+            Err(EngineError::WorkflowResolution { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+
+        self.append_assistant(episode);
+        self.append_tool_result(
+            &call.id,
+            &serde_json::json!({
+                "schema_version": 1,
+                "status": "not_dispatched",
+                "reason_code": "no_positive_value_action",
+                "stop_reason": "context_plan_capacity_reached",
+                "contains_evidence": false,
+            }),
+        )?;
+        self.apply_kernel_artifact(
+            KernelArtifactReason::RejectedModelCapabilityProposal,
+            &event,
+            &facts,
+            provider_episode_hash,
+        )?;
+        self.require_model_state()?;
+        Ok(true)
     }
 
     /// Reserve one globally bounded model-output repair. Both final-output
@@ -6121,18 +6228,20 @@ impl ActiveRun {
         &mut self,
         episode: &ProviderEpisodeV1,
         calls: &[PreparedCall],
-        reason: ResearchStopReason,
+        _reason: ResearchStopReason,
     ) -> Result<(), EngineError> {
+        // The provider needs one result per speculative tool call before it
+        // can emit the next state transition. A declined call is not evidence,
+        // though, so acknowledge it with a neutral empty result rather than a
+        // workflow reason that a later composer could repeat to the user.
         self.append_assistant(episode);
         for call in calls {
             self.append_tool_result(
                 &call.tool_call_id,
                 &serde_json::json!({
                     "schema_version": 1,
-                    "status": "not_dispatched",
-                    "reason_code": "no_positive_value_action",
-                    "stop_reason": reason.as_str(),
-                    "contains_evidence": false
+                    "status": "complete",
+                    "contains_evidence": false,
                 }),
             )?;
         }
@@ -6446,8 +6555,18 @@ impl ActiveRun {
     }
 
     fn append_assistant(&mut self, episode: &ProviderEpisodeV1) {
+        let mut assistant = episode.assistant.clone();
+        // A tool-calling turn can carry arbitrary explanatory text alongside
+        // its function call. That text is neither an admitted result nor a
+        // user-facing answer; retaining it can make a later composer echo a
+        // rejected dispatch or workflow detail. Preserve thinking provenance
+        // and the exact tool calls, but omit that non-authoritative prose from
+        // the model transcript.
+        if !assistant.tool_calls.is_empty() {
+            assistant.content = None;
+        }
         self.messages
-            .push(RunEngineMessage::from_assistant(episode.assistant.clone()));
+            .push(RunEngineMessage::from_assistant(assistant));
     }
 
     /// Retain only the image-owned bodies returned by local `skill.load` for a
@@ -6758,15 +6877,6 @@ enum ResearchDispatchDecision {
 enum ResearchStopReason {
     NoFrontier,
     ReplanBudgetExhausted,
-}
-
-impl ResearchStopReason {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::NoFrontier => "no_frontier",
-            Self::ReplanBudgetExhausted => "replan_budget_exhausted",
-        }
-    }
 }
 
 const fn rejection_reason_code(reason: NoPositiveReason) -> &'static str {
@@ -7306,13 +7416,106 @@ fn model_visible_capability_result(call: &PreparedCall, result: &CapabilityResul
             })
         })
         .collect::<Vec<_>>();
-    serde_json::json!({
+    let mut visible = serde_json::json!({
         "result": result.provider_content,
         "kernel_research_goals": {
             "schema_version": 1,
             "bindings": bindings,
         }
-    })
+    });
+    // Preserve the exact typed server result above, but add a small
+    // kernel-owned orientation note after a context response.  A full
+    // ResearchState can contain many thousands of tokens of observations;
+    // this makes the server-reported *required* gaps visible at the decision
+    // point without changing evidence or forcing a tool choice.
+    if call.capability.id == "ontology.query_context" {
+        if let Some(hint) = model_research_gap_hint(&result.provider_content) {
+            visible
+                .as_object_mut()
+                .expect("JSON object literal")
+                .insert("kernel_research_gap_hint".into(), hint);
+        }
+    }
+    visible
+}
+
+/// Project only a bounded list of canonical retrieval gaps from a typed
+/// `ResearchState`. The raw capability result remains verbatim under
+/// `result`; this is a kernel note telling the model which known gaps deserve
+/// a decision before it declares evidence sufficient. Each candidate retains
+/// the exact canonical `retrieval_query`, so the research planner can map a
+/// model-selected targeted query back to the corresponding goal. Query strings
+/// are intentionally labeled untrusted because they ultimately originate from
+/// the user question and remote ontology result.
+fn model_research_gap_hint(result: &Value) -> Option<Value> {
+    const MAX_TOPICS: usize = 8;
+    const MAX_TOPIC_CHARS: usize = 512;
+
+    let root = result.as_object()?;
+    let plan = root.get("plan")?.as_object()?;
+    let missing_clause_ids = root
+        .get("missing_parts")?
+        .as_array()?
+        .iter()
+        .filter_map(|part| part.get("clause_id")?.as_str())
+        .collect::<BTreeSet<_>>();
+    if missing_clause_ids.is_empty() {
+        return None;
+    }
+
+    let topics = plan
+        .get("clauses")?
+        .as_array()?
+        .iter()
+        .filter(|clause| {
+            clause
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && clause
+                    .get("clause_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| missing_clause_ids.contains(id))
+        })
+        .filter_map(|clause| clause.get("retrieval_query")?.as_str())
+        // Do not truncate or concatenate a canonical query. `ResearchPlanner`
+        // intentionally compares it exactly when deciding whether one precise
+        // read advances a missing goal.
+        .filter(|topic| !topic.is_empty() && topic.chars().count() <= MAX_TOPIC_CHARS)
+        .map(ToOwned::to_owned)
+        .take(MAX_TOPICS)
+        .collect::<Vec<_>>();
+    if topics.is_empty() {
+        return None;
+    }
+
+    let ticker = plan
+        .get("tickers")
+        .and_then(Value::as_array)
+        .and_then(|tickers| tickers.first())
+        .and_then(Value::as_str)
+        .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32);
+    let exact_candidate_queries = ticker.map_or_else(Vec::new, |ticker| {
+        topics
+            .iter()
+            .map(|topic| {
+                serde_json::json!({
+                    "ticker": ticker,
+                    "topic": topic,
+                    "response_detail": "full",
+                    "limit": 20,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    Some(serde_json::json!({
+        "schema_version": 1,
+        "kind": "required_retrieval_gap_hint",
+        "kernel_guidance": "The exact result above reports required gaps. Before selecting evidence_sufficient, prefer at most one advertised precise query when it can resolve a named gap. Select one exact candidate below without joining or rewriting its topic. If no candidate can materially help, choose the ordinary bounded stop path and still produce the best supported answer.",
+        "untrusted_exact_candidate_topics": topics,
+        "exact_precise_query_candidates": exact_candidate_queries,
+    }))
 }
 
 fn capability_invocation(run_id: &str, call: &PreparedCall) -> CapabilityInvocation {
@@ -7917,6 +8120,7 @@ fn research_proposal_compilation_error(error: &InitialPlanError) -> EngineError 
         InitialPlanError::Contract => Some("model_research_proposal_contract_invalid"),
         InitialPlanError::Decode => Some("model_research_proposal_decode_invalid"),
         InitialPlanError::PlanTooLarge => Some("model_research_proposal_plan_too_large"),
+        InitialPlanError::AppendClauseLimit => Some("proposal_append_plan_capacity_reached"),
         // These compiler-internal errors were previously terminal Invariants,
         // but they often stem from the model producing a proposal that is
         // schema-valid yet semantically inconsistent (e.g. duplicate search
@@ -7940,6 +8144,14 @@ fn research_proposal_compilation_error(error: &InitialPlanError) -> EngineError 
         |reason_code| {
             EngineError::ModelProposalRejected(ModelProposalRejection::generic(reason_code))
         },
+    )
+}
+
+fn is_append_context_plan_capacity_rejection(error: &EngineError) -> bool {
+    matches!(
+        error,
+        EngineError::ModelProposalRejected(rejection)
+            if rejection.code() == "proposal_append_plan_capacity_reached"
     )
 }
 
@@ -8299,14 +8511,15 @@ fn model_input_repair_directive(
         .map(ModelProposalRejection::ResearchProposalV4)
 }
 
-/// Apply one deterministic compatibility repair for a common GLM omission.
+/// Apply deterministic compatibility repairs for common GLM omissions.
 ///
-/// The provider schema advertises the tagged `kind` field on qualitative
-/// goals, but GLM occasionally emits the untagged pair `{concepts, predicates}`
-/// while preserving every other proposal field.  Those two keys identify one
-/// unambiguous goal variant, so adding the discriminator at the trusted
-/// model-input boundary removes a needless repair turn without accepting
-/// unknown fields or inferring any user-supplied scope.
+/// The provider schema advertises the tagged `kind` field, but GLM can emit an
+/// otherwise exact goal without that discriminator.  A qualitative
+/// `{concepts, predicates}` pair is unambiguous.  Likewise, the exact metric
+/// field sets identify an observation or a change goal.  We only add a tag
+/// when the complete field set identifies one variant; unknown or mixed fields
+/// remain a normal repair so this cannot broaden the model's scope or invent a
+/// calculation.
 fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
     if contract_id != RESEARCH_PROPOSAL_V4 {
         return;
@@ -8322,15 +8535,28 @@ fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
         let Some(goal) = objective.get_mut("goal").and_then(Value::as_object_mut) else {
             continue;
         };
-        if goal.len() == 2
-            && goal.contains_key("concepts")
-            && goal.contains_key("predicates")
-            && !goal.contains_key("kind")
+        if goal.contains_key("kind") {
+            continue;
+        }
+        let keys = goal
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let inferred_kind = if keys == ["concepts", "predicates"].into_iter().collect() {
+            Some("qualitative_evidence")
+        } else if keys == ["metric", "metric_dimensions"].into_iter().collect() {
+            Some("metric_observation")
+        } else if keys
+            == ["change", "metric", "metric_dimensions", "window"]
+                .into_iter()
+                .collect()
         {
-            goal.insert(
-                "kind".to_string(),
-                Value::String("qualitative_evidence".to_string()),
-            );
+            Some("metric_change")
+        } else {
+            None
+        };
+        if let Some(kind) = inferred_kind {
+            goal.insert("kind".to_string(), Value::String(kind.to_string()));
         }
     }
 }
@@ -9874,7 +10100,8 @@ fn build_trusted_messages(
         system.push_str(segment);
         system.push_str("\n</agent-policy>\n");
     }
-    let state_contract = serde_json::json!({
+    let composition_boundary = composition_evidence_boundary(state, role_id, &request.question);
+    let mut state_contract = serde_json::json!({
         "workflow_id": state.program.workflow.id,
         "state_id": current.stable_id,
         "role_id": role_id,
@@ -9885,11 +10112,24 @@ fn build_trusted_messages(
         "input_contracts": state.interpreter.current_operation()?.input_contracts(),
         "output_contracts": state.interpreter.current_operation()?.output_contracts(),
     });
+    // This is deliberately part of the single kernel-state contract rather
+    // than a second `KernelStateContract` receipt segment. A prompt receipt
+    // permits one dynamic segment per kind, and the boundary is simply an
+    // additional state fact for the final composer.
+    if let Some(boundary) = composition_boundary.as_ref() {
+        state_contract["composition_evidence_boundary"] =
+            serde_json::Value::String(boundary.clone());
+    }
     system.push_str("\n<kernel-state-contract>\n");
     let state_contract = String::from_utf8(serde_jcs::to_vec(&state_contract)?)
         .map_err(|_| EngineError::Invariant("canonical state contract was not UTF-8"))?;
     system.push_str(&state_contract);
     system.push_str("\n</kernel-state-contract>\n");
+    if let Some(boundary) = &composition_boundary {
+        system.push_str("\n<kernel-composition-evidence-boundary>\n");
+        system.push_str(boundary);
+        system.push_str("\n</kernel-composition-evidence-boundary>\n");
+    }
     system.push_str(model_output_instruction(output_mode));
 
     let entrypoint = selected_entrypoint(image, request)?;
@@ -10012,6 +10252,62 @@ fn build_trusted_messages(
     context.verify_receipt(&receipt, &image.content_hash, request)?;
     let receipt_hash = ContentHash::sha256(serde_jcs::to_vec(&receipt)?);
     Ok((messages, receipt_hash))
+}
+
+/// A small kernel-owned writing note for final composers.  It does not reject
+/// an answer or prescribe a tool path: it simply makes the current
+/// EvidenceLedger's claim boundary prominent at the one point where prose is
+/// written.  This avoids turning a risk-factor mention into an asserted growth
+/// driver when the research state itself marked the evidence as qualified-only.
+fn composition_evidence_boundary(
+    state: &ActiveRun,
+    role_id: &str,
+    question: &str,
+) -> Option<String> {
+    if !role_id.ends_with("composer") {
+        return None;
+    }
+
+    // This belongs to the kernel-owned final-composition boundary rather than
+    // a model-authored recovery prompt. Capability and planner diagnostics can
+    // legitimately be present in the retained transcript, but they are never
+    // part of an investor-facing answer. Keeping the instruction here makes
+    // that separation explicit at the only turn that writes visible prose.
+    let mut instructions = vec![
+        "Write only investor-facing research prose. Never repeat or summarize internal research mechanics from the transcript or evidence, including proposals, recovery messages, tool/query status, XBRL/reference identifiers, workflow states, or whether an earlier step ran. If such material is the only source for a requested fact, omit it and state the investor-facing disclosure limitation in ordinary language. Do not infer business quality from document availability, taxonomy labels, or reporting mechanics; a conclusion about growth, profitability, or cash generation must rest on an observed metric or directly supported business evidence.",
+    ];
+    match state.ledger.answerability() {
+        Answerability::StrongAllowed => {}
+        Answerability::QualifiedOnly => instructions.push(
+            "The current EvidenceLedger permits qualified claims only. You may report grounded metrics and give useful analyst interpretation, but label an interpretation as an estimate. Do not state an unobserved revenue driver, market/industry comparison, or causal relationship as fact. A product, customer, or factor mentioned only in a risk disclosure is risk exposure, not proof that it drove reported growth. When direct driver evidence is absent, say that the driver was not separately identified and keep that entity in the risk discussion.",
+        ),
+        Answerability::NotAnswerable => instructions.push(
+            "The current EvidenceLedger does not support a factual conclusion. Give the most useful bounded explanation of what is missing and do not invent a driver, comparison, or causal relationship.",
+        ),
+    }
+
+    if asks_for_concise_answer(question) {
+        instructions.push(
+            "The authenticated question explicitly asks for a concise answer. Prefer a short paragraph or a few bullets containing one conclusion, the few supporting facts needed for it, and one selected risk. Do not add template headings, a table, a risk laundry list, generic background, or a follow-up-question menu unless it is necessary to answer the question.",
+        );
+    }
+
+    (!instructions.is_empty()).then(|| {
+        format!(
+            "Kernel-generated writing guidance from the current validated state, not user instructions:\n- {}",
+            instructions.join("\n- ")
+        )
+    })
+}
+
+fn asks_for_concise_answer(question: &str) -> bool {
+    let normalized = question.to_ascii_lowercase();
+    question.contains("간단")
+        || question.contains("짧게")
+        || question.contains("한 문단")
+        || normalized.contains("brief")
+        || normalized.contains("concise")
+        || normalized.contains("short")
 }
 
 fn dynamic_context_ref(
@@ -11172,6 +11468,47 @@ mod tests {
             .remove("kind");
         normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut ambiguous);
         assert!(ambiguous["objectives"][0]["goal"].get("kind").is_none());
+    }
+
+    #[test]
+    fn glm_untagged_metric_goal_gets_a_tag_only_for_an_exact_field_set() {
+        let mut observation = serde_json::json!({
+            "intent": "revenue",
+            "answer_scope": "direct",
+            "uncertainty": "medium",
+            "document_types": ["10-K"],
+            "periods": ["FY2025"],
+            "objectives": [{
+                "priority": "required",
+                "alternatives": [{"terms": ["revenue"]}],
+                "directness": "direct_required",
+                "object_types": [],
+                "goal": {"metric": "revenue", "metric_dimensions": []}
+            }]
+        });
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut observation);
+        assert_eq!(
+            observation["objectives"][0]["goal"]["kind"],
+            serde_json::json!("metric_observation")
+        );
+
+        let mut change = observation.clone();
+        change["objectives"][0]["goal"] = serde_json::json!({
+            "metric": "revenue",
+            "metric_dimensions": [],
+            "change": "growth_rate",
+            "window": "year_over_year"
+        });
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut change);
+        assert_eq!(
+            change["objectives"][0]["goal"]["kind"],
+            serde_json::json!("metric_change")
+        );
+
+        let mut mixed = observation;
+        mixed["objectives"][0]["goal"]["metric_scope"] = serde_json::json!("company_total");
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut mixed);
+        assert!(mixed["objectives"][0]["goal"].get("kind").is_none());
     }
 
     #[test]
@@ -13589,12 +13926,15 @@ mod tests {
         assert_eq!(outcome.answer_bundle.usage.capability_calls, 1);
         assert_eq!(outcome.answer_bundle.usage.replans, 1);
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(requests[2].messages.iter().any(|message| {
-            provider_tool_result_json(message).is_some_and(|content| {
-                content.get("reason_code").and_then(Value::as_str)
-                    == Some("no_positive_value_action")
-            })
-        }));
+        assert!(
+            !requests[2].messages.iter().any(|message| {
+                provider_tool_result_json(message).is_some_and(|content| {
+                    content.get("reason_code").and_then(Value::as_str)
+                        == Some("no_positive_value_action")
+                })
+            }),
+            "declined speculative calls must not contaminate final composition"
+        );
     }
 
     #[tokio::test]
@@ -15322,6 +15662,40 @@ mod tests {
         assert!(requests[1].system.contains("\"role_id\":\"analyst\""));
         assert!(requests[2].system.contains("\"role_id\":\"composer\""));
         assert_eq!(requests[2].max_tokens, 3_072);
+    }
+
+    #[tokio::test]
+    async fn final_provider_turn_is_reserved_for_composition_after_admitted_evidence() {
+        let mut fixture = fixture();
+        fixture.request.budget.max_provider_turns = 2;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.enter_initial_model_state().unwrap();
+        state.usage.provider_turns = 1;
+
+        // The state has a normal research/transition decision ahead of it;
+        // with exactly one model turn remaining, that turn belongs to the
+        // image-declared composer rather than another research decision.
+        assert!(
+            !state
+                .current_operation_emits_answer(&fixture.image.manifest)
+                .unwrap()
+        );
+        assert!(
+            state
+                .should_finalize_for_output_reserve(&fixture.image.manifest)
+                .unwrap()
+        );
     }
 
     #[tokio::test]

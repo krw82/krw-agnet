@@ -8,7 +8,8 @@
 
 1. daemon이 `schema_version: 3`로 출력한 public release descriptor
 2. 운영자가 secret 값을 넣지 않고 서명·보관한 `krw-credential-rotation/v1` receipt
-3. 별도 credentialed 환경이 exact `glm-5.2`와 production MCP/PostgreSQL/품질 검사를
+3. 별도 credentialed 환경이 선택한 제공자의 exact physical model
+   (`glm-5.2` 또는 `deepseek-v4-flash`)와 production MCP/PostgreSQL/품질 검사를
    통과한 뒤 출력한 `krw-live-acceptance/v1` redacted receipt
 
 필수 rotation 필드:
@@ -33,8 +34,9 @@
   "schema_version": "krw-live-acceptance/v1",
   "status": "pass",
   "redacted": true,
-  "requested_model": "glm-5.2",
-  "observed_model": "glm-5.2",
+  "provider_id": "deepseek",
+  "requested_model": "deepseek-v4-flash",
+  "observed_model": "deepseek-v4-flash",
   "release_set_hash": "sha256:...",
   "data_release_hash": "sha256:...",
   "provider_contract_hash": "sha256:...",
@@ -51,6 +53,13 @@ Local smoke와 manifest 무결성 검사는 다음처럼 실행한다.
 
 ```bash
 python3 scripts/collect_release_evidence.py --profile ci
+python3 scripts/collect_release_evidence.py --profile production-7d \
+  --provider deepseek \
+  --release-descriptor /secure/releases/<id>/deepseek/public-release.json \
+  --release-authorization /secure/releases/<id>/deepseek/release-authorization.json \
+  --release-trust-registry /secure/releases/<id>/deepseek/release-trust-registry.json \
+  --credential-rotation-receipt /secure/evidence/<id>/deepseek/rotation.json \
+  --live-acceptance-receipt /secure/evidence/<id>/deepseek/live-acceptance.json
 python3 scripts/collect_release_evidence.py \
   --verify-manifest target/release-evidence/ci-.../manifest.json
 ```

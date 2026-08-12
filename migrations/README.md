@@ -58,6 +58,12 @@ procedure is an idempotent, owner-scoped hard-purge path for a trusted product
 `product_hard_purge` lifecycle receipt and refuses to run while any queued,
 deferred, or active room run exists.
 
+`0018_daemon_heartbeat.sql` adds the daemon-owned, release-bound readiness
+receipt used by the GCP front before it creates new work. It contains only the
+daemon ID, selected provider, descriptor/release-set hashes, runtime version,
+and expiry timestamps. It is intentionally separate from ontology data,
+customer sessions, and the retired plugin-worker heartbeat.
+
 `0009_migration_tracking.sql` adds the `agent_store.schema_migrations` table
 that records which migration versions have been applied, replacing the legacy
 sentinel-file mechanism. `scripts/apply_migrations.sh` consults this table to

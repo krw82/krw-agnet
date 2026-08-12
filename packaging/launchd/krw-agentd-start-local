@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# User-level macOS launcher for a sealed krw-agent release.  Secrets stay in
+# the existing local operator environment; this script only maps the front's
+# database variable names to the daemon's private environment contract and
+# then delegates to the immutable release wrapper.
+
+usage() {
+  printf '%s\n' 'usage: krw-agentd-start-local --env-file /absolute/local-worker.env --overlay-file /absolute/agentd-overlay.env [--check|--database-check]'
+}
+
+env_file=''
+overlay_file=''
+mode=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      env_file=$2
+      shift 2
+      ;;
+    --overlay-file)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      overlay_file=$2
+      shift 2
+      ;;
+    --check|--database-check)
+      [[ -z "$mode" ]] || { usage >&2; exit 2; }
+      mode=$1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+for candidate in "$env_file" "$overlay_file"; do
+  [[ "$candidate" == /* && -f "$candidate" && ! -L "$candidate" ]] || {
+    echo 'krw-agentd local launcher: environment file is missing or unsafe' >&2
+    exit 1
+  }
+done
+
+set -a
+# The Mac environment file is operator-owned. The overlay is generated locally
+# with mode 0600 and carries no provider credential or database URL.
+# shellcheck disable=SC1090
+source "$env_file"
+# shellcheck disable=SC1090
+source "$overlay_file"
+set +a
+
+if [[ -z "${KRW_AGENT_DATABASE_URL:-}" ]]; then
+  KRW_AGENT_DATABASE_URL=${AGENT_V1_DATABASE_URL:-${AGENT_V1_OUTBOX_DATABASE_URL:-${SUPABASE_DB_URL:-}}}
+  export KRW_AGENT_DATABASE_URL
+fi
+[[ "$KRW_AGENT_DATABASE_URL" == postgres://* || "$KRW_AGENT_DATABASE_URL" == postgresql://* ]] || {
+  echo 'krw-agentd local launcher: PostgreSQL runtime URL is missing' >&2
+  exit 1
+}
+
+if [[ -z "${KRW_AGENT_DATABASE_CA_PEM:-}" && -n "${AGENT_V1_DATABASE_CA_PEM:-}" ]]; then
+  KRW_AGENT_DATABASE_CA_PEM=$AGENT_V1_DATABASE_CA_PEM
+  export KRW_AGENT_DATABASE_CA_PEM
+fi
+if [[ -z "${KRW_AGENT_DATABASE_CA_PEM:-}" && -n "${AGENT_V1_DATABASE_CA_FILE:-}" ]]; then
+  [[ -f "$AGENT_V1_DATABASE_CA_FILE" && ! -L "$AGENT_V1_DATABASE_CA_FILE" ]] || {
+    echo 'krw-agentd local launcher: configured database CA file is unsafe' >&2
+    exit 1
+  }
+  KRW_AGENT_DATABASE_CA_PEM=$(<"$AGENT_V1_DATABASE_CA_FILE")
+  export KRW_AGENT_DATABASE_CA_PEM
+fi
+
+case "${KRW_AGENT_PROVIDER:-}" in
+  glm)
+    [[ -n "${GLM_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: GLM credential is missing' >&2; exit 1; }
+    ;;
+  deepseek)
+    [[ -n "${DEEPSEEK_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: DeepSeek credential is missing' >&2; exit 1; }
+    ;;
+  *)
+    echo 'krw-agentd local launcher: invalid provider' >&2
+    exit 1
+    ;;
+esac
+
+[[ "${KRW_AGENT_CURRENT_DIR:-}" == /* && -L "$KRW_AGENT_CURRENT_DIR" && -d "$KRW_AGENT_CURRENT_DIR" ]] || {
+  echo 'krw-agentd local launcher: current release symlink is unavailable' >&2
+  exit 1
+}
+wrapper="$KRW_AGENT_CURRENT_DIR/packaging/systemd/krw-agentd-start"
+[[ -x "$wrapper" && ! -L "$wrapper" ]] || {
+  echo 'krw-agentd local launcher: immutable release wrapper is unavailable' >&2
+  exit 1
+}
+
+if [[ -n "$mode" ]]; then
+  exec "$wrapper" "$mode"
+fi
+exec "$wrapper"

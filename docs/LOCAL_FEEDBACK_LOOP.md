@@ -14,7 +14,7 @@
   └─ AgentSpec/prompt 변경          → image fingerprint 갱신 + smoke/quality
 
 품질 확인이 필요할 때만
-  └─ 이미 떠 있는 Gateway에 GLM 질문을 보내고 원문·trace·usage를 저장
+  └─ 이미 떠 있는 Gateway에 선택 provider 질문을 보내고 원문·trace·usage를 저장
 ```
 
 각 레인은 서로 다른 실패를 확인한다. Rust 단위 테스트가 통과했다고 GLM 답변 품질이 보장되는
@@ -34,7 +34,13 @@
 # Python/TypeScript만 바꾼 경우: Rust 빌드는 건너뛰고 프로세스만 재기동
 ./scripts/dev-stack.sh reload --skip-prepare
 
-# 실제 GLM 품질은 재사용 중인 Gateway에 소수 smoke부터 보냄
+# 실제 provider 품질은 선택한 lane의 재사용 Gateway에 소수 smoke부터 보냄
+KRW_AGENT_PROVIDER=glm \
+KRW_AGENT_GATEWAY_TOKEN=... \
+./scripts/dev-stack.sh test smoke --case short_aapl_price_drop
+
+# DeepSeek도 같은 절차로 실행하되 stack을 먼저 DeepSeek lane으로 재기동
+KRW_AGENT_PROVIDER=deepseek \
 KRW_AGENT_GATEWAY_TOKEN=... \
 ./scripts/dev-stack.sh test smoke --case short_aapl_price_drop
 
@@ -47,6 +53,11 @@ cargo run -p krw-agent-perf-harness -- \
 prompt, image contract를 바꿨다면 먼저 `prepare`를 실행한다. `up`은 준비된 supervisor를 재사용하므로
 매 질문마다 cold stack을 시작하지 않는다.
 
+provider를 바꿀 때는 기존 stack을 먼저 `down`한 뒤 선택한 provider로 `up`한다. 이미 떠 있는
+Gateway의 descriptor/model이 요청한 provider와 다르면 wrapper가 두 번째 daemon을 띄우지 않고
+즉시 중단한다. 오래된 `frontend.env`에 provider가 없더라도 descriptor의 모든 entry가
+`glm-5.2` 또는 `deepseek-v4-flash` 중 선택 lane과 일치할 때만 재사용한다.
+
 ## 3. 캐시와 재빌드 경계
 
 - Cargo incremental cache는 `target/` 하나를 지속해서 사용한다. 같은 상태의 재빌드는 Cargo가
@@ -58,7 +69,8 @@ prompt, image contract를 바꿨다면 먼저 `prepare`를 실행한다. `up`은
 - PostgreSQL은 supervisor 종료 때도 유지한다. 재기동 시 migration checksum만 확인하고 pending
   migration만 적용한다.
 - 품질 runner는 질문을 직접 서버에 보내며, 로컬 stack을 시작하지 않는다. 따라서 품질 시간은
-  GLM·MCP 작업 시간만 측정한다.
+  선택한 provider·MCP 작업 시간만 측정한다. GLM과 DeepSeek는 같은 corpus와 같은 세션
+  follow-up runner로 각각 검증한다.
 - `chat-matrix`는 20명 × 3개 방 × 2턴을 fake provider/capability로 실행하고, 2,000개 대기
   principal은 task/client 없이 queue 후보로만 만든다. 같은 방 직렬화, 다른 방 병렬성,
   principal 공정성, scope 격리, 중복 run 방지를 네트워크 변동 없이 확인한다.

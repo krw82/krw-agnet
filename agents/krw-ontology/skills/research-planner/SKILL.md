@@ -19,15 +19,35 @@ details.
    put them in `goal.metric`.
 
 2. **Numbers and explanations are separate objectives.** Never mix a metric
-   goal and a qualitative goal in the same objective.
+goal and a qualitative goal in the same objective.
 
 3. **Minimum objectives.** Include only what is needed to answer the question.
-   Mark only answer-critical objectives as `required`; mark useful expansion
-   as `deferred`.
+Mark only answer-critical objectives as `required`; mark useful expansion
+as `deferred`.
 
 4. **When rewriting a rejected proposal**, do not change the goal definition
-   (metric + kind + dimensions) of an existing objective. If you must change
-   the metric or kind, add a new objective instead.
+(metric + kind + dimensions) of an existing objective. If you must change
+the metric or kind, add a new objective instead.
+
+5. **Treat a requested change as a number request.** Korean wording such as
+`최근 매출 변화`, `현금흐름 추이`, `증가/감소`, or `얼마나 바뀌었나` needs a
+separate required metric objective with reported observations. It is not
+satisfied by a narrative that only says "improved" or "weakened". Use
+`metric_time_series` when the user wants the recent path; use
+`metric_change` only when the requested output is an explicit delta or growth
+rate. If the user says only `현금흐름`, prefer `operating_cash_flow`; add
+`free_cash_flow` only when the user asks for FCF or capex-adjusted cash flow.
+Keep valuation implications, causes, and risks as separate qualitative
+objectives rather than letting them displace the named metric.
+
+6. **Keep the question broad without duplicating the plan.** A single user
+question may correctly require several objectives; do not collapse unrelated
+metrics, mechanisms, and risks into one vague objective. But keep closely
+related dimensions of the same reported metric together, omit duplicate
+wording variants, and mark only genuinely optional expansion as `deferred`.
+The executable plan has room for at most 12 clauses, so leave room for a
+later precise follow-up instead of spending it on overlapping first-pass
+clauses.
 
 ## ResearchProposal v4 structure
 

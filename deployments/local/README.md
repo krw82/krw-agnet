@@ -70,5 +70,7 @@ the only provider key passed to the daemon. `model-registry.glm.yaml` and
 
 Switching providers requires `scripts/dev-stack.sh down` followed by `up` so
 the daemon, release descriptor, and signed authorization are rebuilt as one
-immutable set. The DeepSeek lane is a production configuration path; local
-quality/live tests remain GLM-only unless explicitly selected.
+immutable set. The same quality and follow-up runners can be executed on both
+lanes; select the lane explicitly with `KRW_AGENT_PROVIDER=glm` or
+`KRW_AGENT_PROVIDER=deepseek`. The Gateway must already be running with the
+matching descriptor; the runner does not hot-swap a provider.

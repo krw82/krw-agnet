@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "suite_id": "dual-provider-production-v1",
+  "suite_version": 1,
+  "cases": [
+    {
+      "case_id": "short_avgo_financial_condition",
+      "ticker": "AVGO",
+      "question": "Broadcom(AVGO)의 최근 재무 상태와 앞으로의 핵심 리스크를 간단히 설명해줘.",
+      "evaluation_focus": ["최근 재무 상태", "핵심 리스크", "근거 범위", "불확실성"]
+    },
+    {
+      "case_id": "short_avgo_cash_flow",
+      "ticker": "AVGO",
+      "question": "AVGO의 현금흐름에서 가장 중요한 변화는 무엇이야?",
+      "evaluation_focus": ["현금흐름", "변화 방향", "기간", "직접 근거"],
+      "session_group": "avgo-followup"
+    },
+    {
+      "case_id": "short_avgo_margin",
+      "ticker": "AVGO",
+      "question": "AVGO의 최근 영업이익률 흐름을 짧게 정리해줘.",
+      "evaluation_focus": ["영업이익률", "추세", "보고기간", "수치 근거"]
+    },
+    {
+      "case_id": "normal_avgo_growth_drivers",
+      "ticker": "AVGO",
+      "question": "AVGO의 최근 매출 성장을 이끈 사업과 앞으로 확인할 지표를 설명해줘.",
+      "evaluation_focus": ["매출 성장", "사업별 기여", "후속 지표", "사실과 판단 구분"]
+    },
+    {
+      "case_id": "normal_avgo_risk_factors",
+      "ticker": "AVGO",
+      "question": "AVGO의 10-K에서 확인할 수 있는 리스크 요인을 재무 영향과 연결해 정리해줘.",
+      "evaluation_focus": ["10-K Risk Factors", "재무 영향", "직접 문서 근거", "확인되지 않은 내용 표시"]
+    },
+    {
+      "case_id": "normal_avgo_competition",
+      "ticker": "AVGO",
+      "question": "AVGO의 경쟁 심화가 매출과 마진에 어떤 경로로 영향을 줄 수 있는지 분석해줘.",
+      "evaluation_focus": ["경쟁", "매출 경로", "마진 경로", "인과관계와 가정"]
+    },
+    {
+      "case_id": "complex_avgo_ai_slowdown",
+      "ticker": "AVGO",
+      "question": "AI 인프라 수요가 둔화되면 AVGO의 매출, 현금흐름, 밸류에이션에 어떤 순서로 영향이 나타날지 시나리오로 분석해줘.",
+      "evaluation_focus": ["AI 수요 둔화", "매출 민감도", "현금흐름", "밸류에이션", "전파 경로", "반대 근거"]
+    },
+    {
+      "case_id": "complex_avgo_cash_flow_quality",
+      "ticker": "AVGO",
+      "question": "AVGO의 이익 증가가 현금창출력의 질 개선으로 이어졌는지 자본지출과 운전자본까지 포함해 검토해줘.",
+      "evaluation_focus": ["이익과 현금흐름", "자본지출", "운전자본", "현금흐름의 질", "기간 비교"]
+    },
+    {
+      "case_id": "complex_avgo_followup",
+      "ticker": "AVGO",
+      "question": "그중 현금흐름에 가장 큰 영향을 주는 요인은 무엇이고, 다음 분기에 무엇을 확인해야 해?",
+      "evaluation_focus": ["후속 질문 해석", "현금흐름 영향", "다음 확인 항목", "세션 문맥"],
+      "session_group": "avgo-followup"
+    }
+  ]
+}

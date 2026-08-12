@@ -8,7 +8,7 @@ canonical JCS `SignedReleaseAuthorizationV1`을 Ed25519로 검증합니다.
 
 - daemon이 실제로 resolve한 public descriptor hash와 release-set hash
 - runtime/kernel version
-- 정확한 물리 모델 `deepseek-v4-flash`
+- 정확한 물리 모델 `glm-5.2` 또는 `deepseek-v4-flash` (provider bundle과 일치해야 함)
 - positive sequence, 발급 시각, 만료 시각
 - key ID
 

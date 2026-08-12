@@ -20,11 +20,12 @@ import tempfile
 import time
 from typing import Any
 
+from release_provider import PROVIDER_MODELS, model_for_provider
+
 
 SCHEMA_VERSION = "krw-release-evidence/v1"
 LIVE_SCHEMA_VERSION = "krw-live-acceptance/v1"
 ROTATION_SCHEMA_VERSION = "krw-credential-rotation/v1"
-MODEL_ID = "glm-5.2"
 MAX_RECEIPT_BYTES = 1024 * 1024
 MAX_LOCAL_ARTIFACT_BYTES = 64 * 1024 * 1024
 SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml")
@@ -160,11 +161,19 @@ def validate_rotation_receipt(value: dict[str, Any]) -> None:
             raise ValueError(f"credential rotation receipt has invalid {field}")
 
 
-def validate_live_receipt(value: dict[str, Any], release_set_hash: str) -> None:
+def validate_live_receipt(
+    value: dict[str, Any], release_set_hash: str, provider: str
+) -> None:
+    expected_model = model_for_provider(provider)
     if value.get("status") != "pass" or value.get("redacted") is not True:
         raise ValueError("live acceptance receipt is not a redacted pass")
-    if value.get("requested_model") != MODEL_ID or value.get("observed_model") != MODEL_ID:
-        raise ValueError("live acceptance must request and observe exact DeepSeek Flash")
+    if value.get("provider_id") != provider:
+        raise ValueError("live acceptance provider does not match the selected bundle")
+    if (
+        value.get("requested_model") != expected_model
+        or value.get("observed_model") != expected_model
+    ):
+        raise ValueError("live acceptance model does not match the selected provider")
     if value.get("release_set_hash") != release_set_hash:
         raise ValueError("live acceptance is bound to a different release set")
     for field in (
@@ -189,8 +198,8 @@ def load_release_set_hash(path: pathlib.Path) -> tuple[str, str]:
     if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_RECEIPT_BYTES:
         raise ValueError("public release descriptor must be a bounded regular file")
     value = json.loads(path.read_bytes())
-    if not isinstance(value, dict) or value.get("schema_version") != 2:
-        raise ValueError("public release descriptor schema must be 2")
+    if not isinstance(value, dict) or value.get("schema_version") != 3:
+        raise ValueError("public release descriptor schema must be 3")
     descriptor_hash = content_hash(canonical_bytes(value))
     release_hash = value.get("release_set_hash")
     if not isinstance(release_hash, str) or not valid_hash(release_hash):
@@ -372,6 +381,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel-version")
     parser.add_argument("--credential-rotation-receipt", type=pathlib.Path)
     parser.add_argument("--live-acceptance-receipt", type=pathlib.Path)
+    parser.add_argument(
+        "--provider",
+        choices=tuple(sorted(PROVIDER_MODELS)),
+        default=os.environ.get("KRW_AGENT_PROVIDER", "glm"),
+        help="provider lane bound to the release evidence (default: glm)",
+    )
     parser.add_argument("--require-authoritative", action="store_true")
     parser.add_argument("--verify-manifest", type=pathlib.Path)
     return parser.parse_args()
@@ -551,7 +566,7 @@ def main() -> int:
                 args.live_acceptance_receipt.resolve(), LIVE_SCHEMA_VERSION
             )
             validate_rotation_receipt(rotation)
-            validate_live_receipt(live, release_hash)
+            validate_live_receipt(live, release_hash, args.provider)
             external = {
                 "release_descriptor_hash": descriptor_hash,
                 "release_authorization_hash": authorization_hash,
@@ -575,7 +590,11 @@ def main() -> int:
         "profile": args.profile,
         "status": status,
         "authoritative": authoritative,
-        "model_policy": {"physical_models": [MODEL_ID], "aliases_allowed": False},
+        "provider_policy": {
+            "provider_id": args.provider,
+            "physical_models": [model_for_provider(args.provider)],
+            "aliases_allowed": False,
+        },
         "source": {
             "tree_hash": source_hash,
             "file_count": source_files,

@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
-    ALLOWED_MODEL_IDS, ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
-    PublicReleaseDescriptor,
+    ALLOWED_MODEL_IDS, ContentHash, DEEPSEEK_MODEL_ID, GLM_MODEL_ID,
+    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PublicReleaseDescriptor,
 };
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderFunctionName,
@@ -34,6 +34,8 @@ const MAX_DESCRIPTOR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
 const GLM_API_KEY_ENV: &str = "GLM_API_KEY";
 const GLM_API_BASE: &str = "https://api.z.ai/api/anthropic";
+const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
+const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/anthropic";
 const PROVIDER_PROBE_PROMPT: &str = "Reply with only: OK";
 const PROVIDER_PROBE_MAX_TOKENS: u32 = 16;
 
@@ -188,12 +190,46 @@ enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 enum ProviderCommand {
-    /// Send one fixed, no-tool request and print only redacted GLM wire metadata.
-    Probe,
-    /// Send separate GLM admission probes for JSON mode and strict
-    /// transition-tool input. This command is the only live structured-output
-    /// check; DeepSeek has no live test path.
+    /// Send one fixed, no-tool request and print only redacted wire metadata.
+    /// GLM is the default; use `--provider deepseek` for the production lane.
+    Probe {
+        #[arg(long, value_enum, default_value_t = ProviderProbeArg::Glm)]
+        provider: ProviderProbeArg,
+    },
+    /// Send a provider admission probe for GLM JSON mode and strict transition
+    /// tool input. DeepSeek's Anthropic lane intentionally uses its documented
+    /// `output_config.effort` path and is checked by the regular `probe` plus
+    /// the full dual-provider acceptance runner instead.
     StructuredProbe,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProviderProbeArg {
+    Glm,
+    Deepseek,
+}
+
+impl ProviderProbeArg {
+    const fn model_id(self) -> &'static str {
+        match self {
+            Self::Glm => GLM_MODEL_ID,
+            Self::Deepseek => DEEPSEEK_MODEL_ID,
+        }
+    }
+
+    const fn api_base(self) -> &'static str {
+        match self {
+            Self::Glm => GLM_API_BASE,
+            Self::Deepseek => DEEPSEEK_API_BASE,
+        }
+    }
+
+    const fn api_key_env(self) -> &'static str {
+        match self {
+            Self::Glm => GLM_API_KEY_ENV,
+            Self::Deepseek => DEEPSEEK_API_KEY_ENV,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -388,9 +424,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("verified {}", public_descriptor_hash(&descriptor)?);
         }
         Command::Provider {
-            command: ProviderCommand::Probe,
+            command: ProviderCommand::Probe { provider },
         } => {
-            let report = probe_glm_52().await?;
+            let report = probe_provider(provider).await?;
             println!("{}", serde_json::to_string(&report)?);
         }
         Command::Provider {
@@ -644,9 +680,11 @@ async fn run_through_gateway(
     }
 }
 
-async fn probe_glm_52() -> Result<ProviderProbeReport, Box<dyn std::error::Error>> {
-    let client = glm_52_client()?;
-    let request = provider_probe_request();
+async fn probe_provider(
+    provider: ProviderProbeArg,
+) -> Result<ProviderProbeReport, Box<dyn std::error::Error>> {
+    let client = provider_client(provider)?;
+    let request = provider_probe_request(provider.model_id());
     let started = Instant::now();
     let episode = client
         .complete_stream(&request, &provider_probe_context())
@@ -662,7 +700,7 @@ async fn probe_glm_52() -> Result<ProviderProbeReport, Box<dyn std::error::Error
 
     Ok(ProviderProbeReport {
         schema_version: 1,
-        model_id: GLM_MODEL_ID.to_owned(),
+        model_id: provider.model_id().to_owned(),
         observed_model: episode.observed_model,
         finish_reason: episode.finish_reason,
         tool_call_count: episode.assistant.tool_calls.len(),
@@ -677,10 +715,10 @@ async fn probe_glm_52() -> Result<ProviderProbeReport, Box<dyn std::error::Error
 
 async fn probe_glm_structured_admission()
 -> Result<ProviderStructuredAdmissionReport, Box<dyn std::error::Error>> {
-    let client = glm_52_client()?;
+    let client = provider_client(ProviderProbeArg::Glm)?;
     let baseline = probe_glm_admission_case(
         &client,
-        provider_probe_request(),
+        provider_probe_request(GLM_MODEL_ID),
         ProviderAdmissionExpectation::NoTools,
     )
     .await;
@@ -880,29 +918,41 @@ fn provider_probe_error_kind(error: &WireError) -> &'static str {
     }
 }
 
-fn glm_52_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
-    let api_key = Zeroizing::new(std::env::var(GLM_API_KEY_ENV).map_err(|_| {
+fn provider_client(
+    provider: ProviderProbeArg,
+) -> Result<ProviderClient, Box<dyn std::error::Error>> {
+    let key_env = provider.api_key_env();
+    let api_key = Zeroizing::new(std::env::var(key_env).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "GLM_API_KEY is not present; inject it through the process environment",
+            format!("{key_env} is not present; inject it through the process environment"),
         )
     })?);
     if api_key.is_empty() {
-        return Err(
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "GLM_API_KEY is empty").into(),
-        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{key_env} is empty"),
+        )
+        .into());
     }
 
     let client = ProviderClient::new(
-        ProviderClientConfig::production(GLM_API_BASE, [GLM_MODEL_ID.to_owned()], 8),
+        ProviderClientConfig::production(provider.api_base(), [provider.model_id().to_owned()], 8),
         api_key.as_str(),
     )?;
     Ok(client)
 }
 
-fn provider_probe_request() -> MessagesRequest {
+/// The fixture-backed quality command remains intentionally GLM-only. Live
+/// DeepSeek quality is exercised through the deployed Gateway acceptance
+/// runner, where the exact sealed release descriptor is also verified.
+fn glm_52_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
+    provider_client(ProviderProbeArg::Glm)
+}
+
+fn provider_probe_request(model_id: &str) -> MessagesRequest {
     MessagesRequest {
-        model: GLM_MODEL_ID.to_owned(),
+        model: model_id.to_owned(),
         messages: vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)],
         system: "KRW provider probe".into(),
         max_tokens: PROVIDER_PROBE_MAX_TOKENS,
@@ -1078,27 +1128,45 @@ fn write_new_file(path: &Path, bytes: &[u8], private: bool) -> Result<(), std::i
 #[cfg(test)]
 mod tests {
     use super::{
-        GLM_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT, provider_probe_context,
-        provider_probe_request,
+        DEEPSEEK_MODEL_ID, GLM_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT,
+        ProviderProbeArg, provider_probe_context, provider_probe_request,
     };
     use krw_agent_protocol::ThinkingMode;
     use krw_agent_provider_wire::ProviderMessage;
 
     #[test]
-    fn provider_probe_is_fixed_glm_only_and_has_no_tools() {
-        let request = provider_probe_request();
-        assert_eq!(request.model, GLM_MODEL_ID);
-        assert!(request.stream);
-        assert!(request.tools.is_empty());
-        assert_eq!(request.thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(request.max_tokens, PROVIDER_PROBE_MAX_TOKENS);
-        assert_eq!(
-            request.messages,
-            vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)]
-        );
+    fn provider_probe_is_exact_for_each_admitted_provider_and_has_no_tools() {
+        for model_id in [GLM_MODEL_ID, DEEPSEEK_MODEL_ID] {
+            let request = provider_probe_request(model_id);
+            assert_eq!(request.model, model_id);
+            assert!(request.stream);
+            assert!(request.tools.is_empty());
+            assert_eq!(request.thinking.kind, ThinkingMode::Disabled);
+            assert_eq!(request.max_tokens, PROVIDER_PROBE_MAX_TOKENS);
+            assert_eq!(
+                request.messages,
+                vec![ProviderMessage::user(PROVIDER_PROBE_PROMPT)]
+            );
+        }
         assert_ne!(
             provider_probe_context().tool_schema_hash,
             provider_probe_context().agent_image_hash
         );
+    }
+
+    #[test]
+    fn provider_probe_selector_uses_closed_provider_endpoints_and_keys() {
+        assert_eq!(ProviderProbeArg::Glm.model_id(), GLM_MODEL_ID);
+        assert_eq!(
+            ProviderProbeArg::Glm.api_base(),
+            "https://api.z.ai/api/anthropic"
+        );
+        assert_eq!(ProviderProbeArg::Glm.api_key_env(), "GLM_API_KEY");
+        assert_eq!(ProviderProbeArg::Deepseek.model_id(), DEEPSEEK_MODEL_ID);
+        assert_eq!(
+            ProviderProbeArg::Deepseek.api_base(),
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(ProviderProbeArg::Deepseek.api_key_env(), "DEEPSEEK_API_KEY");
     }
 }

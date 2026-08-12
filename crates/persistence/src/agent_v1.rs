@@ -36,6 +36,8 @@ pub const FINAL_OUTPUT_READ_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0006_read_final_output.sql");
 pub const SESSION_MEMORY_RETENTION_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0016_session_memory_source_retention.sql");
+pub const DAEMON_HEARTBEAT_MIGRATION_SQL: &str =
+    include_str!("../../../migrations/0018_daemon_heartbeat.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AgentV1Procedure {
@@ -61,6 +63,7 @@ pub enum AgentV1Procedure {
     ReadFinalOutput,
     ReapRetainedRuns,
     RetireSessionMemory,
+    HeartbeatDaemon,
 }
 
 impl AgentV1Procedure {
@@ -88,6 +91,7 @@ impl AgentV1Procedure {
             Self::ReadFinalOutput => "agent_v1.read_final_output",
             Self::ReapRetainedRuns => "agent_v1.reap_retained_runs",
             Self::RetireSessionMemory => "agent_v1.retire_session_memory",
+            Self::HeartbeatDaemon => "agent_v1.heartbeat_daemon",
         }
     }
 
@@ -121,6 +125,7 @@ impl AgentV1Procedure {
             Self::ReadFinalOutput => "SELECT agent_v1.read_final_output($1::jsonb)",
             Self::ReapRetainedRuns => "SELECT agent_v1.reap_retained_runs($1::jsonb)",
             Self::RetireSessionMemory => "SELECT agent_v1.retire_session_memory($1::jsonb)",
+            Self::HeartbeatDaemon => "SELECT agent_v1.heartbeat_daemon($1::jsonb)",
         }
     }
 }
@@ -255,6 +260,8 @@ fn validate_request_object(
         ("session_id", 128),
         ("mutation_id", 128),
         ("worker_id", 128),
+        ("daemon_id", 128),
+        ("provider", 16),
         ("action_key", 128),
         ("child_id", 160),
         ("tool_call_id", 128),
@@ -297,6 +304,7 @@ fn validate_request_object(
         "snapshot_revision",
         "snapshot_size_bytes",
         "outbox_id",
+        "heartbeat_ttl_ms",
     ] {
         if object
             .get(key)
@@ -350,6 +358,19 @@ fn validate_request_object(
             procedure,
             reason: "lease duration is outside bounds",
         });
+    }
+    if procedure == AgentV1Procedure::HeartbeatDaemon {
+        let valid_provider = matches!(object.get("provider").and_then(Value::as_str), Some("glm" | "deepseek"));
+        let valid_ttl = matches!(
+            object.get("heartbeat_ttl_ms").and_then(Value::as_u64),
+            Some(30_000..=120_000)
+        );
+        if !valid_provider || !valid_ttl {
+            return Err(AgentV1Error::InvalidRequest {
+                procedure,
+                reason: "daemon heartbeat contract is invalid",
+            });
+        }
     }
     if let Some(limit) = object.get("limit").and_then(Value::as_u64)
         && !(1..=100).contains(&limit)
@@ -1488,6 +1509,28 @@ pub struct ReadCommittedOutcomeResponse {
     pub terminal_outcome: Option<Value>,
 }
 
+/// A daemon-owned, non-secret liveness receipt. It is deliberately separate
+/// from session/run state: a front end can reject new work when no exact
+/// daemon release is available without inspecting customer content or model
+/// transcripts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatDaemonRequest {
+    pub daemon_id: String,
+    pub provider: String,
+    pub descriptor_artifact_hash: ContentHash,
+    pub release_set_hash: ContentHash,
+    pub runtime_version: String,
+    pub heartbeat_ttl_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatDaemonResponse {
+    pub ready: bool,
+    pub heartbeat_expires_at: String,
+}
+
 macro_rules! impl_request {
     ($request:ty, $response:ty, $procedure:expr) => {
         impl sealed::Sealed for $request {}
@@ -1592,6 +1635,11 @@ impl_request!(
     ReadCommittedOutcomeRequest,
     ReadCommittedOutcomeResponse,
     AgentV1Procedure::ReadCommittedOutcome
+);
+impl_request!(
+    HeartbeatDaemonRequest,
+    HeartbeatDaemonResponse,
+    AgentV1Procedure::HeartbeatDaemon
 );
 
 #[cfg(test)]
@@ -1764,6 +1812,7 @@ mod tests {
             AgentV1Procedure::ClaimOutbox,
             AgentV1Procedure::AckOutbox,
             AgentV1Procedure::ReadCommittedOutcome,
+            AgentV1Procedure::HeartbeatDaemon,
         ];
         for procedure in procedures {
             assert_eq!(

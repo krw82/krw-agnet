@@ -49,7 +49,7 @@ echo "apply_migrations: highest applied version=$APPLIED_MAX"
 # runners; a mismatch is a hard pre-flight failure regardless of the lock.
 if (( APPLIED_MAX > 0 )); then
   # version<TAB>checksum for all applied rows, one per line, in version order.
-  APPLIED_ROWS="$(psql "$@" -tAF $'\t' \
+  APPLIED_ROWS="$(psql "$@" -tAF $'\t' -c \
     "SELECT version, checksum FROM agent_store.schema_migrations ORDER BY version" \
     2>/dev/null || true)"
   while IFS=$'\t' read -r row_version row_checksum; do

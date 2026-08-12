@@ -63,14 +63,18 @@ profiles:
         ontology.chain: 1
   - profile_id: scenario_sensitivity
     limits:
-      max_provider_turns: 10
+      # The scenario workflow has two planning stages, evidence assessment,
+      # optional trace/chain work, scenario construction, and final writing.
+      # Ten turns can exhaust before the composer receives a turn; keep room
+      # for the full declared path plus one bounded repair.
+      max_provider_turns: 16
       max_capability_calls: 5
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
-      max_output_tokens: 14000
+      max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 600000
       capability_call_limits:
         ontology.query_context: 2
         ontology.query: 2
@@ -90,6 +94,20 @@ profiles:
         ontology.query_context_universe: 2
         ontology.query_universe: 2
         ontology.trace_universe: 1
+  - profile_id: wide_research
+    limits:
+      max_provider_turns: 16
+      max_capability_calls: 5
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 120000
+      max_output_tokens: 28000
+      max_evidence_bytes: 8388608
+      deadline_ms: 600000
+      capability_call_limits:
+        ontology.query_context_universe: 2
+        ontology.query_universe: 3
+        ontology.trace_universe: 2
   - profile_id: display_plan_minimal
     limits:
       max_provider_turns: 4

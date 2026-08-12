@@ -4,8 +4,10 @@
 This runner never starts or rebuilds the local stack. Independent chains may
 run in parallel, but every step in one chain is strictly serial and uses the
 session ID returned by the preceding request (or the explicitly retained
-initial session for ``resume_initial``). DeepSeek is not selected: the Gateway
-release descriptor owns the pinned GLM model.
+initial session for ``resume_initial``). The selected provider is an operator
+lane label (``KRW_AGENT_PROVIDER`` or ``--provider``); the Gateway itself
+still owns the immutable descriptor and never accepts a provider from the
+question payload.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from release_provider import PROVIDER_MODELS, validate_public_descriptor
 
 from run_live_quality_matrix import (
     GatewayProblem,
@@ -31,7 +35,6 @@ from run_live_quality_matrix import (
     write_private_json,
     write_private_text,
 )
-
 
 class RunnerError(RuntimeError):
     pass
@@ -50,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gateway-url",
         default=os.environ.get("KRW_AGENT_GATEWAY_URL", "http://127.0.0.1:4318/v1/agent"),
+    )
+    parser.add_argument(
+        "--provider",
+        choices=tuple(sorted(PROVIDER_MODELS)),
+        default=os.environ.get("KRW_AGENT_PROVIDER", "glm"),
+        help="provider lane already loaded by the Gateway (default: KRW_AGENT_PROVIDER or glm)",
     )
     parser.add_argument("--timeout-seconds", type=int, default=720)
     parser.add_argument("--poll-seconds", type=float, default=2.0)
@@ -172,7 +181,11 @@ def run_chain(
                 "POST",
                 path,
                 token,
-                {"schema_version": 1, "question": step["question"], "ticker": step["ticker"]},
+                {
+                    "schema_version": 1,
+                    "question": step["question"],
+                    "ticker": step["ticker"],
+                },
             )
             session_id, run_id, _ = validate_submit(submitted)
             if action == "new" and initial_session is None:
@@ -253,6 +266,8 @@ def main() -> int:
             "suite_id": "chat-session-followup-v1",
             "generated_at": now_utc(),
             "mode": "dry_run",
+            "provider_id": args.provider,
+            "physical_model": PROVIDER_MODELS[args.provider],
             "chains": [planned_chain(chain) for chain in chains],
         }
         write_private_json(report_root / "report.json", report)
@@ -262,6 +277,20 @@ def main() -> int:
     if not token:
         raise RunnerError("KRW_AGENT_GATEWAY_TOKEN is required unless --dry-run is used")
     gateway_url = normalized_gateway_url(args.gateway_url)
+    descriptor_path = os.environ.get("KRW_AGENT_RELEASE_DESCRIPTOR_PATH", "").strip()
+    descriptor_hash = os.environ.get("KRW_AGENT_RELEASE_ARTIFACT_HASH", "").strip()
+    release_set_hash = os.environ.get("KRW_AGENT_RELEASE_SET_HASH", "").strip()
+    if not descriptor_path or not descriptor_hash or not release_set_hash:
+        raise RunnerError("provider release pins are required for live follow-up runs")
+    try:
+        lane = validate_public_descriptor(
+            Path(descriptor_path),
+            args.provider,
+            expected_artifact_hash=descriptor_hash,
+            expected_release_set_hash=release_set_hash,
+        )
+    except (OSError, ValueError) as error:
+        raise RunnerError(f"provider release lane is invalid: {error}") from error
     # Keep chains serial by design. The CLI intentionally defaults to one; a
     # future bounded executor may parallelize independent chains without ever
     # interleaving steps within one room.
@@ -273,7 +302,14 @@ def main() -> int:
         "schema_version": 1,
         "suite_id": "chat-session-followup-v1",
         "generated_at": now_utc(),
-        "mode": "live_glm_gateway",
+        "mode": "live_gateway",
+        "provider_id": lane["provider_id"],
+        "physical_model": lane["physical_model"],
+        "release": {
+            key: lane[key]
+            for key in ("descriptor_artifact_hash", "release_set_hash", "entry_count")
+            if key in lane
+        },
         "chains": reports,
         "completed_chains": len(reports) - failed,
         "failed_chains": failed,

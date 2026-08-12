@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The systemd unit loads the selected provider and its credentials from the
+# deployment environment. This wrapper binds every path to one immutable
+# provider directory and refuses a mixed GLM/DeepSeek startup.
+
+krw_current=${KRW_AGENT_CURRENT_DIR:-/opt/krw-agent/current}
+krw_provider=${KRW_AGENT_PROVIDER:-}
+krw_mode_args=()
+case "${1:-}" in
+  '') ;;
+  --check) krw_mode_args=(--check); shift ;;
+  --database-check) krw_mode_args=(--database-check); shift ;;
+  *) echo 'krw-agentd: unsupported wrapper argument' >&2; exit 2 ;;
+esac
+[[ "$#" -eq 0 ]] || { echo 'krw-agentd: wrapper accepts at most one check argument' >&2; exit 2; }
+case "$krw_provider" in
+  glm) krw_model='glm-5.2'; krw_key=${GLM_API_KEY:-} ;;
+  deepseek) krw_model='deepseek-v4-flash'; krw_key=${DEEPSEEK_API_KEY:-} ;;
+  *) echo 'krw-agentd: invalid KRW_AGENT_PROVIDER' >&2; exit 2 ;;
+esac
+[[ -n "$krw_key" ]] || { echo 'krw-agentd: provider credential is missing' >&2; exit 1; }
+[[ -L "$krw_current" && -d "$krw_current" ]] || { echo 'krw-agentd: current release is not an atomic symlink' >&2; exit 1; }
+[[ -x "$krw_current/bin/krw-agentd" ]] || { echo 'krw-agentd: daemon binary is missing' >&2; exit 1; }
+[[ -f "$krw_current/deployments/model-registry.yaml" ]] || { echo 'krw-agentd: model registry is missing' >&2; exit 1; }
+if ! grep -Eq "^[[:space:]]+model_id:[[:space:]]+$krw_model[[:space:]]*$" "$krw_current/deployments/model-registry.yaml"; then
+  echo 'krw-agentd: provider and model registry disagree' >&2
+  exit 1
+fi
+
+krw_images=()
+for krw_image in krw-ontology krw-ontology-en krw-feed krw-source-filing krw-guru-advisor krw-router krw-display krw-notebook; do
+  [[ -d "$krw_current/images/$krw_image" ]] || { echo "krw-agentd: missing image $krw_image" >&2; exit 1; }
+  krw_images+=(--image-dir "$krw_current/images/$krw_image")
+done
+
+krw_metrics_args=()
+if [[ -n "${KRW_AGENT_METRICS_BIND:-}" ]]; then
+  [[ "$KRW_AGENT_METRICS_BIND" != *$'\n'* && "$KRW_AGENT_METRICS_BIND" != *' '* ]] || {
+    echo 'krw-agentd: invalid metrics bind address' >&2
+    exit 2
+  }
+  krw_metrics_args=(--metrics-bind "$KRW_AGENT_METRICS_BIND")
+fi
+
+exec "$krw_current/bin/krw-agentd" \
+  "${krw_images[@]}" \
+  --deployment-binding "$krw_current/deployments/deployment-binding.yaml" \
+  --model-registry "$krw_current/deployments/model-registry.yaml" \
+  --provider "$krw_provider" \
+  --budget-registry "$krw_current/deployments/budget-registry.yaml" \
+  --endpoint-registry "$krw_current/deployments/endpoint-registry.yaml" \
+  --release-authorization "$krw_current/release-authorization.json" \
+  --release-trust-registry "$krw_current/release-trust-registry.json" \
+  --database-tls-mode require \
+  --database-ca-pem-env "${KRW_AGENT_DATABASE_CA_PEM_ENV:-KRW_AGENT_DATABASE_CA_PEM}" \
+  --worker-id "${KRW_AGENT_WORKER_ID:-krw-agentd-node-a}" \
+  --artifact-root "${KRW_AGENT_ARTIFACT_ROOT:-/var/lib/krw-agent/artifacts}" \
+  --max-active-runs "${KRW_AGENT_MAX_ACTIVE_RUNS:-16}" \
+  --mcp-pool-entries "${KRW_AGENT_MCP_POOL_ENTRIES:-64}" \
+  "${krw_metrics_args[@]}" \
+  "${krw_mode_args[@]}"

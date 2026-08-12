@@ -355,8 +355,52 @@ run_quality() {
   [[ "${KRW_LIVE_QUALITY_DRY_RUN:-0}" == 1 ]] && dry_run=1
   if [[ "$dry_run" == 0 ]]; then
     show_status >/dev/null
+    load_runtime_pins
   fi
   exec python3 "$krw_root/scripts/run_live_quality_matrix.py" "$@"
+}
+
+load_runtime_pins() {
+  local runtime_env="$krw_state/frontend.env"
+  [[ -f "$runtime_env" ]] || {
+    printf 'local stack release pins are missing: %s\n' "$runtime_env" >&2
+    return 1
+  }
+  # The stack writes this file itself. Still parse an explicit allow-list
+  # instead of sourcing arbitrary shell text, so quality commands cannot turn
+  # a generated runtime artifact into code execution.
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "${line#\#}" != "$line" ]] && continue
+    [[ "$line" == *=* ]] || {
+      printf 'invalid local stack runtime pin line\n' >&2
+      return 1
+    }
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      KRW_AGENT_BACKEND_MODE|KRW_AGENT_ADMISSION_MODE|KRW_RUNTIME_ENVIRONMENT|\
+      KRW_AGENT_TENANT_ID|KRW_AGENT_RELEASE_DESCRIPTOR_PATH|\
+      KRW_AGENT_RELEASE_ARTIFACT_HASH|KRW_AGENT_RELEASE_SET_HASH|AGENT_V1_DATABASE_URL)
+        # Shell variables cannot contain NUL; reject the line delimiters that
+        # can still break the generated environment format.
+        [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+          printf 'invalid local stack runtime pin value\n' >&2
+          return 1
+        }
+        export "$key=$value"
+        ;;
+      KRW_AGENT_PROVIDER)
+        # Provider selection is owned by this wrapper's explicit lane, which
+        # has already been checked against the running daemon by show_status.
+        ;;
+      *)
+        printf 'unexpected local stack runtime pin key\n' >&2
+        return 1
+        ;;
+    esac
+  done < "$runtime_env"
+  export KRW_AGENT_PROVIDER="$krw_provider"
 }
 
 run_smoke() {
@@ -368,6 +412,7 @@ run_smoke() {
   [[ "${KRW_LIVE_QUALITY_DRY_RUN:-0}" == 1 ]] && dry_run=1
   if [[ "$dry_run" == 0 ]]; then
     show_status >/dev/null
+    load_runtime_pins
   fi
   exec python3 "$krw_root/scripts/run_live_quality_matrix.py" \
     --per-bucket 1 --parallelism 1 "$@"
