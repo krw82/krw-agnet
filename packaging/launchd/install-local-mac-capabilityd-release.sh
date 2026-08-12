@@ -96,6 +96,30 @@ PY
     || fail 'Sealed canonical capability runtime is incomplete'
 }
 
+capability_runtime_is_active() {
+  [[ -f "$IDENTITY" && -f "$GATEWAY_CONFIG" ]] || return 1
+  curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/healthz" \
+    | python3 -c '
+import json, sys
+expected = json.load(open(sys.argv[1], encoding="utf-8"))
+actual = json.load(sys.stdin)
+for field in ("ok", "build_id", "tool_schema_sha256", "release_manifest_sha256", "protocol_version", "tool_count"):
+    if actual.get(field) != expected.get(field):
+        raise SystemExit(1)
+if actual.get("ok") is not True:
+    raise SystemExit(1)
+' "$IDENTITY" >/dev/null 2>&1 || return 1
+  python3 - "$GATEWAY_CONFIG" "$CAPABILITY_PORT" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+if config.get("service") != "krw-capabilityd":
+    raise SystemExit(1)
+upstream = config.get("upstream")
+if not isinstance(upstream, dict) or upstream.get("host") != "127.0.0.1" or upstream.get("port") != int(sys.argv[2]):
+    raise SystemExit(1)
+PY
+}
+
 validate_runtime_archive() {
   python3 - "$RUNTIME_ARCHIVE" <<'PY'
 import pathlib
@@ -297,7 +321,7 @@ PY
 wait_for_ready() {
   deadline=$(( $(date +%s) + 45 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
-    if curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/readyz" \
+    if curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$CAPABILITY_PORT/healthz" \
       | python3 -c '
 import json, sys
 expected = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -340,6 +364,14 @@ restore() {
 case "$MODE" in
   activate)
     capture_current_bundle
+    # Capabilityd is provider-independent and long-lived.  Reusing a healthy
+    # listener with the exact sealed identity keeps ordinary agent releases
+    # from needlessly restarting the ontology/Guru runtime.  A mismatch still
+    # fails closed and follows the full activation path below.
+    if capability_runtime_is_active; then
+      printf '%s\n' "Reusing healthy canonical capability runtime: $RELEASE_ID ($PROVIDER)"
+      exit 0
+    fi
     mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR" "$STATE_DIR"
     chmod 0700 "$LOG_DIR" "$STATE_DIR"
     [ ! -e "$STATE_DIR/gateway.previous.json" ] || fail 'Capability activation state already exists'
