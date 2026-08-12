@@ -281,8 +281,27 @@ impl SecretSource for ProcessEnvironment {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationMode {
+    /// Validate a release that will be able to execute provider calls.
     Production,
+    /// Validate the complete production release contract without constructing
+    /// a provider client. This is used for sealed-descriptor authoring and
+    /// database ABI diagnostics, neither of which can issue a model request.
+    ///
+    /// Production binding fingerprints and all non-provider secrets remain
+    /// mandatory. Only the dormant execution-provider credential is omitted.
+    ProductionDescriptor,
+    /// Permit deliberately synthetic fixtures used by unit tests.
     Fixture,
+}
+
+impl ValidationMode {
+    const fn requires_production_integrity(self) -> bool {
+        matches!(self, Self::Production | Self::ProductionDescriptor)
+    }
+
+    const fn requires_provider_credentials(self) -> bool {
+        matches!(self, Self::Production)
+    }
 }
 
 pub fn load_yaml<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, ConfigError> {
@@ -535,20 +554,24 @@ fn prepare_globals(
     }
 
     let mut secret_cache = BTreeMap::<String, Arc<Zeroizing<String>>>::new();
-    // A registry only requires credentials for providers it actually
-    // advertises. Empty placeholders are intentionally startup-local and are
-    // never exposed to a run; this lets a GLM-only deployment operate without
-    // carrying a dormant DeepSeek credential.
-    let deepseek_api_key = if registry
-        .models
-        .iter()
-        .any(|model| model.model_id == DEEPSEEK_MODEL_ID)
+    // A live registry requires credentials only for providers it actually
+    // advertises. Descriptor and database checks do not construct a provider
+    // client, so they intentionally validate the same immutable release
+    // without requiring a dormant execution credential. These empty values
+    // remain startup-local and are never exposed to a run.
+    let deepseek_api_key = if mode.requires_provider_credentials()
+        && registry
+            .models
+            .iter()
+            .any(|model| model.model_id == DEEPSEEK_MODEL_ID)
     {
         read_secret_once(secrets, &mut secret_cache, "DEEPSEEK_API_KEY")?
     } else {
         Arc::new(Zeroizing::new(String::new()))
     };
-    let glm_api_key = if registry.models.iter().any(|m| m.model_id == GLM_MODEL_ID) {
+    let glm_api_key = if mode.requires_provider_credentials()
+        && registry.models.iter().any(|m| m.model_id == GLM_MODEL_ID)
+    {
         read_secret_once(secrets, &mut secret_cache, "GLM_API_KEY")?
     } else {
         Arc::new(Zeroizing::new(String::new()))
@@ -649,7 +672,7 @@ fn resolve_image(
     mode: ValidationMode,
 ) -> Result<(DeploymentBinding, ResolvedRuntime), ConfigError> {
     verify_manifest_identity(image)?;
-    if mode == ValidationMode::Production {
+    if mode.requires_production_integrity() {
         krw_agent_contracts::verify_registry()
             .map_err(|error| ConfigError::CanonicalContractRegistry(format!("{error:?}")))?;
         for contract in &image.body.contracts {
@@ -1316,7 +1339,7 @@ fn validate_binding(binding: &CapabilityBinding, mode: ValidationMode) -> Result
             binding.binding_key.clone(),
         ));
     }
-    if mode == ValidationMode::Production
+    if mode.requires_production_integrity()
         && (binding.server_schema_bundle_hash.as_str() == ZERO_HASH
             || binding.data_release_hash.as_str() == ZERO_HASH
             || binding.server_build == "fixture")
@@ -2153,6 +2176,46 @@ mod tests {
     }
 
     #[test]
+    fn production_descriptor_validation_does_not_require_provider_api_key() {
+        let (mut binding, models, budgets, endpoints) = global_fixture();
+        for capability in &mut binding.capabilities {
+            capability.server_schema_bundle_hash =
+                krw_agent_protocol::ContentHash::sha256("production-schema");
+            capability.data_release_hash =
+                krw_agent_protocol::ContentHash::sha256("production-data-release");
+            capability.server_build = "production-test".into();
+        }
+        let mut values = global_secret_values();
+        values.remove("GLM_API_KEY");
+        let secrets = FixtureSecrets(values);
+
+        let descriptor_only = resolve_release_set(
+            all_images(),
+            &binding,
+            &models,
+            &budgets,
+            &endpoints,
+            &secrets,
+            ValidationMode::ProductionDescriptor,
+        )
+        .expect("descriptor validation must not construct a GLM provider client");
+        assert!(descriptor_only.glm_api_key().is_empty());
+
+        assert!(matches!(
+            resolve_release_set(
+                all_images(),
+                &binding,
+                &models,
+                &budgets,
+                &endpoints,
+                &secrets,
+                ValidationMode::Production,
+            ),
+            Err(ConfigError::MissingSecret(name)) if name == "GLM_API_KEY"
+        ));
+    }
+
+    #[test]
     fn public_descriptor_is_deterministic_complete_and_secret_free() {
         let (binding, models, budgets, endpoints) = global_fixture();
         let releases = resolve_release_set(
@@ -2170,7 +2233,11 @@ mod tests {
             descriptor.schema_version,
             PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION
         );
-        assert_eq!(descriptor.entries.len(), 18);
+        // Eight checked-in images currently publish 19 public entrypoints:
+        // one router, five Guru lenses, five core ontology workflows, one
+        // English company workflow, four feed workflows, and one each for
+        // source filing, notebook, and answer composition.
+        assert_eq!(descriptor.entries.len(), 19);
         assert!(descriptor.entries.windows(2).all(|pair| {
             (pair[0].run_kind.as_str(), pair[0].locale.as_str())
                 < (pair[1].run_kind.as_str(), pair[1].locale.as_str())

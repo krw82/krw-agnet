@@ -272,6 +272,11 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let budgets: BudgetRegistry = load_yaml(&args.budget_registry)?;
     let endpoints: EndpointRegistry = load_yaml(&args.endpoint_registry)?;
+    let validation_mode = if args.check || args.database_check {
+        ValidationMode::ProductionDescriptor
+    } else {
+        ValidationMode::Production
+    };
     let releases = resolve_release_set(
         images,
         &binding,
@@ -279,7 +284,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         &budgets,
         &endpoints,
         &ProcessEnvironment,
-        ValidationMode::Production,
+        validation_mode,
     )?;
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
     verify_release_authorization_for_model(
