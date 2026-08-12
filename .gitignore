@@ -22,3 +22,5 @@ benchmarks/results/
 .local/
 .srl
 .zcode/
+/.playwright-mcp/
+/research_money_how/
