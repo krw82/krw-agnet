@@ -360,7 +360,16 @@ impl ResearchPlanner {
                 for goal in receipt.intent_graph.goals() {
                     match current.graph.goal(&goal.goal_id) {
                         Some(existing) if same_goal_definition(existing, goal) => {}
-                        Some(_) => return Err(ResearchPlannerError::IntentGoalDefinitionDrift),
+                        Some(_) => {
+                            // A provider may restate an already committed
+                            // objective on a later turn (for example,
+                            // changing directness while asking for the next
+                            // piece of evidence).  The first accepted
+                            // definition remains the trusted contract; keep
+                            // it and continue with any new clause bindings.
+                            // This prevents a harmless rephrasing from
+                            // terminating an otherwise valid research run.
+                        }
                         None => {
                             ensure_fresh_intent_goal(goal)?;
                             additions.push(goal.clone());
@@ -2338,15 +2347,10 @@ mod tests {
     }
 
     #[test]
-    fn later_intent_cannot_rewrite_a_committed_goal_definition() {
+    fn later_intent_restatement_keeps_committed_goal_definition() {
         let mut planner = ResearchPlanner::default();
         let receipt = fixture_intent_receipt();
-        planner
-            .record_initial_context(ContentHash::sha256("fixture-context"))
-            .unwrap();
-        planner
-            .ingest_research_state_for_intent(&fixture_for_proposal(), &receipt)
-            .unwrap();
+        planner.merge_intent_receipt(&receipt).unwrap();
         let mut rewritten = fixture_proposal();
         rewritten["objectives"][0]["directness"] = serde_json::json!("any");
         let context = RunContextV1::CompanyTickerSet {
@@ -2364,10 +2368,15 @@ mod tests {
         )
         .unwrap()
         .receipt;
-        assert!(matches!(
-            planner.ingest_research_state_for_intent(&fixture_for_proposal(), &rewritten_receipt),
-            Err(ResearchPlannerError::IntentGoalDefinitionDrift)
-        ));
+        planner.merge_intent_receipt(&rewritten_receipt).unwrap();
+        let goal = planner
+            .intent_projection()
+            .and_then(|projection| projection.graph.goals().next())
+            .expect("committed goal");
+        assert_eq!(
+            goal.directness,
+            krw_agent_planning::DirectnessRequirement::Direct
+        );
     }
 
     #[test]
