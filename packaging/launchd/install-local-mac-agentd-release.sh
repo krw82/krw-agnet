@@ -117,6 +117,7 @@ for provider, model in providers.items():
         "frontend-runtime.env",
         "packaging/launchd/krw-agentd-start-local",
         "packaging/launchd/install-local-mac-agentd-release.sh",
+        "packaging/local-mcp-gateways/mcp_tls_proxy.mjs",
         "packaging/systemd/krw-agentd-start",
     )
     if any(not (bundle / item).is_file() or (bundle / item).is_symlink() for item in required):

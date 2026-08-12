@@ -75,7 +75,7 @@ install -m 0644 packages/host-ts/package.json packages/host-ts/package-lock.json
   packages/host-ts/tsconfig.json packages/host-ts/README.md packages/host-ts/INTEGRATION.md \
   "$krw_common/host-ts/"
 cp -R packages/host-ts/src packages/host-ts/test "$krw_common/host-ts/"
-cp -R packaging/systemd packaging/launchd "$krw_common/packaging/"
+cp -R packaging/systemd packaging/launchd packaging/local-mcp-gateways "$krw_common/packaging/"
 install -m 0644 packaging/README.md packaging/release-trust-registry.example.json \
   "$krw_common/packaging/"
 install -m 0755 scripts/verify_standalone_release.py "$krw_common/packaging/"
