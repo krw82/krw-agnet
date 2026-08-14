@@ -22,6 +22,33 @@ insider-transaction tools, stays `run-scoped` because its MCP session may carry
 state that must not cross a run boundary. `auth_scope` remains `tenant` for the
 activated capabilities; only `tool_session_reuse` changes.
 
+The matrix is also checked offline by
+`scripts/test_dual_provider_release.py`; a provider release is not accepted if
+one provider accidentally changes a Feed/Filings binding to stateless reuse.
+The test does not contact an MCP server and therefore cannot replace the live
+readiness + `initialize` attestation check in the local gateway installer.
+
+## Model-free retrieval audit
+
+For a running local stack, the bounded read path can be checked without a
+provider call:
+
+```bash
+python3 scripts/run_direct_mcp_audit.py \
+  --operator-root "$HOME/krw-agnet-prod" \
+  --ticker AAPL
+```
+
+The audit calls readiness, `initialize`, `tools/list`, and one representative
+read for Ontology, Feed, Filings, and Guru. It also follows one Ontology object
+through `trace` and `chain`. It records latency, result counts, pagination,
+tool-error state, ticker consistency, and chain payload presence. Empty Feed or
+Filings data is reported as an observed empty result, not a false test failure.
+The report explicitly says that no model was called; it cannot judge whether a
+later synthesized investment insight is useful. `--strict-auth` can be used in
+CI or release operations when missing Feed/Filings credentials must fail the
+audit rather than be reported as skipped.
+
 ## Capability matrix (checked-in example bindings)
 
 | Capability | `tool_session_reuse` | `auth_scope` | Why |

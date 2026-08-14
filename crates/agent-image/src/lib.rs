@@ -323,6 +323,12 @@ pub struct SkillCatalogSource {
     /// skill files. Typically `["skills", "prompts", "references"]`. Only
     /// declared prompt segments marked `loadable: true` are included.
     pub skills_dirs: Vec<String>,
+    /// Optional role-scoped allowlist. An empty list preserves the legacy
+    /// all-registered behavior for images that still use a global catalog.
+    /// Non-empty catalogs expose only these immutable segment IDs, while the
+    /// local loader continues to resolve the same canonical IDs.
+    #[serde(default)]
+    pub include_skill_ids: Vec<String>,
 }
 
 /// Declares that a prompt segment is generated at build time from ontology
@@ -1989,8 +1995,21 @@ fn render_skill_catalog(
     all_segments: &[PromptSegmentSource],
 ) -> Result<String, ImageError> {
     let catalog_dirs = resolve_skill_catalog_dirs(source, root, segment_id)?;
+    let requested_ids = source
+        .include_skill_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if requested_ids.len() != source.include_skill_ids.len() {
+        return Err(ImageError::InvalidSpec(format!(
+            "skill_catalog segment `{segment_id}` contains duplicate include_skill_ids"
+        )));
+    }
     let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
     for candidate in all_segments.iter().filter(|candidate| candidate.loadable) {
+        if !requested_ids.is_empty() && !requested_ids.contains(candidate.id.as_str()) {
+            continue;
+        }
         let path = candidate.path.as_deref().ok_or_else(|| {
             ImageError::InvalidSpec(format!(
                 "loadable skill {} must use a static path source",
@@ -2004,6 +2023,17 @@ fn render_skill_catalog(
         let content = fs::read_to_string(&file_path)?;
         let (description, when_to_use) = skill_frontmatter_metadata(&content, &candidate.id)?;
         entries.push((candidate.id.clone(), description, when_to_use));
+    }
+    if !requested_ids.is_empty() {
+        let observed = entries
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect::<BTreeSet<_>>();
+        if let Some(unknown) = requested_ids.difference(&observed).next() {
+            return Err(ImageError::InvalidSpec(format!(
+                "skill_catalog segment `{segment_id}` includes unknown or non-loadable skill `{unknown}`"
+            )));
+        }
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -4359,10 +4389,11 @@ mod tests {
             .into_loaded()
             .unwrap();
         let catalog = image.prompt("skill_catalog").unwrap();
-        assert!(catalog.contains("**research_planner_skill**"));
-        assert!(catalog.contains("**research_analysis**"));
+        assert!(catalog.contains("**provider_proposal_contract**"));
         assert!(catalog.contains("**earnings_quality_policy**"));
         assert!(catalog.contains("**scenario_construction**"));
+        assert!(!catalog.contains("**research_planner_skill**"));
+        assert!(!catalog.contains("**research_analysis**"));
         assert!(catalog.contains("You may load more than one distinct relevant skill"));
         assert!(
             catalog.contains("when EPS, net income, margin, or free cash flow may be distorted")
@@ -4383,8 +4414,18 @@ mod tests {
             .iter()
             .find(|blob| blob.id == "security_boundary")
             .unwrap();
-        assert!(planner.loadable);
+        assert!(!planner.loadable);
         assert!(!security.loadable);
+
+        let planner_catalog = image.prompt("planner_skill_catalog").unwrap();
+        assert!(planner_catalog.contains("**provider_proposal_contract**"));
+        assert!(planner_catalog.contains("**research_period_policy**"));
+        assert!(!planner_catalog.contains("**earnings_quality_policy**"));
+        assert!(!planner_catalog.contains("**scenario_construction**"));
+
+        let company_catalog = image.prompt("company_skill_catalog").unwrap();
+        assert!(company_catalog.contains("**research_financial_interpretation**"));
+        assert!(!company_catalog.contains("**earnings_quality_policy**"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 name: research-ontology-layer-map
 description: "Ontology layer map. Defines object-type purposes for internal evidence selection."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when choosing the ontology object layer for a metric, filing quote, claim, event, risk, or business relationship"
 ---
 
 # Ontology Layer Map

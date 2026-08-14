@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 
@@ -37,9 +38,61 @@ SEALED_FILES = {
     "release-trust-registry.json",
 }
 
+EXPECTED_TOOL_SESSION_REUSE = {
+    "krw_ontology_query_context": "attested-stateless-v1",
+    "krw_ontology_company_context": "attested-stateless-v1",
+    "krw_market_snapshot": "attested-stateless-v1",
+    "krw_ontology_query": "attested-stateless-v1",
+    "krw_ontology_trace": "attested-stateless-v1",
+    "krw_ontology_chain": "attested-stateless-v1",
+    "krw_skill_local": "attested-stateless-v1",
+    "krw_guru_query_context": "attested-stateless-v1",
+    "krw_guru_company_brief": "attested-stateless-v1",
+    "krw_guru_review_company_evidence": "attested-stateless-v1",
+    "list_feed_items": "run-scoped",
+    "get_feed_items": "run-scoped",
+    "get_feed_context": "run-scoped",
+    "search_catalog_filings": "run-scoped",
+    "get_filing": "run-scoped",
+    "get_filing_brief": "run-scoped",
+    "list_filing_sections": "run-scoped",
+    "read_filing_section": "run-scoped",
+    "list_filing_documents": "run-scoped",
+    "read_filing_document": "run-scoped",
+    "get_form4_insider_transactions": "run-scoped",
+}
+
 
 def file_hash(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_tool_session_matrix(binding_text: str) -> dict[str, str]:
+    """Validate the closed MCP reuse policy without parsing provider data."""
+
+    blocks = re.split(r"(?=^  - binding_key: )", binding_text, flags=re.MULTILINE)
+    observed: dict[str, str] = {}
+    for block in blocks:
+        match = re.search(r"^  - binding_key: ([A-Za-z0-9._-]+)\s*$", block, re.MULTILINE)
+        if not match:
+            continue
+        key = match.group(1)
+        reuse = re.search(r"^    tool_session_reuse: ([A-Za-z0-9._-]+)\s*$", block, re.MULTILINE)
+        if key in EXPECTED_TOOL_SESSION_REUSE:
+            if reuse is None:
+                raise ValueError(f"MCP binding has no reuse policy: {key}")
+            observed[key] = reuse.group(1)
+    missing = set(EXPECTED_TOOL_SESSION_REUSE) - set(observed)
+    if missing:
+        raise ValueError(f"MCP reuse matrix is missing bindings: {sorted(missing)}")
+    mismatched = {
+        key: (observed[key], expected)
+        for key, expected in EXPECTED_TOOL_SESSION_REUSE.items()
+        if observed[key] != expected
+    }
+    if mismatched:
+        raise ValueError(f"MCP reuse matrix mismatch: {mismatched}")
+    return observed
 
 
 def write_fixture_bundle(root: pathlib.Path, provider: str) -> None:
@@ -115,7 +168,7 @@ def verify_dual_root(root: pathlib.Path, expect_sealed: bool) -> dict[str, objec
 class DualProviderReleaseTest(unittest.TestCase):
     def test_provider_models_are_closed(self) -> None:
         self.assertEqual(PROVIDER_MODELS, {
-            "glm": "glm-5.2",
+            "glm": "glm-5.3",
             "deepseek": "deepseek-v4-flash",
         })
 
@@ -156,6 +209,26 @@ class DualProviderReleaseTest(unittest.TestCase):
             (root / "common").mkdir()
             with self.assertRaisesRegex(ValueError, "unexpected entries"):
                 verify_dual_root(root, expect_sealed=False)
+
+    def test_checked_in_mcp_reuse_matrix_is_closed_and_provider_independent(self) -> None:
+        binding = pathlib.Path("deployments/prod/deployment-binding.example.yaml").read_text(
+            encoding="utf-8"
+        )
+        observed = validate_tool_session_matrix(binding)
+        self.assertEqual(observed["krw_ontology_query"], "attested-stateless-v1")
+        self.assertEqual(observed["krw_guru_company_brief"], "attested-stateless-v1")
+        self.assertEqual(observed["get_feed_context"], "run-scoped")
+        self.assertEqual(observed["read_filing_document"], "run-scoped")
+
+    def test_reuse_matrix_rejects_accidental_feed_sharing(self) -> None:
+        binding = pathlib.Path("deployments/prod/deployment-binding.example.yaml").read_text(
+            encoding="utf-8"
+        ).replace(
+            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    transport: mcp-http\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: run-scoped",
+            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    transport: mcp-http\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: attested-stateless-v1",
+        )
+        with self.assertRaisesRegex(ValueError, "MCP reuse matrix mismatch"):
+            validate_tool_session_matrix(binding)
 
 
 def main() -> int:

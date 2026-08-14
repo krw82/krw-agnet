@@ -17,7 +17,10 @@ use krw_agent_evidence::{
 use krw_agent_protocol::ContentHash;
 use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
-use krw_ontology_adapter::{Continuation, ResearchPlanningProjection, ResearchRetrievalStatus};
+use krw_ontology_adapter::{
+    Continuation, MAX_SUPPLEMENTAL_READ_STATUSES, ResearchPlanningProjection,
+    ResearchRetrievalStatus, SupplementalReadStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -373,6 +376,22 @@ fn composer_retrieval_status(status: ResearchRetrievalStatus) -> ResearchRetriev
             reason: None,
         }),
         warnings: Vec::new(),
+        supplemental_reads: status
+            .supplemental_reads
+            .into_iter()
+            .rev()
+            .take(MAX_SUPPLEMENTAL_READ_STATUSES)
+            .map(|read| SupplementalReadStatus {
+                kind: read.kind,
+                result_count: read.result_count,
+                has_more: read.has_more,
+                next_offset: None,
+                warning_codes: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
     }
 }
 
@@ -919,6 +938,7 @@ mod tests {
         PhaseCompactionBoundaryV1, ProviderReplayState, StateArtifactDraft, StateIdentity,
         StateOperation,
     };
+    use krw_ontology_adapter::SupplementalReadKind;
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -1106,7 +1126,23 @@ mod tests {
                     "source_label":"TEST Form 10-Q"
                 }],
                 "continuation": {"has_more":true,"omitted_evidence_count":4,"reason":"limit"},
-                "warnings": ["planned_evidence_truncated"]
+                "warnings": ["planned_evidence_truncated"],
+                "supplemental_reads": [
+                    {
+                        "kind":"retrieved",
+                        "result_count":20,
+                        "has_more":true,
+                        "next_offset":20,
+                        "warning_codes":["supplemental_truncated"]
+                    },
+                    {
+                        "kind":"ambiguous",
+                        "result_count":0,
+                        "has_more":false,
+                        "next_offset":null,
+                        "warning_codes":["supplemental_ambiguous"]
+                    }
+                ]
             }
         }))
         .unwrap();
@@ -1128,7 +1164,17 @@ mod tests {
         let status = output.context.retrieval_status.as_ref().unwrap();
         assert!(status.continuation.as_ref().unwrap().has_more);
         assert_eq!(status.source_anchors[0].role, "current_driver");
+        assert_eq!(status.supplemental_reads.len(), 2);
+        assert_eq!(status.supplemental_reads[0].result_count, 20);
+        assert_eq!(
+            status.supplemental_reads[1].kind,
+            SupplementalReadKind::Ambiguous
+        );
         let composer = output.context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert!(composer.canonical().contains("\"kind\":\"retrieved\""));
+        assert!(composer.canonical().contains("\"kind\":\"ambiguous\""));
+        assert!(!composer.canonical().contains("\"next_offset\":20"));
+        assert!(!composer.canonical().contains("supplemental_ambiguous"));
         assert!(composer.canonical().contains("\"has_more\":true"));
         assert!(
             composer

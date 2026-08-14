@@ -1,7 +1,7 @@
 ---
 name: research-web-chat-runtime
 description: "Web chat runtime. Company filing anchor processing and current_driver/annual_baseline conventions."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when a web-chat question needs company filing anchors, current-driver selection, or annual-baseline handling"
 ---
 
 # Web Chat Runtime Contract

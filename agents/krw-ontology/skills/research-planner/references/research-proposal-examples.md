@@ -1,7 +1,7 @@
 ---
 name: research_proposal_examples
 description: "Use before the planner role chooses a goal type or splits mixed evidence needs. Five semantic ResearchProposal v4 examples."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when deciding whether a question is numeric, explanatory, multi-objective, scenario, or wide research"
 ---
 
 # ResearchProposal v4 examples

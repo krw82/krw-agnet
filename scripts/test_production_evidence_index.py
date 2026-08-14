@@ -25,7 +25,7 @@ HASH = "sha256:" + "a" * 64
 def bundle(provider: str) -> dict[str, str]:
     return {
         "provider_id": provider,
-        "physical_model": "glm-5.2" if provider == "glm" else "deepseek-v4-flash",
+        "physical_model": "glm-5.3" if provider == "glm" else "deepseek-v4-flash",
         "manifest_hash": HASH,
         "descriptor_artifact_hash": HASH,
         "release_set_hash": HASH,
@@ -103,7 +103,7 @@ class ProductionEvidenceIndexTest(unittest.TestCase):
             result = validate_sealed_bundle(root, "deepseek")
             self.assertEqual(result["physical_model"], "deepseek-v4-flash")
 
-            descriptor["entries"][0]["execution"]["resolved_model"] = "glm-5.2"
+        descriptor["entries"][0]["execution"]["resolved_model"] = "glm-5.3"
             descriptor_raw = json.dumps(
                 descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             ).encode("utf-8")

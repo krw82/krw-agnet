@@ -3,7 +3,7 @@ kind: AgentSpec
 
 metadata:
   id: krw.feed-research.ko
-  version: 3.1.0
+  version: 3.2.0
   description: Direct-authored stored-feed discovery, selected-event research, market-move interpretation, and filing-correlation programs.
 
 entrypoints:
@@ -14,6 +14,14 @@ entrypoints:
     required_budget_profile: feed_discovery
     required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
+    constants: {}
+  news_discovery_wide:
+    run_kind: news_discovery_wide
+    locale: ko-KR
+    workflow: news_discovery_wide_v1
+    required_budget_profile: feed_discovery
+    required_model_profile: glm_high
+    scope: { allowed_context: covered_universe, cardinality: { kind: max, value: 20 }, ticker_canonicalization: not_applicable }
     constants: {}
   news_research:
     run_kind: news_research
@@ -91,6 +99,19 @@ capabilities:
       require_any_of: [tickers]
     parallel_safe: false
     prerequisites: []
+  - id: feed.list_market_items
+    binding_key: list_feed_items
+    permission: read
+    input_contract: krw-feed-list-items-input/v1
+    output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_list_items_v1
+    scope_binding:
+      kind: covered_universe
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+    parallel_safe: false
+    prerequisites: []
   - id: feed.get_items
     binding_key: get_feed_items
     permission: read
@@ -109,6 +130,25 @@ capabilities:
     idempotency: canonical_args
     result_ingest: front_feed_context_v2
     scope_projection: { kind: ticker_set, output_contract: krw-feed-context/v2, source_pointer: /tickers, max_items: 5, require_nonempty: true }
+    scope_binding:
+      kind: selected_feed_items
+      issue_ids_pointer: /issue_ids
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      forbid_ticker_references: true
+    parallel_safe: false
+    prerequisites: []
+  # Semantic alias for the bounded Supabase-backed news context read. It uses
+  # the same physical feed MCP binding so the release adds no new endpoint or
+  # failure surface.
+  - id: news.search_context
+    binding_key: get_feed_context
+    permission: read
+    input_contract: krw-feed-context-input/v2
+    output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_context_v2
+    scope_projection: { kind: ticker_set, output_contract: krw-feed-context/v2, source_pointer: /tickers, max_items: 5, require_nonempty: false }
     scope_binding:
       kind: selected_feed_items
       issue_ids_pointer: /issue_ids
@@ -218,12 +258,36 @@ workflows:
       - { from: render_ko, on: rendered, to: commit }
       - { from: commit, on: committed, to: succeeded }
 
+  - id: news_discovery_wide_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      - { id: request_feed_items, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: fetch_feed_items, kind: capability, capability_id: feed.list_market_items, max_visits: 1 }
+      - { id: ingest_feed_items, kind: ingest, max_visits: 1 }
+      - { id: rank_feed_items, kind: assess, role_id: feed_reader, max_visits: 1 }
+      - { id: compose_orientation, kind: compose, role_id: composer, max_visits: 1 }
+      - { id: verify_orientation, kind: verify, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: request_feed_items }
+      - { from: request_feed_items, on: feed_requested, to: fetch_feed_items }
+      - { from: fetch_feed_items, on: result_observed, to: ingest_feed_items }
+      - { from: ingest_feed_items, on: ingested, to: rank_feed_items }
+      - { from: rank_feed_items, on: ranked, to: compose_orientation }
+      - { from: compose_orientation, on: draft_ready, to: verify_orientation }
+      - { from: verify_orientation, on: verified, to: render_ko }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
   - id: news_research_v1
     initial: accepted
     states:
       - { id: accepted, kind: start, max_visits: 1 }
       - { id: request_feed_anchor, kind: assess, role_id: feed_reader, max_visits: 1 }
-      - { id: load_feed_anchor, kind: capability, capability_id: feed.get_context, max_visits: 1 }
+      - { id: load_feed_anchor, kind: capability, capability_id: news.search_context, max_visits: 1 }
       - { id: ingest_feed_anchor, kind: ingest, max_visits: 1 }
       - { id: author_event_plan, kind: plan, role_id: news_planner, max_visits: 2 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
@@ -410,8 +474,10 @@ validators:
     fuel: 256
     instructions:
       - { op: max_calls, capability_id: feed.list_items, max: 1, code: feed_list_limit }
+      - { op: max_calls, capability_id: feed.list_market_items, max: 1, code: feed_market_list_limit }
       - { op: max_calls, capability_id: feed.get_items, max: 1, code: feed_get_limit }
       - { op: max_calls, capability_id: feed.get_context, max: 1, code: feed_context_limit }
+      - { op: max_calls, capability_id: news.search_context, max: 1, code: news_context_limit }
       - { op: max_calls, capability_id: filing.search_catalog, max: 1, code: filing_search_limit }
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }

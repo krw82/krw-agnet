@@ -1,7 +1,7 @@
 ---
 name: research-evidence-to-analyst-synthesis
 description: "Evidence-to-analyst synthesis guardrail. Candidate route versus evidence, internal-to-user translation rules, and what to hide from normal answers."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when turning admitted ontology evidence into analyst claims without exposing internal retrieval mechanics"
 ---
 
 # Evidence to Analyst Synthesis

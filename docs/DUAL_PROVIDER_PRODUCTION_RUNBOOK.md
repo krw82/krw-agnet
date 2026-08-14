@@ -46,7 +46,7 @@ scripts/finalize_dual_provider_release.sh --release-root "$RELEASE_ROOT"
 
 봉인 단계는 provider와 물리 모델을 정확히 맞춘다.
 
-- `glm` → `glm-5.2`, `GLM_API_KEY`
+- `glm` → `glm-5.3`, `GLM_API_KEY`
 - `deepseek` → `deepseek-v4-flash`, `DEEPSEEK_API_KEY`
 
 서로 다른 model registry, descriptor, authorization, trust registry, manifest를

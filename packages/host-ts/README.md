@@ -19,7 +19,7 @@ The public path is intentionally narrow:
 
 Pinned compatibility is strict: protocol v7, claim schema v7, public release
 descriptor v3, session-memory carrier v3, and the closed physical model set
-`glm-5.2` / `deepseek-v4-flash`. The daemon-generated descriptor selects one
+`glm-5.3` / `deepseek-v4-flash`. The daemon-generated descriptor selects one
 exact model lane; there is no carrier-v1 or model-alias fallback.
 
 The package contains no provider loop, prompt builder, MCP client, workflow

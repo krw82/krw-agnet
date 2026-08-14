@@ -101,7 +101,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 selected = sys.argv[2]
-providers = {"glm": "glm-5.2", "deepseek": "deepseek-v4-flash"}
+providers = {"glm": "glm-5.3", "deepseek": "deepseek-v4-flash"}
 digest = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 if {entry.name for entry in root.iterdir()} != {"glm", "deepseek", "dual-release-index.json"}:

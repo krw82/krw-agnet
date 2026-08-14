@@ -6,7 +6,7 @@
   "run_kind": "company_research",
   "locale": "ko-KR",
   "question": "VG의 현금창출력이 공시 근거로 확인되는지 설명해줘",
-  "requested_model": "glm-5.2",
+  "requested_model": "glm-5.3",
   "model_profile": "glm_high",
   "budget": {
     "max_provider_turns": 12,

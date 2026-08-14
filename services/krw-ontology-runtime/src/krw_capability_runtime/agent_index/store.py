@@ -1461,6 +1461,7 @@ class OntologyStore:
                 tickers=tickers,
                 document_types=document_types,
                 periods=metric_periods,
+                source_periods=periods,
                 object_types=selected_types,
                 include_rejected=include_rejected,
                 limit=query_limit,
@@ -1476,7 +1477,7 @@ class OntologyStore:
                         metric_profile["topic"],
                         tickers=tickers,
                         document_types=document_types,
-                        periods=metric_periods,
+                        periods=periods,
                         object_types=fallback_types,
                         include_rejected=include_rejected,
                         limit=min(query_limit, 20),
@@ -1640,6 +1641,7 @@ class OntologyStore:
                 tickers=tickers,
                 document_types=document_types,
                 periods=metric_periods,
+                source_periods=periods,
                 object_types=selected_types,
                 include_rejected=include_rejected,
                 limit=query_limit,
@@ -1655,7 +1657,7 @@ class OntologyStore:
                         metric_profile["topic"],
                         tickers=tickers,
                         document_types=document_types,
-                        periods=metric_periods,
+                        periods=periods,
                         object_types=fallback_types,
                         include_rejected=include_rejected,
                         limit=min(query_limit, 20),
@@ -1829,6 +1831,7 @@ class OntologyStore:
             tickers=available_tickers,
             document_types=document_types,
             periods=effective_metric_periods,
+            source_periods=periods,
             metric_dimensions=requested_metric_dimensions,
             metric_scope=metric_scope,
             calculation_window=calculation_window,
@@ -3911,6 +3914,7 @@ class OntologyStore:
         tickers: Sequence[str] | None,
         document_types: Iterable[str] | None,
         periods: Iterable[str] | None,
+        source_periods: Iterable[str] | None = None,
         object_types: Iterable[str],
         include_rejected: bool,
         limit: int,
@@ -3943,6 +3947,7 @@ class OntologyStore:
                 tickers=tickers,
                 document_types=document_types,
                 periods=periods,
+                source_periods=source_periods,
                 object_types=object_types,
                 include_rejected=include_rejected,
                 limit=limit,
@@ -3963,6 +3968,14 @@ class OntologyStore:
             where_parts, where_params, "metric_lookup.document_type", list(document_types or [])
         )
         _add_in_filter(where_parts, where_params, "metric_lookup.object_type", selected_types)
+        _add_object_scope_filters(
+            where_parts,
+            where_params,
+            tickers=tickers,
+            document_types=document_types,
+            periods=source_periods,
+            object_types=selected_types,
+        )
         period_clause_parts: list[str] = []
         period_params: list[Any] = []
         if years:
@@ -4187,6 +4200,7 @@ class OntologyStore:
         tickers: Sequence[str] | None,
         document_types: Iterable[str] | None,
         periods: Iterable[str] | None,
+        source_periods: Iterable[str] | None = None,
         object_types: Iterable[str],
         include_rejected: bool,
         limit: int,
@@ -4283,6 +4297,14 @@ class OntologyStore:
             target_where, target_params, "metric_lookup.document_type", list(document_types or [])
         )
         _add_in_filter(target_where, target_params, "metric_lookup.object_type", selected_types)
+        _add_object_scope_filters(
+            target_where,
+            target_params,
+            tickers=tickers,
+            document_types=document_types,
+            periods=source_periods,
+            object_types=selected_types,
+        )
         _add_in_filter(
             target_where, target_params, "metric_dimension_lookup.dimension_key", dimension_keys
         )
@@ -4346,6 +4368,14 @@ class OntologyStore:
                 total_where, total_params, "metric_lookup.document_type", list(document_types or [])
             )
             _add_in_filter(total_where, total_params, "metric_lookup.object_type", selected_types)
+            _add_object_scope_filters(
+                total_where,
+                total_params,
+                tickers=tickers,
+                document_types=document_types,
+                periods=source_periods,
+                object_types=selected_types,
+            )
             add_period_filters(total_where, total_params, "metric_lookup")
             if not include_rejected:
                 total_where.append(
@@ -4587,6 +4617,7 @@ class OntologyStore:
             tickers=[ticker],
             document_types=document_types,
             periods=periods,
+            source_periods=periods,
             metric_dimensions=None,
             metric_scope="any",
             calculation_window=None,
@@ -4601,6 +4632,7 @@ class OntologyStore:
         tickers: Iterable[str] | None,
         document_types: Iterable[str] | None,
         periods: Iterable[str] | None,
+        source_periods: Iterable[str] | None = None,
         metric_dimensions: Iterable[str] | None,
         metric_scope: str,
         limit_per_metric: int,
@@ -4701,6 +4733,24 @@ class OntologyStore:
             len(normalized_periods),
         )
         params.append(observation_depth)
+        # ``filtered`` ranks metric projections before joining their source
+        # objects.  Keep the caller's filing scope authoritative at the join
+        # boundary as well; otherwise a stale source object can survive even
+        # when the derived observation period matched the request.
+        object_scope_parts: list[str] = []
+        object_scope_params: list[Any] = []
+        _add_object_scope_filters(
+            object_scope_parts,
+            object_scope_params,
+            tickers=normalized_tickers,
+            document_types=normalized_document_types,
+            periods=source_periods,
+            object_types=None,
+        )
+        object_scope_sql = (
+            " AND " + " AND ".join(object_scope_parts) if object_scope_parts else ""
+        )
+        params.extend(object_scope_params)
         rows = self.conn.execute(
             f"""
             WITH filtered AS (
@@ -4796,6 +4846,7 @@ class OntologyStore:
             WHERE ranked.observation_rank <= ?
               AND ranked.duplicate_value_rank = 1
               AND (objects.review_status IS NULL OR objects.review_status != 'rejected')
+              {object_scope_sql}
             ORDER BY
                 (context_variants.conflict_value_count > 1) DESC,
                 ranked.observation_rank,
@@ -7736,6 +7787,45 @@ def _add_in_filter(parts: list[str], params: list[Any], column: str, values: lis
     placeholders = ",".join("?" for _ in values)
     parts.append(f"{column} IN ({placeholders})")
     params.extend(values)
+
+
+def _add_object_scope_filters(
+    parts: list[str],
+    params: list[Any],
+    *,
+    tickers: Iterable[str] | None,
+    document_types: Iterable[str] | None,
+    periods: Iterable[str] | None,
+    object_types: Iterable[str] | None,
+) -> None:
+    """Apply the public filing scope to a joined ``objects`` row.
+
+    Metric lookup tables are derived projections.  Their observation period
+    and document metadata can legitimately describe a comparative value that
+    is carried by a different source filing.  A caller's explicit scope is
+    about the source filing, so every metric fast path must also constrain the
+    joined object row.  Keeping this in one helper prevents the normal,
+    dimensioned, and planned metric paths from drifting apart.
+    """
+    _add_in_filter(
+        parts,
+        params,
+        "objects.ticker",
+        [str(ticker).strip().upper() for ticker in tickers or [] if str(ticker).strip()],
+    )
+    _add_in_filter(
+        parts,
+        params,
+        "objects.document_type",
+        [str(value).strip().upper() for value in document_types or [] if str(value).strip()],
+    )
+    _add_in_filter(parts, params, "objects.period", _normalize_periods(periods))
+    _add_in_filter(
+        parts,
+        params,
+        "objects.type",
+        [str(value).strip() for value in object_types or [] if str(value).strip()],
+    )
 
 
 def _fts_query(topic: str, *, operator: str) -> str:

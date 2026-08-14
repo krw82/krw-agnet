@@ -15,6 +15,7 @@ import {
   prepareEnqueueRun,
   parseGatewayCompanyResearchRequest,
   prepareGatewayCompanyResearch,
+  projectOperatorProtocolFailureClass,
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
   validateClaimShape,
@@ -69,8 +70,8 @@ function descriptor(): PublicReleaseDescriptor {
           model_registry_hash: hash("3"),
           budget_registry_hash: hash("4"),
           model_profile: "glm_high",
-          requested_model: "glm-5.2",
-          resolved_model: "glm-5.2",
+          requested_model: "glm-5.3",
+          resolved_model: "glm-5.3",
           provider_api_version: "anthropic-messages-v1",
           provider_max_context_tokens: 204_800,
           provider_wire_capabilities: {
@@ -206,7 +207,7 @@ test("enqueue claim is exact, hash-bound and contains no provider injection surf
   const built = buildEnqueueRunRequest(descriptor(), input());
   assert.equal(built.agent_image_hash, hash("1"));
   assert.equal(built.priority, 0);
-  assert.equal(built.immutable_snapshot.request.requested_model, "glm-5.2");
+    assert.equal(built.immutable_snapshot.request.requested_model, "glm-5.3");
   assert.equal(built.immutable_snapshot.request.model_profile, "glm_high");
   assert.equal(built.immutable_snapshot.execution.provider_api_version, "anthropic-messages-v1");
   assert.equal(built.immutable_snapshot.execution.thinking, "enabled");
@@ -284,8 +285,8 @@ test("model and profile tampering are rejected", () => {
         ...entry,
         execution: {
           ...entry.execution,
-          requested_model: "glm-5.2-injected",
-          resolved_model: "glm-5.2-injected",
+        requested_model: "glm-5.3-injected",
+        resolved_model: "glm-5.3-injected",
         },
       },
     ],
@@ -465,7 +466,7 @@ test("Gateway company-research request cannot inject a route, ownership, or memo
   });
   assert.equal(immutable.request.session_memory, null);
   assert.equal(Object.hasOwn(immutable.request, "requested_model"), true);
-  assert.equal(immutable.request.requested_model, "glm-5.2");
+    assert.equal(immutable.request.requested_model, "glm-5.3");
 });
 
 test("mutation envelope is deterministic and reserves ABI fields", () => {
@@ -691,6 +692,40 @@ test("readTerminalTrace returns only the bounded terminal action summary", async
   await assert.rejects(
     () => new HostAgentClient(leakingTransport).readTerminalTrace(ownership),
     /unknown_or_missing_response_field/,
+  );
+});
+
+test("operator protocol class is closed and never reuses arbitrary release text", () => {
+  assert.equal(
+    projectOperatorProtocolFailureClass({
+      reason_code: "provider_protocol_failure",
+      release: {
+        kind: "krw.agent/failure-diagnostic-v1",
+        failure_kind: "provider_protocol_tool_arguments_not_object",
+        identifier_hash: hash("a"),
+      },
+    }),
+    "provider_protocol_tool_arguments_not_object",
+  );
+  assert.equal(
+    projectOperatorProtocolFailureClass({
+      reason_code: "provider_protocol_failure",
+      release: {
+        kind: "krw.agent/failure-diagnostic-v1",
+        failure_kind: "tool_arguments_private_capability_id",
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    projectOperatorProtocolFailureClass({
+      reason_code: "provider_protocol_failure",
+      release: {
+        kind: "untrusted-diagnostic",
+        failure_kind: "provider_protocol_tool_arguments_not_object",
+      },
+    }),
+    null,
   );
 });
 

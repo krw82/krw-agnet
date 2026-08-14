@@ -61,6 +61,7 @@ SESSION_ID_RE = re.compile(r"^ses_[A-Za-z0-9_-]{1,128}$")
 RUN_ID_RE = re.compile(r"^run_[A-Za-z0-9_-]{1,128}$")
 HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 CAPABILITY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+FAILURE_CLASS_RE = re.compile(r"^provider_protocol_[a-z0-9_]{1,100}$")
 KNOWN_STATES = {"queued", "deferred", "active", "final", "cancelled", "failed"}
 TERMINAL_STATES = {"final", "cancelled", "failed"}
 ACTION_STAGES = {"begun", "observed", "accepted", "rejected", "ambiguous"}
@@ -538,8 +539,15 @@ def validate_terminal_trace(
     expected_session_id: str,
     expected_run_id: str,
     expected_state: str,
-) -> list[dict[str, str | None]]:
-    if set(value) != {"schema_version", "session_id", "run_id", "state", "actions"}:
+) -> tuple[list[dict[str, str | None]], str | None]:
+    required_fields = {"schema_version", "session_id", "run_id", "state", "actions"}
+    # Older long-lived local Gateways do not yet return this optional field.
+    # Keep the live runner compatible while validating it strictly whenever it
+    # is present.  It is written only to the private quality report.
+    if (
+        not required_fields.issubset(value)
+        or not set(value).issubset(required_fields | {"failure_class"})
+    ):
         raise GatewayProblem("terminal_trace_shape_invalid")
     session_id, run_id, state, actions = (
         value["session_id"],
@@ -561,6 +569,11 @@ def validate_terminal_trace(
         or len(actions) > MAX_TERMINAL_TRACE_ACTIONS
     ):
         raise GatewayProblem("terminal_trace_identity_invalid")
+    failure_class = value.get("failure_class")
+    if failure_class is not None and (
+        not isinstance(failure_class, str) or not FAILURE_CLASS_RE.fullmatch(failure_class)
+    ):
+        raise GatewayProblem("terminal_trace_failure_class_invalid")
     normalized: list[dict[str, str | None]] = []
     for action in actions:
         if not isinstance(action, dict) or set(action) != {
@@ -592,13 +605,14 @@ def validate_terminal_trace(
                 "result_hash": result_hash,
             }
         )
-    return normalized
+    return normalized, failure_class
 
 
 def action_trace_block(
     actions: list[dict[str, str | None]] | None,
     *,
     reason: str | None = None,
+    failure_class: str | None = None,
 ) -> dict[str, Any]:
     """Keep only operator-safe action metadata, never private reasoning or results."""
 
@@ -611,6 +625,7 @@ def action_trace_block(
             "actions": [],
             "private_reasoning": "not_collected",
             "reason": reason or "terminal_trace_unavailable",
+            "failure_class": None,
         }
     capability_sequence = [str(action["capability_id"]) for action in actions]
     return {
@@ -620,6 +635,7 @@ def action_trace_block(
         "chain_capability_called": "ontology.chain" in capability_sequence,
         "actions": actions,
         "private_reasoning": "not_collected",
+        "failure_class": failure_class,
     }
 
 
@@ -686,6 +702,7 @@ def planned_result(case: QualityCase) -> dict[str, Any]:
                 "chain_capability_called": False,
                 "actions": [],
                 "private_reasoning": "not_collected",
+                "failure_class": None,
             },
         },
         "quality": {
@@ -753,9 +770,10 @@ def run_case(
                 "GET", f"{gateway_url}/runs/{run_id}/trace", token
             )
             write_private_json(trace_path, terminal_trace)
-            action_trace = action_trace_block(
-                validate_terminal_trace(terminal_trace, session_id, run_id, state)
+            actions, failure_class = validate_terminal_trace(
+                terminal_trace, session_id, run_id, state
             )
+            action_trace = action_trace_block(actions, failure_class=failure_class)
         except GatewayProblem as trace_error:
             action_trace = action_trace_block(None, reason=str(trace_error))
         elapsed = round(time.monotonic() - started, 3)
@@ -776,6 +794,7 @@ def run_case(
                 "final_output_hash": final_hash,
                 "usage": usage,
                 "retry_message": retry_message,
+                "failure_class": action_trace["failure_class"],
                 "action_trace": action_trace,
             },
             "quality": review_block(case, state, answer, action_trace),
@@ -809,6 +828,7 @@ def run_case(
                 "final_output_hash": None,
                 "usage": None,
                 "retry_message": None,
+                "failure_class": None,
                 "action_trace": action_trace_block(None, reason="run_not_terminal"),
             },
             "quality": {

@@ -1,7 +1,7 @@
 ---
 name: research-research-pack-rendering
 description: "Research pack rendering. Defines ResearchState field purposes (resolved_scope, source_anchors, clause_coverage, evidence_units, computed_values)."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when reading resolved scope, source anchors, clause coverage, evidence units, or computed values from ResearchState"
 ---
 
 # ResearchState Rendering Policy

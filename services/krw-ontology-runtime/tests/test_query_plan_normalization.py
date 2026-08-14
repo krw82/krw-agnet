@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from krw_capability_runtime.agent_index.store import (
     OntologyStore,
@@ -504,6 +505,133 @@ def test_period_filter_does_not_expand_fiscal_quarter_to_calendar_quarter() -> N
     # A year without a quarter is still intentionally broad because the
     # serving index uses both annual label conventions.
     assert _normalize_period("FY2024") == ["FY2024", "CY2024"]
+
+
+def test_metric_lookup_keeps_source_object_inside_explicit_filing_scope(
+    tmp_path: Path,
+) -> None:
+    """A derived metric row must not smuggle in an older source filing.
+
+    The metric projection can carry a comparative observation period while its
+    source object belongs to another filing.  The public query scope is the
+    source filing scope, so the joined ``objects`` row is part of the
+    contract, not merely an implementation detail.
+    """
+
+    db_path = tmp_path / "metric-scope.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE objects (
+            id TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            document_type TEXT NOT NULL,
+            period TEXT NOT NULL,
+            type TEXT NOT NULL,
+            review_status TEXT
+        );
+        CREATE TABLE metric_lookup (
+            object_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            document_type TEXT NOT NULL,
+            object_type TEXT NOT NULL,
+            fiscal_year INTEGER,
+            fiscal_quarter INTEGER,
+            observation_period TEXT,
+            observation_period_type TEXT,
+            observation_context_key TEXT,
+            canonical_metric TEXT,
+            metric_name TEXT,
+            metric_alias_text TEXT,
+            text TEXT,
+            value_text TEXT,
+            value_numeric REAL,
+            unit TEXT,
+            segment_name TEXT,
+            product_name TEXT,
+            geography_name TEXT,
+            is_company_total INTEGER,
+            dimensions_json TEXT,
+            filing_period TEXT,
+            observation_start_date TEXT,
+            observation_end_date TEXT
+        );
+        """
+    )
+    object_rows = [
+        ("wanted-fy", "AAPL", "10-K", "FY2022"),
+        ("wanted-cy", "AAPL", "10-K", "CY2022"),
+        # The derived observation says FY2022, but this is an older source
+        # filing.  It must not be returned for an explicit FY2022 filing read.
+        ("stale-source", "AAPL", "10-K", "FY2021"),
+        # The projection metadata says 10-K, but the source object is 10-Q.
+        ("wrong-document", "AAPL", "10-Q", "FY2022"),
+    ]
+    conn.executemany(
+        "INSERT INTO objects(id,ticker,document_type,period,type,review_status) VALUES(?,?,?,?,?,'')",
+        [(*row, "MetricObservation") for row in object_rows],
+    )
+    conn.executemany(
+        """
+        INSERT INTO metric_lookup(
+            object_id,ticker,document_type,object_type,fiscal_year,fiscal_quarter,
+            observation_period,observation_period_type,observation_context_key,
+            canonical_metric,metric_name,metric_alias_text,text,value_text,value_numeric,
+            unit,segment_name,product_name,geography_name,is_company_total,
+            dimensions_json,filing_period,observation_start_date,observation_end_date
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        [
+            (
+                object_id,
+                "AAPL",
+                # Keep projection metadata intentionally identical so only the
+                # joined source-object scope can reject the bad rows.
+                "10-K",
+                "MetricObservation",
+                2022,
+                None,
+                "FY2022",
+                "annual",
+                object_id,
+                "revenue",
+                "revenue",
+                "revenue sales",
+                "revenue",
+                # Keep the derived rows distinct so the test exercises
+                # scope filtering rather than metric deduplication.
+                f"100-{object_id}",
+                100.0,
+                "USD",
+                None,
+                None,
+                None,
+                1,
+                "{}",
+                "FY2022",
+                None,
+                None,
+            )
+            for object_id, *_ in object_rows
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    with OntologyStore(db_path) as store:
+        rows, _strategy = store._query_metric_lookup_with_strategy(
+            "revenue",
+            tickers=["AAPL"],
+            document_types=["10-K"],
+            periods=["FY2022"],
+            source_periods=["FY2022"],
+            object_types=["MetricObservation"],
+            include_rejected=False,
+            limit=10,
+            normalization={},
+        )
+
+    assert {row["id"] for row in rows} == {"wanted-fy", "wanted-cy"}
 
 
 def test_predicate_aliases_do_not_require_every_wording_in_one_filing_sentence() -> None:

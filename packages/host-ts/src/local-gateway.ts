@@ -21,6 +21,7 @@ import {
   loadPinnedReleaseArtifact,
   parseGatewayCompanyResearchRequest,
   prepareGatewayCompanyResearch,
+  projectOperatorProtocolFailureClass,
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
   type JsonObject,
@@ -452,6 +453,7 @@ async function readRunTrace(
       run_id: runId,
       state: outcome.state,
       actions: null,
+      failure_class: null,
     };
   }
   const trace = await agent.readTerminalTrace(ownership);
@@ -465,6 +467,11 @@ async function readRunTrace(
       stage: action.stage,
       result_hash: action.result_hash,
     })),
+    // This endpoint is the authenticated operator trace, not the browser
+    // chat response.  It carries only a closed class already emitted by the
+    // Rust kernel; provider text, tool IDs, inputs, and prompt data remain
+    // unavailable here.
+    failure_class: projectOperatorProtocolFailureClass(outcome.terminal_outcome),
   };
 }
 

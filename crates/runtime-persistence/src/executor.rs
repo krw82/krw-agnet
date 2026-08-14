@@ -1102,6 +1102,27 @@ mod tests {
     }
 
     #[test]
+    fn structural_provider_failure_keeps_only_a_closed_diagnostic() {
+        let failure = engine_execution_failure(&EngineError::ToolArgumentsMustBeObject(
+            "private-capability-id".into(),
+        ));
+
+        assert_eq!(failure.reason_code, "provider_protocol_failure");
+        assert_eq!(
+            failure.release,
+            json!({
+                "kind": "krw.agent/failure-diagnostic-v1",
+                "failure_kind": "provider_protocol_tool_arguments_not_object",
+                "identifier_hash": ContentHash::sha256(
+                    "provider_protocol_tool_arguments_not_object"
+                ),
+            })
+        );
+        let serialized = serde_json::to_string(&failure.release).expect("serializable release");
+        assert!(!serialized.contains("private-capability-id"));
+    }
+
+    #[test]
     fn dependency_failure_retains_hashes_but_not_dependency_content() {
         let dependency = krw_agent_run_engine::DependencyFailure::redacted(
             "private-dependency-code",

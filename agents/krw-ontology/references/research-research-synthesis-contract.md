@@ -1,7 +1,7 @@
 ---
 name: research-research-synthesis-contract
 description: "Research synthesis contract. Defines the ResearchSynthesis artifact shape for structured handoff."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when an explicit structured research handoff or export is requested instead of ordinary web-chat Markdown"
 ---
 
 # Research Synthesis Contract

@@ -1,7 +1,7 @@
 ---
 name: research-forbidden-user-facing-language
 description: "Forbidden user-facing language. Lists internal terms, limitation phrases, tool names, and diagnostic labels that must never appear in normal answers."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "before composing any normal user-facing answer to remove internal tool, failure, and implementation wording"
 ---
 
 # Forbidden User-Facing Language

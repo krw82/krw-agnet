@@ -1,7 +1,7 @@
 ---
 name: research-financial-statement-interpretation
 description: "Financial statement interpretation. Separates P&L, FCF calculation, investing cash flow, and financing cash flow layers. Prevents double-counting R&D and misclassifying M&A addbacks."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when a question involves revenue, profit, margin, cash flow, investing cash flow, financing, R&D, or M&A accounting"
 ---
 
 # Financial Statement Interpretation

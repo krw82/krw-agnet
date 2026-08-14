@@ -775,7 +775,7 @@ fn fixture_snapshot(
         resolved_model: model_id.into(),
         provider_api_version: "anthropic-messages-v1".into(),
         provider_max_context_tokens: 204_800,
-        provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+        provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
         capability_release_hashes: release_hashes,

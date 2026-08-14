@@ -22,7 +22,8 @@ use krw_agent_planning::{
 pub use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation, ScoringWeights};
 use krw_agent_protocol::ContentHash;
 use krw_ontology_adapter::{
-    ClauseCoverageProgress, ClausePlanningBinding, ResearchPlanningProjection, ResearchStateV2,
+    ClauseCoverageProgress, ClausePlanningBinding, MAX_SUPPLEMENTAL_READ_STATUSES,
+    ResearchPlanningProjection, ResearchStateV2, SupplementalReadStatus,
     derive_clause_coverage_progress, derive_research_planning_projection,
 };
 use serde::{Deserialize, Serialize};
@@ -543,6 +544,26 @@ impl ResearchPlanner {
             .into_iter()
             .take(MAX_RETRIEVAL_STATUS_WARNINGS)
             .collect();
+    }
+
+    /// Keep a bounded, typed outcome for a supplemental read. This is control
+    /// context only: it never changes goal coverage or final-answer validity.
+    pub fn record_supplemental_retrieval_status(&mut self, status: SupplementalReadStatus) {
+        let Some(projection) = self.projection.as_mut() else {
+            return;
+        };
+        if projection.retrieval_status.supplemental_reads.last() == Some(&status) {
+            return;
+        }
+        projection.retrieval_status.supplemental_reads.push(status);
+        if projection.retrieval_status.supplemental_reads.len() > MAX_SUPPLEMENTAL_READ_STATUSES {
+            let excess = projection.retrieval_status.supplemental_reads.len()
+                - MAX_SUPPLEMENTAL_READ_STATUSES;
+            projection
+                .retrieval_status
+                .supplemental_reads
+                .drain(..excess);
+        }
     }
 
     /// Remember a canonical query-context input that the server rejected.
@@ -1664,6 +1685,7 @@ fn merge_projection(
         .filter(|warning| warning.starts_with("supplemental_"))
         .cloned()
         .collect::<BTreeSet<_>>();
+    let preserved_supplemental_reads = current.retrieval_status.supplemental_reads.clone();
     current.retrieval_status = observed.retrieval_status;
     let mut warnings = current
         .retrieval_status
@@ -1677,6 +1699,17 @@ fn merge_projection(
         .into_iter()
         .take(MAX_RETRIEVAL_STATUS_WARNINGS)
         .collect();
+    let observed_supplemental_reads = current.retrieval_status.supplemental_reads.clone();
+    current.retrieval_status.supplemental_reads = preserved_supplemental_reads;
+    current
+        .retrieval_status
+        .supplemental_reads
+        .extend(observed_supplemental_reads);
+    if current.retrieval_status.supplemental_reads.len() > MAX_SUPPLEMENTAL_READ_STATUSES {
+        let excess =
+            current.retrieval_status.supplemental_reads.len() - MAX_SUPPLEMENTAL_READ_STATUSES;
+        current.retrieval_status.supplemental_reads.drain(..excess);
+    }
     Ok(())
 }
 
@@ -1938,7 +1971,8 @@ mod tests {
     use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation};
     use krw_agent_protocol::RunContextV1;
     use krw_ontology_adapter::{
-        CalculationCoverage, MissingPart, RecommendedAction, parse_research_state,
+        CalculationCoverage, MissingPart, RecommendedAction, SupplementalReadKind,
+        parse_research_state,
     };
 
     use super::*;
@@ -2434,6 +2468,30 @@ mod tests {
                 "supplemental_targeted_query_not_found".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn replanning_keeps_bounded_typed_supplemental_statuses() {
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&partial_fixture()).unwrap();
+        for offset in 0..6 {
+            planner.record_supplemental_retrieval_status(SupplementalReadStatus {
+                kind: SupplementalReadKind::Retrieved,
+                result_count: 1,
+                has_more: true,
+                next_offset: Some(offset),
+                warning_codes: vec!["supplemental_truncated".into()],
+            });
+        }
+
+        let statuses = &planner
+            .projection()
+            .unwrap()
+            .retrieval_status
+            .supplemental_reads;
+        assert_eq!(statuses.len(), MAX_SUPPLEMENTAL_READ_STATUSES);
+        assert_eq!(statuses[0].next_offset, Some(2));
+        assert_eq!(statuses[3].next_offset, Some(5));
     }
 
     #[test]

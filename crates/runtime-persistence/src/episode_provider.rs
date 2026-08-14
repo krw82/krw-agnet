@@ -127,7 +127,7 @@ mod tests {
 
     fn request() -> MessagesRequest {
         MessagesRequest {
-            model: "glm-5.2".into(),
+            model: "glm-5.3".into(),
             messages: Vec::new(),
             system: "system".into(),
             max_tokens: 1024,

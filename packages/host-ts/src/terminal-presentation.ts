@@ -48,6 +48,30 @@ export interface RetryMessage extends JsonObject {
 }
 
 const MAX_COUNTER = 0xffff_ffff;
+const OPERATOR_PROTOCOL_FAILURE_CLASS = /^provider_protocol_[a-z0-9_]{1,100}$/;
+
+/**
+ * Return a closed provider-protocol class for the authenticated operator
+ * trace only.  This is intentionally separate from the product retry copy:
+ * it neither changes the user-facing response nor forwards an arbitrary
+ * durable diagnostic.  The Rust engine owns the source allowlist; this
+ * projection accepts only its fixed provider-protocol namespace.
+ */
+export function projectOperatorProtocolFailureClass(value: JsonValue | null): string | null {
+  if (!isPlainObject(value)) return null;
+  const release = value.release;
+  if (
+    release === undefined
+    || !isPlainObject(release)
+    || release.kind !== "krw.agent/failure-diagnostic-v1"
+  ) {
+    return null;
+  }
+  const failureKind = release.failure_kind;
+  return typeof failureKind === "string" && OPERATOR_PROTOCOL_FAILURE_CLASS.test(failureKind)
+    ? failureKind
+    : null;
+}
 
 /**
  * Project kernel-recorded usage into the stable, product-facing counters.

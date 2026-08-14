@@ -1,7 +1,7 @@
 ---
 name: research-grounded-investment-inference
 description: "Grounded investment inference. Defines the estimate-plus-evidence-plus-limits pattern for partial evidence answers."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when evidence is incomplete but a useful estimate or investor implication can still be stated with explicit limits"
 ---
 
 # Grounded Investment Inference

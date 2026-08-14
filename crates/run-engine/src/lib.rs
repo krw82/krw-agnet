@@ -101,7 +101,11 @@ use krw_context_planner::{
     CompiledStateContext, ContextPlanner, ContextSegmentKind, DynamicContextSegmentRef, LoadReason,
     ProviderOutputSchemaRef,
 };
-use krw_ontology_adapter::{ExactTargetedQueryCandidate, parse_research_state};
+use krw_ontology_adapter::{
+    ExactTargetedQueryCandidate, SupplementalReadKind, SupplementalReadStatus,
+    parse_research_state, supplemental_status_for_targeted_payload,
+    supplemental_status_for_trace_payload,
+};
 use krw_policy_runtime::{
     PolicyAccumulator, PolicyAuthority, PolicyCeiling, PolicyDecision, PolicyEffect, PolicyPhase,
     VerifierTier,
@@ -591,9 +595,9 @@ fn glm_failure_code(error: &WireError) -> String {
         | WireError::EpisodeBufferLimit(_) => "glm_response_too_large".into(),
         WireError::Json(_) => "glm_response_json_invalid".into(),
         WireError::InvalidThinkingToolReplay => "glm_thinking_tool_replay_invalid".into(),
-        WireError::MissingObservedModel
-        | WireError::ModelChangedMidStream { .. }
-        | WireError::ObservedModelMismatch { .. } => "glm_model_stream_invalid".into(),
+        WireError::MissingObservedModel => "glm_model_missing".into(),
+        WireError::ModelChangedMidStream { .. } => "glm_model_changed_midstream".into(),
+        WireError::ObservedModelMismatch { .. } => "glm_model_mismatch".into(),
         WireError::InvalidEndpoint
         | WireError::InvalidAuthorization
         | WireError::UnknownModel(_)
@@ -2775,9 +2779,17 @@ where
                         .insert(call.capability.id.clone());
                 }
                 state.record_accepted_action(&call)?;
-                state
-                    .action_cache
-                    .insert(call.action_key.clone(), result.clone());
+                if capability_result_cacheable(
+                    call.capability
+                        .research_action
+                        .as_ref()
+                        .map(|policy| policy.kind),
+                    &result,
+                ) {
+                    state
+                        .action_cache
+                        .insert(call.action_key.clone(), result.clone());
+                }
                 state.complete_capability(
                     input.image,
                     &call,
@@ -3398,9 +3410,17 @@ where
                     .insert(call.capability.id.clone());
             }
             state.record_accepted_action(&call)?;
-            state
-                .action_cache
-                .insert(call.action_key.clone(), result.clone());
+            if capability_result_cacheable(
+                call.capability
+                    .research_action
+                    .as_ref()
+                    .map(|policy| policy.kind),
+                &result,
+            ) {
+                state
+                    .action_cache
+                    .insert(call.action_key.clone(), result.clone());
+            }
             state.complete_capability(
                 input.image,
                 &call,
@@ -5283,10 +5303,35 @@ impl ActiveRun {
             .ok_or(EngineError::CounterOverflow("output_tokens"))
     }
 
+    /// Preserve the answer-producing turn before cumulative prompt reuse can
+    /// consume the full run input allowance. This is intentionally a soft
+    /// *research* stop, not a new model-visible rule: after substantive
+    /// evidence exists the kernel follows the image's existing composition
+    /// edge and the composer receives the compacted, already-admitted facts.
+    ///
+    /// The budget is charged from provider-reported input usage only after a
+    /// turn completes, so this check runs at every settled boundary. Keeping
+    /// one fifth of the envelope available leaves room for the final answer
+    /// prompt without suppressing the evidence-gathering turns that came
+    /// before it.
+    fn input_budget_answer_reserve_reached(&self) -> bool {
+        const RESERVE_NUMERATOR: u64 = 4;
+        const RESERVE_DENOMINATOR: u64 = 5;
+
+        u64::from(self.usage.input_tokens) * RESERVE_DENOMINATOR
+            >= u64::from(self.limits.max_input_tokens) * RESERVE_NUMERATOR
+    }
+
     fn should_finalize_for_output_reserve(
         &self,
         image: &AgentImageManifest,
     ) -> Result<bool, EngineError> {
+        if self.input_budget_answer_reserve_reached()
+            && !self.current_operation_emits_answer(image)?
+        {
+            return Ok(true);
+        }
+
         if let Some(reserve) =
             image.effective_final_output_reserve_tokens(&self.program.workflow.id)?
         {
@@ -5722,6 +5767,7 @@ impl ActiveRun {
         image: &AgentImageManifest,
         provider_episode_hash: &ContentHash,
     ) -> Result<bool, EngineError> {
+        let input_budget_reserved = self.input_budget_answer_reserve_reached();
         if !self.should_finalize_for_output_reserve(image)?
             || !self.has_substantive_research_evidence()
         {
@@ -5743,6 +5789,7 @@ impl ActiveRun {
         let answer_contract = ContractPin::canonical(&image.body.answer_policy.internal_format)?;
         let facts = serde_json::json!({
             "output_budget_reserved": true,
+            "input_budget_reserved": input_budget_reserved,
             "admitted_evidence_available": true,
         });
         let event = self.unique_available_transition_event(
@@ -5761,7 +5808,11 @@ impl ActiveRun {
             "output reserve recovery finalization",
         )?;
         self.apply_kernel_artifact(
-            KernelArtifactReason::OutputBudgetReserved,
+            if input_budget_reserved {
+                KernelArtifactReason::InputBudgetReserved
+            } else {
+                KernelArtifactReason::OutputBudgetReserved
+            },
             &event,
             &facts,
             provider_episode_hash.clone(),
@@ -6374,8 +6425,13 @@ impl ActiveRun {
             }
             ImageResearchActionKind::Targeted | ImageResearchActionKind::Trace => {
                 next.record_completed(fingerprint)?;
-                if let Some(warning) = Self::supplemental_retrieval_warning(policy.kind, result) {
-                    next.record_supplemental_retrieval_warning(warning);
+                if let Some(status) = Self::supplemental_retrieval_status(policy.kind, result) {
+                    next.record_supplemental_retrieval_status(status.clone());
+                    if let Some(warning) =
+                        Self::supplemental_retrieval_warning_for_status(policy.kind, &status)
+                    {
+                        next.record_supplemental_retrieval_warning(warning);
+                    }
                 }
             }
         }
@@ -6387,45 +6443,71 @@ impl ActiveRun {
     /// condition. The immediate model turn retains the raw payload; this
     /// fixed, non-sensitive marker is what survives the next compaction and
     /// tells later roles that the result does not prove company non-disclosure.
+    fn supplemental_retrieval_status(
+        kind: ImageResearchActionKind,
+        result: &CapabilityResult,
+    ) -> Option<SupplementalReadStatus> {
+        let payload = &result.provider_content;
+        match kind {
+            ImageResearchActionKind::Targeted => {
+                supplemental_status_for_targeted_payload(payload).ok()
+            }
+            ImageResearchActionKind::Trace => supplemental_status_for_trace_payload(payload).ok(),
+            ImageResearchActionKind::Context => None,
+        }
+    }
+
+    #[cfg(test)]
     fn supplemental_retrieval_warning(
         kind: ImageResearchActionKind,
         result: &CapabilityResult,
     ) -> Option<&'static str> {
-        let payload = &result.provider_content;
-        let error = payload.get("error")?;
-        let code = error
-            .as_str()
-            .or_else(|| error.get("code").and_then(Value::as_str))
-            .or_else(|| error.get("status").and_then(Value::as_str))
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        Some(if code.contains("ambiguous") {
-            match kind {
-                ImageResearchActionKind::Targeted => "supplemental_targeted_query_ambiguous",
-                ImageResearchActionKind::Trace => "supplemental_trace_ambiguous",
+        let status = Self::supplemental_retrieval_status(kind, result)?;
+        Self::supplemental_retrieval_warning_for_status(kind, &status)
+    }
+
+    fn supplemental_retrieval_warning_for_status(
+        kind: ImageResearchActionKind,
+        status: &SupplementalReadStatus,
+    ) -> Option<&'static str> {
+        Some(match (kind, status.kind) {
+            (_, SupplementalReadKind::Retrieved) if status.has_more => match kind {
+                ImageResearchActionKind::Targeted => "supplemental_targeted_query_truncated",
+                ImageResearchActionKind::Trace => "supplemental_trace_truncated",
                 ImageResearchActionKind::Context => return None,
+            },
+            (ImageResearchActionKind::Targeted, SupplementalReadKind::Empty) => {
+                "supplemental_targeted_query_empty"
             }
-        } else if code.contains("invalid") || code.contains("input") || code.contains("validation")
-        {
-            match kind {
-                ImageResearchActionKind::Targeted => {
-                    "supplemental_targeted_query_input_not_accepted"
-                }
-                ImageResearchActionKind::Trace => "supplemental_trace_input_not_accepted",
-                ImageResearchActionKind::Context => return None,
+            (ImageResearchActionKind::Trace, SupplementalReadKind::Empty) => {
+                "supplemental_trace_empty"
             }
-        } else if code.contains("not_found") || code.contains("not found") {
-            match kind {
-                ImageResearchActionKind::Targeted => "supplemental_targeted_query_not_found",
-                ImageResearchActionKind::Trace => "supplemental_trace_not_found",
-                ImageResearchActionKind::Context => return None,
+            (ImageResearchActionKind::Targeted, SupplementalReadKind::Ambiguous) => {
+                "supplemental_targeted_query_ambiguous"
             }
-        } else {
-            match kind {
-                ImageResearchActionKind::Targeted => "supplemental_targeted_query_unavailable",
-                ImageResearchActionKind::Trace => "supplemental_trace_unavailable",
-                ImageResearchActionKind::Context => return None,
+            (ImageResearchActionKind::Trace, SupplementalReadKind::Ambiguous) => {
+                "supplemental_trace_ambiguous"
             }
+            (ImageResearchActionKind::Targeted, SupplementalReadKind::InputRejected) => {
+                "supplemental_targeted_query_input_not_accepted"
+            }
+            (ImageResearchActionKind::Trace, SupplementalReadKind::InputRejected) => {
+                "supplemental_trace_input_not_accepted"
+            }
+            (ImageResearchActionKind::Targeted, SupplementalReadKind::NotFound) => {
+                "supplemental_targeted_query_not_found"
+            }
+            (ImageResearchActionKind::Trace, SupplementalReadKind::NotFound) => {
+                "supplemental_trace_not_found"
+            }
+            (ImageResearchActionKind::Targeted, SupplementalReadKind::ApplicationError) => {
+                "supplemental_targeted_query_unavailable"
+            }
+            (ImageResearchActionKind::Trace, SupplementalReadKind::ApplicationError) => {
+                "supplemental_trace_unavailable"
+            }
+            (_, SupplementalReadKind::Retrieved) => return None,
+            (ImageResearchActionKind::Context, _) => return None,
         })
     }
 
@@ -7116,6 +7198,42 @@ fn is_input_correction(result: &CapabilityResult) -> bool {
 
 fn capability_result_completes_prerequisite(result: &CapabilityResult) -> bool {
     !is_input_correction(result)
+}
+
+fn capability_result_cacheable(
+    kind: Option<ImageResearchActionKind>,
+    result: &CapabilityResult,
+) -> bool {
+    let Some(kind) = kind else {
+        return true;
+    };
+    match kind {
+        ImageResearchActionKind::Context => true,
+        ImageResearchActionKind::Targeted => {
+            supplemental_status_for_targeted_payload(&result.provider_content)
+                .map(|status| {
+                    matches!(
+                        status.kind,
+                        SupplementalReadKind::Retrieved
+                            | SupplementalReadKind::Empty
+                            | SupplementalReadKind::NotFound
+                    )
+                })
+                .unwrap_or(false)
+        }
+        ImageResearchActionKind::Trace => {
+            supplemental_status_for_trace_payload(&result.provider_content)
+                .map(|status| {
+                    matches!(
+                        status.kind,
+                        SupplementalReadKind::Retrieved
+                            | SupplementalReadKind::Empty
+                            | SupplementalReadKind::NotFound
+                    )
+                })
+                .unwrap_or(false)
+        }
+    }
 }
 
 fn answer_error_code(error: &EngineError) -> &'static str {
@@ -11805,6 +11923,32 @@ pub fn durable_failure_diagnostic(error: &EngineError) -> Option<EngineFailureDi
                 identifier_hash: ContentHash::sha256(kind.as_bytes()),
             })
         }
+        // These variants are raised only after a provider episode has crossed
+        // the model boundary.  Keep their durable form closed and content-free
+        // so operations can distinguish a wire-shape drift from a generic
+        // provider protocol failure without retaining a tool name, ID, or
+        // argument value.
+        EngineError::ToolArgumentsMustBeObject(_) => {
+            let kind = "provider_protocol_tool_arguments_not_object";
+            Some(EngineFailureDiagnosticV1 {
+                kind,
+                identifier_hash: ContentHash::sha256(kind.as_bytes()),
+            })
+        }
+        EngineError::InvalidToolCallId => {
+            let kind = "provider_protocol_tool_call_id_invalid";
+            Some(EngineFailureDiagnosticV1 {
+                kind,
+                identifier_hash: ContentHash::sha256(kind.as_bytes()),
+            })
+        }
+        EngineError::TooManyToolCalls { .. } => {
+            let kind = "provider_protocol_tool_call_count_exceeded";
+            Some(EngineFailureDiagnosticV1 {
+                kind,
+                identifier_hash: ContentHash::sha256(kind.as_bytes()),
+            })
+        }
         EngineError::ProviderConstrainedOutputViolation(reason) => {
             let kind = "provider_constrained_output_violation";
             Some(EngineFailureDiagnosticV1 {
@@ -12388,6 +12532,53 @@ mod tests {
             ActiveRun::supplemental_retrieval_warning(ImageResearchActionKind::Trace, &result),
             Some("supplemental_trace_not_found"),
         );
+
+        let truncated = CapabilityResult {
+            provider_content: serde_json::json!({
+                "results": [{"id": "claim:AAPL:1"}],
+                "pagination": {"has_more": true, "next_offset": 20}
+            }),
+            evidence: Vec::new(),
+            answerability: None,
+            calculations: Vec::new(),
+        };
+        assert_eq!(
+            ActiveRun::supplemental_retrieval_warning(
+                ImageResearchActionKind::Targeted,
+                &truncated
+            ),
+            Some("supplemental_targeted_query_truncated"),
+        );
+
+        let unknown_error = CapabilityResult {
+            provider_content: serde_json::json!({
+                "error": {"code": "upstream_index_unavailable"}
+            }),
+            evidence: Vec::new(),
+            answerability: None,
+            calculations: Vec::new(),
+        };
+        assert_eq!(
+            ActiveRun::supplemental_retrieval_warning(
+                ImageResearchActionKind::Targeted,
+                &unknown_error
+            ),
+            Some("supplemental_targeted_query_unavailable"),
+        );
+        assert!(!capability_result_cacheable(
+            Some(ImageResearchActionKind::Targeted),
+            &unknown_error
+        ));
+        let not_found = CapabilityResult {
+            provider_content: serde_json::json!({"error": "not_found"}),
+            evidence: Vec::new(),
+            answerability: None,
+            calculations: Vec::new(),
+        };
+        assert!(capability_result_cacheable(
+            Some(ImageResearchActionKind::Targeted),
+            &not_found
+        ));
     }
 
     #[test]
@@ -12543,6 +12734,38 @@ mod tests {
             diagnostic.identifier_hash,
             ContentHash::sha256("provider_protocol_dynamic_frontier")
         );
+    }
+
+    #[test]
+    fn durable_provider_protocol_diagnostics_cover_structural_tool_failures() {
+        let cases = [
+            (
+                EngineError::ToolArgumentsMustBeObject("ontology.query".into()),
+                "provider_protocol_tool_arguments_not_object",
+            ),
+            (
+                EngineError::InvalidToolCallId,
+                "provider_protocol_tool_call_id_invalid",
+            ),
+            (
+                EngineError::TooManyToolCalls {
+                    observed: 4,
+                    limit: 3,
+                },
+                "provider_protocol_tool_call_count_exceeded",
+            ),
+        ];
+
+        for (error, expected_kind) in cases {
+            let diagnostic = durable_failure_diagnostic(&error)
+                .expect("closed structural provider diagnostic");
+            assert_eq!(diagnostic.kind, expected_kind);
+            assert_eq!(
+                diagnostic.identifier_hash,
+                ContentHash::sha256(expected_kind),
+                "diagnostic must not retain the provider tool name or call count"
+            );
+        }
     }
 
     #[test]
@@ -13945,7 +14168,7 @@ mod tests {
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
             provider_max_context_tokens: 204_800,
-            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::High),
             capability_release_hashes: BTreeMap::from([
@@ -14014,7 +14237,7 @@ mod tests {
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
             provider_max_context_tokens: 204_800,
-            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
             thinking: ThinkingMode::Disabled,
             reasoning_effort: None,
             capability_release_hashes: BTreeMap::new(),
@@ -14084,7 +14307,7 @@ mod tests {
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
             provider_max_context_tokens: 204_800,
-            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
             thinking,
             reasoning_effort: (thinking == ThinkingMode::Enabled)
                 .then_some(krw_agent_protocol::ReasoningEffort::High),
@@ -14307,7 +14530,7 @@ mod tests {
             resolved_model: request.requested_model.clone(),
             provider_api_version: "anthropic-messages-v1".into(),
             provider_max_context_tokens: 204_800,
-            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
             thinking: ThinkingMode::Enabled,
             reasoning_effort: Some(krw_agent_protocol::ReasoningEffort::Max),
             capability_release_hashes: release_hashes,
@@ -16921,7 +17144,7 @@ mod tests {
 
     #[test]
     fn semantic_decision_and_glm_wire_encoding_are_separate() {
-        let capabilities = ProviderWireCapabilities::glm_5_2();
+        let capabilities = ProviderWireCapabilities::glm_5_3();
 
         let thinking_capability = encode_provider_output_channel(
             ModelOutputMode::CapabilityCall,
@@ -17046,7 +17269,80 @@ mod tests {
         assert!(
             state
                 .should_finalize_for_output_reserve(&fixture.image.manifest)
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn input_budget_reserve_moves_research_to_composition_before_the_hard_cap() {
+        let mut fixture = fixture();
+        fixture.request.budget.max_input_tokens = 220_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.enter_initial_model_state().unwrap();
+
+        // Below 80%, the ordinary research path remains available.
+        state.usage.input_tokens = 175_999;
+        assert!(
+            !state
+                .should_finalize_for_output_reserve(&fixture.image.manifest)
                 .unwrap()
+        );
+
+        // At 80% of the cumulative input envelope, leave the remaining fifth
+        // for the compacted composer prompt rather than dispatching another
+        // evidence turn.
+        state.usage.input_tokens = 176_000;
+        assert!(
+            state
+                .should_finalize_for_output_reserve(&fixture.image.manifest)
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn input_budget_reserve_composes_from_admitted_evidence_without_another_research_turn() {
+        let mut fixture = fixture();
+        fixture.request.budget.max_input_tokens = 220_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let usage = |prompt_tokens| TokenUsage {
+            prompt_tokens,
+            completion_tokens: 5,
+            total_tokens: prompt_tokens.saturating_add(5),
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: prompt_tokens,
+        };
+        let rig = engine_with_script_results_and_usage(
+            VecDeque::from([
+                company_context_tool_call("company-context"),
+                query_context_tool_call("context", &fixture_research_state()["plan"]),
+                final_answer_message(),
+            ]),
+            VecDeque::from([usage(100), usage(175_900), usage(100)]),
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+        );
+
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(rig.provider.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.answer_bundle.usage.input_tokens, 176_100);
+        let requests = rig.provider.requests.lock().unwrap();
+        assert!(
+            requests[2].tools.is_empty(),
+            "the 80% input reserve must spend the next turn on composition, not another research action"
         );
     }
 
@@ -18055,5 +18351,23 @@ mod tests {
         // Failure codes must use the glm_ prefix instead of deepseek_.
         assert!(glm_failure_code(&WireError::MissingMessageStop).starts_with("glm_"));
         assert!(deepseek_failure_code(&WireError::MissingMessageStop).starts_with("deepseek_"));
+        assert_eq!(
+            glm_failure_code(&WireError::MissingObservedModel),
+            "glm_model_missing"
+        );
+        assert_eq!(
+            glm_failure_code(&WireError::ModelChangedMidStream {
+                first: "glm-5.3".into(),
+                later: "other-model".into(),
+            }),
+            "glm_model_changed_midstream"
+        );
+        assert_eq!(
+            glm_failure_code(&WireError::ObservedModelMismatch {
+                requested: "glm-5.3".into(),
+                observed: "other-model".into(),
+            }),
+            "glm_model_mismatch"
+        );
     }
 }

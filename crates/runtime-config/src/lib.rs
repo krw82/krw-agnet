@@ -32,7 +32,7 @@ pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 4;
 const TLS_PROFILE_SYSTEM_ROOTS_V1: &str = "system-roots-v1";
 const TLS_PROFILE_SYSTEM_PLUS_PINNED_CA_V1: &str = "system-plus-pinned-ca-v1";
 
-// Pinned GLM-5.2 deployment facts. These mirror the DeepSeek constants baked
+// Pinned GLM-5.3 deployment facts. These mirror the DeepSeek constants baked
 // into `validate_model` and keep the GLM branch free of magic numbers. Both
 // providers speak the Anthropic Messages API: GLM via z.ai's `/api/anthropic`
 // facade and DeepSeek via `api.deepseek.com/anthropic`.
@@ -456,7 +456,7 @@ fn prepare_globals(
     // Pre-multi-provider this was a strict equality check against the single
     // DeepSeek model; relaxing it to a subset keeps single-model deployments
     // behaving identically while permitting additional provider models
-    // (e.g. GLM-5.2) to coexist in one release set.
+    // (e.g. GLM-5.3) to coexist in one release set.
     if !model_ids.iter().all(|id| ALLOWED_MODEL_IDS.contains(id)) {
         return Err(ConfigError::ModelInventoryMismatch);
     }
@@ -959,7 +959,7 @@ impl ResolvedRuntime {
     }
 
     /// Startup-owned GLM API key. Empty when the model registry does not
-    /// advertise GLM-5.2; callers should branch on emptiness before use.
+    /// advertise GLM-5.3; callers should branch on emptiness before use.
     pub fn glm_api_key(&self) -> &str {
         self.glm_api_key.as_str()
     }
@@ -1214,7 +1214,7 @@ fn validate_deepseek_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
 }
 
 fn validate_glm_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
-    // Same shape as the DeepSeek branch, but with the GLM-5.2 wire contract.
+    // Same shape as the DeepSeek branch, but with the GLM-5.3 wire contract.
     // `max_in_flight` uses the same 1..=2_500 bound so the GLM codec never has
     // to reason about a different concurrency envelope than DeepSeek.
     if model.api_base != GLM_API_BASE
@@ -1223,7 +1223,7 @@ fn validate_glm_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
         || model.max_output_tokens != GLM_MAX_OUTPUT_TOKENS
         || !(1..=2_500).contains(&model.max_in_flight)
         || !model.provider_wire_capabilities.is_well_formed()
-        || model.provider_wire_capabilities != ProviderWireCapabilities::glm_5_2()
+        || model.provider_wire_capabilities != ProviderWireCapabilities::glm_5_3()
         || model.model_id != GLM_MODEL_ID
     {
         return Err(ConfigError::InvalidGlmModel(model.model_id.clone()));
@@ -1887,7 +1887,7 @@ mod tests {
         ));
     }
 
-    /// GLM-5.2 model and profile validation is the per-provider mirror of the
+    /// GLM-5.3 model and profile validation is the per-provider mirror of the
     /// `DeepSeek` branch. This test exercises `validate_model` and
     /// `validate_model_profile` directly, including the exact published GLM
     /// context and output limits.
@@ -1900,7 +1900,7 @@ mod tests {
             max_context_tokens: GLM_MAX_CONTEXT_TOKENS,
             max_output_tokens: GLM_MAX_OUTPUT_TOKENS,
             max_in_flight: 64,
-            provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+            provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
         };
         validate_model(&glm_model).expect("well-formed GLM model validates");
 

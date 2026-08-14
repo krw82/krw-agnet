@@ -1,7 +1,7 @@
 ---
 name: research-query-context-contract
 description: "Query context contract. SearchPlan specification and ResearchState v2 field interpretation guide."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when authoring or interpreting the first ontology query_context SearchPlan and its ResearchState response"
 ---
 
 # Query Context Contract

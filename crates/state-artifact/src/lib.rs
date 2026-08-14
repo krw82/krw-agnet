@@ -123,6 +123,11 @@ pub enum KernelArtifactReason {
     /// after evidence had already been admitted. The kernel may only use this
     /// bounded fact to take an image-declared composition edge.
     OutputBudgetReserved,
+    /// The cumulative provider-input budget reached the kernel's answer
+    /// reserve threshold after evidence had already been admitted. The
+    /// workflow uses its existing image-declared composition edge rather than
+    /// spending the remaining budget on another research turn.
+    InputBudgetReserved,
 }
 
 /// The trusted producer of a state artifact.
@@ -471,7 +476,8 @@ impl StateOperation {
                 ArtifactProducer::Kernel {
                     reason:
                         KernelArtifactReason::RejectedModelCapabilityProposal
-                        | KernelArtifactReason::OutputBudgetReserved,
+                        | KernelArtifactReason::OutputBudgetReserved
+                        | KernelArtifactReason::InputBudgetReserved,
                     ..
                 },
             ) => true,

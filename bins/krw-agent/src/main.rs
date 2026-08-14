@@ -65,12 +65,12 @@ enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
-    /// Read-only, fixed-prompt GLM-5.2 provider readiness check.
+    /// Read-only, fixed-prompt GLM-5.3 provider readiness check.
     Provider {
         #[command(subcommand)]
         command: ProviderCommand,
     },
-    /// Fixture-backed research-quality acceptance tests using GLM-5.2.
+    /// Fixture-backed research-quality acceptance tests using GLM-5.3.
     Quality {
         #[command(subcommand)]
         command: QualityCommand,

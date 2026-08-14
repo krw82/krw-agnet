@@ -105,7 +105,7 @@ fn descriptor() -> PublicReleaseDescriptor {
                 resolved_model: GLM_MODEL_ID.into(),
                 provider_api_version: "anthropic-messages-v1".into(),
                 provider_max_context_tokens: 204_800,
-                provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+                provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
                 thinking: ThinkingMode::Disabled,
                 reasoning_effort: None,
                 capability_release_hashes: BTreeMap::new(),

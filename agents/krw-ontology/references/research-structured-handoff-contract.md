@@ -1,7 +1,7 @@
 ---
 name: research-structured-handoff-contract
 description: "Structured handoff contract. Defines the optional frontend handoff artifact boundary."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when the runtime explicitly requests a structured handoff, export, audit payload, or display artifact"
 ---
 
 # Optional Structured Handoff Contract

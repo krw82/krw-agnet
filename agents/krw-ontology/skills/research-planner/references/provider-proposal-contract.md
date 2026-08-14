@@ -1,7 +1,7 @@
 ---
 name: provider_proposal_contract
 description: "Use before the planner role authors a ResearchProposal v4. Defines the exact provider call shape and common invalid shapes."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when authoring the planner's provider-facing ResearchProposal v4 call envelope"
 ---
 
 # Provider proposal contract

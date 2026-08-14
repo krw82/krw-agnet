@@ -1,6 +1,6 @@
 ---
 name: research_planner_skill
-description: "Procedure for turning a user question into a minimal evidence request (ResearchProposal v4). Covers metric identifiers, goal types, required/deferred separation, and recovery."
+description: "Procedure for turning a user question into a compact, investor-useful evidence request (ResearchProposal v4). Covers metric identifiers, goal types, direct-answer and insight objectives, required/deferred separation, and recovery."
 when_to_use: "when the advertised role is planner or a corrected research decision is needed"
 ---
 
@@ -21,9 +21,21 @@ details.
 2. **Numbers and explanations are separate objectives.** Never mix a metric
 goal and a qualitative goal in the same objective.
 
-3. **Minimum objectives.** Include only what is needed to answer the question.
-Mark only answer-critical objectives as `required`; mark useful expansion
-as `deferred`.
+3. **Direct answer plus one decision-relevant insight.** First preserve every
+fact, number, period, comparison, or explanation the user directly asked for.
+Then include at most one closely connected insight objective when it can show
+why that answer matters to an investor: the relevant business driver, exposure,
+counter-signal, or condition that would change the reading. This is not a
+generic company review, a valuation detour, a peer comparison, or a market
+prediction. It must use the same company and the same decision question. Mark
+direct-answer objectives as `required`. Mark the insight objective as
+`required` when it is necessary to give a useful investor reading and as
+`deferred` only when it is genuinely optional.
+
+For an exact single-number question, do not append a broad company profile.
+Choose at most one context objective tied to that number (for example, the
+reported driver of the change or the most material counter-signal). For a
+company-introduction question, use the dedicated overview procedure below.
 
 4. **When rewriting a rejected proposal**, do not change the goal definition
 (metric + kind + dimensions) of an existing objective. If you must change
@@ -119,6 +131,68 @@ answer distinguish a large/current exposure from a merely hypothetical risk.
     `지역별` or `제품별` is not such a list: use one grouped objective with the
     relevant filing phrase (for example, `net sales by reportable segment`)
     unless the user supplied the individual names.
+
+## Company overview procedure
+
+Treat short open questions such as `어떤 기업이야?`, `무슨 회사야?`, `이 회사
+뭐 하는 곳이야?`, `투자 포인트는?`, or `회사 개요를 알려줘` as an
+**investor company overview**, not as a request for a one-line industry label.
+Use an intent ending in `_company_overview` and create a compact, company-specific
+plan with **three required objectives**:
+
+1. **Business and revenue model.** Retrieve the actual operating segments,
+   products, customers, or services that explain what the company sells and
+   how it earns money. Use wording from the company ontology orientation map,
+   not a generic industry label.
+2. **Current operating signal.** Retrieve one current, reportable signal that
+   helps distinguish a static description from the company as it is now. Prefer
+   a comparable revenue or operating-profit observation when the issuer has it;
+   otherwise use a company-specific reported operating development. Do not
+   invent a period or require a number that is not present.
+3. **Investment transmission or counter-signal.** Retrieve one company-specific
+   demand driver, exposure, business-cycle link, or risk mechanism that explains
+   what could improve or weaken the operating signal. Use a filing phrase from
+   the orientation map or from the company vocabulary; do not add a generic
+   macro narrative.
+
+These are a bounded first-pass plan, not a full initiation report. Do not add
+valuation, target price, peer comparison, or every possible risk unless the
+user asks. If one overview objective remains unavailable, keep the useful
+supported answer and identify the concrete item an investor should watch; do
+not turn the absence into a workflow failure.
+
+## Concept explanations and short follow-ups
+
+Treat questions such as `X가 뭐야?`, `쉽게 말하면 뭐야?`, `왜 필요한가?`,
+`왜 중요한가?`, `그게 뭐야?`, and `그게 왜 필요해?` as a **concept
+explanation**, not as a failed or underspecified research request. Resolve the
+term in this order:
+
+1. an explicitly named term in the current question;
+2. one clearly identified concept in the most recent user/assistant research
+   context; then
+3. the trusted company's orientation map and admitted evidence.
+
+If the term is a stable general concept (for example, a mine, turbine,
+backlog, or working capital), the final answer may give a plain-language
+general definition. Do not create a filing query merely to prove a dictionary
+definition. When the concept is relevant to the trusted company, create one
+compact qualitative objective only for the **company-specific connection**:
+what the company sells, uses, faces, or reports in relation to that concept.
+Use the company map's vocabulary and do not invent a company relationship.
+
+For `why is it needed?`, plan for the function or economic role of the concept,
+then the company-specific transmission to demand, cost, capacity, risk, or
+cash generation where admitted evidence supports it. Do not turn a general
+explanation into an unsupported claim about current commodity prices, policy,
+market size, or a company event.
+
+When a short follow-up has one clear antecedent, preserve it in the intent and
+plan rather than asking the user to repeat it. When two or more antecedents
+remain genuinely plausible, do not guess or fail the run: make the answer's
+first sentence a compact conditional clarification (for example, `직전의
+광산 장비를 말한 것이라면…`) and explain the most likely company-relevant
+meaning. Do not spend a new broad company review on resolving one pronoun.
 
 ## ResearchProposal v4 structure
 

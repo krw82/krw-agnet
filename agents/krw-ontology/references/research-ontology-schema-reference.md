@@ -1,7 +1,7 @@
 ---
 name: research-ontology-schema-reference
 description: "Ontology schema reference. Detailed object, metric, event, and evidence type specifications."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when a proposal or follow-up needs exact object, metric, claim, event, or evidence fields"
 ---
 
 # Ontology Schema Reference

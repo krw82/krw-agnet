@@ -59,7 +59,7 @@ const release = await loadPinnedReleaseArtifact({
 The loader rejects symlinks, non-regular or group/world-writable files,
 non-canonical JSON, secrets/endpoints, artifact drift, duplicate routes,
 protocol/profile mismatches, and anything except the exact physical model
-`glm-5.2` or `deepseek-v4-flash`. Rotate the descriptor by replacing the deployment artifact
+`glm-5.3` or `deepseek-v4-flash`. Rotate the descriptor by replacing the deployment artifact
 and restarting the host; never reread it per request.
 
 Protocol compatibility is fail-closed:
@@ -71,7 +71,7 @@ Protocol compatibility is fail-closed:
 | Immutable claim | `7` |
 | Release descriptor | `3` |
 | Session-memory carrier | `3` only |
-| Provider model | `glm-5.2` or `deepseek-v4-flash` |
+| Provider model | `glm-5.3` or `deepseek-v4-flash` |
 | Provider API | `anthropic-messages-v1` |
 | Profiles | `glm_high`, `glm_max`, `glm_direct` |
 

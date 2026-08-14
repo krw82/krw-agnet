@@ -47,14 +47,15 @@ class TerminalActionTraceTest(unittest.TestCase):
         }
 
     def test_accepts_only_safe_action_metadata_and_marks_chain(self) -> None:
-        actions = quality.validate_terminal_trace(
+        actions, failure_class = quality.validate_terminal_trace(
             self.trace(), self.session_id, self.run_id, "final"
         )
-        trace = quality.action_trace_block(actions)
+        trace = quality.action_trace_block(actions, failure_class=failure_class)
         self.assertEqual(trace["status"], "available")
         self.assertEqual(trace["action_count"], 2)
         self.assertTrue(trace["chain_capability_called"])
         self.assertEqual(trace["private_reasoning"], "not_collected")
+        self.assertIsNone(trace["failure_class"])
         self.assertNotIn("arguments", trace)
         self.assertNotIn("result", trace)
 
@@ -72,6 +73,23 @@ class TerminalActionTraceTest(unittest.TestCase):
         wrong_state["state"] = "cancelled"
         with self.assertRaisesRegex(quality.GatewayProblem, "terminal_trace_identity_invalid"):
             quality.validate_terminal_trace(wrong_state, self.session_id, self.run_id, "final")
+
+    def test_accepts_only_closed_provider_protocol_failure_classes(self) -> None:
+        failed_trace = self.trace()
+        failed_trace["state"] = "failed"
+        failed_trace["failure_class"] = "provider_protocol_tool_arguments_not_object"
+        actions, failure_class = quality.validate_terminal_trace(
+            failed_trace, self.session_id, self.run_id, "failed"
+        )
+        trace = quality.action_trace_block(actions, failure_class=failure_class)
+        self.assertEqual(trace["failure_class"], "provider_protocol_tool_arguments_not_object")
+
+        invalid = self.trace()
+        invalid["failure_class"] = "tool_arguments_private_capability_id"
+        with self.assertRaisesRegex(
+            quality.GatewayProblem, "terminal_trace_failure_class_invalid"
+        ):
+            quality.validate_terminal_trace(invalid, self.session_id, self.run_id, "final")
 
     def test_terminal_status_carries_credit_usage_or_markdown_retry_guidance(self) -> None:
         final = {

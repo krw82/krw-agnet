@@ -80,8 +80,8 @@ function descriptor(contextKind: "existing_answer" | "question_only" = "existing
           model_registry_hash: hash("3"),
           budget_registry_hash: hash("4"),
           model_profile: "glm_direct",
-          requested_model: "glm-5.2",
-          resolved_model: "glm-5.2",
+          requested_model: "glm-5.3",
+          resolved_model: "glm-5.3",
           provider_api_version: "anthropic-messages-v1",
           provider_max_context_tokens: 204_800,
           provider_wire_capabilities: {
@@ -246,7 +246,7 @@ test("safe enqueue materializes existing answer and leaves memory to the fenced 
   assert.equal(prepared.agent_request.immutable_snapshot.request.session_memory, null);
   assert.equal(prepared.agent_request.immutable_snapshot.schema_version, 7);
   assert.equal(prepared.agent_request.immutable_snapshot.execution.protocol_version, 7);
-  assert.equal(prepared.agent_request.immutable_snapshot.execution.requested_model, "glm-5.2");
+  assert.equal(prepared.agent_request.immutable_snapshot.execution.requested_model, "glm-5.3");
   assert.equal(Object.isFrozen(prepared), true);
   assert.equal(Object.isFrozen(prepared.agent_request), true);
   validatePreparedEnqueueRun(prepared);
@@ -421,7 +421,7 @@ test("release artifact loader pins canonical bytes, descriptor hash, and Flash-o
       expectedArtifactHash: canonicalHash(value),
       expectedReleaseSetHash: value.release_set_hash,
     });
-    assert.equal(loaded.descriptor.entries[0]?.execution.requested_model, "glm-5.2");
+    assert.equal(loaded.descriptor.entries[0]?.execution.requested_model, "glm-5.3");
     assert.equal(Object.isFrozen(loaded.descriptor), true);
 
     await assert.rejects(
@@ -514,7 +514,7 @@ test("projection consumers receive DB fence, stable idempotency key, safe SSE, a
   assert.equal(committedCommand.sse.event_type, "done");
   assert.equal(Object.hasOwn(committedCommand.sse.data, "canonical_source"), false);
   const billingCommand = applied[1] as AnswerBillingProjectionV1;
-  assert.equal(billingCommand.model_id, "glm-5.2");
+  assert.equal(billingCommand.model_id, "glm-5.3");
   assert.equal(Object.hasOwn(billingCommand.billing, "cost"), false);
   assert.equal(Object.hasOwn(billingCommand.billing, "settlement"), false);
 });

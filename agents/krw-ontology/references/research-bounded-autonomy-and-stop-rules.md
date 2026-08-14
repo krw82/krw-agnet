@@ -1,7 +1,7 @@
 ---
 name: research-bounded-autonomy-and-stop-rules
 description: "Bounded autonomy and stop rules. Prevents looping, enforces evidence sufficiency before answering, and defines overflow recovery."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when evidence is partial, a continuation may help, or the run needs a bounded stop decision"
 ---
 
 # Bounded Autonomy and Stop Rules

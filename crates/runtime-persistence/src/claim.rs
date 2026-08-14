@@ -445,7 +445,7 @@ mod tests {
         let validated = validate_claim(&receipt, &image, &runtime, "runtime-test").unwrap();
         assert_eq!(validated.request().run_id, request.run_id);
         assert_eq!(validated.snapshot().fencing_token, 7);
-        assert_eq!(validated.snapshot().resolved_model, "glm-5.2");
+        assert_eq!(validated.snapshot().resolved_model, "glm-5.3");
         assert!(!format!("{validated:?}").contains(&request.question));
     }
 

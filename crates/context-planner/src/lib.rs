@@ -617,10 +617,12 @@ fn compile_state_context(
     // extra tool. Roles retain their primary skills as static context, while
     // the catalog lets them add one or more distinct relevant skills during
     // the same run.
-    let include_skill_load = role
-        .prompt_segments
-        .iter()
-        .any(|segment_id| segment_id == "skill_catalog");
+    // Catalog IDs are image-authored role boundaries. Keep the legacy
+    // `skill_catalog` name working while allowing each planner/analyst role
+    // to receive only its own reference catalog.
+    let include_skill_load = role.prompt_segments.iter().any(|segment_id| {
+        segment_id == "skill_catalog" || segment_id.ends_with("_skill_catalog")
+    });
     let (tool_definitions, capability_schemas) =
         build_frontier_tools(image, &frontier, include_skill_load)?;
     let provider_output_schema = match &state.operation {
@@ -936,7 +938,7 @@ mod tests {
             run_kind: "company_research".into(),
             locale: "ko-KR".into(),
             question: "회사를 분석해줘".into(),
-            requested_model: "glm-5.2".into(),
+            requested_model: "glm-5.3".into(),
             model_profile: "glm_high".into(),
             budget: BudgetLimits {
                 max_provider_turns: 8,
@@ -1009,7 +1011,6 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "ontology.query_context",
-                "ontology.company_context",
                 "market.snapshot",
                 "ontology.query",
                 "ontology.trace",
@@ -1018,11 +1019,13 @@ mod tests {
             ])
         );
 
-        // Composer keeps its primary writing skills in role context and can
-        // add a distinct relevant skill when its `use when` hint applies.
+        // Composer has no capability frontier and therefore receives its
+        // writing references statically; it never needs a skill-load detour.
         let compose = planner.for_request(&request, "compose_ir").unwrap();
-        assert_eq!(compose.capability_schemas.len(), 1);
-        assert_eq!(compose.capability_schemas[0].capability_id, "skill.load");
+        assert!(compose
+            .capability_schemas
+            .iter()
+            .all(|schema| schema.capability_id != "skill.load"));
     }
 
     #[test]
@@ -1068,7 +1071,7 @@ mod tests {
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
         assert!(loaded.contains("security_boundary"));
-        assert!(loaded.contains("skill_catalog"));
+        assert!(loaded.contains("planner_skill_catalog"));
         assert!(loaded.contains("research_planner_skill"));
         // The planner skill owns the proposal contract, examples, and repair
         // procedure. Do not duplicate those bodies in every planning turn.
@@ -1084,6 +1087,16 @@ mod tests {
                 .iter()
                 .any(|segment| segment.segment_id == "scenario_analysis")
         );
+
+        let assess = planner.for_request(&request, "assess_obligations").unwrap();
+        let analyst = assess
+            .static_segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(analyst.contains("company_skill_catalog"));
+        assert!(analyst.contains("evidence_analyst"));
+        assert!(analyst.contains("research_analysis"));
     }
 
     #[test]
@@ -1097,7 +1110,7 @@ mod tests {
             .iter()
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
-        assert!(planner_segments.contains("skill_catalog"));
+        assert!(planner_segments.contains("planner_skill_catalog"));
         assert!(planner_segments.contains("research_planner_skill"));
         assert!(!planner_segments.contains("earnings_analysis"));
 
@@ -1109,9 +1122,10 @@ mod tests {
             .iter()
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
-        assert!(analyst_segments.contains("skill_catalog"));
+        assert!(analyst_segments.contains("earnings_skill_catalog"));
         assert!(analyst_segments.contains("evidence_analyst"));
         assert!(analyst_segments.contains("earnings_analysis"));
+        assert!(!analyst_segments.contains("research_analysis"));
         assert!(!analyst_segments.contains("thesis_change_policy"));
 
         let compose = planner.for_request(&request, "compose_ir").unwrap();
@@ -1121,7 +1135,7 @@ mod tests {
             .map(|segment| segment.segment_id.as_str())
             .collect::<BTreeSet<_>>();
         assert!(composer_segments.contains("earnings_output_contract"));
-        assert!(composer_segments.contains("skill_catalog"));
+        assert!(!composer_segments.contains("skill_catalog"));
         assert!(!composer_segments.contains("scenario_output_contract"));
     }
 

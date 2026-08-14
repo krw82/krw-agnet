@@ -16,7 +16,7 @@ pub const PROTOCOL_VERSION: u16 = 7;
 pub const CLAIM_PAYLOAD_SCHEMA_VERSION: u16 = 7;
 pub const PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION: u16 = 3;
 pub const DEEPSEEK_MODEL_ID: &str = "deepseek-v4-flash";
-pub const GLM_MODEL_ID: &str = "glm-5.2";
+pub const GLM_MODEL_ID: &str = "glm-5.3";
 /// Closed set of model ids the protocol admits. Adding a new provider means
 /// extending this slice, never bypassing it: every resolved profile must be
 /// backed by one of these exact ids so that downstream codecs can dispatch on
@@ -25,7 +25,7 @@ pub const ALLOWED_MODEL_IDS: &[&str] = &[DEEPSEEK_MODEL_ID, GLM_MODEL_ID];
 pub const FLASH_HIGH_PROFILE_ID: &str = "flash_high";
 pub const FLASH_MAX_PROFILE_ID: &str = "flash_max";
 pub const FLASH_DIRECT_PROFILE_ID: &str = "flash_direct";
-/// GLM-5.2 execution profile ids — the GLM mirror of the `flash_*` set.
+/// GLM-5.3 execution profile ids — the GLM mirror of the `flash_*` set.
 pub const GLM_HIGH_PROFILE_ID: &str = "glm_high";
 pub const GLM_MAX_PROFILE_ID: &str = "glm_max";
 pub const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
@@ -356,7 +356,7 @@ pub struct ProviderWireCapabilities {
     pub requires_thinking_block_replay: bool,
     /// OpenAI-vocab legacy flag retained for run-engine `AssistantMessage`
     /// reconstruction compatibility: the provider may emit assistant content
-    /// alongside tool calls (`DeepSeek` V4 does, GLM-5.2 does not).
+    /// alongside tool calls (`DeepSeek` V4 does, GLM-5.3 does not).
     pub requires_assistant_content_for_tool_calls: bool,
 }
 
@@ -394,17 +394,17 @@ impl ProviderWireCapabilities {
         }
     }
 
-    /// GLM-5.2 wire facts. Like `DeepSeek` V4 Flash it carries reasoning content
+    /// GLM-5.3 wire facts. Like `DeepSeek` V4 Flash it carries reasoning content
     /// on the thinking channel, but unlike `DeepSeek` its tool-channel accepts
     /// `tool_choice` in both thinking and non-thinking modes and keeps the
     /// same JSON-object support. Used for validation and deterministic test
     /// fixtures only; YAML must still carry the full matrix.
-    pub const fn glm_5_2() -> Self {
+    pub const fn glm_5_3() -> Self {
         Self {
             thinking: ProviderWireModeCapabilities {
                 supported: true,
                 supports_tools: true,
-                // GLM-5.2 accepts tool_choice=required in both modes, and
+                // GLM-5.3 accepts tool_choice=required in both modes, and
                 // emitting it improves tool-call reliability for capability
                 // states (the model is less likely to skip a required tool).
                 supports_tool_choice: true,
@@ -420,7 +420,7 @@ impl ProviderWireCapabilities {
                 supports_json_schema_output: false,
                 supports_strict_tool_input: false,
             },
-            // GLM-5.2 may omit the thinking block on tool-only turns even when
+            // GLM-5.3 may omit the thinking block on tool-only turns even when
             // thinking is enabled. The run engine still injects a bounded
             // wire-only replay placeholder before a later request, but the
             // provider episode itself must not be rejected for this omission.
@@ -1295,13 +1295,13 @@ mod tests {
                     provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
                 },
                 ModelDescriptor {
-                    model_id: "glm-5.2".into(),
+                    model_id: "glm-5.3".into(),
                     api_base: "https://api.z.ai/api/anthropic".into(),
                     api_version: "anthropic-messages-v1".into(),
                     max_context_tokens: 128_000,
                     max_output_tokens: 16_384,
                     max_in_flight: 32,
-                    provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
+                    provider_wire_capabilities: ProviderWireCapabilities::glm_5_3(),
                 },
             ],
             profiles: vec![
@@ -1313,7 +1313,7 @@ mod tests {
                 },
                 ModelExecutionProfile {
                     profile_id: "glm_high".into(),
-                    model_id: "glm-5.2".into(),
+                    model_id: "glm-5.3".into(),
                     thinking: ThinkingMode::Enabled,
                     reasoning_effort: Some(ReasoningEffort::High),
                 },
@@ -1327,10 +1327,10 @@ mod tests {
         assert_eq!(deepseek_model.model_id, "deepseek-v4-flash");
 
         let (glm_profile, glm_model) = registry
-            .resolve_profile_exact("glm_high", "glm-5.2")
-            .expect("glm-5.2 resolves under the generalized allow-list");
-        assert_eq!(glm_profile.model_id, "glm-5.2");
-        assert_eq!(glm_model.model_id, "glm-5.2");
+            .resolve_profile_exact("glm_high", "glm-5.3")
+            .expect("glm-5.3 resolves under the generalized allow-list");
+        assert_eq!(glm_profile.model_id, "glm-5.3");
+        assert_eq!(glm_model.model_id, "glm-5.3");
         assert!(
             !glm_model
                 .provider_wire_capabilities
@@ -1340,7 +1340,7 @@ mod tests {
         // A profile that requests GLM through a deepseek-only profile id must
         // still surface the model mismatch rather than silently substituting.
         assert!(matches!(
-            registry.resolve_profile_exact("flash_high", "glm-5.2"),
+            registry.resolve_profile_exact("flash_high", "glm-5.3"),
             Err(ContractError::ModelMismatch { .. })
         ));
     }

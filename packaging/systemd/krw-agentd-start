@@ -16,7 +16,7 @@ case "${1:-}" in
 esac
 [[ "$#" -eq 0 ]] || { echo 'krw-agentd: wrapper accepts at most one check argument' >&2; exit 2; }
 case "$krw_provider" in
-  glm) krw_model='glm-5.2'; krw_key=${GLM_API_KEY:-} ;;
+  glm) krw_model='glm-5.3'; krw_key=${GLM_API_KEY:-} ;;
   deepseek) krw_model='deepseek-v4-flash'; krw_key=${DEEPSEEK_API_KEY:-} ;;
   *) echo 'krw-agentd: invalid KRW_AGENT_PROVIDER' >&2; exit 2 ;;
 esac

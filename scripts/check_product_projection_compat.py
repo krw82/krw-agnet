@@ -74,7 +74,7 @@ def main() -> int:
             "provider_models_allowed",
             all(
                 model in sql
-                for model in ("glm-5.2", "deepseek-v4-flash")
+                for model in ("glm-5.3", "deepseek-v4-flash")
             )
             and not re.search(r"\^deepseek-", sql),
         ),

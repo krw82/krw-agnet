@@ -129,7 +129,7 @@ roles:
     # The planner's primary skill is role-scoped, so it is available on the
     # first turn without asking the model to make a preliminary skill.load
     # call.
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
     # Planning is a closed tool-proposal task. GLM direct mode avoids spending a
     # large hidden-thinking turn before the first immutable evidence lookup.
@@ -139,10 +139,9 @@ roles:
     # planner's one direct proposal turn.
     execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: analyst
-    # Use the compact evidence-analysis skill by default. The much broader
-    # research_analysis reference remains available through skill.load when
-    # a question genuinely needs one of its specialist paths.
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst]
+    # The long research-analysis contract is core context for every ordinary
+    # company analyst turn. References remain progressive-disclosure material.
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, company_skill_catalog, evidence_analyst, research_analysis]
     deterministic: false
     # Thinking-enabled role for evidence analysis. GLM bills private thinking
     # and the following capability decision against one output ceiling. The
@@ -170,35 +169,35 @@ roles:
     # two complete composition attempts without changing any tool or model turn.
     execution: { max_output_tokens: 16384 }
   - id: earnings_planner
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: earnings_analyst
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, earnings_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, earnings_skill_catalog, evidence_analyst, earnings_analysis]
     deterministic: false
     execution: { max_output_tokens: 8192 }
   - id: scenario_planner
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: scenario_analyst
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, scenario_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, scenario_skill_catalog, evidence_analyst, scenario_analysis]
     deterministic: false
     execution: { max_output_tokens: 8192 }
   - id: idea_planner
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill, research_scope]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: idea_analyst
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, idea_screen]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, evidence_analyst, idea_screen]
     deterministic: false
     execution: { max_output_tokens: 8192 }
   - id: wide_planner
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill, research_scope]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
     execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: wide_analyst
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, wide_research_analysis]
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, evidence_analyst, wide_research_analysis]
     deterministic: false
     execution: { max_output_tokens: 8192 }
   - id: earnings_composer
@@ -226,64 +225,103 @@ prompt_segments:
   - { id: kernel_runtime, path: skills/kernel-runtime/SKILL.md, stable_prefix: true, private: true }
   - { id: company_scope, path: prompts/company-scope.md, stable_prefix: true, private: true }
   - { id: company_ontology_orientation, path: prompts/company-ontology-orientation.md, stable_prefix: true, private: true }
-  - { id: research_scope, path: prompts/research-scope.md, stable_prefix: true, private: true, loadable: true }
+  - { id: research_scope, path: prompts/research-scope.md, stable_prefix: true, private: true }
   - { id: retrieval_planner, path: prompts/retrieval-planner.md, stable_prefix: true, private: true, loadable: true }
-  - { id: research_planner_skill, path: skills/research-planner/SKILL.md, stable_prefix: true, private: true, loadable: true }
-  - { id: provider_proposal_contract, path: skills/research-planner/references/provider-proposal-contract.md, stable_prefix: true, private: true }
-  - { id: research_proposal_examples, path: skills/research-planner/references/research-proposal-examples.md, stable_prefix: true, private: true }
-  - { id: research_recovery_loop, path: skills/research-planner/references/recovery-loop.md, stable_prefix: true, private: true }
-  - { id: evidence_analyst, path: prompts/evidence-analyst.md, stable_prefix: true, private: true, loadable: true }
-  - { id: research_synthesis, path: references/research-synthesis.md, stable_prefix: true, private: true, loadable: true }
-  - { id: plain_korean_investor_language, path: references/plain-korean-investor-language.md, stable_prefix: true, private: true, loadable: true }
-  - { id: final_markdown_contract, path: references/final-markdown-contract.md, stable_prefix: true, private: true, loadable: true }
-  - { id: earnings_analysis, path: prompts/earnings-analysis.md, stable_prefix: false, private: true, loadable: true }
-  - { id: scenario_analysis, path: prompts/scenario-analysis.md, stable_prefix: false, private: true, loadable: true }
-  - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true, loadable: true }
-  - { id: wide_research_analysis, path: prompts/wide-research-analysis.md, stable_prefix: false, private: true, loadable: true }
-  - { id: wide_research_output_contract, path: references/wide-research-output-contract.md, stable_prefix: false, private: true, loadable: true }
-  - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_planner_skill, path: skills/research-planner/SKILL.md, stable_prefix: true, private: true }
+  - { id: provider_proposal_contract, path: skills/research-planner/references/provider-proposal-contract.md, stable_prefix: true, private: true, loadable: true }
+  - { id: research_proposal_examples, path: skills/research-planner/references/research-proposal-examples.md, stable_prefix: true, private: true, loadable: true }
+  - { id: research_recovery_loop, path: skills/research-planner/references/recovery-loop.md, stable_prefix: true, private: true, loadable: true }
+  - { id: evidence_analyst, path: prompts/evidence-analyst.md, stable_prefix: true, private: true }
+  - { id: research_synthesis, path: references/research-synthesis.md, stable_prefix: true, private: true }
+  - { id: plain_korean_investor_language, path: references/plain-korean-investor-language.md, stable_prefix: true, private: true }
+  - { id: final_markdown_contract, path: references/final-markdown-contract.md, stable_prefix: true, private: true }
+  - { id: earnings_analysis, path: prompts/earnings-analysis.md, stable_prefix: false, private: true }
+  - { id: scenario_analysis, path: prompts/scenario-analysis.md, stable_prefix: false, private: true }
+  - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true }
+  - { id: wide_research_analysis, path: prompts/wide-research-analysis.md, stable_prefix: false, private: true }
+  - { id: wide_research_output_contract, path: references/wide-research-output-contract.md, stable_prefix: false, private: true }
+  - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true }
   - { id: thesis_change_policy, path: references/thesis-change-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: earnings_quality_policy, path: references/earnings-quality-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: commentary_reconciliation, path: references/commentary-number-reconciliation.md, stable_prefix: false, private: true, loadable: true }
   - { id: earnings_period_map, path: references/earnings-period-map.md, stable_prefix: false, private: true, loadable: true }
-  - { id: earnings_output_contract, path: references/output-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: earnings_output_contract, path: references/output-contract.md, stable_prefix: false, private: true }
   - { id: scenario_construction, path: references/scenario-construction.md, stable_prefix: false, private: true, loadable: true }
   - { id: scenario_sensitivity_policy, path: references/scenario-sensitivity-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: scenario_event_liquidity_policy, path: references/scenario-event-liquidity-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: scenario_action_threshold_policy, path: references/scenario-action-threshold-policy.md, stable_prefix: false, private: true, loadable: true }
-  - { id: scenario_output_contract, path: references/scenario-output-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: scenario_output_contract, path: references/scenario-output-contract.md, stable_prefix: false, private: true }
   - { id: idea_search_order, path: references/idea-search-order.md, stable_prefix: false, private: true, loadable: true }
   - { id: idea_candidate_funnel, path: references/idea-candidate-funnel.md, stable_prefix: false, private: true, loadable: true }
   - { id: idea_candidate_evidence_policy, path: references/idea-candidate-evidence-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: idea_rejection_policy, path: references/idea-rejection-policy.md, stable_prefix: false, private: true, loadable: true }
-  - { id: idea_output_contract, path: references/idea-output-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: idea_output_contract, path: references/idea-output-contract.md, stable_prefix: false, private: true }
   - { id: idea_url_screen_compression, path: references/idea-url-screen-compression.md, stable_prefix: false, private: true, loadable: true }
-  - { id: research_analysis, path: prompts/research-analysis.md, stable_prefix: false, private: true, loadable: true }
-  - { id: research_artifact_contract, path: references/research-artifact-contract.md, stable_prefix: false, private: true }
-  - { id: research_bounded_autonomy, path: references/research-bounded-autonomy-and-stop-rules.md, stable_prefix: false, private: true }
-  - { id: research_evaluation_gates, path: references/research-evaluation-gates.md, stable_prefix: false, private: true }
-  - { id: research_evidence_synthesis, path: references/research-evidence-to-analyst-synthesis.md, stable_prefix: false, private: true }
-  - { id: research_financial_interpretation, path: references/research-financial-statement-interpretation.md, stable_prefix: false, private: true }
-  - { id: research_forbidden_language, path: references/research-forbidden-user-facing-language.md, stable_prefix: false, private: true }
-  - { id: research_grounded_inference, path: references/research-grounded-investment-inference.md, stable_prefix: false, private: true }
-  - { id: research_investment_decision, path: references/research-investment-decision-questions.md, stable_prefix: false, private: true }
-  - { id: research_ontology_layer_map, path: references/research-ontology-layer-map.md, stable_prefix: false, private: true }
-  - { id: research_ontology_schema_ref, path: references/research-ontology-schema-reference.md, stable_prefix: false, private: true }
-  - { id: research_period_policy, path: references/research-period-and-latest-policy.md, stable_prefix: false, private: true }
-  - { id: research_plain_korean, path: references/research-plain-korean-investor-language.md, stable_prefix: false, private: true }
-  - { id: research_query_context_contract, path: references/research-query-context-contract.md, stable_prefix: false, private: true }
-  - { id: research_pack_rendering, path: references/research-research-pack-rendering.md, stable_prefix: false, private: true }
-  - { id: research_synthesis_contract, path: references/research-research-synthesis-contract.md, stable_prefix: false, private: true }
-  - { id: research_structured_handoff, path: references/research-structured-handoff-contract.md, stable_prefix: false, private: true }
-  - { id: research_tool_policy, path: references/research-tool-policy.md, stable_prefix: false, private: true }
-  - { id: research_trace_chain_policy, path: references/research-trace-chain-policy.md, stable_prefix: false, private: true }
-  - { id: research_web_chat_runtime, path: references/research-web-chat-runtime.md, stable_prefix: false, private: true }
+  - { id: research_analysis, path: prompts/research-analysis.md, stable_prefix: false, private: true }
+  - { id: research_artifact_contract, path: references/research-artifact-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_bounded_autonomy, path: references/research-bounded-autonomy-and-stop-rules.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_evaluation_gates, path: references/research-evaluation-gates.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_evidence_synthesis, path: references/research-evidence-to-analyst-synthesis.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_financial_interpretation, path: references/research-financial-statement-interpretation.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_forbidden_language, path: references/research-forbidden-user-facing-language.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_grounded_inference, path: references/research-grounded-investment-inference.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_investment_decision, path: references/research-investment-decision-questions.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_ontology_layer_map, path: references/research-ontology-layer-map.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_ontology_schema_ref, path: references/research-ontology-schema-reference.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_period_policy, path: references/research-period-and-latest-policy.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_plain_korean, path: references/research-plain-korean-investor-language.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_query_context_contract, path: references/research-query-context-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_pack_rendering, path: references/research-research-pack-rendering.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_synthesis_contract, path: references/research-research-synthesis-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_structured_handoff, path: references/research-structured-handoff-contract.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_tool_policy, path: references/research-tool-policy.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_trace_chain_policy, path: references/research-trace-chain-policy.md, stable_prefix: false, private: true, loadable: true }
+  - { id: research_web_chat_runtime, path: references/research-web-chat-runtime.md, stable_prefix: false, private: true, loadable: true }
   - id: ontology_catalog
     ontology_schema: { bundled_runtime_schema: true, schemas: [metric_dictionary, quote_types, claim_types, risk_categories, objects] }
     stable_prefix: true
     private: true
   - id: skill_catalog
     skill_catalog: { skills_dirs: [skills, prompts, references] }
+    stable_prefix: true
+    private: true
+  # Role-scoped catalogs keep progressive disclosure useful: a planner sees
+  # proposal/retrieval references, while each analyst sees only references
+  # relevant to its research mode. Core long skills above remain static.
+  - id: planner_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [provider_proposal_contract, research_proposal_examples, research_recovery_loop, research_period_policy, research_query_context_contract, research_tool_policy]
+    stable_prefix: true
+    private: true
+  - id: company_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [research_bounded_autonomy, research_evidence_synthesis, research_financial_interpretation, research_forbidden_language, research_grounded_inference, research_investment_decision, research_ontology_layer_map, research_ontology_schema_ref, research_period_policy, research_plain_korean, research_query_context_contract, research_pack_rendering, research_synthesis_contract, research_structured_handoff, research_tool_policy, research_trace_chain_policy, research_web_chat_runtime]
+    stable_prefix: true
+    private: true
+  - id: earnings_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [research_bounded_autonomy, research_evidence_synthesis, research_financial_interpretation, research_forbidden_language, research_grounded_inference, research_ontology_layer_map, research_ontology_schema_ref, research_period_policy, research_query_context_contract, research_pack_rendering, research_tool_policy, research_trace_chain_policy, research_web_chat_runtime, thesis_change_policy, earnings_quality_policy, commentary_reconciliation, earnings_period_map]
+    stable_prefix: true
+    private: true
+  - id: scenario_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [research_bounded_autonomy, research_evidence_synthesis, research_financial_interpretation, research_forbidden_language, research_grounded_inference, research_ontology_layer_map, research_ontology_schema_ref, research_period_policy, research_query_context_contract, research_pack_rendering, research_tool_policy, research_trace_chain_policy, research_web_chat_runtime, scenario_construction, scenario_sensitivity_policy, scenario_event_liquidity_policy, scenario_action_threshold_policy]
+    stable_prefix: true
+    private: true
+  - id: idea_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [research_bounded_autonomy, research_evidence_synthesis, research_forbidden_language, research_grounded_inference, research_ontology_layer_map, research_ontology_schema_ref, research_period_policy, research_query_context_contract, research_tool_policy, research_trace_chain_policy, research_web_chat_runtime, idea_search_order, idea_candidate_funnel, idea_candidate_evidence_policy, idea_rejection_policy, idea_url_screen_compression]
+    stable_prefix: true
+    private: true
+  - id: wide_skill_catalog
+    skill_catalog:
+      skills_dirs: [skills, prompts, references]
+      include_skill_ids: [research_bounded_autonomy, research_evidence_synthesis, research_financial_interpretation, research_forbidden_language, research_grounded_inference, research_ontology_layer_map, research_ontology_schema_ref, research_period_policy, research_query_context_contract, research_pack_rendering, research_tool_policy, research_trace_chain_policy, research_web_chat_runtime]
     stable_prefix: true
     private: true
 capabilities:
@@ -814,6 +852,10 @@ answer_policy:
   max_research_turn_tokens: 16384
   locale: ko-KR
   conclusion_first: true
+  # Keep three useful next-research suggestions as the typed-answer default.
+  # The direct Markdown composer may use fewer for explicit brevity requests
+  # or when the evidence does not expose three honest, ontology-researchable
+  # paths; never pad that answer with generic questions.
   exact_follow_up_count: 3
   target_price_forbidden: true
   definitive_rating_forbidden: true

@@ -3,7 +3,7 @@ registry_id: glm-only-production-2026-08
 # Production template. GLM's documented 200K context window and 128K maximum
 # output are recorded as binary token capacities (204800 and 131072).
 models:
-  - model_id: glm-5.2
+  - model_id: glm-5.3
     api_base: https://api.z.ai/api/anthropic
     api_version: anthropic-messages-v1
     max_context_tokens: 204800
@@ -30,14 +30,14 @@ models:
       requires_assistant_content_for_tool_calls: false
 profiles:
   - profile_id: glm_high
-    model_id: glm-5.2
+    model_id: glm-5.3
     thinking: enabled
     reasoning_effort: high
   - profile_id: glm_max
-    model_id: glm-5.2
+    model_id: glm-5.3
     thinking: enabled
     reasoning_effort: max
   - profile_id: glm_direct
-    model_id: glm-5.2
+    model_id: glm-5.3
     thinking: disabled
     reasoning_effort: null

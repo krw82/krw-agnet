@@ -42,6 +42,7 @@ const MAX_EXACT_TARGETED_QUERY_CANDIDATES: usize = 12;
 const MAX_EXACT_TARGETED_QUERY_FILTERS: usize = 16;
 const MAX_SOURCE_ANCHORS: usize = 32;
 const MAX_RESEARCH_WARNINGS: usize = 32;
+pub const MAX_SUPPLEMENTAL_READ_STATUSES: usize = 4;
 const MAX_CHAIN_CONTEXT_ITEMS: usize = 16;
 const MAX_CHAIN_CONTEXT_DEPTH: usize = 4;
 const MAX_CHAIN_CONTEXT_STRING_BYTES: usize = 512;
@@ -316,6 +317,8 @@ pub struct ResearchRetrievalStatus {
     pub continuation: Option<Continuation>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub supplemental_reads: Vec<SupplementalReadStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -341,6 +344,29 @@ pub struct EvidenceDelta {
 pub struct SupplementalEvidenceDelta {
     pub records: Vec<EvidenceRecord>,
     pub calculations: Vec<Calculation>,
+    pub status: SupplementalReadStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupplementalReadKind {
+    Retrieved,
+    Empty,
+    NotFound,
+    InputRejected,
+    Ambiguous,
+    ApplicationError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupplementalReadStatus {
+    pub kind: SupplementalReadKind,
+    pub result_count: u16,
+    pub has_more: bool,
+    pub next_offset: Option<u32>,
+    #[serde(default)]
+    pub warning_codes: Vec<String>,
 }
 
 /// A safe, compact projection of the per-company topic store. This is
@@ -803,6 +829,7 @@ fn research_retrieval_status(state: &ResearchStateV2) -> ResearchRetrievalStatus
         source_anchors: anchors,
         continuation: state.continuation.clone(),
         warnings,
+        supplemental_reads: Vec::new(),
     }
 }
 
@@ -1797,10 +1824,14 @@ pub fn map_targeted_query(
 ) -> Result<SupplementalEvidenceDelta, AdapterError> {
     validate_supplemental_payload(payload)?;
     if payload.get("error").is_some() {
-        return Ok(empty_supplemental_delta());
+        return Ok(empty_supplemental_delta(supplemental_read_status(
+            payload, 0, true,
+        )));
     }
     let Some(results) = payload.get("results") else {
-        return Ok(empty_supplemental_delta());
+        return Ok(empty_supplemental_delta(supplemental_read_status(
+            payload, 0, false,
+        )));
     };
     let results = results
         .as_array()
@@ -1818,6 +1849,7 @@ pub fn map_targeted_query(
     Ok(SupplementalEvidenceDelta {
         records,
         calculations: Vec::new(),
+        status: supplemental_read_status(payload, results.len(), true),
     })
 }
 
@@ -1858,7 +1890,9 @@ pub fn map_trace(
 ) -> Result<SupplementalEvidenceDelta, AdapterError> {
     validate_supplemental_payload(payload)?;
     if payload.get("error").is_some() {
-        return Ok(empty_supplemental_delta());
+        return Ok(empty_supplemental_delta(supplemental_read_status(
+            payload, 0, true,
+        )));
     }
     let object = payload
         .get("object")
@@ -1872,6 +1906,7 @@ pub fn map_trace(
     Ok(SupplementalEvidenceDelta {
         records,
         calculations: Vec::new(),
+        status: supplemental_read_status(payload, 1, true),
     })
 }
 
@@ -2442,10 +2477,120 @@ fn company_context_record(
     Ok(record)
 }
 
-fn empty_supplemental_delta() -> SupplementalEvidenceDelta {
+fn empty_supplemental_delta(status: SupplementalReadStatus) -> SupplementalEvidenceDelta {
     SupplementalEvidenceDelta {
         records: Vec::new(),
         calculations: Vec::new(),
+        status,
+    }
+}
+
+fn supplemental_read_status(
+    payload: &Value,
+    result_count: usize,
+    results_present: bool,
+) -> SupplementalReadStatus {
+    let pagination = payload.get("pagination").and_then(Value::as_object);
+    let has_more = pagination
+        .and_then(|value| value.get("has_more"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let next_offset = pagination.and_then(|value| {
+        value
+            .get("next_offset")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                value
+                    .get("next_cursor")
+                    .and_then(Value::as_str)
+                    .and_then(|cursor| cursor.parse::<u64>().ok())
+            })
+            .and_then(|offset| u32::try_from(offset).ok())
+    });
+    let bounded_count = result_count.min(MAX_SUPPLEMENTAL_RECORDS);
+    let mut warning_codes = Vec::new();
+
+    let kind = if let Some(error) = payload.get("error") {
+        let code = supplemental_error_code(error);
+        let (kind, warning) = classify_supplemental_error(&code);
+        warning_codes.push(warning.to_owned());
+        kind
+    } else if !results_present {
+        warning_codes.push("supplemental_results_missing".to_owned());
+        SupplementalReadKind::ApplicationError
+    } else if bounded_count == 0 {
+        SupplementalReadKind::Empty
+    } else {
+        if has_more {
+            warning_codes.push("supplemental_truncated".to_owned());
+        }
+        SupplementalReadKind::Retrieved
+    };
+
+    SupplementalReadStatus {
+        kind,
+        result_count: u16::try_from(bounded_count).unwrap_or(u16::MAX),
+        has_more,
+        next_offset,
+        warning_codes,
+    }
+}
+
+pub fn supplemental_status_for_targeted_payload(
+    payload: &Value,
+) -> Result<SupplementalReadStatus, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    if payload.get("error").is_some() {
+        return Ok(supplemental_read_status(payload, 0, true));
+    }
+    let Some(results) = payload.get("results") else {
+        return Ok(supplemental_read_status(payload, 0, false));
+    };
+    let results = results
+        .as_array()
+        .ok_or(AdapterError::InvalidSupplementalPayload("results"))?;
+    Ok(supplemental_read_status(payload, results.len(), true))
+}
+
+pub fn supplemental_status_for_trace_payload(
+    payload: &Value,
+) -> Result<SupplementalReadStatus, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    if payload.get("error").is_some() {
+        return Ok(supplemental_read_status(payload, 0, true));
+    }
+    let object_present = payload.get("object").is_some();
+    Ok(supplemental_read_status(
+        payload,
+        if object_present { 1 } else { 0 },
+        object_present,
+    ))
+}
+
+fn supplemental_error_code(error: &Value) -> String {
+    error
+        .as_str()
+        .or_else(|| error.get("code").and_then(Value::as_str))
+        .or_else(|| error.get("status").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn classify_supplemental_error(code: &str) -> (SupplementalReadKind, &'static str) {
+    if code.contains("not_found") || code.contains("not found") {
+        (SupplementalReadKind::NotFound, "supplemental_not_found")
+    } else if code.contains("ambiguous") {
+        (SupplementalReadKind::Ambiguous, "supplemental_ambiguous")
+    } else if code.contains("invalid") || code.contains("input") || code.contains("validation") {
+        (
+            SupplementalReadKind::InputRejected,
+            "supplemental_input_rejected",
+        )
+    } else {
+        (
+            SupplementalReadKind::ApplicationError,
+            "supplemental_unclassified_error",
+        )
     }
 }
 
@@ -3397,6 +3542,74 @@ mod tests {
             map_targeted_query(&payload, &context("ontology.query")),
             Err(AdapterError::InvalidSupplementalPayload("results"))
         ));
+    }
+
+    #[test]
+    fn targeted_input_error_is_not_normalized_as_empty_evidence() {
+        let delta = map_targeted_query(
+            &serde_json::json!({
+                "error": {"code": "input_invalid"}
+            }),
+            &context("ontology.query"),
+        )
+        .unwrap();
+
+        assert_eq!(delta.records.len(), 0);
+        assert_eq!(delta.status.kind, SupplementalReadKind::InputRejected);
+        assert_eq!(
+            delta.status.warning_codes,
+            vec!["supplemental_input_rejected".to_owned()]
+        );
+    }
+
+    #[test]
+    fn targeted_empty_and_truncated_results_have_distinct_status() {
+        let empty = map_targeted_query(
+            &serde_json::json!({"results": []}),
+            &context("ontology.query"),
+        )
+        .unwrap();
+        assert_eq!(empty.status.kind, SupplementalReadKind::Empty);
+        assert_eq!(empty.status.result_count, 0);
+        assert!(!empty.status.has_more);
+
+        let truncated = map_targeted_query(
+            &serde_json::json!({
+                "results": [{
+                    "id": "claim:AAPL:1",
+                    "ticker": "AAPL",
+                    "text": "Revenue grew.",
+                    "evidence": {"quotes": []}
+                }],
+                "pagination": {
+                    "has_more": true,
+                    "next_offset": 20
+                }
+            }),
+            &context("ontology.query"),
+        )
+        .unwrap();
+        assert_eq!(truncated.status.kind, SupplementalReadKind::Retrieved);
+        assert_eq!(truncated.status.result_count, 1);
+        assert!(truncated.status.has_more);
+        assert_eq!(truncated.status.next_offset, Some(20));
+    }
+
+    #[test]
+    fn unknown_trace_application_error_is_not_normalized_as_not_found() {
+        let delta = map_trace(
+            &serde_json::json!({
+                "error": {"code": "upstream_index_unavailable"}
+            }),
+            &context("ontology.trace"),
+        )
+        .unwrap();
+        assert_eq!(delta.records.len(), 0);
+        assert_eq!(delta.status.kind, SupplementalReadKind::ApplicationError);
+        assert_eq!(
+            delta.status.warning_codes,
+            vec!["supplemental_unclassified_error".to_owned()]
+        );
     }
 
     #[test]

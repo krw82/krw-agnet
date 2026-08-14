@@ -53,7 +53,7 @@ case "$krw_postgres_lifecycle" in
 esac
 case "$krw_provider" in
   glm)
-    krw_provider_model_id=glm-5.2
+    krw_provider_model_id=glm-5.3
     ;;
   deepseek)
     krw_provider_model_id=deepseek-v4-flash

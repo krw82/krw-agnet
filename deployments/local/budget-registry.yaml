@@ -20,7 +20,7 @@ profiles:
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
-  # GLM-5.2 is the active research profile. Keep local and production on the
+  # GLM-5.3 is the active research profile. Keep local and production on the
   # same bounded envelope: ordinary research completes in 3-7 turns, with
   # room for a small recovery loop. High-reasoning provider turns can take
   # 96–144 seconds and occasionally longer; a 600-second run deadline could
@@ -33,11 +33,14 @@ profiles:
       max_capability_calls: 5
       max_replans: 3
       max_repairs: 3
-      # Keep 200,000 combined tokens, leaving 4,800 for provider framing.
-      # A complex company run needs one full 16,384-token evidence decision
-      # plus two full 16,384-token composition attempts. This is a ceiling,
-      # not a compulsory spend; it prevents a valid final answer from being
-      # retried under a smaller, doomed token cap.
+      # This is a cumulative run budget, not a single provider request. A
+      # detailed multi-objective company question can legitimately reuse its
+      # grounded context across several turns before composition. At 80% the
+      # kernel stops optional research and moves to the answer phase, so this
+      # GLM-5.3 has a 204800-token context. Keep the 56000-token output
+      # reservation and leave protocol headroom instead of publishing an
+      # impossible 220000+56000 combination that prevents agentd startup.
+      # Keep this equal to the checked-in request contract (144000).
       max_input_tokens: 144000
       max_output_tokens: 56000
       max_evidence_bytes: 8388608

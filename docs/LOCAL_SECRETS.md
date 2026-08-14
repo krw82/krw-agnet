@@ -1,6 +1,6 @@
 # Local provider secrets
 
-현재 live 검증에 필요한 GLM-5.2 credential과 DeepSeek production credential은 저장소 밖의
+현재 live 검증에 필요한 GLM-5.3 credential과 DeepSeek production credential은 저장소 밖의
 secret manager가 가장 좋다. 개발 중에는
 이 저장소의 git-ignored [`../.env.local`](../.env.local) 파일을 제한적으로 사용할 수 있다.
 
@@ -38,7 +38,7 @@ cd ~/krw-agnet
 ./scripts/with_local_env.sh cargo run -p krw-agent -- provider probe
 ```
 
-`provider probe`는 GLM-5.2에 고정된 16-token, no-tool, non-thinking 요청 한 번만 보낸다.
+`provider probe`는 GLM-5.3에 고정된 16-token, no-tool, non-thinking 요청 한 번만 보낸다.
 `provider structured-probe`는 같은 GLM endpoint에 baseline, Z.AI JSON mode
 (`response_format.type=json_object`), strict transition tool input을 각각 보내고 수락 여부만
 redacted JSON으로 출력한다. 이 두 CLI 명령은 GLM credential과 endpoint만

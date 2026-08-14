@@ -45,7 +45,7 @@ Python `krw-capabilityd`를 공유하면서 많은 세션을 bounded memory로 �
 ### Runtime and provider
 
 - production target은 기존 Claude plugin worker와 같은 이 Mac의 user-level `launchd` Rust daemon이다.
-- provider wire는 Anthropic Messages 계약을 사용한다. GLM-5.2와
+- provider wire는 Anthropic Messages 계약을 사용한다. GLM-5.3와
   `deepseek-v4-flash`를 각각 exact registry/model lane으로 생성·검증할 수 있으며,
   한 queue에서는 한 provider만 admission한다. GLM은 staging/quality lane,
   DeepSeek는 service lane으로 선택할 수 있지만 hot-swap은 하지 않는다. 현재 이
@@ -123,7 +123,7 @@ Static AgentImage release set + global DeploymentBinding/Budget/Model registries
 ClaimReceipt.agent_image_hash + RunRequest
   └─ ResolvedExecutionSnapshot
        └─ Rust Agent Kernel
-            ├─ selected GLM-5.2 or deepseek-v4-flash HTTPS/SSE lane (live)
+            ├─ selected GLM-5.3 or deepseek-v4-flash HTTPS/SSE lane (live)
             ├─ bounded scheduler and budgets
             ├─ durable provider/action receipts
             └─ pooled MCP
@@ -247,7 +247,7 @@ ClaimReceipt.agent_image_hash + RunRequest
 ### 과거 로컬 검증 기록 (2026-08-09)
 
 2026-08-09 현재 구현 검증은 `cargo check --workspace --all-targets --locked`와 rustfmt 검사까지
-통과했다. GLM-5.2 live admission probe에서 baseline, JSON mode, strict transition-tool input이
+통과했다. GLM-5.3 live admission probe에서 baseline, JSON mode, strict transition-tool input이
 모두 수락됐다. TypedJson의 GLM JSON mode는 활성화했고, JSON Schema output은 provider contract
 미지원으로 계속 비활성이다. 당시에는 운영 안전 정책상 DeepSeek live 호출을 하지 않았다. 현재
 provider-neutral Gateway runner와 dual-provider release gate는 GLM/DeepSeek 각각의 sealed
@@ -265,7 +265,7 @@ descriptor를 요구하며, 실제 network acceptance는 운영 자격증명과 
   문제로 기록한다.
 
 - `cargo test --workspace --no-fail-fast`, strict workspace clippy, rustfmt
-- `krw-agent quality replay`는 credential/network 없이 recorded provider turn을 GLM-5.2 snapshot으로
+- `krw-agent quality replay`는 credential/network 없이 recorded provider turn을 GLM-5.3 snapshot으로
   full kernel에 재생한다. DeepSeek endpoint/credential은 읽지 않는다.
   현재 단일 주장, 두 독립 주장, 그리고 partial ResearchState → trace → 동일 목표의 selective replan
   case가 있다. 마지막 case는 관련 없는 모델 제안을 dispatch 전에 거절하고, 새 근거로 실제 coverage를

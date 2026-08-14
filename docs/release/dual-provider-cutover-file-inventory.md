@@ -13,6 +13,9 @@ agents/krw-ontology/**
 agents/krw-guru-advisor/**
 contracts/release-evidence/README.md
 crates/research-planner/src/initial_plan.rs
+crates/research-planner/src/lib.rs
+crates/krw-ontology-adapter/src/lib.rs
+crates/context-compaction/src/lib.rs
 crates/run-engine/src/lib.rs
 crates/runtime-persistence/tests/live_provider_episode_audit.rs
 deployments/local/**
@@ -81,6 +84,8 @@ supabase/migrations/20260812090000_agent_v1_contract_v7_compatibility.sql
 supabase/migrations/20260812090150_agent_v1_runtime_schema_compatibility.sql
 supabase/migrations/20260812090400_agent_v1_commit_final_memory_v7_compatibility.sql
 supabase/migrations/20260812100000_agent_v1_research_run_kinds.sql
+supabase/migrations/20260814130000_agent_v1_failure_projection.sql
+src/krw-feed-mcp/feed-reader.ts
 vendor/krw-agent-host/krw-agent-host-0.1.0.tgz
 vendor/krw-agent-host/provenance.json
 ```

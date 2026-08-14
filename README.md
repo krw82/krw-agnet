@@ -1,22 +1,22 @@
 # KRW Agent Runtime
 
-현재 GLM-5.2를 live 검증 대상으로 사용하는 KRW 리서치 에이전트 런타임입니다. DeepSeek 호환
+현재 GLM-5.3을 live 검증 대상으로 사용하는 KRW 리서치 에이전트 런타임입니다. DeepSeek 호환
 계약은 정적 fixture/replay 범위에만 남겨 두고, 실행마다 Claude Code나 별도 플러그인
 프로세스를 띄우지 않고, 하나의 Rust daemon이 많은 세션을 제한된 메모리 안에서 처리하도록
 만들고 있습니다.
 
 ## 아주 쉽게 설명하면
 
-이 시스템은 **GLM-5.2 분석가 + Rust 팀장 + Python 자료실 + PostgreSQL 업무일지**로 동작합니다.
+이 시스템은 **GLM-5.3 분석가 + Rust 팀장 + Python 자료실 + PostgreSQL 업무일지**로 동작합니다.
 
-- GLM-5.2는 질문을 이해하고 조사 순서와 최종 설명을 만듭니다.
+- GLM-5.3은 질문을 이해하고 조사 순서와 최종 설명을 만듭니다.
 - Rust는 모델이 마음대로 건너뛰지 못하도록 근거, 도구 순서, 호출 횟수, 시간과 메모리를
   강제합니다.
 - 기존 Python `krw-ontology`는 공시와 온톨로지에서 실제 근거를 찾아 줍니다.
 - PostgreSQL은 매 단계의 영수증을 기록해, 서버가 중간에 죽어도 같은 일을 중복하지 않고
   안전하게 이어가게 합니다.
 
-여기서 GLM-5.2가 "분석한다"는 말은 첫 계획과 최종 문장만 만든다는 뜻이 아닙니다. 모델은
+여기서 GLM-5.3이 "분석한다"는 말은 첫 계획과 최종 문장만 만든다는 뜻이 아닙니다. 모델은
 도구 결과를 받을 때마다 새 근거의 의미, 남은 의문, 결론을 바꿀 가능성을 다시 판단하고 다음 조회나
 중단을 제안합니다. Rust는 그 제안이 실제 서버가 보고한 근거 공백과 일치하는지, 중복인지, 비용 대비
 가치가 양수인지 확인한 뒤 실행합니다. 즉 조사 방향은 결과에 따라 동적으로 바뀌지만, 네트워크·DB·예산
@@ -30,13 +30,13 @@
 
 ```text
 질문
- → GLM-5.2가 조사 계획 작성
+ → GLM-5.3이 조사 계획 작성
  → Rust가 계획·권한·예산 검사
  → Python 온톨로지에서 근거 수집
- → GLM-5.2가 새 근거를 해석하고 후속 조사 후보 제안
+ → GLM-5.3이 새 근거를 해석하고 후속 조사 후보 제안
  → Rust가 실제 근거 공백·중복·비용을 평가해 필요한 조회만 실행
  → 근거가 달라질 때마다 위 판단을 반복
- → GLM-5.2가 실제 근거를 바탕으로 일반 한국어 Markdown 답변 작성
+ → GLM-5.3이 실제 근거를 바탕으로 일반 한국어 Markdown 답변 작성
  → Rust가 수집된 EvidenceLedger를 답변과 함께 고정하고 출력 경계·예산을 검증
  → 답변·과금·알림 상태를 한 번에 저장
 ```
@@ -68,7 +68,7 @@ immutable AgentImage release set (1..=64)
                     │
                     ▼
               Rust Agent Kernel
-                 ├── Anthropic-compatible provider API (현재 live는 GLM-5.2)
+                 ├── Anthropic-compatible provider API (현재 live는 GLM-5.3)
                  └── pooled MCP ── 기존 Python krw-ontology
                     │
                     ▼
@@ -85,7 +85,7 @@ immutable AgentImage release set (1..=64)
 
 - provider wire는 Anthropic Messages 계약을 사용합니다. GLM TypedJson은 Z.AI JSON mode
   (`response_format.type=json_object`)를 사용하고 canonical schema를 kernel에서 검증합니다.
-  현재 provider-network 검증은 GLM-5.2만 허용하며, DeepSeek은 live credential/endpoint를 사용하지
+  현재 provider-network 검증은 GLM-5.3만 허용하며, DeepSeek은 live credential/endpoint를 사용하지
   않는 정적 호환 fixture로만 유지합니다.
 - 물리 모델과 profile은 immutable registry에서 exact-match로 고정하며 alias/fallback을 허용하지 않습니다.
 - production 실행기는 machine-wide Rust daemon 하나입니다.
@@ -117,13 +117,13 @@ immutable AgentImage release set (1..=64)
 - EvidenceLedger, strong-claim/숫자 lineage 검증, direct Markdown final-output receipt
 - 실행 fence, provider episode/action receipt, cancel/final 단일화의 in-memory 계약 모델
 - 다중 세션용 bounded scheduler 기반
-- provider-native wire/SSE/reasoning replay 기반 (현재 live admission은 GLM-5.2)
+- provider-native wire/SSE/reasoning replay 기반 (현재 live admission은 GLM-5.3)
 - 기존 `ResearchState v2`를 EvidenceLedger로 옮기는 KRW adapter
 - TLS PostgreSQL `agent_v1` claim/lease/fencing supervisor
 - standalone release의 Ed25519 authorization, key validity/revoke, expiry, sequence downgrade 차단
 - standalone bundle manifest의 file/hash/size/symlink/extra-file offline verifier
 - tenant/principal/run 범위로 암호화된 versioned-key recovery CAS
-- immutable claim → direct GLM-5.2 → pooled MCP → atomic final의 live daemon 연결
+- immutable claim → direct GLM-5.3 → pooled MCP → atomic final의 live daemon 연결
 - API key가 필요 없는 vertical-slice fixture
 
 아직 production-ready가 아님:
@@ -179,7 +179,7 @@ direct Markdown output boundary → EvidenceLedger receipt → final commit 계�
 Production daemon의 설정 검증과 실제 실행 인자는
 [`docs/POSTGRES_RUNTIME.md`](docs/POSTGRES_RUNTIME.md)에 정리되어 있습니다.
 
-개발 중 GLM-5.2 wire와 구조화 출력 admission만 확인할 때의 로컬 secret 주입과 probe는
+개발 중 GLM-5.3 wire와 구조화 출력 admission만 확인할 때의 로컬 secret 주입과 probe는
 [`docs/LOCAL_SECRETS.md`](docs/LOCAL_SECRETS.md)를 따릅니다.
 
 ## 소스 위치

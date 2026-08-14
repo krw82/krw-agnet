@@ -9,7 +9,7 @@
 1. daemon이 `schema_version: 3`로 출력한 public release descriptor
 2. 운영자가 secret 값을 넣지 않고 서명·보관한 `krw-credential-rotation/v1` receipt
 3. 별도 credentialed 환경이 선택한 제공자의 exact physical model
-   (`glm-5.2` 또는 `deepseek-v4-flash`)와 production MCP/PostgreSQL/품질 검사를
+   (`glm-5.3` 또는 `deepseek-v4-flash`)와 production MCP/PostgreSQL/품질 검사를
    통과한 뒤 출력한 `krw-live-acceptance/v1` redacted receipt
 
 필수 rotation 필드:

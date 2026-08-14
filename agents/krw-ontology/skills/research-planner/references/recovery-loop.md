@@ -1,7 +1,7 @@
 ---
 name: research_recovery_loop
 description: "Use when a capability returns recovery_required. Defines replace/narrow/split repair modes for model-correctable errors."
-when_to_use: "when the relevant analysis context arises"
+when_to_use: "when the previous proposal or capability result requests a model-correctable replacement, narrowing, or split"
 ---
 
 # Recovery loop

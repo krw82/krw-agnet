@@ -56,7 +56,7 @@ prompt, image contract를 바꿨다면 먼저 `prepare`를 실행한다. `up`은
 provider를 바꿀 때는 기존 stack을 먼저 `down`한 뒤 선택한 provider로 `up`한다. 이미 떠 있는
 Gateway의 descriptor/model이 요청한 provider와 다르면 wrapper가 두 번째 daemon을 띄우지 않고
 즉시 중단한다. 오래된 `frontend.env`에 provider가 없더라도 descriptor의 모든 entry가
-`glm-5.2` 또는 `deepseek-v4-flash` 중 선택 lane과 일치할 때만 재사용한다.
+`glm-5.3` 또는 `deepseek-v4-flash` 중 선택 lane과 일치할 때만 재사용한다.
 
 ## 3. 캐시와 재빌드 경계
 
