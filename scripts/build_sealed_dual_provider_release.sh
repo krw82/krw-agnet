@@ -8,6 +8,7 @@ set -euo pipefail
 krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 krw_output_root=
 krw_operator_root=${KRW_AGENT_OPERATOR_ROOT:-"$HOME/krw-agnet-prod"}
+krw_runtime_env=${KRW_AGENT_RUNTIME_ENV_FILE:-}
 krw_runtime_version=${KRW_AGENT_RUNTIME_VERSION:-0.1.0}
 krw_kernel_version=${KRW_AGENT_KERNEL_VERSION:-0.1.0}
 krw_authorization_ttl=${KRW_AGENT_RELEASE_AUTH_TTL_SECONDS:-2592000}
@@ -16,7 +17,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build_sealed_dual_provider_release.sh \
   --output-root /absolute/new/release-directory \
-  [--operator-root /absolute/operator-directory]
+  [--operator-root /absolute/operator-directory] \
+  [--runtime-env /absolute/runtime.env]
 
 Builds a fresh GLM+DeepSeek release, applies the operator-owned endpoint
 bindings, signs each exact descriptor, verifies both bundles, and writes the
@@ -41,6 +43,11 @@ while [[ $# -gt 0 ]]; do
       krw_operator_root=$2
       shift 2
       ;;
+    --runtime-env)
+      [[ $# -ge 2 ]] || fail "--runtime-env requires an absolute file"
+      krw_runtime_env=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -58,6 +65,9 @@ done
   || fail "release output already exists: $krw_output_root"
 [[ "$krw_operator_root" = /* && -d "$krw_operator_root" && ! -L "$krw_operator_root" ]] \
   || fail "operator root must be an existing absolute real directory"
+krw_runtime_env=${krw_runtime_env:-"$krw_operator_root/runtime/krw-agent-deploy.env"}
+[[ "$krw_runtime_env" = /* && -f "$krw_runtime_env" && ! -L "$krw_runtime_env" ]] \
+  || fail "runtime env must be an existing absolute regular file"
 case "$krw_authorization_ttl" in
   ''|*[!0-9]*) fail "KRW_AGENT_RELEASE_AUTH_TTL_SECONDS must be a positive integer" ;;
   *) [[ "$krw_authorization_ttl" -gt 0 ]] || fail "KRW_AGENT_RELEASE_AUTH_TTL_SECONDS must be positive" ;;
@@ -75,6 +85,15 @@ krw_private_key="$krw_operator_root/signing/release-private.pk8"
 cd "$krw_root"
 [[ -z "$(git status --porcelain=v1 --untracked-files=normal)" ]] \
   || fail "sealed dual-provider release requires a clean committed Git tree"
+
+# Descriptor preparation validates the resolved local MCP endpoints. Keep the
+# values in the operator-owned runtime envelope and export them only to this
+# short-lived packaging process; neither the release nor its logs contain
+# those credentials.
+set -a
+# shellcheck disable=SC1090
+. "$krw_runtime_env"
+set +a
 
 krw_now=$(date +%s)
 krw_expires_at=$((krw_now + krw_authorization_ttl))
