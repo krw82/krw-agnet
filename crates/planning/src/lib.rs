@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PPM: u32 = 1_000_000;
+/// Maximum evidence or calculation references retained on one planning goal.
+/// The underlying evidence ledger remains independent and may retain more;
+/// this bound only keeps the deterministic action-planning graph compact.
+pub const MAX_EVIDENCE_GOAL_LINKS: usize = 32;
 const MAX_GOALS: usize = 128;
-const MAX_GOAL_LINKS: usize = 32;
+const MAX_GOAL_LINKS: usize = MAX_EVIDENCE_GOAL_LINKS;
 const MAX_ACTIONS: usize = 64;
 const MAX_ACTION_GOALS: usize = 32;
 const MAX_CONFLICT_KEYS: usize = 32;

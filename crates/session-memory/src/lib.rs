@@ -27,7 +27,10 @@ pub const SESSION_MEMORY_SCHEMA_VERSION: u16 = 3;
 
 const MAX_SOURCE_ID_BYTES: usize = 128;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
-const MAX_RECENT_TURN_EXCERPT_BYTES: usize = 32 * 1024;
+// Recent turns are conversational continuity, not a second transcript.  An
+// 8 KiB excerpt per side keeps four in-scope turns small enough that their
+// prose cannot evict structured claims/goals from the next room follow-up.
+const MAX_RECENT_TURN_EXCERPT_BYTES: usize = 8 * 1024;
 const MAX_COMPLETED_TURN_PROJECTION_BYTES: usize = 768 * 1024;
 const MAX_CONSTRAINTS: usize = 32;
 const MAX_CLAIMS_PER_DELTA: usize = 64;
@@ -68,6 +71,11 @@ pub struct MemorySourceV3 {
     pub final_commit_intent_hash: ContentHash,
     pub answer_bundle_hash: ContentHash,
     pub final_output_hash: ContentHash,
+    /// Canonical company/entity scope for this one room turn.  Old persisted
+    /// sources deserialize as an empty scope and are treated as unknown rather
+    /// than being assumed to match every future company question.
+    #[serde(default)]
+    pub tickers: Vec<String>,
 }
 
 impl fmt::Debug for MemorySourceV3 {
@@ -87,6 +95,7 @@ impl fmt::Debug for MemorySourceV3 {
             .field("final_commit_intent_hash", &self.final_commit_intent_hash)
             .field("answer_bundle_hash", &self.answer_bundle_hash)
             .field("final_output_hash", &self.final_output_hash)
+            .field("ticker_count", &self.tickers.len())
             .finish()
     }
 }
@@ -174,6 +183,10 @@ impl fmt::Debug for MemoryGoalV3 {
 #[serde(deny_unknown_fields)]
 pub struct RecentTurnV3 {
     pub source_run_id: String,
+    /// The scope is repeated on the conversational projection so continuity
+    /// selection never needs to infer a company from free-form answer prose.
+    #[serde(default)]
+    pub tickers: Vec<String>,
     pub user_content_hash: ContentHash,
     pub user_content: String,
     pub user_content_original_bytes: u64,
@@ -192,6 +205,7 @@ impl fmt::Debug for RecentTurnV3 {
                 "source_run_id_hash",
                 &ContentHash::sha256(&self.source_run_id),
             )
+            .field("ticker_count", &self.tickers.len())
             .field("user_content_hash", &self.user_content_hash)
             .field("user_content", &"[REDACTED]")
             .field(
@@ -340,6 +354,8 @@ impl SessionMemoryDeltaV3 {
         validate_recent_turn(&self.recent_turn)?;
         if self.source.revision != self.revision
             || self.recent_turn.source_run_id != self.source.run_id
+            || self.source.tickers != self.tickers
+            || self.recent_turn.tickers != self.tickers
         {
             return Err(MemoryError::InvalidLineage);
         }
@@ -1191,7 +1207,11 @@ impl SessionMemoryCatalogV3 {
             .values()
             .filter(|claim| claim.superseded_by.is_none())
             .filter_map(|claim| {
-                let revision = source_revision(&claim.source_run_id).ok()?;
+                let source = self.sources.get(&claim.source_run_id)?;
+                if selection::ticker_scope_conflicts(&source.tickers, query.trusted_tickers) {
+                    return None;
+                }
+                let revision = source.revision;
                 let candidate = selection::rank_text(
                     &query_terms,
                     &claim_search_text(claim),
@@ -1212,7 +1232,11 @@ impl SessionMemoryCatalogV3 {
             .values()
             .filter(|goal| goal.resolved_by.is_none())
             .filter_map(|goal| {
-                let revision = source_revision(&goal.source_run_id).ok()?;
+                let source = self.sources.get(&goal.source_run_id)?;
+                if selection::ticker_scope_conflicts(&source.tickers, query.trusted_tickers) {
+                    return None;
+                }
+                let revision = source.revision;
                 let candidate = selection::rank_text(
                     &query_terms,
                     &goal.text,
@@ -1228,15 +1252,30 @@ impl SessionMemoryCatalogV3 {
             (Reverse(*candidate_score), goal.memory_id.as_str())
         });
 
-        let pinned_count = selection::TARGET_CONTINUITY_TURNS.min(self.recent_turns.len());
-        let pinned_start = self.recent_turns.len().saturating_sub(pinned_count);
-        let pinned_indices = (pinned_start..self.recent_turns.len()).collect::<BTreeSet<_>>();
+        let continuity_indices = self
+            .recent_turns
+            .iter()
+            .enumerate()
+            .filter(|(_, turn)| {
+                selection::ticker_scope_matches_for_continuity(&turn.tickers, query.trusted_tickers)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let pinned_indices = continuity_indices
+            .iter()
+            .rev()
+            .take(selection::TARGET_CONTINUITY_TURNS)
+            .copied()
+            .collect::<BTreeSet<_>>();
         let mut supplemental = self
             .recent_turns
             .iter()
             .enumerate()
-            .take(pinned_start)
+            .filter(|(index, _)| !pinned_indices.contains(index))
             .filter_map(|(index, turn)| {
+                if selection::ticker_scope_conflicts(&turn.tickers, query.trusted_tickers) {
+                    return None;
+                }
                 let revision = source_revision(&turn.source_run_id).ok()?;
                 let candidate = selection::rank_text(
                     &query_terms,
@@ -1313,7 +1352,11 @@ impl SessionMemoryCatalogV3 {
             source_frontier_hash: self.frontier_hash.clone(),
             source_revision: self.revision,
             view_hash: empty_frontier_hash(),
-            tickers: self.tickers.iter().cloned().collect(),
+            tickers: if query.trusted_tickers.is_empty() {
+                self.tickers.iter().cloned().collect()
+            } else {
+                normalized_memory_tickers(query.trusted_tickers)
+            },
             constraints: self.constraints.values().cloned().collect(),
             sources,
             claims: selected_claims,
@@ -1771,6 +1814,7 @@ pub fn completed_turn_delta(
     }
     let answer_ir_bytes = serde_jcs::to_vec(input.answer_ir)?;
     let final_output_hash = ContentHash::sha256(answer_ir_bytes);
+    let tickers = normalized_memory_tickers(input.tickers);
     let source = MemorySourceV3 {
         run_id: input.run_id.to_owned(),
         revision: input.revision,
@@ -1779,6 +1823,7 @@ pub fn completed_turn_delta(
         final_commit_intent_hash: input.final_commit_intent_hash,
         answer_bundle_hash: input.answer_bundle_hash,
         final_output_hash: final_output_hash.clone(),
+        tickers: tickers.clone(),
     };
     let (user_content, user_content_original_bytes, user_content_truncated) =
         utf8_excerpt(input.user_content, MAX_RECENT_TURN_EXCERPT_BYTES)?;
@@ -1803,34 +1848,16 @@ pub fn completed_turn_delta(
     }
 
     let mut goals = BTreeMap::new();
-    for (index, text) in input
-        .answer_ir
-        .follow_up_questions
-        .iter()
-        .take(MAX_GOALS_PER_DELTA)
-        .enumerate()
-    {
-        if let Ok(goal) = memory_goal(
-            input.run_id,
-            &final_output_hash,
-            None,
-            index,
-            text,
-            Vec::new(),
-        ) {
-            let cost = canonical_item_cost(&goal)?;
-            if projection_bytes.saturating_add(cost) <= MAX_COMPLETED_TURN_PROJECTION_BYTES {
-                projection_bytes += cost;
-                goals.insert(goal.memory_id.clone(), goal);
-            }
-        }
-    }
+    // `follow_up_questions` are answer presentation, not user commitments.
+    // Persisting them as unresolved goals made every suggestion reappear as a
+    // durable instruction in later room turns.  A question becomes an active
+    // research goal only when the user actually asks it in a subsequent turn.
     for (index, claim) in input
         .answer_ir
         .claims
         .iter()
         .filter(|claim| claim.kind == ClaimKind::Uncertainty)
-        .take(MAX_GOALS_PER_DELTA.saturating_sub(goals.len()))
+        .take(MAX_GOALS_PER_DELTA)
         .enumerate()
     {
         let Ok(goal) = memory_goal(
@@ -1849,15 +1876,6 @@ pub fn completed_turn_delta(
             goals.entry(goal.memory_id.clone()).or_insert(goal);
         }
     }
-    let tickers = input
-        .tickers
-        .iter()
-        .filter(|ticker| is_canonical_ticker(ticker))
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .take(MAX_TICKERS)
-        .collect::<Vec<_>>();
     let mut constraint_ids = BTreeSet::new();
     let constraints = input
         .constraints
@@ -1901,7 +1919,7 @@ pub fn completed_turn_delta(
         parent_frontier_hash: input.parent_frontier_hash,
         revision: input.revision,
         source,
-        tickers,
+        tickers: tickers.clone(),
         constraints,
         claims,
         unresolved_goals: goals.into_values().collect(),
@@ -1909,6 +1927,7 @@ pub fn completed_turn_delta(
         resolved_goals,
         recent_turn: RecentTurnV3 {
             source_run_id: input.run_id.to_owned(),
+            tickers: tickers.clone(),
             user_content_hash: ContentHash::sha256(input.user_content),
             user_content,
             user_content_original_bytes,
@@ -1932,6 +1951,7 @@ pub fn completed_markdown_turn_delta(
     if !bounded_id(input.session_id) || !bounded_id(input.run_id) || input.revision == 0 {
         return Err(MemoryError::InvalidEnvelope);
     }
+    let tickers = normalized_memory_tickers(input.tickers);
     let source = MemorySourceV3 {
         run_id: input.run_id.to_owned(),
         revision: input.revision,
@@ -1943,20 +1963,12 @@ pub fn completed_markdown_turn_delta(
         // name in its durable schema. Its value is nevertheless the exact
         // canonical final-output hash; no synthetic AnswerIR is created.
         final_output_hash: input.final_output_hash,
+        tickers: tickers.clone(),
     };
     let (user_content, user_content_original_bytes, user_content_truncated) =
         utf8_excerpt(input.user_content, MAX_RECENT_TURN_EXCERPT_BYTES)?;
     let (answer_content, answer_content_original_bytes, answer_content_truncated) =
         utf8_excerpt(input.rendered_answer, MAX_RECENT_TURN_EXCERPT_BYTES)?;
-    let tickers = input
-        .tickers
-        .iter()
-        .filter(|ticker| is_canonical_ticker(ticker))
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .take(MAX_TICKERS)
-        .collect::<Vec<_>>();
     let mut constraint_ids = BTreeSet::new();
     let constraints = input
         .constraints
@@ -2000,7 +2012,7 @@ pub fn completed_markdown_turn_delta(
         parent_frontier_hash: input.parent_frontier_hash,
         revision: input.revision,
         source,
-        tickers,
+        tickers: tickers.clone(),
         constraints,
         claims: Vec::new(),
         unresolved_goals: Vec::new(),
@@ -2008,6 +2020,7 @@ pub fn completed_markdown_turn_delta(
         resolved_goals,
         recent_turn: RecentTurnV3 {
             source_run_id: input.run_id.to_owned(),
+            tickers: tickers.clone(),
             user_content_hash: ContentHash::sha256(input.user_content),
             user_content,
             user_content_original_bytes,
@@ -2113,6 +2126,7 @@ fn validate_source(source: &MemorySourceV3) -> Result<(), MemoryError> {
         || !bounded_id(&source.assistant_message_id)
         || source.user_message_id != deterministic_message_id(&source.run_id, "user")
         || source.assistant_message_id != deterministic_message_id(&source.run_id, "assistant")
+        || validate_tickers(&source.tickers).is_err()
     {
         return Err(MemoryError::InvalidId("memory source"));
     }
@@ -2173,6 +2187,7 @@ fn validate_recent_turn(turn: &RecentTurnV3) -> Result<(), MemoryError> {
     let answer_bytes =
         u64::try_from(turn.answer_content.len()).map_err(|_| MemoryError::Overflow)?;
     if !bounded_id(&turn.source_run_id)
+        || validate_tickers(&turn.tickers).is_err()
         || !bounded_text(&turn.user_content, MAX_TEXT_BYTES)
         || !bounded_text(&turn.answer_content, MAX_TEXT_BYTES)
         || turn.user_content_original_bytes < user_bytes
@@ -2187,6 +2202,17 @@ fn validate_recent_turn(turn: &RecentTurnV3) -> Result<(), MemoryError> {
         return Err(MemoryError::InvalidRecentTurn);
     }
     Ok(())
+}
+
+fn normalized_memory_tickers(tickers: &[String]) -> Vec<String> {
+    tickers
+        .iter()
+        .filter(|ticker| is_canonical_ticker(ticker))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(MAX_TICKERS)
+        .collect()
 }
 
 fn utf8_excerpt(value: &str, max_bytes: usize) -> Result<(String, u64, bool), MemoryError> {
@@ -2859,10 +2885,12 @@ mod tests {
             ("run:6", "여섯 번째 질문", "여섯 번째 답변"),
         ];
         let catalog = markdown_catalog(&rows);
-        let tickers = vec![String::from("AAPL")];
         let query = SessionViewQuery {
             question: "그중 가장 중요한 원인은?",
-            trusted_tickers: &tickers,
+            // This is the wide, no-fixed-company continuity behavior. A
+            // company-fenced follow-up is covered separately below and must
+            // exclude another company's newer turns.
+            trusted_tickers: &[],
         };
         let view = catalog.select_view_with_query(&query, 256 * 1024).unwrap();
         let ids = view
@@ -2906,6 +2934,60 @@ mod tests {
                 .any(|turn| turn.source_run_id == "run:msft-old")
         );
         assert_eq!(view.session_id_hash, ContentHash::sha256(SESSION_ID));
+    }
+
+    #[test]
+    fn current_company_followup_does_not_pin_newer_turns_for_another_company() {
+        let rows = [
+            ("run:aapl", "AAPL의 매출과 리스크", "AAPL 답변"),
+            ("run:msft-1", "MSFT의 매출과 리스크", "MSFT 답변 1"),
+            ("run:msft-2", "MSFT의 현금흐름", "MSFT 답변 2"),
+            ("run:msft-3", "MSFT의 밸류에이션", "MSFT 답변 3"),
+        ];
+        let catalog = markdown_catalog(&rows);
+        let tickers = vec![String::from("AAPL")];
+        let query = SessionViewQuery {
+            question: "그 회사의 핵심 리스크는?",
+            trusted_tickers: &tickers,
+        };
+
+        let view = catalog.select_view_with_query(&query, 256 * 1024).unwrap();
+
+        assert_eq!(
+            view.recent_turns
+                .iter()
+                .map(|turn| turn.source_run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run:aapl"],
+        );
+        assert_eq!(view.tickers, vec!["AAPL"]);
+    }
+
+    #[test]
+    fn suggested_follow_up_is_not_stored_as_an_unresolved_goal() {
+        let catalog = SessionMemoryCatalogV3::new(SESSION_ID).unwrap();
+        let mut answer = answer_ir();
+        answer
+            .claims
+            .retain(|claim| claim.kind != ClaimKind::Uncertainty);
+        let delta = completed_turn_delta(CompletedTurnInputV3 {
+            session_id: SESSION_ID,
+            parent_frontier_hash: catalog.frontier_hash.clone(),
+            revision: 1,
+            run_id: RUN_ID,
+            final_commit_intent_hash: hash("suggestion-intent"),
+            answer_bundle_hash: hash("suggestion-bundle"),
+            user_content: "AAPL의 매출을 알려줘.",
+            rendered_answer: "AAPL 매출 답변",
+            answer_ir: &answer,
+            tickers: &["AAPL".into()],
+            constraints: &[],
+            supersessions: &[],
+            resolved_goals: &[],
+        })
+        .unwrap();
+
+        assert!(delta.unresolved_goals.is_empty());
     }
 
     #[test]

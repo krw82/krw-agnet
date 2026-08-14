@@ -95,6 +95,21 @@ umask 077
 printf '%s\n' "$krw_postgres_lifecycle" >"$krw_postgres_marker"
 chmod 600 "$krw_postgres_marker"
 
+# Persist the exact port map alongside this reusable state directory.  The
+# `dev-stack.sh reload` path reads this as data before it starts the next
+# supervisor, so a stack that intentionally uses offset ports cannot restart
+# against the default ports by accident.
+krw_runtime_ports="$krw_state/runtime-ports.env"
+krw_runtime_ports_tmp="$krw_runtime_ports.$$.tmp"
+{
+  printf 'KRW_AGENT_GATEWAY_PORT=%s\n' "$krw_gateway_port"
+  printf 'KRW_AGENT_LOCAL_POSTGRES_PORT=%s\n' "$krw_pg_port"
+  printf 'KRW_AGENT_LOCAL_CAPABILITY_PORT=%s\n' "$krw_capability_port"
+  printf 'KRW_AGENT_LOCAL_MCP_TLS_PORT=%s\n' "$krw_tls_port"
+} >"$krw_runtime_ports_tmp"
+chmod 600 "$krw_runtime_ports_tmp"
+mv -f "$krw_runtime_ports_tmp" "$krw_runtime_ports"
+
 krw_secrets="$krw_state/secrets.env"
 if [[ ! -f "$krw_secrets" ]]; then
   {
@@ -401,8 +416,9 @@ else
   unset KRW_AGENT_DATABASE_CA_PEM
 fi
 export RUST_LOG="${RUST_LOG:-info}"
-# Forward provider/MCP debug flags to agentd when set in the caller's env so
-# DeepSeek SSE payloads and MCP arguments land in agentd.log for diagnosis.
+# Forward provider/MCP diagnostic flags only when the operator explicitly sets
+# them. MCP diagnostics are metadata-only (name, byte count, hash), never raw
+# arguments or results; an empty inherited variable remains disabled.
 export KRW_DEBUG_PROVIDER="${KRW_DEBUG_PROVIDER:-}"
 export KRW_DEBUG_MCP_ARGS="${KRW_DEBUG_MCP_ARGS:-}"
 # Run the pre-built agentd binary directly (not via cargo run) so the log

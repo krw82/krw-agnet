@@ -25,8 +25,10 @@ Question meaning: “Show the last three annual revenue values and trend.”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "revenue"] },
-          { "terms": ["total net sales", "annual revenue"] }
+          { "terms": ["net sales"] },
+          { "terms": ["revenue"] },
+          { "terms": ["total net sales"] },
+          { "terms": ["annual revenue"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -60,8 +62,8 @@ Question meaning: “What was annual revenue growth?”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "year over year"] },
-          { "terms": ["revenue", "annual growth"] }
+          { "terms": ["net sales year over year"] },
+          { "terms": ["revenue annual growth"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -98,15 +100,15 @@ revenue pressure?”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["customer demand", "revenue"] },
-          { "terms": ["demand", "net sales"] }
+          { "terms": ["customer demand revenue"] },
+          { "terms": ["demand net sales"] }
         ],
         "directness": "direct_required",
-        "object_types": ["NarrativeEvidence"],
+        "object_types": ["BusinessFactor", "EvidenceQuote", "ResearchClaim"],
         "goal": {
           "kind": "qualitative_evidence",
           "concepts": ["customer demand", "revenue"],
-          "predicates": ["pressures", "reduces"]
+          "predicates": ["pressures"]
         }
       }
     ]
@@ -134,8 +136,8 @@ company give?”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "year over year"] },
-          { "terms": ["revenue", "annual growth"] }
+          { "terms": ["net sales year over year"] },
+          { "terms": ["revenue annual growth"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -150,15 +152,15 @@ company give?”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["revenue increase", "due to"] },
-          { "terms": ["net sales", "primarily driven by"] }
+          { "terms": ["revenue increase due to"] },
+          { "terms": ["net sales primarily driven by"] }
         ],
         "directness": "direct_required",
-        "object_types": ["NarrativeEvidence"],
+        "object_types": ["BusinessFactor", "EvidenceQuote", "ResearchClaim"],
         "goal": {
           "kind": "qualitative_evidence",
           "concepts": ["revenue", "company explanation"],
-          "predicates": ["driven by", "due to"]
+          "predicates": ["driven by"]
         }
       }
     ]
@@ -186,7 +188,8 @@ materially explains the result.”
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "revenue"] }
+          { "terms": ["net sales"] },
+          { "terms": ["revenue"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -199,7 +202,8 @@ materially explains the result.”
       {
         "priority": "deferred",
         "alternatives": [
-          { "terms": ["geographic net sales", "revenue"] }
+          { "terms": ["geographic net sales"] },
+          { "terms": ["geographic revenue"] }
         ],
         "directness": "direct_preferred",
         "object_types": ["MetricObservation"],
@@ -234,8 +238,10 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "revenue"] },
-          { "terms": ["total net sales", "annual revenue"] }
+          { "terms": ["net sales"] },
+          { "terms": ["revenue"] },
+          { "terms": ["total net sales"] },
+          { "terms": ["annual revenue"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -248,7 +254,8 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["gross margin", "gross profit"] }
+          { "terms": ["gross margin"] },
+          { "terms": ["gross profit"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -261,8 +268,10 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["research and development", "operating expense"] },
-          { "terms": ["R&D", "operating costs"] }
+          { "terms": ["research and development"] },
+          { "terms": ["operating expense"] },
+          { "terms": ["R&D"] },
+          { "terms": ["operating costs"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -275,15 +284,16 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
       {
         "priority": "deferred",
         "alternatives": [
-          { "terms": ["iphone", "services", "products"] },
-          { "terms": ["segment revenue", "product revenue"] }
+          { "terms": ["iphone services products"] },
+          { "terms": ["segment revenue"] },
+          { "terms": ["product revenue"] }
         ],
         "directness": "any",
-        "object_types": ["BusinessActivity", "NumericEvidence"],
+        "object_types": ["BusinessActivity", "MetricObservation", "Calculation"],
         "goal": {
           "kind": "qualitative_evidence",
           "concepts": ["product mix", "segment revenue"],
-          "predicates": ["due to", "driven by"]
+          "predicates": ["due to"]
         }
       }
     ]
@@ -293,7 +303,7 @@ Question meaning: "How do revenue composition, costs, and margins connect?"
 
 This example shows the earnings chain pattern: revenue and margin metrics are
 required, R&D/operating costs are required for the cost layer, and segment
-breakdown (BusinessActivity + NumericEvidence) is deferred but included so the
+breakdown (BusinessActivity + MetricObservation/Calculation) is deferred but included so the
 model can attempt product-mix decomposition. Both 10-K and 10-Q document types
 are requested so quarterly and annual data are both available.
 
@@ -362,6 +372,9 @@ first retry — do not repeat the same mistake.
 ```
 
 If the user asks about a metric that is not in the canonical list, use the
-closest canonical metric with `qualitative_evidence` for the rest, or use
-`metric_dimensions` to narrow a canonical metric (e.g. `segment_revenue` with
-dimension `["geographic"]` instead of inventing `geographic_revenue`).
+closest canonical metric with `qualitative_evidence` for the rest. For a
+named product or geography breakdown, use `segment_revenue` with an empty
+`metric_dimensions` array and place the member's literal filing phrase in its
+own required objective. Only use `metric_dimensions` when a prior ontology
+result has already supplied that issuer's exact member label; do not invent a
+generic filter such as `"geographic"`.

@@ -13,10 +13,10 @@
     "max_capability_calls": 5,
     "max_replans": 3,
     "max_repairs": 3,
-    "max_input_tokens": 176000,
-    "max_output_tokens": 28000,
+    "max_input_tokens": 144000,
+    "max_output_tokens": 56000,
     "max_evidence_bytes": 8388608,
-    "deadline_ms": 600000,
+    "deadline_ms": 1200000,
     "capability_call_limits": {
       "ontology.query_context": 2,
       "ontology.company_context": 1,

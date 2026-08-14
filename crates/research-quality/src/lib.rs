@@ -55,7 +55,10 @@ const MAX_CASES: usize = 64;
 const MAX_EVAL_PROVIDER_TURNS: u16 = 8;
 const MAX_EVAL_CAPABILITY_CALLS: u16 = 4;
 const MAX_EVAL_INPUT_TOKENS: u32 = 64_000;
-const MAX_EVAL_OUTPUT_TOKENS: u32 = 8_000;
+// The checked-in company image reserves two full 16,384-token composition
+// attempts. Quality fixtures must admit the same bounded envelope or they
+// would fail before exercising the production workflow.
+const MAX_EVAL_OUTPUT_TOKENS: u32 = 56_000;
 const MAX_EVAL_DEADLINE_MS: u64 = 120_000;
 const QUALITY_FENCE: u64 = 1;
 
@@ -2678,8 +2681,14 @@ mod tests {
                 == "model_research_proposal_shape"
                 && assertion.passed)
         );
+        let query_context = run
+            .report
+            .capability_calls
+            .iter()
+            .find(|call| call.capability_id == "ontology.query_context")
+            .expect("the mandatory company orientation must be followed by the research plan");
         assert_eq!(
-            run.report.capability_calls[0]
+            query_context
                 .plan_quality
                 .as_ref()
                 .and_then(|quality| quality.clause_count),

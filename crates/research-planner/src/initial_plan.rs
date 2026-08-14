@@ -23,6 +23,9 @@ use thiserror::Error;
 // only the remaining slots in the already accepted root plan; it must never
 // construct a larger plan and defer the failure to contract validation.
 const MAX_SELECTED_CLAUSES: usize = 12;
+const MIN_CONTEXT_RESULT_LIMIT: usize = 12;
+const RESULT_SLOTS_PER_REQUIRED_CLAUSE: usize = 3;
+const MAX_CONTEXT_RESULT_LIMIT: usize = 50;
 const MAX_EXACT_SEARCH_NODES: usize = 65_536;
 const RESEARCH_INTENT_RECEIPT_SCHEMA_VERSION: u16 = 1;
 
@@ -204,6 +207,10 @@ struct IntentGoal {
 struct CandidateClause {
     candidate_id: String,
     covers_goal_ids: Vec<String>,
+    /// The model orders alternatives by expected filing-language fit. This
+    /// stays private to the compiler: it is a deterministic selection hint,
+    /// not a new SearchPlan/MCP field that an external provider can author.
+    alternative_rank: u8,
     retrieval_query: String,
     required_concepts: Vec<String>,
     required_predicates: Vec<String>,
@@ -278,16 +285,22 @@ struct ResearchProposalAlternative {
     terms: Vec<String>,
 }
 
-/// Stable answer-claim identity deliberately excludes proof strength,
-/// retrieval alternatives, and physical object filters. Those values change
-/// how evidence is collected, not what the user is asking to establish. A
-/// later proposal therefore cannot silently rewrite a committed claim by
-/// weakening its directness or swapping search wording.
+/// Stable answer-claim identity deliberately excludes proof strength and
+/// physical object filters. Those values change how evidence is collected,
+/// not what the user is asking to establish. A later proposal therefore
+/// cannot silently rewrite a committed claim by weakening its directness.
+///
+/// Retrieval alternatives normally remain outside the identity because they
+/// are interchangeable wording for one claim. A named breakdown is the
+/// narrow exception: `segment_revenue` has no schema field for the requested
+/// product/region member, so its literal focus is part of the fact the user
+/// asked to establish rather than merely a retrieval hint.
 #[derive(Debug, Clone, Serialize)]
 struct ResearchObjectiveIdentity {
     kind: String,
     metric: Option<String>,
     metric_dimensions: Vec<String>,
+    focus_terms: Vec<String>,
     calculation_window: Option<CalculationWindow>,
     concepts: Vec<String>,
     predicates: Vec<String>,
@@ -344,6 +357,7 @@ enum MetricChange {
 struct PreparedCandidate {
     source: CandidateClause,
     covers_required: u32,
+    alternative_rank: u8,
     canonical_bytes: usize,
     fingerprint: String,
 }
@@ -351,6 +365,7 @@ struct PreparedCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlanScore {
     clause_count: usize,
+    alternative_preference_cost: usize,
     canonical_bytes: usize,
     fingerprints: Vec<String>,
 }
@@ -359,6 +374,10 @@ impl Ord for PlanScore {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.clause_count
             .cmp(&other.clause_count)
+            .then_with(|| {
+                self.alternative_preference_cost
+                    .cmp(&other.alternative_preference_cost)
+            })
             .then_with(|| self.canonical_bytes.cmp(&other.canonical_bytes))
             .then_with(|| self.fingerprints.cmp(&other.fingerprints))
     }
@@ -436,20 +455,47 @@ fn lower_research_proposal(
     scope: InitialPlanScope<'_>,
 ) -> Result<ResearchIntent, InitialPlanError> {
     let user_span = bounded_question_anchor(scope.question)?;
+    let mut objectives = proposal.objectives;
+    // A product/region numerator is not enough to answer a revenue-mix
+    // question: the company-total revenue from the same disclosure period is
+    // the denominator.  This is a semantic dependency of the user's request,
+    // not a generic catch-all expansion.  Derive it in the kernel so a model
+    // does not have to remember a hidden calculation prerequisite, while
+    // preserving the immutable twelve-clause ceiling when the user already
+    // requested a fully saturated research plan.
+    if revenue_mix_requires_company_total_denominator(scope.question, &objectives)
+        && objectives
+            .iter()
+            .filter(|objective| objective.priority == ResearchProposalPriority::Required)
+            .count()
+            < MAX_SELECTED_CLAUSES
+    {
+        objectives.push(ResearchProposalObjective {
+            priority: ResearchProposalPriority::Required,
+            alternatives: vec![ResearchProposalAlternative {
+                terms: vec!["total net sales".into()],
+            }],
+            directness: Directness::DirectRequired,
+            object_types: Vec::new(),
+            goal: ResearchProposalGoal::MetricObservation {
+                metric: "revenue".into(),
+                metric_dimensions: Vec::new(),
+            },
+        });
+    }
     // `comparison_axes` is plan-wide in the ontology contract. Once any
     // required objective asks for a temporal calculation, every required
     // metric clause must name a calculation window as well. Reuse a window
     // explicitly declared by the proposal instead of letting a valid mixed
     // raw-value + growth request fail at the MCP boundary.
-    let shared_temporal_window = required_temporal_window(&proposal.objectives)
+    let shared_temporal_window = required_temporal_window(&objectives)
         .or_else(|| temporal_window_from_prior_plan(scope.prior_plan));
     let mut goals = Vec::new();
     let mut seen_goal_ids = BTreeSet::new();
     let mut comparison_axes = BTreeSet::new();
     let mut grouped_candidates =
-        BTreeMap::<String, (CandidateClauseShape, BTreeSet<String>)>::new();
-    for objective in proposal
-        .objectives
+        BTreeMap::<String, (CandidateClauseShape, BTreeSet<String>, u8)>::new();
+    for objective in objectives
         .into_iter()
         .filter(|objective| objective.priority == ResearchProposalPriority::Required)
     {
@@ -465,6 +511,7 @@ fn lower_research_proposal(
             continue;
         }
         let mut lowered = lower_goal(&objective.goal);
+        let object_types = normalize_execution_object_types(&objective.object_types, &lowered);
         let calculation_required = lowered.calculation_window.is_some();
         if !lowered.metrics.is_empty() && lowered.calculation_window.is_none() {
             lowered.calculation_window = shared_temporal_window;
@@ -487,7 +534,9 @@ fn lower_research_proposal(
             // ontology's plan-wide temporal-axis rule.
             calculation_required,
         });
-        for alternative in objective.alternatives {
+        for (alternative_index, alternative) in objective.alternatives.into_iter().enumerate() {
+            let alternative_rank = u8::try_from(alternative_index)
+                .expect("proposal alternative count is bounded by the contract");
             let semantic_terms = if lowered.metrics.is_empty() {
                 // Qualitative clause: use concepts and predicates as prose
                 // terms so the retrieval index can match them in filing text.
@@ -519,7 +568,7 @@ fn lower_research_proposal(
                 required_concepts: lowered.required_concepts.clone(),
                 required_predicates: lowered.required_predicates.clone(),
                 directness: objective.directness,
-                object_types: objective.object_types.clone(),
+                object_types: object_types.clone(),
                 metrics: lowered.metrics.clone(),
                 metric_dimensions: lowered.metric_dimensions.clone(),
                 metric_scope: lowered.metric_scope,
@@ -530,18 +579,20 @@ fn lower_research_proposal(
             let key = ContentHash::sha256(canonical).to_string();
             grouped_candidates
                 .entry(key)
-                .and_modify(|(_, goal_ids)| {
+                .and_modify(|(_, goal_ids, existing_rank)| {
                     goal_ids.insert(goal_id.clone());
+                    *existing_rank = (*existing_rank).min(alternative_rank);
                 })
-                .or_insert_with(|| (shape, BTreeSet::from([goal_id.clone()])));
+                .or_insert_with(|| (shape, BTreeSet::from([goal_id.clone()]), alternative_rank));
         }
     }
     let candidate_clauses = grouped_candidates
         .into_values()
-        .map(|(shape, goal_ids)| {
+        .map(|(shape, goal_ids, alternative_rank)| {
             Ok(CandidateClause {
                 candidate_id: generated_identifier("clause", scope.question, &shape)?,
                 covers_goal_ids: goal_ids.into_iter().collect(),
+                alternative_rank,
                 retrieval_query: shape.retrieval_query,
                 required_concepts: shape.required_concepts,
                 required_predicates: shape.required_predicates,
@@ -557,6 +608,15 @@ fn lower_research_proposal(
     if goals.is_empty() || candidate_clauses.is_empty() {
         return Err(InitialPlanError::Contract);
     }
+    // A complex question intentionally becomes several independently
+    // verifiable clauses. A fixed global limit of twelve let the first few
+    // clauses consume the entire response, making later facts look absent.
+    // Reserve a small deterministic result budget per required clause while
+    // staying within the ontology contract's hard maximum.
+    let limit_results = candidate_clauses
+        .len()
+        .saturating_mul(RESULT_SLOTS_PER_REQUIRED_CLAUSE)
+        .clamp(MIN_CONTEXT_RESULT_LIMIT, MAX_CONTEXT_RESULT_LIMIT);
     Ok(ResearchIntent {
         intent: proposal.intent,
         answer_scope: proposal.answer_scope,
@@ -566,7 +626,7 @@ fn lower_research_proposal(
         comparison_axes: comparison_axes.into_iter().collect(),
         // Model authors never set execution resource limits. These are a
         // bounded kernel policy and trusted scope later narrows them further.
-        limit_results: 12,
+        limit_results: u64::try_from(limit_results).expect("bounded result limit fits u64"),
         limit_tickers: 12,
         goals,
         candidate_clauses,
@@ -592,6 +652,71 @@ fn required_temporal_window(objectives: &[ResearchProposalObjective]) -> Option<
         has_period_over_period = true;
     }
     has_period_over_period.then_some(CalculationWindow::PeriodOverPeriod)
+}
+
+fn revenue_mix_requires_company_total_denominator(
+    question: &str,
+    objectives: &[ResearchProposalObjective],
+) -> bool {
+    if !question_requests_revenue_mix(question) {
+        return false;
+    }
+    let mut has_segment_revenue = false;
+    let mut has_company_total_revenue = false;
+    for objective in objectives
+        .iter()
+        .filter(|objective| objective.priority == ResearchProposalPriority::Required)
+    {
+        let (metric, metric_dimensions) = match &objective.goal {
+            ResearchProposalGoal::MetricObservation {
+                metric,
+                metric_dimensions,
+            }
+            | ResearchProposalGoal::MetricTimeSeries {
+                metric,
+                metric_dimensions,
+            }
+            | ResearchProposalGoal::MetricChange {
+                metric,
+                metric_dimensions,
+                ..
+            }
+            | ResearchProposalGoal::MetricDifference {
+                metric,
+                metric_dimensions,
+            } => (metric, metric_dimensions),
+            ResearchProposalGoal::QualitativeEvidence { .. } => continue,
+        };
+        if metric.trim().eq_ignore_ascii_case("segment_revenue") {
+            has_segment_revenue = true;
+        }
+        if metric.trim().eq_ignore_ascii_case("revenue") && metric_dimensions.is_empty() {
+            has_company_total_revenue = true;
+        }
+    }
+    has_segment_revenue && !has_company_total_revenue
+}
+
+fn question_requests_revenue_mix(question: &str) -> bool {
+    let normalized = question.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    let korean_revenue_mix = normalized.contains("매출")
+        && ["비중", "구성", "믹스", "기여도", "기여"]
+            .iter()
+            .any(|signal| normalized.contains(signal));
+    let english_revenue_mix = [
+        "revenue mix",
+        "sales mix",
+        "revenue share",
+        "sales share",
+        "revenue contribution",
+        "sales contribution",
+    ]
+    .iter()
+    .any(|signal| normalized.contains(signal));
+    korean_revenue_mix || english_revenue_mix
 }
 
 /// An append preserves the accepted root plan and its plan-wide comparison
@@ -679,6 +804,7 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
             kind: "metric_observation".into(),
             metric: Some(metric.to_lowercase()),
             metric_dimensions: normalize(metric_dimensions),
+            focus_terms: named_breakdown_focus_terms(metric, &objective.alternatives),
             calculation_window: None,
             concepts: Vec::new(),
             predicates: Vec::new(),
@@ -690,6 +816,7 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
             kind: "metric_time_series".into(),
             metric: Some(metric.to_lowercase()),
             metric_dimensions: normalize(metric_dimensions),
+            focus_terms: named_breakdown_focus_terms(metric, &objective.alternatives),
             calculation_window: None,
             concepts: Vec::new(),
             predicates: Vec::new(),
@@ -707,6 +834,7 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
             .into(),
             metric: Some(metric.to_lowercase()),
             metric_dimensions: normalize(metric_dimensions),
+            focus_terms: named_breakdown_focus_terms(metric, &objective.alternatives),
             calculation_window: Some(*window),
             concepts: Vec::new(),
             predicates: Vec::new(),
@@ -718,6 +846,7 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
             kind: "metric_difference".into(),
             metric: Some(metric.to_lowercase()),
             metric_dimensions: normalize(metric_dimensions),
+            focus_terms: named_breakdown_focus_terms(metric, &objective.alternatives),
             calculation_window: None,
             concepts: Vec::new(),
             predicates: Vec::new(),
@@ -729,11 +858,30 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
             kind: "qualitative_evidence".into(),
             metric: None,
             metric_dimensions: Vec::new(),
+            focus_terms: Vec::new(),
             calculation_window: None,
             concepts: normalize(concepts),
             predicates: normalize(predicates),
         },
     }
+}
+
+fn named_breakdown_focus_terms(
+    metric: &str,
+    alternatives: &[ResearchProposalAlternative],
+) -> Vec<String> {
+    if !metric.trim().eq_ignore_ascii_case("segment_revenue") {
+        return Vec::new();
+    }
+    let mut focus_terms = alternatives
+        .iter()
+        .flat_map(|alternative| alternative.terms.iter())
+        .map(|term| term.trim().to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    focus_terms.sort();
+    focus_terms.dedup();
+    focus_terms
 }
 
 /// Private lowering from a model-visible semantic goal to the small set of
@@ -751,28 +899,49 @@ struct LoweredGoal {
 }
 
 fn lower_goal(goal: &ResearchProposalGoal) -> LoweredGoal {
-    let metric_goal = |metric: &String, metric_dimensions: &Vec<String>, axis| LoweredGoal {
-        required_concepts: Vec::new(),
-        required_predicates: Vec::new(),
-        metrics: vec![metric.clone()],
-        metric_scope: if metric_dimensions.is_empty() {
-            MetricScope::CompanyTotal
-        } else {
-            MetricScope::Dimensioned
-        },
-        metric_dimensions: metric_dimensions.clone(),
-        calculation_window: None,
-        comparison_axis: axis,
+    let metric_goal = |metric: &String, metric_dimensions: &Vec<String>, axis| {
+        let named_breakdown = metric.trim().eq_ignore_ascii_case("segment_revenue");
+        LoweredGoal {
+            required_concepts: Vec::new(),
+            required_predicates: Vec::new(),
+            metrics: vec![metric.clone()],
+            // `segment_revenue` is a semantic metric. Its actual member
+            // labels are issuer-specific (for example, `Service` versus
+            // `Services`), and a generic model field such as `segment` is
+            // not a valid exact database key. Select dimensioned observations
+            // broadly, while the independently preserved literal focus and
+            // retrieval query select the requested product/region evidence.
+            metric_scope: if named_breakdown || !metric_dimensions.is_empty() {
+                MetricScope::Dimensioned
+            } else {
+                MetricScope::CompanyTotal
+            },
+            metric_dimensions: if named_breakdown {
+                Vec::new()
+            } else {
+                metric_dimensions.clone()
+            },
+            calculation_window: None,
+            comparison_axis: axis,
+        }
     };
     match goal {
         ResearchProposalGoal::MetricObservation {
             metric,
             metric_dimensions,
-        }
-        | ResearchProposalGoal::MetricTimeSeries {
+        } => metric_goal(metric, metric_dimensions, "value"),
+        ResearchProposalGoal::MetricTimeSeries {
             metric,
             metric_dimensions,
-        } => metric_goal(metric, metric_dimensions, "value"),
+        } => {
+            // A raw time series is not itself a growth calculation, so it
+            // remains on the value axis.  The window tells the retrieval
+            // selector to retain a compatible pair instead of returning one
+            // latest observation plus unrelated filler evidence.
+            let mut lowered = metric_goal(metric, metric_dimensions, "value");
+            lowered.calculation_window = Some(CalculationWindow::PeriodOverPeriod);
+            lowered
+        }
         ResearchProposalGoal::MetricChange {
             metric,
             metric_dimensions,
@@ -807,6 +976,81 @@ fn lower_goal(goal: &ResearchProposalGoal) -> LoweredGoal {
             comparison_axis: "directness",
         },
     }
+}
+
+/// Canonicalize model-facing ontology type filters before they become exact
+/// physical SQL filters.  The proposal contract deliberately accepts an open
+/// vocabulary so an older image can still be decoded.  At the execution
+/// boundary an unknown narrowing filter must never turn into an authoritative
+/// zero-result lookup: known legacy names are expanded to their traceable
+/// serving types and unknown names are omitted, allowing the runtime default
+/// query set to recover the evidence.
+fn normalize_execution_object_types(values: &[String], goal: &LoweredGoal) -> Vec<String> {
+    const CANONICAL: &[&str] = &[
+        "AgreementTerm",
+        "AssumptionCandidate",
+        "BusinessActivity",
+        "BusinessEvent",
+        "BusinessFactor",
+        "Calculation",
+        "CanonicalEntity",
+        "ChangeEvent",
+        "CompanyBusinessProfile",
+        "EntityMention",
+        "EvidenceQuote",
+        "ExternalFactorExposure",
+        "MetricObservation",
+        "OntologyRegistrySnapshot",
+        "ResearchClaim",
+        "RunManifest",
+        "SourceDocument",
+        "SourceLocation",
+        "SourceTable",
+        "SourceTableCell",
+        "SupportLink",
+        "TaxonomyTerm",
+        "TemporalLink",
+        "TrendObservation",
+        "ValidationReport",
+        "XBRLFact",
+    ];
+
+    let mut normalized = BTreeSet::new();
+    for raw in values {
+        let compact = raw
+            .trim()
+            .chars()
+            .filter(|character| !matches!(character, '_' | '-' | ' '))
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        let aliases: &[&str] = match compact.as_str() {
+            "narrativeevidence" => &["BusinessFactor", "EvidenceQuote", "ResearchClaim"],
+            "numericevidence" | "calculatednumericsupport" => {
+                &["Calculation", "MetricObservation", "XBRLFact"]
+            }
+            "riskfactor" | "growthdriver" | "headwind" => &["BusinessFactor"],
+            "financialmetric" | "financialmetricvalue" | "derivedmetricvalue" => {
+                &["MetricObservation"]
+            }
+            _ => CANONICAL
+                .iter()
+                .find(|candidate| candidate.eq_ignore_ascii_case(raw.trim()))
+                .map_or(&[][..], |candidate| std::slice::from_ref(candidate)),
+        };
+        normalized.extend(aliases.iter().map(|value| (*value).to_owned()));
+    }
+    // A product, segment, geography, or other dimensioned metric is not
+    // reliably represented by a standalone MetricObservation in every filing
+    // release. The filing table and its accompanying management discussion
+    // commonly arrive as an EvidenceQuote or ResearchClaim instead. Retain
+    // those answer-ready representations alongside the requested numeric
+    // types; this broadens retrieval without weakening the metric identity
+    // that remains in the clause itself.
+    if !goal.metrics.is_empty() && goal.metric_scope == MetricScope::Dimensioned {
+        normalized.insert("EvidenceQuote".into());
+        normalized.insert("ResearchClaim".into());
+    }
+    normalized.into_iter().collect()
 }
 
 /// Construct a physical retrieval phrase from model-provided search terms and
@@ -1105,6 +1349,7 @@ fn prepare_candidates(
         prepared.push(PreparedCandidate {
             source: candidate.clone(),
             covers_required,
+            alternative_rank: candidate.alternative_rank,
             canonical_bytes: canonical.len(),
             fingerprint,
         });
@@ -1129,9 +1374,11 @@ fn remove_dominated(candidates: &[PreparedCandidate]) -> Vec<PreparedCandidate> 
             !candidates.iter().enumerate().any(|(other_index, other)| {
                 other_index != *index
                     && candidate.covers_required | other.covers_required == other.covers_required
-                    && other.canonical_bytes <= candidate.canonical_bytes
-                    && (other.canonical_bytes < candidate.canonical_bytes
-                        || other.fingerprint < candidate.fingerprint)
+                    && (other.alternative_rank < candidate.alternative_rank
+                        || (other.alternative_rank == candidate.alternative_rank
+                            && other.canonical_bytes <= candidate.canonical_bytes
+                            && (other.canonical_bytes < candidate.canonical_bytes
+                                || other.fingerprint < candidate.fingerprint)))
             })
         })
         .map(|(_, candidate)| candidate.clone())
@@ -1271,6 +1518,7 @@ fn greedy_cover(
                     u64::from(right.2) * u64::try_from(left.1.canonical_bytes).unwrap_or(u64::MAX);
                 left_ratio
                     .cmp(&right_ratio)
+                    .then_with(|| right.1.alternative_rank.cmp(&left.1.alternative_rank))
                     .then_with(|| right.1.canonical_bytes.cmp(&left.1.canonical_bytes))
                     .then_with(|| right.1.fingerprint.cmp(&left.1.fingerprint))
             })
@@ -1285,8 +1533,13 @@ fn greedy_cover(
     }
     selected.sort_by(|left, right| {
         candidates[*left]
-            .fingerprint
-            .cmp(&candidates[*right].fingerprint)
+            .alternative_rank
+            .cmp(&candidates[*right].alternative_rank)
+            .then_with(|| {
+                candidates[*left]
+                    .fingerprint
+                    .cmp(&candidates[*right].fingerprint)
+            })
     });
     Ok(selected)
 }
@@ -1299,6 +1552,10 @@ fn selection_score(candidates: &[PreparedCandidate], selected: &[usize]) -> Plan
     fingerprints.sort();
     PlanScore {
         clause_count: selected.len(),
+        alternative_preference_cost: selected
+            .iter()
+            .map(|index| usize::from(candidates[*index].alternative_rank))
+            .sum(),
         canonical_bytes: selected
             .iter()
             .map(|index| candidates[*index].canonical_bytes)
@@ -1313,8 +1570,13 @@ fn sort_selected_by_fingerprint(
 ) -> Vec<usize> {
     selected.sort_by(|left, right| {
         candidates[*left]
-            .fingerprint
-            .cmp(&candidates[*right].fingerprint)
+            .alternative_rank
+            .cmp(&candidates[*right].alternative_rank)
+            .then_with(|| {
+                candidates[*left]
+                    .fingerprint
+                    .cmp(&candidates[*right].fingerprint)
+            })
     });
     selected
 }
@@ -1386,10 +1648,12 @@ fn search_plan_clause(
     candidate: &CandidateClause,
     tickers: &[String],
 ) -> Result<Value, InitialPlanError> {
-    let retrieval_query = assemble_retrieval_query(
-        tickers.to_vec(),
-        std::iter::once(candidate.retrieval_query.clone()),
-    )?;
+    // Company scope is carried separately in `tickers` and enforced by the
+    // serving query. Do not inject the symbol into filing-text retrieval:
+    // quotes and table rows generally contain the issuer name, not `AAPL` or
+    // another ticker, so doing so changes a valid term match into a false
+    // empty result.
+    let retrieval_query = candidate.retrieval_query.clone();
     // A metric clause must remain a pure metric clause on the wire. Its
     // natural-language filing phrase is still present in `retrieval_query`,
     // while the canonical metric identity lets the ontology select the actual
@@ -1482,6 +1746,84 @@ mod tests {
     }
 
     #[test]
+    fn trusted_ticker_scope_is_not_injected_into_filing_text_retrieval() {
+        // Ticker scope travels in `clause.tickers` and becomes a SQL/FTS
+        // scope filter downstream. Most filing sentences do not literally
+        // contain `AAPL`; injecting it into the lexical query can therefore
+        // turn otherwise matching evidence into a false empty result.
+        let question = "How durable is AAPL services growth?";
+        let mut proposal = proposal();
+        proposal["objectives"][0]["alternatives"] = json!([
+            {"terms":["services growth"]}
+        ]);
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        assert_eq!(plan["clauses"][0]["tickers"], json!(["AAPL"]));
+        assert_eq!(
+            plan["clauses"][0]["retrieval_query"],
+            json!("services growth")
+        );
+    }
+
+    #[test]
+    fn legacy_or_unknown_object_types_never_become_zero_result_filters() {
+        let question = "What filing evidence supports AAPL's principal risks?";
+        let mut proposal = proposal();
+        proposal["objectives"][0]["alternatives"] = json!([
+            {"terms":["AAPL", "principal risks"]}
+        ]);
+        proposal["objectives"][0]["goal"] = json!({
+            "kind":"qualitative_evidence",
+            "concepts":["principal risks"],
+            "predicates":[]
+        });
+        proposal["objectives"][0]["object_types"] =
+            json!(["NarrativeEvidence", "obsolete_ontology_type"]);
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        assert_eq!(
+            plan["clauses"][0]["object_types"],
+            json!(["BusinessFactor", "EvidenceQuote", "ResearchClaim"])
+        );
+    }
+
+    #[test]
+    fn dimensioned_metric_keeps_filing_quote_and_claim_evidence_available() {
+        // Segment and geography values are often represented by a filing table
+        // plus its quoted discussion, rather than by a standalone
+        // MetricObservation. A numeric-only filter therefore turns an
+        // existing iPhone/Services or regional disclosure into an apparent
+        // absence. Keep the numeric types, but also retain the two
+        // answer-ready filing representations.
+        let question = "Compare AAPL iPhone and Services revenue mix.";
+        let mut proposal = proposal();
+        proposal["objectives"][0]["alternatives"] = json!([
+            {"terms":["AAPL", "iPhone Services revenue segment"]}
+        ]);
+        proposal["objectives"][0]["object_types"] = json!(["MetricObservation"]);
+        proposal["objectives"][0]["goal"] = json!({
+            "kind":"metric_observation",
+            "metric":"segment_revenue",
+            "metric_dimensions":["iPhone", "Services"]
+        });
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        assert_eq!(
+            plan["clauses"][0]["object_types"],
+            json!(["EvidenceQuote", "MetricObservation", "ResearchClaim"])
+        );
+    }
+
+    #[test]
     fn each_required_objective_becomes_a_deterministic_independent_goal() {
         let question = "How durable is AAPL services growth?";
         let mut proposal = proposal();
@@ -1510,6 +1852,124 @@ mod tests {
                         && goal_ids[0].starts_with("goal-")
                 })
         );
+    }
+
+    #[test]
+    fn context_result_limit_scales_with_independent_required_clauses() {
+        let question = "Compare AAPL growth, margins, cash conversion, regional mix, and costs.";
+        let mut proposal = proposal();
+        for term in [
+            "margin",
+            "cash conversion",
+            "regional mix",
+            "operating costs",
+        ] {
+            proposal["objectives"].as_array_mut().unwrap().push(json!({
+                "priority":"required",
+                "alternatives":[{"terms":["AAPL", term]}],
+                "directness":"direct_preferred",
+                "object_types":[],
+                "goal": {
+                    "kind":"qualitative_evidence",
+                    "concepts":[term],
+                    "predicates":[]
+                }
+            }));
+        }
+
+        let compiled = compile_research_proposal(&proposal, company_scope(question)).unwrap();
+        assert_eq!(compiled.search_plan["clauses"].as_array().unwrap().len(), 5);
+        assert_eq!(compiled.search_plan["limit_results"], json!(15));
+    }
+
+    #[test]
+    fn separately_requested_named_segments_remain_independent_metric_clauses() {
+        let question = "Compare AAPL iPhone, Services, Mac, iPad, and Wearables revenue mix.";
+        let segment_objective = |segment: &str| {
+            json!({
+                "priority":"required",
+                "alternatives":[{"terms":["AAPL", format!("{segment} net sales")] }],
+                "directness":"direct_required",
+                "object_types":["MetricObservation"],
+                "goal": {
+                    "kind":"metric_observation",
+                    "metric":"segment_revenue",
+                    "metric_dimensions":["segment"]
+                }
+            })
+        };
+        let mut proposal = proposal();
+        proposal["objectives"] = Value::Array(
+            ["iPhone", "Services", "Mac", "iPad", "Wearables"]
+                .into_iter()
+                .map(segment_objective)
+                .collect(),
+        );
+
+        let compiled = compile_research_proposal(&proposal, company_scope(question)).unwrap();
+        let clauses = compiled.search_plan["clauses"].as_array().unwrap();
+        // The five named products remain independent numerators, plus the
+        // deterministic company-total revenue denominator required by the
+        // user's explicit mix question.
+        assert_eq!(clauses.len(), 6);
+        assert_eq!(compiled.search_plan["limit_results"], json!(18));
+        for segment in ["iPhone", "Services", "Mac", "iPad", "Wearables"] {
+            assert!(clauses.iter().any(|clause| {
+                clause["metrics"] == json!(["segment_revenue"])
+                    && clause["metric_scope"] == json!("dimensioned")
+                    && clause["metric_dimensions"] == json!([])
+                    && clause["retrieval_query"]
+                        .as_str()
+                        .is_some_and(|query| query.contains(segment))
+            }));
+        }
+        assert!(clauses.iter().any(|clause| {
+            clause["metrics"] == json!(["revenue"])
+                && clause["metric_scope"] == json!("company_total")
+        }));
+    }
+
+    #[test]
+    fn revenue_mix_derives_a_company_total_denominator_clause() {
+        // A product/service mix cannot be calculated from dimensioned revenue
+        // observations alone. The provider proposal intentionally names only
+        // the two user-facing numerators; the compiler must add the stable
+        // company-total denominator instead of leaving the composer to report
+        // that a disclosed share is unavailable.
+        let question = "애플의 아이폰·서비스 매출 비중을 비교해줘.";
+        let segment_objective = |term: &str| {
+            json!({
+                "priority":"required",
+                "alternatives":[{"terms":[term]}],
+                "directness":"direct_required",
+                "object_types":["MetricObservation"],
+                "goal": {
+                    "kind":"metric_observation",
+                    "metric":"segment_revenue",
+                    "metric_dimensions":[]
+                }
+            })
+        };
+        let mut proposal = proposal();
+        proposal["objectives"] = json!([
+            segment_objective("iPhone net sales"),
+            segment_objective("Services net sales")
+        ]);
+
+        let compiled = compile_research_proposal(&proposal, company_scope(question))
+            .expect("a revenue-mix proposal compiles");
+        let clauses = compiled.search_plan["clauses"]
+            .as_array()
+            .expect("canonical clauses");
+
+        assert_eq!(clauses.len(), 3);
+        assert!(clauses.iter().any(|clause| {
+            clause["metrics"] == json!(["revenue"])
+                && clause["metric_scope"] == json!("company_total")
+                && clause["retrieval_query"]
+                    .as_str()
+                    .is_some_and(|query| query.contains("total net sales"))
+        }));
     }
 
     #[test]
@@ -1558,6 +2018,45 @@ mod tests {
     }
 
     #[test]
+    fn first_retrieval_alternative_is_the_model_selected_primary_phrase() {
+        // Alternatives are ordered evidence-retrieval preferences, not an
+        // unordered set.  Choosing by content hash lets an arbitrary phrase
+        // win even when the planner deliberately supplied its best filing
+        // wording first; that creates a false-empty lookup without any new
+        // information from the user or model.
+        let question = "How durable is AAPL services growth?";
+        for (primary, secondary) in [
+            ("services growth", "services expansion"),
+            ("net sales", "revenue"),
+            ("risk factors", "principal risks"),
+            (
+                "cash provided by operating activities",
+                "operating cash flow",
+            ),
+            ("iPhone net sales", "iPhone revenue"),
+            ("research and development", "R&D expense"),
+            ("gross margin", "gross profit margin"),
+            ("customer concentration", "customer dependency"),
+        ] {
+            let mut proposal = proposal();
+            proposal["objectives"][0]["alternatives"] = json!([
+                {"terms":["AAPL", primary]},
+                {"terms":["AAPL", secondary]}
+            ]);
+
+            let compiled = compile_research_proposal(&proposal, company_scope(question)).unwrap();
+            let clauses = compiled.search_plan["clauses"].as_array().unwrap();
+            assert_eq!(clauses.len(), 1);
+            assert!(
+                clauses[0]["retrieval_query"]
+                    .as_str()
+                    .is_some_and(|query| query.contains(primary)),
+                "primary alternative {primary:?} must win over {secondary:?}"
+            );
+        }
+    }
+
+    #[test]
     fn metric_objective_lowers_to_a_pure_dimensioned_metric_clause() {
         let question = "How durable is AAPL services growth?";
         let mut proposal = proposal();
@@ -1594,11 +2093,12 @@ mod tests {
     }
 
     #[test]
-    fn metric_time_series_never_invents_a_comparison_window() {
-        // Regression for the live Flash failure: "revenue trend" is a
-        // request for observations across time, not implicitly a growth-rate
-        // or period-over-period calculation. The tagged V4 goal lets the
-        // compiler derive the only valid physical shape.
+    fn metric_time_series_preserves_an_observation_selection_window() {
+        // "Revenue trend" asks for observations across time, not a generated
+        // growth-rate claim.  It still needs a compatible pair retained by
+        // the retrieval layer, so the existing calculation-window field acts
+        // only as a selection window while the plan remains on the raw-value
+        // axis.
         let question = "Explain AAPL revenue trend from its latest 10-K.";
         let mut proposal = proposal();
         proposal["objectives"][0]["alternatives"][0]["terms"] = json!(["AAPL", "revenue trend"]);
@@ -1614,9 +2114,9 @@ mod tests {
         assert_eq!(plan["comparison_axes"], json!(["directness", "value"]));
         assert_eq!(plan["clauses"][0]["metrics"], json!(["revenue"]));
         assert_eq!(plan["clauses"][0]["required_concepts"], json!([]));
-        assert!(
-            plan["clauses"][0].get("calculation_window").is_none()
-                || plan["clauses"][0]["calculation_window"] == Value::Null
+        assert_eq!(
+            plan["clauses"][0]["calculation_window"],
+            json!("period_over_period")
         );
         validate_value(SEARCH_PLAN_V2, &plan).unwrap();
     }
@@ -1796,10 +2296,11 @@ mod tests {
         let plan = compile_research_proposal(&proposal, company_scope(question))
             .unwrap()
             .search_plan;
-        assert_eq!(
-            plan["clauses"][0]["retrieval_query"],
-            "AAPL a services growth"
-        );
+        // The company scope travels in the clause's `tickers` field.  The
+        // text query must remain a filing-language query because a quote or
+        // table row generally does not contain the ticker symbol itself.
+        assert_eq!(plan["clauses"][0]["retrieval_query"], "a services growth");
+        assert_eq!(plan["clauses"][0]["tickers"], json!(["AAPL"]));
         validate_value(SEARCH_PLAN_V2, &plan).unwrap();
     }
 

@@ -6,8 +6,11 @@ use krw_agent_evidence::{
     Answerability, Calculation, Directness, EvidenceGrade, EvidenceRecord, EvidenceScope,
     EvidenceSource, NormalizedFact, PublicCitation,
 };
-use krw_agent_planning::{DirectnessRequirement, EvidenceGoal, EvidenceGoalGraph, GoalStatus, PPM};
-use krw_agent_protocol::ContentHash;
+use krw_agent_planning::{
+    DirectnessRequirement, EvidenceGoal, EvidenceGoalGraph, GoalStatus, MAX_EVIDENCE_GOAL_LINKS,
+    PPM,
+};
+use krw_agent_protocol::{ContentHash, is_canonical_ticker};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -21,10 +24,29 @@ const MAX_MARKET_SNAPSHOT_METRICS: usize = 6;
 const MAX_MARKET_METRIC_ABS: f64 = 1.0e18;
 const MAX_RESEARCH_FACTS_PER_RECORD: usize = 128;
 const MAX_RESEARCH_CALCULATIONS: usize = 64;
+// The ontology contract already caps this renderer-neutral sidecar at eight
+// series with twelve observations each. Keep the same bounds in the adapter
+// so a malformed payload cannot expand the trusted evidence context.
+const MAX_METRIC_SERIES_RECORDS: usize = 8;
+const MAX_METRIC_SERIES_POINTS: usize = 12;
 const MAX_NORMALIZED_RECORD_BYTES: usize = 256 * 1024;
 const MAX_PLANNING_GAPS: usize = 256;
+// A compacted analyst turn must retain the exact, server-normalized follow-up
+// reads for required gaps.  The raw ResearchState is deliberately removed at
+// every settled boundary, so keeping this small list prevents the analyst from
+// seeing only "missing" without the safe query it can actually issue.
+// A SearchPlan is capped at twelve clauses. Retain every missing required
+// clause's follow-up candidate so an item near the end of a broad plan is not
+// hidden merely by clause order.
+const MAX_EXACT_TARGETED_QUERY_CANDIDATES: usize = 12;
+const MAX_EXACT_TARGETED_QUERY_FILTERS: usize = 16;
+const MAX_SOURCE_ANCHORS: usize = 32;
+const MAX_RESEARCH_WARNINGS: usize = 32;
+const MAX_CHAIN_CONTEXT_ITEMS: usize = 16;
+const MAX_CHAIN_CONTEXT_DEPTH: usize = 4;
+const MAX_CHAIN_CONTEXT_STRING_BYTES: usize = 512;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchStateV2 {
     pub contract_version: String,
@@ -50,7 +72,7 @@ pub struct ResearchStateV2 {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchAnswerability {
     pub status: String,
@@ -62,7 +84,7 @@ pub struct ResearchAnswerability {
     pub reason_codes: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClauseCoverage {
     pub clause_id: String,
@@ -144,7 +166,7 @@ pub struct MetricPoint {
     pub conflict_value_count: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputedValue {
     pub calculation_id: String,
@@ -170,7 +192,62 @@ pub struct ComputedValue {
     pub source_object_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Renderer-neutral, filing-anchored metric series returned alongside a
+/// `ResearchState`. These values used to be visible only in the raw MCP
+/// payload, which is removed at the next compaction boundary. Keeping a
+/// bounded evidence projection lets the composer use product, service, and
+/// geographic series that the ontology already retrieved.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetricSeriesPack {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    series: Vec<MetricSeries>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetricSeries {
+    series_key: String,
+    label: String,
+    #[serde(default)]
+    canonical_metric: Option<String>,
+    #[serde(default)]
+    metric_name: Option<String>,
+    #[serde(default)]
+    ticker: Option<String>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    period_type: Option<String>,
+    #[serde(default)]
+    duration: Option<String>,
+    scope: MetricSeriesScope,
+    #[serde(default)]
+    points: Vec<MetricSeriesPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetricSeriesScope {
+    key: String,
+    kind: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetricSeriesPoint {
+    period: String,
+    value: Value,
+    object_id: String,
+    #[serde(default)]
+    formatted_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalculationCoverage {
     pub clause_id: String,
@@ -208,12 +285,37 @@ pub struct RecommendedAction {
     pub ticker: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Continuation {
     pub has_more: bool,
     pub omitted_evidence_count: u32,
     pub reason: Option<String>,
+}
+
+/// Safe, bounded filing provenance retained after raw MCP output is compacted.
+/// This is control context, not evidence: it tells later roles whether a
+/// current-driver document exists, whether pagination omitted rows, or whether
+/// a retrieval failed. It cannot itself support a factual claim.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceAnchor {
+    pub ticker: Option<String>,
+    pub period: Option<String>,
+    pub document_type: Option<String>,
+    pub role: String,
+    pub source_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchRetrievalStatus {
+    #[serde(default)]
+    pub source_anchors: Vec<ResearchSourceAnchor>,
+    #[serde(default)]
+    pub continuation: Option<Continuation>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +371,38 @@ pub struct ClausePlanningBinding {
     pub retrieval_query: String,
 }
 
+/// One exact, bounded `ontology.query` input distilled from a required clause
+/// that the ontology reports as missing.  This is control context, not
+/// evidence: it cannot support an answer claim, but it lets the analyst make
+/// a precise follow-up instead of inventing a paraphrased query after raw MCP
+/// output has been compacted away.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactTargetedQueryCandidate {
+    pub clause_id: String,
+    pub ticker: String,
+    pub topic: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub document_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub periods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_types: Vec<String>,
+    /// A known required gap must be read using its full phrase. This public
+    /// MCP field selects answer-ready records and, in the bundled runtime,
+    /// disables partial-term fallback for this kernel-generated exact read.
+    /// Default to `true` so a checkpoint created before this field existed
+    /// cannot silently regain the old lossy behavior on recovery.
+    #[serde(default = "exact_targeted_query_answer_candidate_only")]
+    pub answer_candidate_only: bool,
+    pub response_detail: String,
+    pub limit: u16,
+}
+
+const fn exact_targeted_query_answer_candidate_only() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchPlanningProjection {
@@ -276,6 +410,13 @@ pub struct ResearchPlanningProjection {
     pub clauses: Vec<ClausePlanningBinding>,
     pub missing_parts: Vec<MissingPart>,
     pub recommended_actions: Vec<RecommendedAction>,
+    /// Exact full-detail reads for the currently missing required clauses.
+    /// Kept separately from prose hints so the candidate survives the trusted
+    /// compaction boundary and remains copyable by the analyst.
+    #[serde(default)]
+    pub exact_precise_query_candidates: Vec<ExactTargetedQueryCandidate>,
+    #[serde(default)]
+    pub retrieval_status: ResearchRetrievalStatus,
 }
 
 /// Canonical per-clause progress distilled from a `ResearchState`. This is
@@ -462,7 +603,207 @@ pub fn derive_research_planning_projection(
         clauses,
         missing_parts: state.missing_parts.clone(),
         recommended_actions: state.recommended_actions.clone(),
+        exact_precise_query_candidates: exact_precise_query_candidates(state),
+        retrieval_status: research_retrieval_status(state),
     })
+}
+
+/// Preserve the exact candidate shape the kernel previously attached only to
+/// the raw `query_context` tool result.  The raw result is intentionally
+/// scrubbed before the analyst turn, so derive the same bounded inputs into
+/// the durable projection instead.  Bad optional filters are omitted rather
+/// than making a valid research state fail; the resulting query becomes
+/// broader and remains subject to the normal trusted-scope check at dispatch.
+fn exact_precise_query_candidates(state: &ResearchStateV2) -> Vec<ExactTargetedQueryCandidate> {
+    let Some(plan) = state.plan.as_object() else {
+        return Vec::new();
+    };
+    let missing_clause_ids = state
+        .missing_parts
+        .iter()
+        .filter_map(|part| part.clause_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    if missing_clause_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let fallback_ticker = bounded_plan_values(plan.get("tickers"), 32)
+        .into_iter()
+        .find(|ticker| valid_targeted_ticker(ticker));
+    let document_types = bounded_plan_values(plan.get("document_types"), 128);
+    let periods = bounded_plan_values(plan.get("periods"), 128);
+    let Some(clauses) = plan.get("clauses").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    for clause in clauses {
+        if candidates.len() >= MAX_EXACT_TARGETED_QUERY_CANDIDATES {
+            break;
+        }
+        let Some(clause) = clause.as_object() else {
+            continue;
+        };
+        if !clause
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(clause_id) = bounded_optional(clause.get("clause_id"), 64) else {
+            continue;
+        };
+        if !missing_clause_ids.contains(clause_id.as_str()) {
+            continue;
+        }
+        let Some(retrieval_query) = bounded_optional(clause.get("retrieval_query"), 512) else {
+            continue;
+        };
+        let ticker = bounded_plan_values(clause.get("tickers"), 32)
+            .into_iter()
+            .find(|ticker| valid_targeted_ticker(ticker))
+            .or_else(|| fallback_ticker.clone());
+        let Some(ticker) = ticker else {
+            continue;
+        };
+        let topic = focused_targeted_query_topic(clause, &retrieval_query);
+        candidates.push(ExactTargetedQueryCandidate {
+            clause_id,
+            ticker,
+            topic,
+            document_types: document_types.clone(),
+            periods: periods.clone(),
+            object_types: bounded_plan_values(clause.get("object_types"), 128),
+            answer_candidate_only: true,
+            response_detail: "full".into(),
+            limit: 20,
+        });
+    }
+    candidates
+}
+
+/// `query_context` can use a canonical metric clause plus multiple discovery
+/// aliases, but the targeted-query ABI has only one FTS `topic` field.  The
+/// bundled runtime treats that topic as a strict AND when
+/// `answer_candidate_only=true`. Passing every alias therefore asks one
+/// filing object to contain mutually redundant spellings such as `R&D`,
+/// `research and development`, and `rd_expense`, which makes an existing fact
+/// look absent. For ordinary company-total metrics, use one stable filing
+/// phrase and retain the original query for named/dimensioned breakdowns.
+/// This narrows only the follow-up text; ticker, period, document, and object
+/// type filters remain unchanged.
+fn focused_targeted_query_topic(clause: &serde_json::Map<String, Value>, fallback: &str) -> String {
+    let metric_scope = clause
+        .get("metric_scope")
+        .and_then(Value::as_str)
+        .unwrap_or("any");
+    if metric_scope == "dimensioned" {
+        return fallback.to_owned();
+    }
+    let metrics = bounded_plan_values(clause.get("metrics"), 128);
+    let [metric] = metrics.as_slice() else {
+        return fallback.to_owned();
+    };
+    let phrase = match metric.as_str() {
+        "revenue" => "net sales",
+        "gross_margin" => "gross margin",
+        "operating_margin" => "operating margin",
+        "research_and_development" => "research and development",
+        "selling_general_and_admin" => "selling general administrative",
+        "operating_cash_flow" => "cash from operating activities",
+        "free_cash_flow" => "free cash flow",
+        "capital_expenditures" => "capital expenditures",
+        "cash_and_equivalents" => "cash and cash equivalents",
+        "total_debt" => "total debt",
+        _ => return fallback.to_owned(),
+    };
+    phrase.to_owned()
+}
+
+fn bounded_plan_values(value: Option<&Value>, max_bytes: usize) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|value| safe_single_line(value, max_bytes, ""))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(MAX_EXACT_TARGETED_QUERY_FILTERS)
+        .collect()
+}
+
+fn valid_targeted_ticker(ticker: &str) -> bool {
+    !ticker.is_empty()
+        && ticker.len() <= 32
+        && ticker.bytes().all(|byte| {
+            byte.is_ascii_uppercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        })
+}
+
+fn research_retrieval_status(state: &ResearchStateV2) -> ResearchRetrievalStatus {
+    let mut anchors = state
+        .source_anchors
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|anchor| {
+            let role = bounded_optional(anchor.get("role"), 64)
+                .unwrap_or_else(|| "retrieved_evidence".into());
+            let raw_period = bounded_optional(anchor.get("period"), 128);
+            let document_type = bounded_optional(anchor.get("document_type"), 64);
+            Some(ResearchSourceAnchor {
+                ticker: bounded_optional(anchor.get("ticker"), 32),
+                // `CY2026Q1` is an ontology routing bucket, not a statement
+                // that this issuer calls the filing its fiscal Q1.  Keep the
+                // user-facing control context neutral until an observed
+                // financial period/date can establish a fiscal label.
+                period: presentation_document_period(
+                    raw_period.as_deref(),
+                    document_type.as_deref(),
+                ),
+                document_type: document_type.clone(),
+                role,
+                source_label: presentation_source_label(
+                    bounded_optional(anchor.get("source_label"), 512).as_deref(),
+                    raw_period.as_deref(),
+                    document_type.as_deref(),
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    anchors.sort_by(|left, right| {
+        (
+            left.ticker.as_deref().unwrap_or(""),
+            left.role.as_str(),
+            left.period.as_deref().unwrap_or(""),
+            left.document_type.as_deref().unwrap_or(""),
+        )
+            .cmp(&(
+                right.ticker.as_deref().unwrap_or(""),
+                right.role.as_str(),
+                right.period.as_deref().unwrap_or(""),
+                right.document_type.as_deref().unwrap_or(""),
+            ))
+    });
+    anchors.dedup();
+    anchors.truncate(MAX_SOURCE_ANCHORS);
+
+    let warnings = state
+        .warnings
+        .iter()
+        .map(|warning| safe_single_line(warning, 256, ""))
+        .filter(|warning| !warning.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(MAX_RESEARCH_WARNINGS)
+        .collect();
+    ResearchRetrievalStatus {
+        source_anchors: anchors,
+        continuation: state.continuation.clone(),
+        warnings,
+    }
 }
 
 /// Compile canonical server coverage into the kernel's deterministic research
@@ -543,7 +884,7 @@ pub fn derive_evidence_goal_graph(
             calculation_required: false,
             status,
             coverage_ppm,
-            evidence_ids: coverage.evidence_ids.clone(),
+            evidence_ids: bounded_goal_links(&coverage.evidence_ids),
             calculation_ids: Vec::new(),
         });
     }
@@ -577,10 +918,25 @@ pub fn derive_evidence_goal_graph(
             status,
             coverage_ppm,
             evidence_ids: Vec::new(),
-            calculation_ids: coverage.calculation_ids.clone(),
+            calculation_ids: bounded_goal_links(&coverage.calculation_ids),
         });
     }
     EvidenceGoalGraph::new(goals).map_err(AdapterError::Planning)
+}
+
+/// A ResearchState may retain many matching records for one clause. They all
+/// remain in the EvidenceLedger; the planning graph only needs a bounded,
+/// deterministic witness set to decide which unresolved goal can advance.
+/// Preserve server order because it already reflects selector priority, while
+/// removing repeated references before the graph's fixed link cap is applied.
+fn bounded_goal_links(values: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .iter()
+        .filter(|value| seen.insert(value.as_str()))
+        .take(MAX_EVIDENCE_GOAL_LINKS)
+        .cloned()
+        .collect()
 }
 
 fn clause_goal_id(clause_id: &str) -> String {
@@ -656,6 +1012,167 @@ pub fn parse_research_state(bytes: &[u8]) -> Result<ResearchStateV2, AdapterErro
     Ok(state)
 }
 
+/// Remove explicit foreign-company material from a fixed-company ResearchState
+/// before it can become either ledger evidence or provider-visible context.
+///
+/// The MCP result is still a successful read: a bad unit is withheld and the
+/// remaining in-scope material is returned to the analyst.  This deliberately
+/// does not turn a remote scope defect into a terminal run failure or request
+/// another model turn.  Wide discovery has no pre-authorized ticker set and
+/// therefore remains untouched.
+pub fn sanitize_research_state_scope(
+    state: &ResearchStateV2,
+    expected_tickers: &[String],
+) -> ResearchStateV2 {
+    const WITHHELD_WARNING: &str = "out_of_scope_evidence_withheld";
+
+    let expected = expected_tickers
+        .iter()
+        .filter(|ticker| is_canonical_ticker(ticker))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if expected.is_empty() {
+        return state.clone();
+    }
+
+    let mut sanitized = state.clone();
+    let mut withheld = false;
+    let ticker_in_scope =
+        |ticker: Option<&str>| ticker.is_none_or(|ticker| expected.contains(ticker));
+
+    let evidence_before = sanitized.evidence_units.len();
+    sanitized
+        .evidence_units
+        .retain(|unit| ticker_in_scope(unit.ticker.as_deref()));
+    withheld |= sanitized.evidence_units.len() != evidence_before;
+    let retained_evidence_ids = sanitized
+        .evidence_units
+        .iter()
+        .map(|unit| unit.evidence_id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let calculations_before = sanitized.computed_values.len();
+    sanitized
+        .computed_values
+        .retain(|value| value.tickers.iter().all(|ticker| expected.contains(ticker)));
+    withheld |= sanitized.computed_values.len() != calculations_before;
+
+    let source_anchors_before = sanitized.source_anchors.len();
+    sanitized
+        .source_anchors
+        .retain(|anchor| ticker_in_scope(anchor.get("ticker").and_then(Value::as_str)));
+    withheld |= sanitized.source_anchors.len() != source_anchors_before;
+
+    let missing_before = sanitized.missing_parts.len();
+    sanitized
+        .missing_parts
+        .retain(|part| ticker_in_scope(part.ticker.as_deref()));
+    let actions_before = sanitized.recommended_actions.len();
+    sanitized
+        .recommended_actions
+        .retain(|action| ticker_in_scope(action.ticker.as_deref()));
+    withheld |= sanitized.missing_parts.len() != missing_before
+        || sanitized.recommended_actions.len() != actions_before;
+
+    if let Some(series_pack) = sanitized.metric_series_pack.as_mut()
+        && let Some(series) = series_pack.get_mut("series").and_then(Value::as_array_mut)
+    {
+        let before = series.len();
+        series.retain(|item| ticker_in_scope(item.get("ticker").and_then(Value::as_str)));
+        withheld |= series.len() != before;
+    }
+
+    for coverage in &mut sanitized.clause_coverage {
+        let evidence_before = coverage.evidence_ids.len();
+        coverage
+            .evidence_ids
+            .retain(|evidence_id| retained_evidence_ids.contains(evidence_id.as_str()));
+        let covered_before = coverage.covered_tickers.len();
+        coverage
+            .covered_tickers
+            .retain(|ticker| expected.contains(ticker));
+        let missing_before = coverage.missing_tickers.len();
+        coverage
+            .missing_tickers
+            .retain(|ticker| expected.contains(ticker));
+        let coverage_withheld = coverage.evidence_ids.len() != evidence_before
+            || coverage.covered_tickers.len() != covered_before
+            || coverage.missing_tickers.len() != missing_before;
+        if coverage_withheld {
+            withheld = true;
+            coverage.strong_claim_ready = false;
+            coverage.best_directness = None;
+            coverage.best_evidence_grade = None;
+            coverage.status = if coverage.evidence_ids.is_empty()
+                || (covered_before > 0 && coverage.covered_tickers.is_empty())
+            {
+                "missing".into()
+            } else {
+                "partial".into()
+            };
+            coverage.reason = Some(WITHHELD_WARNING.into());
+        }
+    }
+
+    for coverage in &mut sanitized.calculation_coverage {
+        let required_before = coverage.required_tickers.len();
+        let covered_before = coverage.covered_tickers.len();
+        coverage
+            .required_tickers
+            .retain(|ticker| expected.contains(ticker));
+        coverage
+            .covered_tickers
+            .retain(|ticker| expected.contains(ticker));
+        if coverage.required_tickers.len() != required_before
+            || coverage.covered_tickers.len() != covered_before
+        {
+            withheld = true;
+            coverage.status = if coverage.covered_tickers.is_empty() {
+                "missing".into()
+            } else {
+                "partial".into()
+            };
+            coverage.reason = Some(WITHHELD_WARNING.into());
+        }
+    }
+
+    if withheld {
+        let required = sanitized
+            .clause_coverage
+            .iter()
+            .filter(|coverage| coverage.required)
+            .count();
+        let covered = sanitized
+            .clause_coverage
+            .iter()
+            .filter(|coverage| coverage.required && coverage.status == "covered")
+            .count();
+        sanitized.answerability.required_clause_count = u16::try_from(required).unwrap_or(u16::MAX);
+        sanitized.answerability.covered_required_clause_count =
+            u16::try_from(covered).unwrap_or(u16::MAX);
+        sanitized.answerability.strong_claim_allowed = false;
+        if covered < required {
+            sanitized.answerability.status = if covered == 0 {
+                "not_answerable".into()
+            } else {
+                "partial".into()
+            };
+        }
+        sanitized
+            .answerability
+            .reason_codes
+            .push(WITHHELD_WARNING.into());
+        sanitized.answerability.reason_codes.sort();
+        sanitized.answerability.reason_codes.dedup();
+        sanitized.warnings.push(WITHHELD_WARNING.into());
+        sanitized.warnings.sort();
+        sanitized.warnings.dedup();
+        sanitized.warnings.truncate(MAX_RESEARCH_WARNINGS);
+    }
+
+    sanitized
+}
+
 pub fn map_research_state(
     state: &ResearchStateV2,
     context: &MappingContext,
@@ -697,7 +1214,12 @@ pub fn map_research_state(
         })
         .collect::<Vec<_>>();
     let mut object_to_evidence = BTreeMap::new();
-    let mut records = Vec::with_capacity(state.evidence_units.len());
+    let mut records = Vec::with_capacity(
+        state
+            .evidence_units
+            .len()
+            .saturating_add(MAX_METRIC_SERIES_RECORDS),
+    );
     for unit in &state.evidence_units {
         if !valid_identifier(&unit.evidence_id)
             || unit
@@ -730,7 +1252,30 @@ pub fn map_research_state(
             object_to_evidence.insert(object_id.clone(), unit.evidence_id.clone());
         }
         let entity = clean_optional(unit.ticker.as_deref(), 128);
-        let period = clean_optional(unit.period.as_deref(), 128);
+        // `unit.period` labels the source document's ontology bucket.  It is
+        // not necessarily the financial observation period: for example, a
+        // document indexed as CY2025 can contain Apple's FY2025 year-to-date
+        // cash-flow point.  Keep the source label for the citation, but use a
+        // single unambiguous metric-point period for the evidence record.
+        // When a record contains several observation periods, deliberately do
+        // not invent one record-wide period; every retained fact still carries
+        // its own period.
+        let raw_document_period = clean_optional(unit.period.as_deref(), 128);
+        let document_period = presentation_document_period(
+            raw_document_period.as_deref(),
+            unit.document_type.as_deref(),
+        );
+        let raw_period = research_metric_record_period(unit, raw_document_period.clone());
+        let period = if let Some(point) = unit.metric_points.first() {
+            presentation_observation_period(
+                raw_period.as_deref(),
+                point.period_type.as_deref(),
+                point.end_date.as_deref(),
+            )
+        } else {
+            presentation_document_period(raw_period.as_deref(), unit.document_type.as_deref())
+        };
+        let as_of = research_metric_as_of(unit);
         let normalized_unit = clean_optional(unit.unit.as_deref(), 64);
         let subject = entity.clone().unwrap_or_else(|| "company".into());
         let predicate = safe_single_line(
@@ -770,7 +1315,29 @@ pub fn map_research_state(
                     predicate: safe_single_line(&predicate, 128, "metric"),
                     value: point.value.clone().unwrap_or(Value::Null),
                     unit: normalized_unit.clone(),
-                    period: clean_optional(Some(point.period.as_str()), 128),
+                    period: presentation_observation_period(
+                        Some(point.period.as_str()),
+                        point.period_type.as_deref(),
+                        point.end_date.as_deref(),
+                    ),
+                });
+            }
+            // Preserve the basis that turns a raw number into a meaningful
+            // observation (annual vs. year-to-date vs. quarter, date window,
+            // currency, scope, and dimensions).  This is one bounded context
+            // fact per evidence record rather than a new research requirement;
+            // it lets the analyst distinguish compatible comparisons without
+            // expanding the ontology schema or adding a model turn.
+            if facts.len() < MAX_RESEARCH_FACTS_PER_RECORD
+                && let Some(context_value) =
+                    research_metric_context(unit, raw_document_period.as_deref())
+            {
+                facts.push(NormalizedFact {
+                    subject: safe_single_line(&subject, 256, "company"),
+                    predicate: "metric_context".into(),
+                    value: context_value,
+                    unit: None,
+                    period: period.clone(),
                 });
             }
         }
@@ -788,7 +1355,7 @@ pub fn map_research_state(
             scope: context.scope.clone(),
             entity,
             period: period.clone(),
-            as_of: None,
+            as_of,
             directness,
             grade,
             strong_claim_allowed,
@@ -799,7 +1366,9 @@ pub fn map_research_state(
                     |title| safe_single_line(title, 512, "KRW ontology evidence"),
                 ),
                 document_type: clean_optional(unit.document_type.as_deref(), 128),
-                period,
+                // Citation period identifies the filing bucket; the evidence
+                // record and its facts above identify the economic period.
+                period: document_period,
             },
             facts,
             supports: unit.supports_clause_ids.clone(),
@@ -810,6 +1379,19 @@ pub fn map_research_state(
         ensure_record_bound(&record)?;
         records.push(record);
     }
+    let series_records =
+        map_metric_series_pack_records(state.metric_series_pack.as_ref(), context)?;
+    for record in &series_records {
+        for object_id in &record.source_object_ids {
+            // A primary EvidenceUnit has the authoritative clause linkage.
+            // The sidecar can back a calculation only when that primary unit
+            // was not returned in the bounded evidence page.
+            object_to_evidence
+                .entry(object_id.clone())
+                .or_insert_with(|| record.evidence_id.clone());
+        }
+    }
+    records.extend(series_records);
     if state
         .computed_values
         .iter()
@@ -875,6 +1457,336 @@ pub fn map_research_state(
     })
 }
 
+/// Returns the single economic period shared by a metric record, if there is
+/// one. `EvidenceUnit.period` is a source-document label and must not override
+/// a fiscal observation period carried by the metric point itself.
+fn research_metric_record_period(
+    unit: &EvidenceUnit,
+    document_period: Option<String>,
+) -> Option<String> {
+    if unit.metric_points.is_empty() {
+        return document_period;
+    }
+    let mut periods = BTreeSet::new();
+    for point in &unit.metric_points {
+        if let Some(period) = clean_optional(Some(point.period.as_str()), 128) {
+            periods.insert(period);
+        }
+    }
+    match periods.len() {
+        0 => document_period,
+        1 => periods.into_iter().next(),
+        // A multi-period record is intentionally record-period-less. Each
+        // fact retains its own period, which is safer than choosing an
+        // arbitrary first or latest point.
+        _ => None,
+    }
+}
+
+/// A date is useful as a recency anchor only when every retained metric point
+/// agrees on it. Mixed annual/quarterly/YTD records deliberately expose no
+/// record-wide `as_of` date.
+fn research_metric_as_of(unit: &EvidenceUnit) -> Option<String> {
+    if unit.metric_points.is_empty() {
+        return None;
+    }
+    let mut dates = BTreeSet::new();
+    for point in &unit.metric_points {
+        if let Some(date) = clean_optional(point.end_date.as_deref(), 128) {
+            dates.insert(date);
+        }
+    }
+    (dates.len() == 1)
+        .then(|| dates.into_iter().next())
+        .flatten()
+}
+
+/// The ontology uses `CY2026Q1`-style strings as stable index buckets.  They
+/// are useful for routing, but they do not establish an issuer's fiscal
+/// quarter: Apple's filing indexed as `CY2026Q1`, for example, ends on March
+/// 28 and is not safe to present as "Apple fiscal Q1".  Model-facing evidence
+/// therefore receives a neutral document-year label.  Genuine `FY...` and
+/// observed date labels pass through unchanged.
+fn presentation_document_period(
+    period: Option<&str>,
+    _document_type: Option<&str>,
+) -> Option<String> {
+    let period = clean_optional(period, 128)?;
+    cy_bucket_year(&period)
+        .map(|year| format!("{year}년"))
+        .or(Some(period))
+}
+
+/// Use the observed end date and basis when a metric is carried in a calendar
+/// routing bucket.  This avoids guessing a fiscal-quarter number while still
+/// giving the analyst an exact, comparable reporting reference.
+fn presentation_observation_period(
+    period: Option<&str>,
+    period_type: Option<&str>,
+    end_date: Option<&str>,
+) -> Option<String> {
+    let period = clean_optional(period, 128)?;
+    if cy_bucket_year(&period).is_none() {
+        return Some(period);
+    }
+    let basis = presentation_period_basis(period_type);
+    if let Some(end_date) = clean_optional(end_date, 128) {
+        return Some(match basis {
+            Some(basis) => format!("{end_date} 종료 {basis}"),
+            None => format!("{end_date} 종료"),
+        });
+    }
+    let year = cy_bucket_year(&period).expect("checked above");
+    Some(match basis {
+        Some(basis) => format!("{year}년 {basis}"),
+        None => format!("{year}년"),
+    })
+}
+
+fn presentation_source_label(
+    source_label: Option<&str>,
+    raw_period: Option<&str>,
+    document_type: Option<&str>,
+) -> Option<String> {
+    let source_label = clean_optional(source_label, 512)?;
+    let Some(raw_period) = clean_optional(raw_period, 128) else {
+        return Some(source_label);
+    };
+    let Some(display_period) = presentation_document_period(Some(&raw_period), document_type)
+    else {
+        return Some(source_label);
+    };
+    if raw_period == display_period {
+        Some(source_label)
+    } else {
+        Some(source_label.replace(&raw_period, &display_period))
+    }
+}
+
+fn cy_bucket_year(value: &str) -> Option<&str> {
+    let suffix = value.strip_prefix("CY")?;
+    let year = suffix.get(..4)?;
+    if !year.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let remainder = suffix.get(4..)?;
+    if remainder.is_empty()
+        || matches!(remainder.as_bytes(), [b'Q', b'1'..=b'4'])
+        || matches!(remainder.as_bytes(), [b' ', b'Q', b'1'..=b'4'])
+    {
+        Some(year)
+    } else {
+        None
+    }
+}
+
+fn presentation_period_basis(period_type: Option<&str>) -> Option<&'static str> {
+    let period_type = period_type?.trim().to_ascii_lowercase();
+    match period_type.as_str() {
+        "annual" | "year" | "yearly" => Some("연간"),
+        "quarter" | "quarterly" | "three_months" | "three_month" => Some("분기"),
+        "year_to_date" | "ytd" | "six_months" | "nine_months" | "cumulative" => Some("누적"),
+        _ => None,
+    }
+}
+
+/// Retain the observation basis once per primary ResearchState record. The
+/// source ontology already supplies this metadata, but raw capability content
+/// is compacted away after ingestion; without this compact fact an annual
+/// source label can be mistaken for a fiscal quarter or a year-to-date value.
+fn research_metric_context(unit: &EvidenceUnit, document_period: Option<&str>) -> Option<Value> {
+    const MAX_OBSERVATIONS: usize = 16;
+    const MAX_DIMENSIONS: usize = 16;
+
+    let mut context = serde_json::Map::new();
+    if let Some(period) =
+        presentation_document_period(document_period, unit.document_type.as_deref())
+    {
+        context.insert("source_document_period".into(), Value::String(period));
+    }
+    if let Some(document_type) = clean_optional(unit.document_type.as_deref(), 128) {
+        context.insert("source_document_type".into(), Value::String(document_type));
+    }
+    if let Some(currency) = clean_optional(unit.currency.as_deref(), 16) {
+        context.insert("currency".into(), Value::String(currency));
+    }
+    if let Some(scope) = clean_optional(unit.metric_scope.as_deref(), 128) {
+        context.insert("metric_scope".into(), Value::String(scope));
+    }
+    if !unit.dimensions.is_empty() {
+        let mut dimensions = serde_json::Map::new();
+        for (key, value) in unit.dimensions.iter().take(MAX_DIMENSIONS) {
+            let key = safe_single_line(key, 128, "");
+            let value = safe_single_line(value, 256, "");
+            if !key.is_empty() && !value.is_empty() {
+                dimensions.insert(key, Value::String(value));
+            }
+        }
+        if !dimensions.is_empty() {
+            context.insert("dimensions".into(), Value::Object(dimensions));
+        }
+    }
+
+    let observations = unit
+        .metric_points
+        .iter()
+        .filter_map(|point| {
+            let mut observation = serde_json::Map::new();
+            if let Some(period) = presentation_observation_period(
+                Some(point.period.as_str()),
+                point.period_type.as_deref(),
+                point.end_date.as_deref(),
+            ) {
+                observation.insert("period".into(), Value::String(period));
+            }
+            if let Some(period_type) = clean_optional(point.period_type.as_deref(), 64) {
+                observation.insert("period_type".into(), Value::String(period_type));
+            }
+            if let Some(start_date) = clean_optional(point.start_date.as_deref(), 128) {
+                observation.insert("start_date".into(), Value::String(start_date));
+            }
+            if let Some(end_date) = clean_optional(point.end_date.as_deref(), 128) {
+                observation.insert("end_date".into(), Value::String(end_date));
+            }
+            if point.conflict_value_count > 0 {
+                observation.insert(
+                    "conflict_value_count".into(),
+                    Value::from(point.conflict_value_count),
+                );
+            }
+            (!observation.is_empty()).then_some(Value::Object(observation))
+        })
+        .take(MAX_OBSERVATIONS)
+        .collect::<Vec<_>>();
+    if !observations.is_empty() {
+        context.insert("observations".into(), Value::Array(observations));
+    }
+    (!context.is_empty()).then_some(Value::Object(context))
+}
+
+/// Admit the verified chart-series sidecar as ordinary, bounded metric
+/// evidence. The sidecar is already attached to the canonical ResearchState;
+/// not projecting it here used to discard exact product/service/geography
+/// observations at the next compaction boundary.
+///
+/// A malformed or future sidecar must never prevent the primary filing
+/// evidence from reaching the user. It is therefore ignored rather than
+/// promoted into a new failure path. Its records never grant strong-claim
+/// permission because the server did not bind them to a clause-coverage
+/// verdict.
+fn map_metric_series_pack_records(
+    payload: Option<&Value>,
+    context: &MappingContext,
+) -> Result<Vec<EvidenceRecord>, AdapterError> {
+    let Some(payload) = payload else {
+        return Ok(Vec::new());
+    };
+    let Ok(pack) = serde_json::from_value::<MetricSeriesPack>(payload.clone()) else {
+        return Ok(Vec::new());
+    };
+    if pack
+        .mode
+        .as_deref()
+        .is_some_and(|mode| mode != "chart_series_sidecar")
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    for series in pack.series.into_iter().take(MAX_METRIC_SERIES_RECORDS) {
+        let entity = clean_optional(series.ticker.as_deref(), 128);
+        let subject = entity.clone().unwrap_or_else(|| "company".into());
+        let label = safe_single_line(&series.label, 256, "filing metric");
+        let unit = clean_optional(series.unit.as_deref(), 64);
+        let period_type = clean_optional(series.period_type.as_deref(), 64);
+        let mut facts = Vec::new();
+        let mut source_object_ids = Vec::new();
+        let mut source_seen = BTreeSet::new();
+        for point in series.points.into_iter().take(MAX_METRIC_SERIES_POINTS) {
+            if !point.value.is_number()
+                || !valid_identifier(&point.object_id)
+                || clean_optional(Some(point.period.as_str()), 128).is_none()
+            {
+                continue;
+            }
+            let period = presentation_observation_period(
+                Some(point.period.as_str()),
+                period_type.as_deref(),
+                None,
+            );
+            facts.push(NormalizedFact {
+                subject: safe_single_line(&subject, 256, "company"),
+                predicate: label.clone(),
+                value: point.value,
+                unit: unit.clone(),
+                period,
+            });
+            if source_seen.insert(point.object_id.clone()) {
+                source_object_ids.push(point.object_id);
+            }
+        }
+        if facts.is_empty() || source_object_ids.is_empty() {
+            continue;
+        }
+
+        let scope_label = clean_optional(series.scope.label.as_deref(), 128);
+        let series_key = safe_single_line(&series.series_key, 512, "metric_series");
+        let metric = clean_optional(series.canonical_metric.as_deref(), 128)
+            .or_else(|| clean_optional(series.metric_name.as_deref(), 128));
+        let content_hash = ContentHash::sha256(serde_jcs::to_vec(&(
+            &series_key,
+            &label,
+            &metric,
+            &scope_label,
+            &entity,
+            &unit,
+            &facts,
+            &source_object_ids,
+        ))?);
+        let evidence_id = format!(
+            "metric-series:{}",
+            content_hash
+                .as_str()
+                .strip_prefix("sha256:")
+                .expect("ContentHash always has sha256 prefix")
+        );
+        let period = facts.last().and_then(|fact| fact.period.clone());
+        let record = EvidenceRecord {
+            evidence_id,
+            content_hash,
+            source: EvidenceSource {
+                capability_id: context.capability_id.clone(),
+                action_key: context.action_key.clone(),
+                server_build: context.server_build.clone(),
+                normalized_contract_hash: context.normalized_contract_hash.clone(),
+                server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+                data_release_hash: context.data_release_hash.clone(),
+            },
+            scope: context.scope.clone(),
+            entity,
+            period: period.clone(),
+            as_of: None,
+            directness: Directness::MetricLineage,
+            grade: EvidenceGrade::Strong,
+            strong_claim_allowed: false,
+            payload_ref: context.payload_ref.clone(),
+            citation: PublicCitation {
+                title: format!("{label} filing metric series"),
+                document_type: None,
+                period,
+            },
+            facts,
+            supports: Vec::new(),
+            refutes: Vec::new(),
+            qualifies: Vec::new(),
+            source_object_ids,
+        };
+        ensure_record_bound(&record)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
 /// Conservatively project the untyped search response into supplemental
 /// evidence. Search results can improve coverage, but they never grant a
 /// load-bearing strong-claim permission; only canonical `ResearchState v2`
@@ -898,12 +1810,43 @@ pub fn map_targeted_query(
     }
     let records = results
         .iter()
-        .map(|item| supplemental_record(item, item.get("evidence"), context))
+        .map(|item| {
+            let object = targeted_result_object(item)?;
+            supplemental_record(&object, targeted_result_evidence(item), context)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(SupplementalEvidenceDelta {
         records,
         calculations: Vec::new(),
     })
+}
+
+/// Targeted-query results use an envelope for pagination and source context,
+/// while the actual ontology object may be nested under ``object``.  Preserve
+/// that object's typed value and identity, filling only harmless envelope
+/// metadata that it omits.  Treating the envelope itself as evidence used to
+/// replace a numeric observation with its display text.
+fn targeted_result_object(item: &Value) -> Result<Value, AdapterError> {
+    let item_map = item
+        .as_object()
+        .ok_or(AdapterError::InvalidSupplementalPayload("result item"))?;
+    let Some(object) = item_map.get("object").and_then(Value::as_object) else {
+        return Ok(item.clone());
+    };
+    let mut normalized = object.clone();
+    for field in ["ticker", "period", "document_type", "section", "text"] {
+        if !normalized.contains_key(field)
+            && let Some(value) = item_map.get(field)
+        {
+            normalized.insert(field.to_owned(), value.clone());
+        }
+    }
+    Ok(Value::Object(normalized))
+}
+
+fn targeted_result_evidence(item: &Value) -> Option<&Value> {
+    item.get("evidence")
+        .or_else(|| item.get("object").and_then(|object| object.get("evidence")))
 }
 
 /// Project one trace response. A trace may establish directness or metric
@@ -921,10 +1864,194 @@ pub fn map_trace(
         .get("object")
         .ok_or(AdapterError::InvalidSupplementalPayload("object"))?;
     let record = supplemental_record(object, payload.get("evidence"), context)?;
+    let chain_record = chain_context_record(payload, &record, context)?;
+    let mut records = vec![record];
+    if let Some(record) = chain_record {
+        records.push(record);
+    }
     Ok(SupplementalEvidenceDelta {
-        records: vec![record],
+        records,
         calculations: Vec::new(),
     })
+}
+
+fn chain_context_record(
+    payload: &Value,
+    root: &EvidenceRecord,
+    context: &MappingContext,
+) -> Result<Option<EvidenceRecord>, AdapterError> {
+    let Some(chain) = payload.get("chain") else {
+        return Ok(None);
+    };
+    let Some(value) = bounded_chain_context_value(chain) else {
+        return Ok(None);
+    };
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(&value)?);
+    let evidence_id = format!(
+        "chain:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    );
+    let mut source_object_ids = root
+        .source_object_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    collect_chain_object_ids(chain, &mut source_object_ids, 0);
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: EvidenceSource {
+            capability_id: context.capability_id.clone(),
+            action_key: context.action_key.clone(),
+            server_build: context.server_build.clone(),
+            normalized_contract_hash: context.normalized_contract_hash.clone(),
+            server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+            data_release_hash: context.data_release_hash.clone(),
+        },
+        scope: context.scope.clone(),
+        entity: root.entity.clone(),
+        period: root.period.clone(),
+        as_of: root.as_of.clone(),
+        directness: Directness::Related,
+        grade: EvidenceGrade::Unverified,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: "KRW ontology relationship context".into(),
+            document_type: root.citation.document_type.clone(),
+            period: root.citation.period.clone(),
+        },
+        facts: vec![NormalizedFact {
+            subject: root.entity.clone().unwrap_or_else(|| "company".into()),
+            predicate: "ontology_chain_context".into(),
+            value,
+            unit: None,
+            period: root.period.clone(),
+        }],
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: source_object_ids
+            .into_iter()
+            .take(MAX_CHAIN_CONTEXT_ITEMS)
+            .collect(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(Some(record))
+}
+
+fn bounded_chain_context_value(value: &Value) -> Option<Value> {
+    let map = value.as_object()?;
+    let mut result = serde_json::Map::new();
+    for key in [
+        "evidence_chain",
+        "semantic_neighbors",
+        "temporal_context",
+        "edge_paths",
+    ] {
+        let Some(raw) = map.get(key) else {
+            continue;
+        };
+        if let Some(value) = bounded_chain_value(raw, 0) {
+            result.insert(key.to_owned(), value);
+        }
+    }
+    (!result.is_empty()).then_some(Value::Object(result))
+}
+
+fn bounded_chain_value(value: &Value, depth: usize) -> Option<Value> {
+    bounded_chain_value_for_field(value, depth, None)
+}
+
+fn bounded_chain_value_for_field(
+    value: &Value,
+    depth: usize,
+    field_name: Option<&str>,
+) -> Option<Value> {
+    if depth > MAX_CHAIN_CONTEXT_DEPTH {
+        return None;
+    }
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => Some(value.clone()),
+        Value::String(text) => {
+            let value = safe_single_line(text, MAX_CHAIN_CONTEXT_STRING_BYTES, "");
+            if value.is_empty() {
+                return None;
+            }
+            if field_name.is_some_and(is_chain_period_field) {
+                return presentation_document_period(Some(&value), None).map(Value::String);
+            }
+            Some(Value::String(value))
+        }
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .filter_map(|item| bounded_chain_value_for_field(item, depth + 1, None))
+                .take(MAX_CHAIN_CONTEXT_ITEMS)
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then_some(Value::Array(values))
+        }
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut result = serde_json::Map::new();
+            for key in keys.into_iter().take(MAX_CHAIN_CONTEXT_ITEMS) {
+                if let Some(value) =
+                    bounded_chain_value_for_field(&values[key], depth + 1, Some(key.as_str()))
+                {
+                    result.insert(key.clone(), value);
+                }
+            }
+            (!result.is_empty()).then_some(Value::Object(result))
+        }
+    }
+}
+
+fn is_chain_period_field(field_name: &str) -> bool {
+    let field_name = field_name.trim().to_ascii_lowercase();
+    field_name == "period" || field_name.ends_with("_period")
+}
+
+fn collect_chain_object_ids(value: &Value, identifiers: &mut BTreeSet<String>, depth: usize) {
+    if depth > MAX_CHAIN_CONTEXT_DEPTH {
+        return;
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .take(MAX_CHAIN_CONTEXT_ITEMS)
+            .for_each(|value| collect_chain_object_ids(value, identifiers, depth + 1)),
+        Value::Object(values) => {
+            for (key, value) in values {
+                let key = key.to_ascii_lowercase();
+                let id_field = key == "id" || key.ends_with("_id");
+                let ids_field = key.ends_with("_ids");
+                if id_field {
+                    if let Some(identifier) = value.as_str().filter(|value| valid_identifier(value))
+                    {
+                        identifiers.insert(identifier.to_owned());
+                    }
+                } else if ids_field {
+                    for identifier in value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter(|value| valid_identifier(value))
+                    {
+                        identifiers.insert(identifier.to_owned());
+                    }
+                }
+                collect_chain_object_ids(value, identifiers, depth + 1);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 /// Sanitize the untyped company-topic response before it can reach the model
@@ -1237,10 +2364,12 @@ fn company_context_topic(topic: &Value, expected_ticker: &str) -> Option<Company
         return None;
     }
     let topic_label = public_orientation_text(topic.get("topic_label"), 256)?;
+    let document_type = public_orientation_text(topic.get("document_type"), 128);
+    let raw_period = public_orientation_text(topic.get("period"), 128);
     Some(CompanyContextTopic {
         topic_label,
-        period: public_orientation_text(topic.get("period"), 128),
-        document_type: public_orientation_text(topic.get("document_type"), 128),
+        period: presentation_document_period(raw_period.as_deref(), document_type.as_deref()),
+        document_type,
         trace_status: public_orientation_text(topic.get("trace_status"), 128),
     })
 }
@@ -1379,11 +2508,45 @@ fn supplemental_record(
         .and_then(Value::as_str)
         .map_or(EvidenceGrade::Unverified, conservative_grade);
     let entity = bounded_optional(object_map.get("ticker"), 128);
-    let period = bounded_optional(object_map.get("period"), 128);
+    let raw_period = bounded_optional(object_map.get("period"), 128);
     let document_type = bounded_optional(object_map.get("document_type"), 128);
+    let period = presentation_observation_period(
+        raw_period.as_deref(),
+        object_map.get("period_type").and_then(Value::as_str),
+        object_map.get("end_date").and_then(Value::as_str),
+    );
+    let citation_period =
+        presentation_document_period(raw_period.as_deref(), document_type.as_deref());
     let subject = entity.clone().unwrap_or_else(|| "company".into());
     let mut facts = Vec::with_capacity(MAX_SUPPLEMENTAL_FACTS);
-    if let Some(value) = first_display_value(object_map) {
+    let metric_name = object_map
+        .get("metric_name")
+        .or_else(|| object_map.get("canonical_metric"))
+        .or_else(|| object_map.get("metric"))
+        .and_then(Value::as_str)
+        .map(|value| safe_single_line(value, 128, "metric"))
+        .filter(|value| !value.is_empty());
+    if let (Some(metric_name), Some(value)) = (
+        metric_name.as_deref(),
+        object_map.get("value").filter(|value| !value.is_null()),
+    ) {
+        facts.push(NormalizedFact {
+            subject: safe_single_line(&subject, 256, "company"),
+            predicate: metric_name.to_owned(),
+            value: value.clone(),
+            unit: bounded_optional(object_map.get("unit"), 64),
+            period: period.clone(),
+        });
+        if let Some(context_value) = supplemental_metric_context(object_map) {
+            facts.push(NormalizedFact {
+                subject: safe_single_line(&subject, 256, "company"),
+                predicate: "metric_context".into(),
+                value: context_value,
+                unit: None,
+                period: period.clone(),
+            });
+        }
+    } else if let Some(value) = first_display_value(object_map) {
         facts.push(NormalizedFact {
             subject: safe_single_line(&subject, 256, "company"),
             predicate: "ontology_object".into(),
@@ -1451,16 +2614,71 @@ fn supplemental_record(
         citation: PublicCitation {
             title,
             document_type,
-            period,
+            period: citation_period,
         },
         facts,
         supports: Vec::new(),
         refutes: Vec::new(),
         qualifies: Vec::new(),
-        source_object_ids: Vec::new(),
+        source_object_ids: supplemental_source_object_ids(object_map, evidence_map),
     };
     ensure_record_bound(&record)?;
     Ok(record)
+}
+
+fn supplemental_source_object_ids(
+    object: &serde_json::Map<String, Value>,
+    evidence: Option<&serde_json::Map<String, Value>>,
+) -> Vec<String> {
+    let mut identifiers = BTreeSet::new();
+    for source in [Some(object), evidence] {
+        let Some(source) = source else {
+            continue;
+        };
+        for field in ["id", "object_id"] {
+            if let Some(identifier) = source.get(field).and_then(Value::as_str)
+                && valid_identifier(identifier)
+            {
+                identifiers.insert(identifier.to_owned());
+            }
+        }
+        for field in ["object_ids", "source_object_ids"] {
+            let Some(values) = source.get(field).and_then(Value::as_array) else {
+                continue;
+            };
+            for identifier in values.iter().filter_map(Value::as_str) {
+                if valid_identifier(identifier) {
+                    identifiers.insert(identifier.to_owned());
+                }
+            }
+        }
+    }
+    identifiers
+        .into_iter()
+        .take(MAX_SUPPLEMENTAL_FACTS)
+        .collect()
+}
+
+fn supplemental_metric_context(object: &serde_json::Map<String, Value>) -> Option<Value> {
+    let mut context = serde_json::Map::new();
+    for field in [
+        "currency",
+        "metric_scope",
+        "period_type",
+        "start_date",
+        "end_date",
+        "dimensions",
+    ] {
+        let Some(value) = object.get(field) else {
+            continue;
+        };
+        if value.is_null() || !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 8 * 1024)
+        {
+            continue;
+        }
+        context.insert(field.to_owned(), value.clone());
+    }
+    (!context.is_empty()).then_some(Value::Object(context))
 }
 
 fn ensure_record_bound(record: &EvidenceRecord) -> Result<(), AdapterError> {
@@ -1673,6 +2891,146 @@ mod tests {
     }
 
     #[test]
+    fn fixed_company_scope_withholds_foreign_evidence_without_rejecting_the_read() {
+        let mut state = answerable_fixture();
+        state.evidence_units[0].ticker = Some("MSFT".into());
+        state.clause_coverage[0].covered_tickers = vec!["MSFT".into()];
+        state.clause_coverage[0].missing_tickers = Vec::new();
+
+        let sanitized = sanitize_research_state_scope(&state, &["VG".into()]);
+
+        assert!(sanitized.evidence_units.is_empty());
+        assert_eq!(sanitized.clause_coverage[0].status, "missing");
+        assert!(!sanitized.answerability.strong_claim_allowed);
+        assert!(
+            sanitized
+                .warnings
+                .iter()
+                .any(|warning| warning == "out_of_scope_evidence_withheld")
+        );
+        let delta = map_research_state(&sanitized, &context("ontology.query_context"))
+            .expect("scope cleanup remains a valid partial research result");
+        assert!(delta.records.is_empty());
+        assert_eq!(delta.answerability, Answerability::NotAnswerable);
+    }
+
+    #[test]
+    fn planning_projection_keeps_exact_full_detail_query_for_required_gap() {
+        let mut state = answerable_fixture();
+        state.missing_parts = vec![MissingPart {
+            code: "metric_calculation_unavailable".into(),
+            detail: "upstream metric retrieval was truncated".into(),
+            clause_id: Some("cash_generation".into()),
+            ticker: Some("VG".into()),
+        }];
+        state.continuation = Some(Continuation {
+            has_more: true,
+            omitted_evidence_count: 17,
+            reason: Some("response evidence limit reached".into()),
+        });
+        let projection = derive_research_planning_projection(&state).unwrap();
+
+        assert_eq!(projection.exact_precise_query_candidates.len(), 1);
+        assert_eq!(
+            projection.exact_precise_query_candidates[0],
+            ExactTargetedQueryCandidate {
+                clause_id: "cash_generation".into(),
+                ticker: "VG".into(),
+                topic: "VG cash generation".into(),
+                document_types: vec!["10-K".into()],
+                periods: Vec::new(),
+                object_types: Vec::new(),
+                answer_candidate_only: true,
+                response_detail: "full".into(),
+                limit: 20,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_gap_candidates_use_one_filing_phrase_for_company_cost_metrics() {
+        let mut state = answerable_fixture();
+        state.plan = serde_json::json!({
+            "tickers": ["AAPL"],
+            "document_types": [],
+            "periods": [],
+            "clauses": [
+                {
+                    "clause_id": "rd",
+                    "required": true,
+                    "tickers": ["AAPL"],
+                    "retrieval_query": "AAPL R&D expense research and development rd_expense",
+                    "metrics": ["research_and_development"],
+                    "metric_scope": "company_total",
+                    "object_types": ["MetricObservation", "XBRLFact"]
+                },
+                {
+                    "clause_id": "sga",
+                    "required": true,
+                    "tickers": ["AAPL"],
+                    "retrieval_query": "AAPL SG&A expense selling general administrative sga",
+                    "metrics": ["selling_general_and_admin"],
+                    "metric_scope": "company_total",
+                    "object_types": ["MetricObservation", "XBRLFact"]
+                }
+            ]
+        });
+        state.missing_parts = vec![
+            MissingPart {
+                code: "metric_calculation_unavailable".into(),
+                detail: "needs a focused follow-up".into(),
+                clause_id: Some("rd".into()),
+                ticker: Some("AAPL".into()),
+            },
+            MissingPart {
+                code: "metric_calculation_unavailable".into(),
+                detail: "needs a focused follow-up".into(),
+                clause_id: Some("sga".into()),
+                ticker: Some("AAPL".into()),
+            },
+        ];
+
+        let candidates = exact_precise_query_candidates(&state);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].topic, "research and development");
+        assert_eq!(candidates[1].topic, "selling general administrative");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.answer_candidate_only)
+        );
+    }
+
+    #[test]
+    fn exact_gap_candidates_keep_all_twelve_required_clauses() {
+        let mut state = answerable_fixture();
+        let clauses = (0..12)
+            .map(|index| {
+                serde_json::json!({
+                    "clause_id": format!("metric-{index}"),
+                    "required": true,
+                    "tickers": ["AAPL"],
+                    "retrieval_query": format!("AAPL metric {index}"),
+                    "metrics": [],
+                    "metric_scope": "any",
+                    "object_types": []
+                })
+            })
+            .collect::<Vec<_>>();
+        state.plan = serde_json::json!({"tickers": ["AAPL"], "clauses": clauses});
+        state.missing_parts = (0..12)
+            .map(|index| MissingPart {
+                code: "missing".into(),
+                detail: "needs a focused follow-up".into(),
+                clause_id: Some(format!("metric-{index}")),
+                ticker: Some("AAPL".into()),
+            })
+            .collect();
+
+        assert_eq!(exact_precise_query_candidates(&state).len(), 12);
+    }
+
+    #[test]
     fn planning_projection_rejects_unbounded_server_gap_lists() {
         let mut state = answerable_fixture();
         state.missing_parts = (0..=MAX_PLANNING_GAPS)
@@ -1689,6 +3047,21 @@ mod tests {
                 "planning gap limit"
             ))
         ));
+    }
+
+    #[test]
+    fn dense_clause_coverage_is_bounded_for_the_planning_graph_without_failing_the_run() {
+        let mut state = answerable_fixture();
+        state.clause_coverage[0].evidence_ids =
+            (0..40).map(|index| format!("ev-dense-{index}")).collect();
+
+        let graph = derive_evidence_goal_graph(&state).unwrap();
+        let goal = graph.goal("clause:cash_generation").unwrap();
+
+        assert_eq!(goal.status, GoalStatus::Satisfied);
+        assert_eq!(goal.evidence_ids.len(), 32);
+        assert_eq!(goal.evidence_ids.first().unwrap(), "ev-dense-0");
+        assert_eq!(goal.evidence_ids.last().unwrap(), "ev-dense-31");
     }
 
     #[test]
@@ -1782,6 +3155,44 @@ mod tests {
     }
 
     #[test]
+    fn targeted_metric_envelope_preserves_the_nested_numeric_object_and_lineage_anchor() {
+        let payload = serde_json::json!({
+            "results": [{
+                "ticker": "AVGO",
+                "period": "CY2026Q1",
+                "document_type": "10-Q",
+                "text": "Net revenue observation",
+                "object": {
+                    "id": "metric:AVGO:revenue:CY2026Q1",
+                    "type": "MetricObservation",
+                    "metric_name": "revenue",
+                    "value": 15400,
+                    "unit": "USD_millions",
+                    "currency": "USD",
+                    "dimensions": {"scope": "company_total"}
+                },
+                "evidence": {
+                    "quotes": [],
+                    "spans": [],
+                    "metric_lineage": {"source_document_ids": ["doc:AVGO:1"]}
+                }
+            }]
+        });
+
+        let delta = map_targeted_query(&payload, &context("ontology.query")).unwrap();
+        let record = &delta.records[0];
+        assert_eq!(record.entity.as_deref(), Some("AVGO"));
+        assert_eq!(record.period.as_deref(), Some("2026년"));
+        assert_eq!(record.source_object_ids, ["metric:AVGO:revenue:CY2026Q1"]);
+        assert!(record.facts.iter().any(|fact| {
+            fact.predicate == "revenue"
+                && fact.value == serde_json::json!(15400)
+                && fact.unit.as_deref() == Some("USD_millions")
+                && fact.period.as_deref() == Some("2026년")
+        }));
+    }
+
+    #[test]
     fn company_context_is_sanitized_and_never_becomes_claim_evidence() {
         let payload = serde_json::json!({
             "ticker": "AAPL",
@@ -1789,7 +3200,7 @@ mod tests {
                 "ticker": "AAPL",
                 "topic_label": "Component Procurement",
                 "topic_summary": "Contains noisy LNG terms and must not be shown as evidence.",
-                "period": "FY2025",
+                "period": "CY2026Q1",
                 "document_type": "10-K",
                 "trace_status": "traceable",
                 "object_ids": ["private:object:1"]
@@ -1811,6 +3222,7 @@ mod tests {
         assert!(delta.provider_content.get("routing").is_none());
         assert!(!delta.provider_content.to_string().contains("LNG"));
         assert!(!delta.provider_content.to_string().contains("/Users/"));
+        assert!(!delta.provider_content.to_string().contains("CY2026Q1"));
         assert_eq!(delta.records.len(), 1);
         assert_eq!(delta.records[0].directness, Directness::Unverified);
         assert_eq!(delta.records[0].grade, EvidenceGrade::Unverified);
@@ -1935,6 +3347,50 @@ mod tests {
     }
 
     #[test]
+    fn chain_keeps_bounded_relationship_paths_after_trace_compaction() {
+        let payload = serde_json::json!({
+            "object": {"id":"claim:AVGO:ai-demand","ticker":"AVGO","text":"AI demand"},
+            "evidence": {"quotes": [{"text":"AI demand supported networking revenue."}]},
+            "chain": {
+                "evidence_chain": [{"id":"quote:AVGO:ai-demand","text":"Demand increased."}],
+                "semantic_neighbors": [{"id":"claim:AVGO:networking","label":"Networking revenue"}],
+                "temporal_context": [{"period":"CY2026Q1","label":"Current filing"}],
+                "edge_paths": [{"from_id":"claim:AVGO:ai-demand","to_id":"claim:AVGO:networking","relation":"supports"}]
+            }
+        });
+
+        let delta = map_trace(&payload, &context("ontology.chain")).unwrap();
+        assert!(delta.records.iter().any(|record| {
+            record
+                .facts
+                .iter()
+                .any(|fact| fact.predicate == "ontology_chain_context")
+        }));
+        let context_record = delta
+            .records
+            .iter()
+            .find(|record| {
+                record
+                    .facts
+                    .iter()
+                    .any(|fact| fact.predicate == "ontology_chain_context")
+            })
+            .unwrap();
+        assert!(
+            context_record
+                .source_object_ids
+                .contains(&"claim:AVGO:networking".into())
+        );
+        assert!(
+            !context_record.facts[0]
+                .value
+                .to_string()
+                .contains("CY2026Q1")
+        );
+        assert!(!context_record.strong_claim_allowed);
+    }
+
+    #[test]
     fn malformed_result_arrays_fail_closed() {
         let payload = serde_json::json!({"results": {"not": "an array"}});
         assert!(matches!(
@@ -2000,5 +3456,179 @@ mod tests {
                 .iter()
                 .all(|record| !record.strong_claim_allowed)
         );
+    }
+
+    #[test]
+    fn verified_metric_series_sidecar_survives_as_bounded_metric_evidence() {
+        let mut state = answerable_fixture();
+        state.metric_series_pack = Some(serde_json::json!({
+            "mode": "chart_series_sidecar",
+            "series": [{
+                "series_key": "AAPL|revenue|product:iphone|usd|annual",
+                "label": "iPhone Revenue",
+                "canonical_metric": "revenue",
+                "metric_name": "revenue",
+                "ticker": "AAPL",
+                "unit": "USD",
+                "period_type": "annual",
+                "duration": "period",
+                "scope": {"key": "iphone", "kind": "product", "label": "iPhone"},
+                "points": [
+                    {
+                        "period": "FY2024",
+                        "value": 201_183_000_000_u64,
+                        "object_id": "metric_observation:AAPL:FY2024:10K:iphone"
+                    },
+                    {
+                        "period": "FY2025",
+                        "value": 209_586_000_000_u64,
+                        "object_id": "metric_observation:AAPL:FY2025:10K:iphone"
+                    }
+                ]
+            }]
+        }));
+
+        let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
+        let series = delta
+            .records
+            .iter()
+            .find(|record| record.evidence_id.starts_with("metric-series:"))
+            .expect("sidecar series is retained as evidence");
+        assert_eq!(series.entity.as_deref(), Some("AAPL"));
+        assert_eq!(series.directness, Directness::MetricLineage);
+        assert_eq!(series.grade, EvidenceGrade::Strong);
+        assert!(!series.strong_claim_allowed);
+        assert_eq!(series.facts.len(), 2);
+        assert!(series.facts.iter().any(|fact| {
+            fact.predicate == "iPhone Revenue"
+                && fact.period.as_deref() == Some("FY2025")
+                && fact.value == serde_json::json!(209586000000_u64)
+        }));
+        assert!(
+            series
+                .source_object_ids
+                .contains(&"metric_observation:AAPL:FY2025:10K:iphone".into())
+        );
+        EvidenceLedger::from_records(delta.records).unwrap();
+    }
+
+    #[test]
+    fn calendar_routing_series_never_reaches_the_model_as_a_fiscal_label() {
+        let mut state = answerable_fixture();
+        state.metric_series_pack = Some(serde_json::json!({
+            "mode": "chart_series_sidecar",
+            "series": [{
+                "series_key": "AAPL|revenue|product:iphone|usd|quarter",
+                "label": "iPhone Revenue",
+                "canonical_metric": "revenue",
+                "ticker": "AAPL",
+                "unit": "USD",
+                "period_type": "quarterly",
+                "scope": {"key": "iphone", "kind": "product", "label": "iPhone"},
+                "points": [{
+                    "period": "CY2026Q1",
+                    "value": 56_994_000_000_u64,
+                    "object_id": "metric_observation:AAPL:CY2026Q1:10Q:iphone"
+                }]
+            }]
+        }));
+
+        let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
+        let series = delta
+            .records
+            .iter()
+            .find(|record| record.evidence_id.starts_with("metric-series:"))
+            .expect("sidecar series is retained as evidence");
+        assert_eq!(series.period.as_deref(), Some("2026년 분기"));
+        assert_eq!(series.citation.period.as_deref(), Some("2026년 분기"));
+        assert_eq!(series.facts[0].period.as_deref(), Some("2026년 분기"));
+    }
+
+    #[test]
+    fn primary_metric_evidence_keeps_fiscal_period_and_ytd_basis_separate_from_document_label() {
+        let mut state = answerable_fixture();
+        let unit = &mut state.evidence_units[0];
+        unit.period = Some("CY2025".into());
+        unit.document_type = Some("10-Q".into());
+        unit.metric = Some("operating_cash_flow".into());
+        unit.unit = Some("USD".into());
+        unit.currency = Some("USD".into());
+        unit.metric_scope = Some("company_total".into());
+        unit.dimensions
+            .insert("scope".into(), "company_total".into());
+        unit.metric_points = vec![MetricPoint {
+            period: "FY2025".into(),
+            value: Some(serde_json::json!(53_887_000_000_u64)),
+            formatted_value: Some("$53.887B".into()),
+            object_id: Some("metric:VG:operating-cash-flow:FY2025".into()),
+            period_type: Some("year_to_date".into()),
+            start_date: Some("2024-09-29".into()),
+            end_date: Some("2025-03-29".into()),
+            conflict_value_count: 0,
+        }];
+        let evidence_id = unit.evidence_id.clone();
+
+        let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
+        let record = delta
+            .records
+            .iter()
+            .find(|record| record.evidence_id == evidence_id)
+            .expect("primary metric record");
+        assert_eq!(record.period.as_deref(), Some("FY2025"));
+        assert_eq!(record.citation.period.as_deref(), Some("2025년"));
+        assert_eq!(record.as_of.as_deref(), Some("2025-03-29"));
+        assert!(record.facts.iter().any(|fact| {
+            fact.predicate == "operating_cash_flow"
+                && fact.period.as_deref() == Some("FY2025")
+                && fact.value == serde_json::json!(53_887_000_000_u64)
+        }));
+        let context = record
+            .facts
+            .iter()
+            .find(|fact| fact.predicate == "metric_context")
+            .expect("metric observation basis");
+        assert_eq!(context.value["source_document_period"], "2025년");
+        assert_eq!(
+            context.value["observations"][0]["period_type"],
+            "year_to_date"
+        );
+        assert_eq!(context.value["observations"][0]["start_date"], "2024-09-29");
+        assert_eq!(context.value["observations"][0]["end_date"], "2025-03-29");
+        EvidenceLedger::from_records(delta.records).unwrap();
+    }
+
+    #[test]
+    fn calendar_routing_bucket_uses_observed_date_without_guessing_fiscal_quarter() {
+        assert_eq!(
+            presentation_observation_period(
+                Some("CY2026Q1"),
+                Some("quarterly"),
+                Some("2026-03-28"),
+            )
+            .as_deref(),
+            Some("2026-03-28 종료 분기")
+        );
+        assert_eq!(
+            presentation_document_period(Some("CY2026Q1"), Some("10-Q")).as_deref(),
+            Some("2026년")
+        );
+        assert_eq!(
+            presentation_source_label(Some("AAPL CY2026Q1 10-Q"), Some("CY2026Q1"), Some("10-Q"),)
+                .as_deref(),
+            Some("AAPL 2026년 10-Q")
+        );
+        assert_eq!(
+            presentation_observation_period(Some("FY2026Q2"), Some("quarterly"), None).as_deref(),
+            Some("FY2026Q2")
+        );
+    }
+
+    #[test]
+    fn malformed_metric_series_sidecar_never_blocks_primary_filing_evidence() {
+        let mut state = answerable_fixture();
+        state.metric_series_pack = Some(serde_json::json!({"series": "not-an-array"}));
+
+        let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
+        assert_eq!(delta.records.len(), state.evidence_units.len());
     }
 }

@@ -33,6 +33,7 @@ const MAX_PROPOSALS: usize = 64;
 const MAX_COMPLETED_FINGERPRINTS: usize = 256;
 const MAX_REJECTED_CONTEXT_FINGERPRINTS: usize = 32;
 const MAX_CONTEXT_PLAN_HASHES: usize = 64;
+const MAX_RETRIEVAL_STATUS_WARNINGS: usize = 32;
 // This is still a small bounded context, but it must cover a complex question
 // plus one adaptive follow-up without turning a valid research plan into a
 // terminal repair loop.
@@ -414,6 +415,7 @@ impl ResearchPlanner {
             return Ok(());
         };
         let observations = derive_clause_coverage_progress(state)?;
+        let required_missing_clauses = required_missing_clause_ids(state);
         let mut observed_goals = BTreeMap::<String, SemanticGoalObservation>::new();
         for (clause_id, goal_ids) in &intent.clause_goal_ids {
             let clause = observations
@@ -424,7 +426,11 @@ impl ResearchPlanner {
                     .graph
                     .goal(goal_id)
                     .ok_or(ResearchPlannerError::IntentReceipt)?;
-                let observation = semantic_observation_for_clause(clause, goal);
+                let observation = semantic_observation_for_clause(
+                    clause,
+                    goal,
+                    required_missing_clauses.contains(clause_id.as_str()),
+                );
                 observed_goals
                     .entry(goal_id.clone())
                     .and_modify(|current| current.merge(&observation))
@@ -512,6 +518,31 @@ impl ResearchPlanner {
         }
         self.completed_fingerprints.insert(fingerprint);
         Ok(())
+    }
+
+    /// Keep a kernel-owned result classification for a supplemental read.
+    /// It is control context rather than evidence and never makes a user
+    /// answer fail; it only prevents raw-tool compaction from turning a
+    /// failed exact read into an apparent company non-disclosure.
+    pub fn record_supplemental_retrieval_warning(&mut self, warning: &str) {
+        if !warning.starts_with("supplemental_") {
+            return;
+        }
+        let Some(projection) = self.projection.as_mut() else {
+            return;
+        };
+        let mut warnings = projection
+            .retrieval_status
+            .warnings
+            .iter()
+            .filter(|current| !current.is_empty())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        warnings.insert(warning.to_owned());
+        projection.retrieval_status.warnings = warnings
+            .into_iter()
+            .take(MAX_RETRIEVAL_STATUS_WARNINGS)
+            .collect();
     }
 
     /// Remember a canonical query-context input that the server rejected.
@@ -746,8 +777,9 @@ impl SemanticGoalObservation {
 fn semantic_observation_for_clause(
     clause: &ClauseCoverageProgress,
     goal: &EvidenceGoal,
+    has_required_gap: bool,
 ) -> SemanticGoalObservation {
-    let (status, coverage_ppm, calculation_ids) = if goal.calculation_required {
+    let (mut status, mut coverage_ppm, calculation_ids) = if goal.calculation_required {
         match (clause.status, clause.calculation_status) {
             (GoalStatus::Satisfied, Some(GoalStatus::Satisfied))
                 if !clause.calculation_ids.is_empty() =>
@@ -775,12 +807,49 @@ fn semantic_observation_for_clause(
     } else {
         (clause.status, clause.coverage_ppm, Vec::new())
     };
+    // The ontology can return a usable raw observation while also reporting
+    // that a required comparison, period, or calculation for this exact
+    // clause remains unresolved.  Do not mark the user-linked goal complete
+    // in that split state: the analyst may already have chosen an advertised
+    // precise follow-up which can close the remaining gap.  This is a
+    // progress projection only; it neither forces a tool call nor blocks the
+    // eventual answer if the precise read remains unavailable.
+    if has_required_gap && status == GoalStatus::Satisfied {
+        status = GoalStatus::Partial;
+        coverage_ppm = coverage_ppm.min(PPM - 1);
+    }
     SemanticGoalObservation {
         status,
         coverage_ppm,
         evidence_ids: clause.evidence_ids.clone(),
         calculation_ids,
     }
+}
+
+/// Return only server-reported gaps for clauses that the normalized plan
+/// itself marks as required.  Incidental/non-required server gaps must not
+/// reopen an otherwise complete user objective.
+fn required_missing_clause_ids(state: &ResearchStateV2) -> BTreeSet<&str> {
+    let required = state
+        .plan
+        .get("clauses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|clause| {
+            clause
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|clause| clause.get("clause_id").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    state
+        .missing_parts
+        .iter()
+        .filter_map(|missing| missing.clause_id.as_deref())
+        .filter(|clause_id| required.contains(clause_id))
+        .collect()
 }
 
 const fn semantic_status_rank(status: GoalStatus) -> u8 {
@@ -1341,6 +1410,7 @@ fn validate_projection(
         || projection.clauses.len() > 128
         || projection.missing_parts.len() > 256
         || projection.recommended_actions.len() > 256
+        || projection.exact_precise_query_candidates.len() > 12
     {
         return Err(ResearchPlannerError::InvalidCheckpoint);
     }
@@ -1393,6 +1463,39 @@ fn validate_projection(
                 .ticker
                 .as_ref()
                 .is_some_and(|ticker| ticker.len() > 32)
+        {
+            return Err(ResearchPlannerError::InvalidCheckpoint);
+        }
+    }
+    let mut exact_candidates = BTreeSet::new();
+    for candidate in &projection.exact_precise_query_candidates {
+        if candidate.clause_id.is_empty()
+            || candidate.clause_id.len() > 64
+            || !clause_ids.contains(candidate.clause_id.as_str())
+            || candidate.ticker.is_empty()
+            || candidate.ticker.len() > 32
+            || candidate.topic.is_empty()
+            || candidate.topic.len() > 512
+            || candidate.response_detail != "full"
+            || candidate.limit == 0
+            || candidate.limit > 50
+            || candidate.document_types.len() > 16
+            || candidate.periods.len() > 16
+            || candidate.object_types.len() > 16
+            || candidate.document_types.iter().any(|value| {
+                value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+            })
+            || candidate.periods.iter().any(|value| {
+                value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+            })
+            || candidate.object_types.iter().any(|value| {
+                value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+            })
+            || !exact_candidates.insert((
+                candidate.clause_id.as_str(),
+                candidate.ticker.as_str(),
+                candidate.topic.as_str(),
+            ))
         {
             return Err(ResearchPlannerError::InvalidCheckpoint);
         }
@@ -1535,31 +1638,8 @@ fn merge_projection(
         if !same_goal_definition(previous, next) {
             return Err(ResearchPlannerError::GoalDefinitionDrift);
         }
-        let new_evidence = next
-            .evidence_ids
-            .iter()
-            .filter(|id| !previous.evidence_ids.contains(id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let new_calculations = next
-            .calculation_ids
-            .iter()
-            .filter(|id| !previous.calculation_ids.contains(id))
-            .cloned()
-            .collect::<Vec<_>>();
-        if previous.status != next.status
-            || previous.coverage_ppm != next.coverage_ppm
-            || !new_evidence.is_empty()
-            || !new_calculations.is_empty()
-        {
-            progress.push(GoalProgressUpdate {
-                goal_id: id.clone(),
-                expected_status: previous.status,
-                status: next.status,
-                coverage_ppm: next.coverage_ppm,
-                evidence_ids: new_evidence,
-                calculation_ids: new_calculations,
-            });
+        if let Some(update) = monotonic_projection_progress(id, previous, next) {
+            progress.push(update);
         }
     }
     if !additions.is_empty() || !progress.is_empty() {
@@ -1572,7 +1652,93 @@ fn merge_projection(
     merge_clause_bindings(&mut current.clauses, &observed.clauses)?;
     current.missing_parts = observed.missing_parts;
     current.recommended_actions = observed.recommended_actions;
+    current.exact_precise_query_candidates = observed.exact_precise_query_candidates;
+    // `ResearchState` is a bounded retrieval snapshot. A later context query
+    // may legitimately contain fewer rows than an earlier one, while its
+    // diagnostics (pagination, current-document anchors, input warnings) are
+    // authoritative for that latest query.
+    let preserved_supplemental_warnings = current
+        .retrieval_status
+        .warnings
+        .iter()
+        .filter(|warning| warning.starts_with("supplemental_"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    current.retrieval_status = observed.retrieval_status;
+    let mut warnings = current
+        .retrieval_status
+        .warnings
+        .iter()
+        .filter(|warning| !warning.is_empty())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    warnings.extend(preserved_supplemental_warnings);
+    current.retrieval_status.warnings = warnings
+        .into_iter()
+        .take(MAX_RETRIEVAL_STATUS_WARNINGS)
+        .collect();
     Ok(())
+}
+
+/// A `ResearchState` is a bounded view of a release-pinned corpus, not a
+/// replacement for evidence already committed during this run. Replanning can
+/// therefore omit a previously covered calculation simply because a different
+/// clause consumed the response budget. Treating that omission as a progress
+/// regression aborts valid research and makes the model report an absence that
+/// was never observed.
+///
+/// Goal definitions remain immutable, while goal progress is joined
+/// monotonically. A later snapshot may advance progress or attach additional
+/// provenance at the same level; it can never retract known coverage.
+fn monotonic_projection_progress(
+    goal_id: &str,
+    previous: &EvidenceGoal,
+    observed: &EvidenceGoal,
+) -> Option<GoalProgressUpdate> {
+    // A lower coverage number in a later bounded snapshot means "not returned
+    // in this page", not that the previously returned evidence disappeared.
+    if observed.coverage_ppm < previous.coverage_ppm
+        || (previous.status == GoalStatus::Satisfied && observed.status != GoalStatus::Satisfied)
+        || previous.status == GoalStatus::Blocked
+    {
+        return None;
+    }
+
+    // `EvidenceGoalGraph` intentionally does not accept an
+    // `Unresolved -> Unresolved` update. Such an observation cannot advance
+    // trusted coverage, even if the provider happened to attach a weak ID.
+    if observed.status == GoalStatus::Unresolved {
+        return None;
+    }
+
+    let new_evidence = observed
+        .evidence_ids
+        .iter()
+        .filter(|id| !previous.evidence_ids.contains(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let new_calculations = observed
+        .calculation_ids
+        .iter()
+        .filter(|id| !previous.calculation_ids.contains(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if previous.status == observed.status
+        && previous.coverage_ppm == observed.coverage_ppm
+        && new_evidence.is_empty()
+        && new_calculations.is_empty()
+    {
+        return None;
+    }
+
+    Some(GoalProgressUpdate {
+        goal_id: goal_id.to_owned(),
+        expected_status: previous.status,
+        status: observed.status,
+        coverage_ppm: observed.coverage_ppm,
+        evidence_ids: new_evidence,
+        calculation_ids: new_calculations,
+    })
 }
 
 fn same_goal_definition(left: &EvidenceGoal, right: &EvidenceGoal) -> bool {
@@ -1771,7 +1937,9 @@ pub enum ResearchPlannerError {
 mod tests {
     use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation};
     use krw_agent_protocol::RunContextV1;
-    use krw_ontology_adapter::{RecommendedAction, parse_research_state};
+    use krw_ontology_adapter::{
+        CalculationCoverage, MissingPart, RecommendedAction, parse_research_state,
+    };
 
     use super::*;
 
@@ -2223,15 +2391,95 @@ mod tests {
         let mut planner = ResearchPlanner::default();
         planner.ingest_research_state(&partial_fixture()).unwrap();
         planner.ingest_research_state(&fixture()).unwrap();
-        let mut regressed = partial_fixture();
-        assert!(planner.ingest_research_state(&regressed).is_err());
 
-        regressed = fixture();
+        // A context response is a bounded page of the same release-pinned
+        // corpus. Its omission of an earlier row must not retract progress
+        // already observed by this run.
+        let regressed = partial_fixture();
+        planner.ingest_research_state(&regressed).unwrap();
+        let goal = planner
+            .projection()
+            .and_then(|projection| projection.graph.goal("clause:cash_generation"))
+            .unwrap();
+        assert_eq!(goal.status, GoalStatus::Satisfied);
+        assert_eq!(goal.coverage_ppm, PPM);
+
+        let mut regressed = fixture();
         regressed.plan["clauses"][0]["retrieval_query"] = Value::String("changed query".into());
         assert!(matches!(
             planner.ingest_research_state(&regressed),
             Err(ResearchPlannerError::ContextPlanDrift)
         ));
+    }
+
+    #[test]
+    fn replanning_keeps_a_prior_supplemental_retrieval_warning() {
+        // A targeted/trace outcome happens after the initial ResearchState.
+        // A later bounded context page must not erase its safe warning and
+        // make the composer reinterpret a failed exact read as company
+        // non-disclosure.
+        let mut planner = ResearchPlanner::default();
+        let mut initial = partial_fixture();
+        initial.warnings = vec!["supplemental_targeted_query_not_found".into()];
+        planner.ingest_research_state(&initial).unwrap();
+
+        let mut later = partial_fixture();
+        later.warnings = vec!["planned_evidence_truncated".into()];
+        planner.ingest_research_state(&later).unwrap();
+
+        assert_eq!(
+            planner.projection().unwrap().retrieval_status.warnings,
+            vec![
+                "planned_evidence_truncated".to_owned(),
+                "supplemental_targeted_query_not_found".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn replanning_does_not_retract_a_previously_covered_calculation() {
+        let mut initial = partial_fixture();
+        initial.calculation_coverage.push(CalculationCoverage {
+            clause_id: "cash_generation".into(),
+            metric: "operating_cash_flow".into(),
+            axis: "growth_rate".into(),
+            metric_scope: "company_total".into(),
+            metric_dimensions: Vec::new(),
+            status: "partial".into(),
+            required_tickers: vec!["VG".into(), "XOM".into()],
+            covered_tickers: vec!["VG".into()],
+            calculation_ids: vec!["calc:vg:ocf-growth".into()],
+            reason: Some("comparison period unavailable".into()),
+        });
+
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&initial).unwrap();
+        let calculation_id = planner
+            .projection()
+            .unwrap()
+            .graph
+            .goals()
+            .find(|goal| goal.calculation_required)
+            .unwrap()
+            .goal_id
+            .clone();
+
+        // A later replan may be truncated before it returns this calculation.
+        // That is an incomplete snapshot, not negative evidence.
+        let mut later = initial;
+        let calculation = &mut later.calculation_coverage[0];
+        calculation.status = "missing".into();
+        calculation.covered_tickers.clear();
+        calculation.calculation_ids.clear();
+        planner.ingest_research_state(&later).unwrap();
+
+        let goal = planner
+            .projection()
+            .and_then(|projection| projection.graph.goal(&calculation_id))
+            .unwrap();
+        assert_eq!(goal.status, GoalStatus::Partial);
+        assert_eq!(goal.coverage_ppm, PPM / 2);
+        assert_eq!(goal.calculation_ids, ["calc:vg:ocf-growth"]);
     }
 
     #[test]
@@ -2437,6 +2685,54 @@ mod tests {
                 reason: NoPositiveReason::NoFrontier,
             }
         );
+    }
+
+    #[test]
+    fn required_mapped_gap_keeps_a_completed_semantic_goal_eligible_for_targeted_read() {
+        let receipt = fixture_intent_receipt();
+        let mut state = fixture_for_proposal();
+        let clause_id = state.plan["clauses"][0]["clause_id"]
+            .as_str()
+            .expect("compiled clause id")
+            .to_owned();
+        let topic = state.plan["clauses"][0]["retrieval_query"]
+            .as_str()
+            .expect("compiled retrieval query")
+            .to_owned();
+        // A raw observation may exist while the ontology explicitly reports a
+        // required comparison/calculation gap for the same user-linked
+        // clause. That gap must remain eligible for the analyst's precise
+        // follow-up instead of being treated as an incidental extra clause.
+        state.missing_parts.push(MissingPart {
+            code: "metric_calculation_unavailable".into(),
+            detail: "comparison evidence remains incomplete".into(),
+            clause_id: Some(clause_id),
+            ticker: Some("VG".into()),
+        });
+
+        let mut planner = ResearchPlanner::default();
+        planner
+            .record_initial_context(ContentHash::sha256("fixture-context"))
+            .unwrap();
+        planner
+            .ingest_research_state_for_intent(&state, &receipt)
+            .unwrap();
+
+        let query = proposal(
+            "required-gap-query",
+            "ontology.query",
+            serde_json::json!({"ticker":"VG", "topic":topic}),
+            0,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&query)).unwrap(),
+            PlannerDecision::Execute {
+                proposal_id,
+                score: Some(score),
+                reason: SelectionReason::PositiveExpectedValue,
+                evaluated: 1,
+            } if proposal_id == "required-gap-query" && score > 0
+        ));
     }
 
     #[test]

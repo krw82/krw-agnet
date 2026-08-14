@@ -59,7 +59,7 @@ contracts:
     max_items: 12
   - id: research-proposal/v4
     schema_ref: canonical:krw-agent/research-proposal-v4
-    content_hash: sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49
+    content_hash: sha256:815cd59f1ca832b67141106e3893b25e7ec6b1413226b4778c3b61d8506e0943
     semantic_authority: krw-agent-research-planner
     max_items: 12
   - id: research-state/v2
@@ -133,32 +133,46 @@ roles:
     deterministic: false
     # Planning is a closed tool-proposal task. GLM direct mode avoids spending a
     # large hidden-thinking turn before the first immutable evidence lookup.
-    # ResearchProposal v4 fits in 500-800 tokens; 1024 is a hard ceiling to
-    # prevent reasoning-token bloat that previously caused 13K-token turns.
-    execution: { reasoning: direct, max_output_tokens: 1024 }
+    # A multi-objective ResearchProposal is itself nested JSON, so it needs
+    # enough room to finish the tool arguments instead of being cut mid-call.
+    # This is still far below the analyst budget and applies only to the
+    # planner's one direct proposal turn.
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: analyst
     # Use the compact evidence-analysis skill by default. The much broader
     # research_analysis reference remains available through skill.load when
     # a question genuinely needs one of its specialist paths.
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst]
     deterministic: false
-    # Thinking-enabled role for evidence analysis. 8192 covers reasoning
-    # (~2-3k) + tool_call/output (~2-3k) without the wasted headroom that
-    # 16384 previously allowed.
-    execution: { max_output_tokens: 8192 }
+    # Thinking-enabled role for evidence analysis. GLM bills private thinking
+    # and the following capability decision against one output ceiling. The
+    # company workflow can hold many evidence obligations at once, so this
+    # role must use the image policy's full 16,384-token research-turn budget:
+    # 8,192 cut a real multi-objective analysis off before its tool decision.
+    # This changes no workflow step or tool allowance; it gives the existing
+    # analysis turn enough room to finish.
+    execution: { max_output_tokens: 16384 }
   - id: composer
-    # These are the composer's primary writing skills; no preliminary tool
-    # call is required before it can produce a normal Korean research answer.
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_synthesis, plain_korean_investor_language, final_markdown_contract]
+    # The composer cannot call capabilities or load more skills. Giving it the
+    # ontology/skill catalogs only consumes context and exposes backend
+    # vocabulary that can leak into investor prose; it writes from the
+    # compacted evidence projection and these answer-writing references.
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract]
     deterministic: false
-    # This is the final renderer, not the evidence decision-maker. Keep its
-    # output budget dedicated to the Korean answer so a long hidden-thinking
-    # turn cannot exhaust the immutable final-output reserve.
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    # Composition still has to reconcile periods, metric scope, evidence
+    # limits, and investor meaning. Let the existing final turn use the
+    # provider's hidden reasoning so it emits a finished answer rather than a
+    # visible draft/checklist. This does not add a model turn.
+    # GLM keeps deep reasoning and visible Markdown under the same output
+    # ceiling. A real complex company answer exhausted 8,192 tokens repeatedly
+    # before emitting a complete response. Use the full 16,384-token company
+    # answer envelope; the workflow-specific reserve and budget profile retain
+    # two complete composition attempts without changing any tool or model turn.
+    execution: { max_output_tokens: 16384 }
   - id: earnings_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 1024 }
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: earnings_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, earnings_analysis]
     deterministic: false
@@ -166,7 +180,7 @@ roles:
   - id: scenario_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 1024 }
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: scenario_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, scenario_analysis]
     deterministic: false
@@ -174,7 +188,7 @@ roles:
   - id: idea_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill, research_scope]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 1024 }
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: idea_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, idea_screen]
     deterministic: false
@@ -182,27 +196,27 @@ roles:
   - id: wide_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_planner_skill, research_scope]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 1024 }
+    execution: { reasoning: direct, max_output_tokens: 3072 }
   - id: wide_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, evidence_analyst, wide_research_analysis]
     deterministic: false
     execution: { max_output_tokens: 8192 }
   - id: earnings_composer
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, earnings_output_contract]
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, earnings_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { max_output_tokens: 4096 }
   - id: scenario_composer
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, scenario_output_contract]
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, scenario_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { max_output_tokens: 4096 }
   - id: idea_composer
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, idea_output_contract]
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, idea_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { max_output_tokens: 4096 }
   - id: wide_composer
-    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, skill_catalog, research_synthesis, plain_korean_investor_language, final_markdown_contract, wide_research_output_contract]
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, wide_research_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { max_output_tokens: 4096 }
   - id: verifier
     prompt_segments: []
     deterministic: true
@@ -478,7 +492,10 @@ workflows:
       - { id: repair_plan, kind: plan, role_id: planner, max_visits: 1 }
       - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 3 }
+      # This is a kernel builtin (not an additional model turn). It must be
+      # able to accept every already-advertised evidence-producing read:
+      # query_context x2, targeted query x2, trace, chain, and market x1.
+      - { id: ingest_evidence, kind: ingest, max_visits: 7 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # A broad company question can have two independent, material evidence
@@ -543,7 +560,7 @@ workflows:
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: earnings_planner, max_visits: 1 }
       - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 3 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
       - { id: reconcile_periods_and_commentary, kind: assess, role_id: earnings_analyst, max_visits: 3 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 1 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
@@ -597,7 +614,7 @@ workflows:
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: scenario_planner, max_visits: 1 }
       - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 6 }
       - { id: assess_transmission_path, kind: assess, role_id: scenario_analyst, max_visits: 5 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
@@ -652,7 +669,7 @@ workflows:
       - { id: validate_discovery_plan, kind: validate, max_visits: 2 }
       - { id: repair_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 1 }
       - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
-      - { id: ingest_candidates, kind: ingest, max_visits: 5 }
+      - { id: ingest_candidates, kind: ingest, max_visits: 7 }
       - { id: assess_candidates, kind: assess, role_id: idea_analyst, max_visits: 6 }
       - { id: candidate_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
       - { id: candidate_trace, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
@@ -704,7 +721,7 @@ workflows:
       - { id: validate_wide_plan, kind: validate, max_visits: 2 }
       - { id: repair_wide_plan, kind: plan, role_id: wide_planner, max_visits: 1 }
       - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
-      - { id: ingest_evidence, kind: ingest, max_visits: 5 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 7 }
       - { id: assess_wide_impacts, kind: assess, role_id: wide_analyst, max_visits: 6 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
@@ -789,7 +806,7 @@ period_policy:
 
 answer_policy:
   internal_format: final-markdown/v1
-  final_output_reserve_tokens: 5120
+  final_output_reserve_tokens: 8192
   minimum_research_turn_tokens: 2048
   # Thinking-enabled research turns (analyst) consume reasoning tokens
   # (~2k-4k) before producing a tool call or assessment. 16384 leaves room

@@ -80,8 +80,11 @@ The buyback supports capital return, but part of the program appears aimed at ma
 When judging a capital-allocation or cost-structure inflection, compare annual periods and the latest quarter together.
 
 ```text
-If CY2025 already shows a step-up in M&A or buybacks, do not call CY2026Q1 the starting point merely because the latest quarter is large.
-Say the transition began in CY2025 and became clearer or stronger in CY2026Q1.
+If the annual baseline already shows a step-up in M&A or buybacks, do not call
+the latest quarter the starting point merely because that quarter is large.
+Say the transition began in the annual baseline and became clearer or stronger
+in the latest reported quarter. Use an observed date/basis or neutral filing
+label rather than a raw `CY...` routing code.
 ```
 
 ## AI, platform, and product attribution

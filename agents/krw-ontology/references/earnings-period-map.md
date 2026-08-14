@@ -1,6 +1,6 @@
 ---
 name: earnings_period_map
-description: "Use during earnings_deep_dive to set comparison periods (current quarter, prior quarter, year-ago quarter, annual baseline) with CY labels and comparability checks."
+description: "Use during earnings_deep_dive to set comparison periods (current quarter, prior quarter, year-ago quarter, annual baseline) with safe reporting labels and comparability checks."
 when_to_use: "when comparing the latest quarter with the prior quarter, year-ago quarter, and annual baseline"
 ---
 
@@ -26,18 +26,20 @@ latest 10-K for business mix, structural cost base, capital allocation, and hist
 
 Lead with the newest available filing. A newer 10-Q is the current driver even when the latest 10-K contains more detail.
 
-## Use CY Labels
+## Use safe reporting labels
 
 Good:
 
 ```text
-CY2026Q1
-CY2025Q4
-CY2025Q1
-CY2025 annual baseline
+latest reported quarter (or its observed end date and basis)
+immediately preceding reported quarter
+matching prior-year quarter
+latest 10-K annual baseline
 ```
 
-Avoid FY labels as the primary visible convention.
+Never expose a raw `CY...` routing code. Use an issuer fiscal label only when
+the source explicitly provides it; otherwise use the observed date/basis or a
+neutral filing label.
 
 ## Comparability Checks
 

@@ -35,7 +35,9 @@ separate required metric objective with reported observations. It is not
 satisfied by a narrative that only says "improved" or "weakened". Use
 `metric_time_series` when the user wants the recent path; use
 `metric_change` only when the requested output is an explicit delta or growth
-rate. If the user says only `현금흐름`, prefer `operating_cash_flow`; add
+rate. Words such as `추세`, `흐름`, `트렌드`, or `path` mean a
+`metric_time_series` even when the metric is not prefixed by `최근`.
+If the user says only `현금흐름`, prefer `operating_cash_flow`; add
 `free_cash_flow` only when the user asks for FCF or capex-adjusted cash flow.
 Keep valuation implications, causes, and risks as separate qualitative
 objectives rather than letting them displace the named metric.
@@ -48,6 +50,75 @@ wording variants, and mark only genuinely optional expansion as `deferred`.
 The executable plan has room for at most 12 clauses, so leave room for a
 later precise follow-up instead of spending it on overlapping first-pass
 clauses.
+
+Before emitting the proposal, make a short coverage checklist of every
+measurement or breakdown the user actually named. An explicit item such as
+`현금흐름`, `FCF`, `capex`, `R&D`, `판관비`, `iPhone`, or `Services` must have
+its own required objective when it is needed to answer the question. Do not
+spend those slots on inferred sub-breakdowns: a generic request such as
+`지역별`, `제품별`, or `세그먼트별` is one grouped objective, not an instruction
+to enumerate every company region or product. Only split a breakdown into
+separate objectives when the user themselves lists its members. If the plan
+would approach 12 clauses, collapse generic geography/product enumeration or
+redundant margin variants first; never silently drop a directly named metric.
+Do not add a generic catch-all `segment_revenue` goal after named product goals
+or a grouped geography goal already cover the same requested mix. Likewise,
+one reported margin objective is normally enough for a generic `마진` request;
+add gross and operating margin separately only when their comparison is itself
+asked for. This leaves retrieval capacity for the user's named costs and cash
+metrics.
+
+7. **Do not guess a hard filing scope.** If the user says `최근`, `최신`,
+`current`, or `latest` without naming a year, quarter, or filing, use
+`"document_types": []` and `"periods": []`. The runtime will select the
+latest confirmed filing and keep the annual filing only as context. Use an
+exact period/document filter only when the user explicitly names it. Never
+convert an issuer fiscal label into an ontology routing label yourself: use a
+returned source label.
+
+8. **Make search wording executable.** Each alternative is one real filing
+phrase. Put wording variants in separate alternatives. Each objective allows
+**1–6 alternatives**; prefer 1–3 genuinely distinct filing phrases and keep
+only the six most useful ones. Put the phrase most likely to appear in the
+issuer's filing first: the runtime uses that order as the deterministic
+first-pass preference. `predicates` holds one relationship wording
+when needed (for example `"due to"`), not a list of synonyms that must all
+appear in one sentence. The trusted company ticker is passed separately as
+scope, so do not put a ticker symbol into `terms` as filler: filing quotes and
+tables often contain the company name but not its market symbol.
+
+9. **Rank a risk from both exposure and mechanism.** When the user asks to
+prioritize a named geographic, product, customer, regulatory, or demand risk,
+do not search only for a generic downside sentence. Create a separate baseline
+objective for the current reported exposure or direction when it can affect
+the ranking (for example, `Greater China net sales`), then create the
+qualitative downside-mechanism objective (for example, demand, regulation, or
+concentration pressure). A baseline can use `predicates: []`; do not put a
+catch-all phrase such as `could adversely` into the baseline. This lets the
+answer distinguish a large/current exposure from a merely hypothetical risk.
+
+10. **Preserve every explicitly named breakdown item.** When the user lists
+    two or more products, product categories, revenue line items, segments,
+    regions, or customers and asks for their mix, contribution, or comparison,
+    make one required metric objective for each named item. Give each objective
+    its own literal filing phrase (for example, `iPhone net sales`, `Services
+    net sales`, `Mac net sales`). Do not put those items into alternatives of
+    one objective: alternatives are interchangeable search phrasings and the
+    kernel may select one of them. A generic segment, geography, or business
+    unit is not a substitute for the named list. For example, a question about
+    instruments versus consumables/reagents must search those two product
+    categories separately; do not substitute Life Sciences, Diagnostics, or a
+    regional revenue line. Use `segment_revenue` with `"metric_dimensions": []`
+    for named breakdown objectives unless a prior ontology result supplied the
+    issuer's exact member label: the runtime resolves issuer-specific labels
+    such as `I Phone` or `Service` from the literal filing phrase. If the only
+    disclosed comparison is a broader bucket such as non-instrumentation,
+    preserve that boundary in the final answer rather than treating it as a
+    consumables-only figure. Use this rule only for items the user actually
+    names, so an ordinary company overview remains compact. A bare request for
+    `지역별` or `제품별` is not such a list: use one grouped objective with the
+    relevant filing phrase (for example, `net sales by reportable segment`)
+    unless the user supplied the individual names.
 
 ## ResearchProposal v4 structure
 
@@ -62,7 +133,7 @@ clauses.
     "objectives": [
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["search phrase 1", "search phrase 2"] }],
+        "alternatives": [{ "terms": ["search phrase 1"] }, { "terms": ["search phrase 2"] }],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
         "goal": { "kind": "...", ... }
@@ -79,13 +150,13 @@ clauses.
 | `intent` | A stable lowercase slug summarising the request | `"aapl_revenue_trend"` |
 | `answer_scope` | Answer breadth, usually `direct` | `"direct"` |
 | `uncertainty` | How uncertain the question is | `"low"` (single number), `"medium"` (analysis) |
-| `document_types` | Which filings to search | `["10-K"]`, `["10-K", "10-Q"]` |
-| `periods` | Which fiscal periods | `["FY2024"]`, `["FY2023", "FY2024"]` |
+| `document_types` | Explicit user-requested filings only; otherwise leave empty | `["10-K"]`, `[]` |
+| `periods` | Explicit user-requested ontology periods only; otherwise leave empty | `["FY2024"]`, `[]` |
 | `objectives` | Evidence requests (1–12 items); keep only decision-relevant ones | see below |
 | `priority` | `required` (essential) or `deferred` (optional) | |
-| `alternatives[].terms` | Literal filing-language search phrases | `["net sales", "revenue"]` |
+| `alternatives[].terms` | Literal filing-language search phrases; 1–6 alternatives per objective; omit the trusted ticker | `["net sales", "revenue"]` |
 | `directness` | How direct the evidence must be | `any`, `direct_preferred`, `direct_required` |
-| `object_types` | Required array of ontology filters; use `[]` when none is needed | `MetricObservation`, `NarrativeEvidence`, or `[]` |
+| `object_types` | Required array of ontology filters; use `[]` when none is needed | `MetricObservation`, `EvidenceQuote`, `ResearchClaim`, `BusinessFactor`, or `[]` |
 
 ## Goal types (5 kinds)
 
@@ -138,9 +209,12 @@ Use when the question asks "how does segment A compare to segment B?".
 "goal": {
   "kind": "metric_difference",
   "metric": "segment_revenue",
-  "metric_dimensions": ["segment"]
+  "metric_dimensions": []
 }
 ```
+
+For a named comparison, use one required objective per named member as in
+rule 10; do not use a generic `"segment"` dimension filter.
 
 ### 5. qualitative_evidence — narrative explanation
 
@@ -150,12 +224,12 @@ Use when the question asks "why?" or "what caused?".
 "goal": {
   "kind": "qualitative_evidence",
   "concepts": ["gross margin", "product mix"],
-  "predicates": ["driven by", "due to"]
+  "predicates": ["due to"]
 }
 ```
 
 - `concepts`: topics to find (1–4 items)
-- `predicates`: relationships between concepts (1–3 items, required when 2+ concepts)
+- `predicates`: one relationship wording when 2+ concepts need a causal link
 
 ## Canonical metric identifiers
 
@@ -230,11 +304,15 @@ canonical metric and add `metric_dimensions` to narrow it, or use
    needs one `metric_time_series` objective (numbers) and one
    `qualitative_evidence` objective (causes).
 
-5. **Set periods.** Use the periods mentioned in the question. For year-over-
-   year comparisons, include both years.
+5. **Set periods.** Use exact periods only when the user mentioned them. For
+   a recent/current question, leave periods and document types empty so the
+   runtime can use the latest confirmed filing. For an explicit year-over-year
+   comparison, include both confirmed period labels.
 
 6. **Write alternatives.** Use the actual filing language (aliases from the
-   metric table) as search terms, not canonical IDs.
+metric table) as search terms, not canonical IDs. Each alternative is one
+phrase; do not put synonym alternatives together in a predicate list. Keep
+each objective to 1–6 alternatives, preferring the most distinct 1–3 phrases.
 
 ## Worked examples
 
@@ -253,7 +331,7 @@ Question: "Apple FY2024 revenue?"
     "objectives": [
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["net sales", "revenue"] }],
+        "alternatives": [{ "terms": ["net sales"] }, { "terms": ["revenue"] }],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
         "goal": { "kind": "metric_observation", "metric": "revenue", "metric_dimensions": [] }
@@ -278,7 +356,7 @@ Question: "Apple FY2024 net income vs prior year?"
     "objectives": [
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["net income", "net earnings"] }],
+        "alternatives": [{ "terms": ["net income"] }, { "terms": ["net earnings"] }],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
         "goal": { "kind": "metric_time_series", "metric": "net_income", "metric_dimensions": [] }
@@ -303,20 +381,20 @@ Question: "Gross margin trend and what drove the change?"
     "objectives": [
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["gross margin", "gross profit"] }],
+        "alternatives": [{ "terms": ["gross margin"] }, { "terms": ["gross profit"] }],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
         "goal": { "kind": "metric_time_series", "metric": "gross_margin", "metric_dimensions": [] }
       },
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["gross margin", "due to", "product mix"] }],
+        "alternatives": [{ "terms": ["gross margin due to product mix"] }],
         "directness": "direct_required",
-        "object_types": ["NarrativeEvidence"],
+        "object_types": ["BusinessFactor", "EvidenceQuote", "ResearchClaim"],
         "goal": {
           "kind": "qualitative_evidence",
           "concepts": ["gross margin", "product mix"],
-          "predicates": ["driven by", "due to"]
+          "predicates": ["due to"]
         }
       }
     ]
@@ -339,7 +417,7 @@ Question: "Revenue growth rate?"
     "objectives": [
       {
         "priority": "required",
-        "alternatives": [{ "terms": ["net sales", "year over year"] }],
+        "alternatives": [{ "terms": ["net sales year over year"] }],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
         "goal": {

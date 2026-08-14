@@ -1406,8 +1406,16 @@ class OntologyStore:
         object_types: Iterable[str] | None = None,
         include_rejected: bool = False,
         limit: int = 20,
+        strict_only: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Return evidence bundles plus deterministic search diagnostics."""
+        """Return evidence bundles plus deterministic search diagnostics.
+
+        ``strict_only`` is used only for a kernel-generated exact follow-up.
+        Such a read is resolving one named gap, so partial-term and OR
+        fallbacks must not turn a generic row into a false successful result.
+        It is deliberately an internal execution flag rather than a model
+        choice or a public MCP schema field.
+        """
         result_limit = max(1, int(limit))
         original_tickers = list(tickers) if tickers is not None else None
         tickers, unavailable_tickers = self._query_available_tickers(original_tickers)
@@ -1436,7 +1444,18 @@ class OntologyStore:
             object_types=selected_types,
             explicit_object_types=explicit_object_types,
         )
-        if metric_profile["enabled"]:
+        if strict_only and topic:
+            rows, search_strategy = self._query_fts_with_strategy(
+                topic,
+                tickers=tickers,
+                document_types=document_types,
+                periods=periods,
+                object_types=selected_types,
+                include_rejected=include_rejected,
+                limit=query_limit,
+                strict_only=True,
+            )
+        elif metric_profile["enabled"]:
             rows, search_strategy = self._query_metric_lookup_with_strategy(
                 metric_profile["topic"],
                 tickers=tickers,
@@ -1461,6 +1480,7 @@ class OntologyStore:
                         object_types=fallback_types,
                         include_rejected=include_rejected,
                         limit=min(query_limit, 20),
+                        strict_only=False,
                     )
                     search_strategy["fallback"] = fallback_strategy
                     search_strategy["fallback_used"] = True
@@ -1486,6 +1506,7 @@ class OntologyStore:
                     object_types=selected_types,
                     include_rejected=include_rejected,
                     limit=min(query_limit, 20),
+                    strict_only=False,
                 )
                 search_strategy["fallback"] = fallback_strategy
                 search_strategy["fallback_used"] = True
@@ -1498,6 +1519,7 @@ class OntologyStore:
                 object_types=selected_types,
                 include_rejected=include_rejected,
                 limit=query_limit,
+                strict_only=False,
             )
         else:
             rows = self._query_objects(
@@ -1515,6 +1537,7 @@ class OntologyStore:
             result_count=len(bundles),
             search_strategy=search_strategy,
         )
+        diagnostics["strict_only"] = bool(strict_only)
         if metric_profile["enabled"]:
             diagnostics["metric_fast_path"] = True
             diagnostics["topic_normalization"] = metric_profile["normalization"]
@@ -1722,6 +1745,8 @@ class OntologyStore:
         tickers: Iterable[str] | None = None,
         document_types: Iterable[str] | None = None,
         periods: Iterable[str] | None = None,
+        metric_periods: Iterable[str] | None = None,
+        query_intent_text: str | None = None,
         object_types: Iterable[str] | None = None,
         include_rejected: bool = False,
         allow_relaxed: bool = False,
@@ -1755,9 +1780,26 @@ class OntologyStore:
             )
             return [], diagnostics
 
+        # Current/latest is an execution concern, not a model-authored hard
+        # period filter.  Gather enough compatible rows first, then rank each
+        # shard by its own current-driver anchor.  This avoids a single global
+        # latest 10-Q being imposed on every company in a wide search.
+        current_prior = self._current_document_prior_context(
+            topic=query_intent_text,
+            tickers=available_tickers,
+            document_types=document_types,
+            periods=periods,
+        )
+        candidate_limit = _current_document_prior_candidate_limit(result_limit, current_prior)
+
         selected_types = tuple(object_types or DEFAULT_QUERY_TYPES)
         requested_metrics = _unique(
             str(metric).strip() for metric in metrics or [] if str(metric).strip()
+        )
+        requested_metric_dimensions = tuple(
+            str(dimension).strip()
+            for dimension in metric_dimensions or []
+            if str(dimension).strip()
         )
         requested_comparison_axes = _unique(
             str(axis).strip().casefold() for axis in comparison_axes or [] if str(axis).strip()
@@ -1774,16 +1816,25 @@ class OntologyStore:
             term for value in predicate_terms or [] for term in _planned_query_terms(str(value))
         )[:32]
         metric_started_at = time.perf_counter()
+        # A Fiscal Q label is meaningful for MetricObservation's own fiscal
+        # coordinate but not necessarily for a filing object's calendar
+        # routing bucket.  Keep the two physical filters intentionally
+        # separate; the caller only supplies `metric_periods` for this exact
+        # ambiguity.
+        effective_metric_periods = (
+            metric_periods if metric_periods is not None else periods
+        )
         queried_metric_rows = self._query_metrics(
             requested_metrics,
             tickers=available_tickers,
             document_types=document_types,
-            periods=periods,
-            metric_dimensions=metric_dimensions,
+            periods=effective_metric_periods,
+            metric_dimensions=requested_metric_dimensions,
             metric_scope=metric_scope,
             calculation_window=calculation_window,
             comparison_axes=requested_comparison_axes,
-            limit_per_metric=result_limit,
+            limit_per_metric=candidate_limit,
+            metric_focus_terms=lexical_terms,
         )
         metric_elapsed_ms = int((time.perf_counter() - metric_started_at) * 1000)
         metric_groups_by_name: dict[str, list[sqlite3.Row]] = {}
@@ -1792,18 +1843,35 @@ class OntologyStore:
         metric_groups = list(metric_groups_by_name.values())
         metric_rows: list[sqlite3.Row] = []
         metric_row_index = 0
-        while len(metric_rows) < result_limit:
+        while len(metric_rows) < candidate_limit:
             added = False
             for group in metric_groups:
                 if metric_row_index >= len(group):
                     continue
                 metric_rows.append(group[metric_row_index])
                 added = True
-                if len(metric_rows) >= result_limit:
+                if len(metric_rows) >= candidate_limit:
                     break
             if not added:
                 break
             metric_row_index += 1
+        # A named product/region query is intentionally broad at the SQL
+        # boundary because issuer member labels are not known to the planner
+        # (for example, Apple stores ``I Phone``).  Once a literal member does
+        # match, however, do not let unrelated geography/segment rows consume
+        # the compact response.  If nothing matches, retain the broad result
+        # set so a spelling difference never becomes a false empty result.
+        metric_member_focus_required = bool(
+            str(metric_scope or "").strip().lower() == "dimensioned"
+            and not requested_metric_dimensions
+            and _planned_metric_member_focus_keys(lexical_terms)
+        )
+        if metric_member_focus_required:
+            metric_rows = _prefer_member_focused_metric_rows(
+                metric_rows,
+                metric_scope=metric_scope,
+                metric_focus_terms=lexical_terms,
+            )
 
         strict_query = " ".join(f"{term}*" for term in lexical_terms)
         fts_started_at = time.perf_counter()
@@ -1821,7 +1889,7 @@ class OntologyStore:
                 periods=periods,
                 object_types=selected_types,
                 include_rejected=include_rejected,
-                limit=result_limit,
+                limit=candidate_limit,
             )
             if strict_query and predicate_lexical_terms
             else []
@@ -1834,7 +1902,7 @@ class OntologyStore:
                 periods=periods,
                 object_types=selected_types,
                 include_rejected=include_rejected,
-                limit=result_limit,
+                limit=candidate_limit,
             )
             if strict_query
             else []
@@ -1856,21 +1924,21 @@ class OntologyStore:
         # that text evidence (EvidenceQuote, ResearchClaim) is not excluded
         # when metric results fill the limit. Reserve at least half the limit
         # for FTS evidence so causal/qualitative context is always present.
-        metric_reserve = min(len(metric_rows), result_limit // 2) if requested_metrics else 0
+        metric_reserve = min(len(metric_rows), candidate_limit // 2) if requested_metrics else 0
         if metric_reserve:
             for row in metric_rows[:metric_reserve]:
                 append_strict_row(row)
 
         strict_row_index = 0
         strict_groups = [list(fts_predicate_rows), list(fts_strict_rows), list(metric_rows[metric_reserve:]) if metric_reserve else []]
-        while len(balanced_strict_rows) < result_limit:
+        while len(balanced_strict_rows) < candidate_limit:
             progressed = False
             for group in strict_groups:
                 if strict_row_index >= len(group):
                     continue
                 progressed = True
                 append_strict_row(group[strict_row_index])
-                if len(balanced_strict_rows) >= result_limit:
+                if len(balanced_strict_rows) >= candidate_limit:
                     break
             if not progressed:
                 break
@@ -1885,7 +1953,7 @@ class OntologyStore:
         predicate_ids = {str(row["id"]) for row in fts_predicate_rows if row["id"]}
         relaxed_ids: set[str] = set()
         relaxed_elapsed_ms = 0
-        if lexical_terms and len(ordered_rows) < result_limit:
+        if allow_relaxed and lexical_terms and len(ordered_rows) < candidate_limit:
             relaxed_started_at = time.perf_counter()
             relaxed_query = " OR ".join(f"{term}*" for term in lexical_terms)
             relaxed_rows = self._execute_fts(
@@ -1895,7 +1963,7 @@ class OntologyStore:
                 periods=periods,
                 object_types=selected_types,
                 include_rejected=include_rejected,
-                limit=result_limit,
+                limit=candidate_limit,
             )
             for row in relaxed_rows:
                 row_id = str(row["id"] or "")
@@ -1903,11 +1971,16 @@ class OntologyStore:
                     continue
                 relaxed_ids.add(row_id)
                 ordered_rows.append(row)
-                if len(ordered_rows) >= result_limit:
+                if len(ordered_rows) >= candidate_limit:
                     break
             relaxed_elapsed_ms = int((time.perf_counter() - relaxed_started_at) * 1000)
 
-        bundles = self._compact_bundles_from_rows(ordered_rows[:result_limit])
+        ordered_rows = self._apply_current_document_prior(
+            ordered_rows,
+            current_prior,
+            limit=result_limit,
+        )
+        bundles = self._compact_bundles_from_rows(ordered_rows)
         metric_metadata_by_id = {
             str(row["id"]): row
             for row in ordered_rows
@@ -1928,6 +2001,14 @@ class OntologyStore:
                     obj["dimensions"] = dict(dimensions)
                 if metadata["planned_metric_canonical_metric"]:
                     obj["canonical_metric"] = metadata["planned_metric_canonical_metric"]
+                obj["planned_metric_match"] = True
+                if metric_member_focus_required:
+                    focus_score = _planned_metric_dimension_focus_score(
+                        str(metadata["planned_metric_dimensions_json"] or "{}"),
+                        lexical_terms,
+                    )
+                    obj["planned_metric_member_focus_required"] = True
+                    obj["planned_metric_member_focus_matched"] = focus_score > 0
                 if metadata["planned_metric_unit"] and not obj.get("unit"):
                     obj["unit"] = metadata["planned_metric_unit"]
                 observation_period = str(
@@ -1970,6 +2051,8 @@ class OntologyStore:
             "metric_lookup_used": bool(requested_metrics),
             "requested_metrics": requested_metrics,
             "metric_result_count": len(metric_ids),
+            "metric_member_focus_required": metric_member_focus_required,
+            "metric_member_focus_result_count": len(metric_rows),
             "calculation_window": calculation_window,
             "comparison_axes": sorted(requested_comparison_axes),
             "metric_observation_period_v2": bool(requested_metrics),
@@ -1990,6 +2073,8 @@ class OntologyStore:
                 "total": int((time.perf_counter() - started_at) * 1000),
             },
         }
+        if current_prior.get("enabled"):
+            diagnostics["current_document_prior"] = current_prior
         if unavailable_tickers:
             diagnostics["warnings"].append("ticker_not_available")
             diagnostics["unavailable_tickers"] = unavailable_tickers
@@ -3374,6 +3459,7 @@ class OntologyStore:
         object_types: Iterable[str],
         include_rejected: bool,
         limit: int,
+        strict_only: bool = False,
     ) -> tuple[list[sqlite3.Row], dict[str, Any]]:
         tickers = list(tickers) if tickers is not None else None
         document_types = list(document_types) if document_types is not None else None
@@ -3435,9 +3521,9 @@ class OntologyStore:
             )
 
         run_attempt("strict_and", topic, operator="AND")
-        if len(selected_rows) < limit and expanded_topic != topic:
+        if not strict_only and len(selected_rows) < limit and expanded_topic != topic:
             run_attempt("expanded_and", expanded_topic, operator="AND")
-        if should_relax and len(selected_rows) < limit:
+        if not strict_only and should_relax and len(selected_rows) < limit:
             split_limit = 12
             if tickers and len(tickers) == 1 and not periods and limit <= 2:
                 split_limit = 5
@@ -3464,7 +3550,7 @@ class OntologyStore:
                 run_attempt("split_and", split_topic, operator="AND")
                 if len(selected_rows) >= limit:
                     break
-        if should_relax and len(selected_rows) < limit:
+        if not strict_only and should_relax and len(selected_rows) < limit:
             max_or_terms = 8
             if tickers and periods:
                 max_or_terms = 4
@@ -3483,6 +3569,7 @@ class OntologyStore:
             "original_topic": topic,
             "expanded_topic": expanded_topic,
             "expanded_terms": expanded_terms,
+            "strict_only": bool(strict_only),
             "selected_mode": selected_mode,
             "attempts": attempts,
         }
@@ -4519,6 +4606,7 @@ class OntologyStore:
         limit_per_metric: int,
         calculation_window: str | None = None,
         comparison_axes: Iterable[str] | None = None,
+        metric_focus_terms: Iterable[str] | None = None,
     ) -> list[sqlite3.Row]:
         requested = _unique(str(metric).strip() for metric in metrics if str(metric).strip())
         if not requested:
@@ -4526,11 +4614,9 @@ class OntologyStore:
         normalized_scope = str(metric_scope or "company_total").strip().lower()
         if normalized_scope not in {"company_total", "dimensioned", "any"}:
             raise ValueError(f"unsupported metric_scope: {metric_scope!r}")
-        metric_candidates = _unique(
-            candidate
-            for metric in requested
-            for candidate in (metric, _canonical_metric_name(metric))
-            if candidate
+        metric_candidates = _metric_candidates_for_request(
+            requested,
+            metric_scope=normalized_scope,
         )
         clauses = [
             "(lower(COALESCE(metric_lookup.canonical_metric, '')) IN ({metrics}) "
@@ -4728,6 +4814,7 @@ class OntologyStore:
             calculation_window=str(calculation_window or "").strip() or None,
             comparison_axes=normalized_axes,
             requested_periods=normalized_periods,
+            metric_focus_terms=metric_focus_terms,
         )
 
     def _topic_map_objects(
@@ -7347,15 +7434,19 @@ def _ticker_coverage(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
 
 def _normalize_period(period: str) -> list[str]:
-    """Expand a period label to include both FY and CY variants.
+    """Normalize a period label without conflating fiscal quarters.
 
-    Filings are indexed by calendar year (CY2023) but the AI may request
-    fiscal year (FY2023). Return both forms so the SQL IN filter matches
-    regardless of which convention the caller used.
+    A bare year is genuinely ambiguous in the serving index, so the existing
+    FY/CY annual expansion remains useful there.  A fiscal quarter is not
+    ambiguous in the same way: an issuer's FY2024Q3 can end in a different
+    calendar quarter from CY2024Q3.  Expanding the latter silently returns a
+    real, but wrong, filing and is worse than an exact miss.
     """
     raw = str(period or "").strip().upper()
     if not raw:
         return []
+    if re.fullmatch(r"(?:FY|CY)(?:19|20)\d{2}Q[1-4]", raw):
+        return [raw]
     # Already CY — return as-is plus FY variant
     if raw.startswith("CY"):
         return [raw, "FY" + raw[2:]]
@@ -7761,6 +7852,7 @@ def _select_planned_metric_rows(
     calculation_window: str | None,
     comparison_axes: set[str],
     requested_periods: Sequence[str],
+    metric_focus_terms: Iterable[str] | None = None,
 ) -> list[sqlite3.Row]:
     """Select atomic conflict sets or compatible period bundles per metric series."""
     temporal = calculation_window in {"period_over_period", "year_over_year"} and (
@@ -7774,6 +7866,9 @@ def _select_planned_metric_rows(
         grouped.setdefault((ticker, metric), []).append(row)
 
     selected_by_group: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    focus_terms = _unique(
+        str(term).strip() for term in metric_focus_terms or [] if str(term).strip()
+    )
     for group_key, group_rows in grouped.items():
         by_series: dict[tuple[Any, ...], list[sqlite3.Row]] = {}
         for row in group_rows:
@@ -7787,7 +7882,9 @@ def _select_planned_metric_rows(
                 [],
             ).append(row)
 
-        bundles: list[tuple[bool, tuple[int, int, str], str, list[sqlite3.Row]]] = []
+        bundles: list[
+            tuple[bool, int, tuple[int, int, str], str, list[sqlite3.Row]]
+        ] = []
         for series_key, series_rows in by_series.items():
             by_context: dict[str, list[sqlite3.Row]] = {}
             for row in series_rows:
@@ -7819,6 +7916,10 @@ def _select_planned_metric_rows(
                 bundles.append(
                     (
                         True,
+                        _planned_metric_dimension_focus_score(
+                            str(conflict[0]["planned_metric_dimensions_json"] or ""),
+                            focus_terms,
+                        ),
                         _planned_metric_row_period_key(conflict[0]),
                         repr(series_key),
                         conflict,
@@ -7861,6 +7962,10 @@ def _select_planned_metric_rows(
                 bundles.append(
                     (
                         False,
+                        _planned_metric_dimension_focus_score(
+                            str(bundle[0]["planned_metric_dimensions_json"] or ""),
+                            focus_terms,
+                        ),
                         max(_planned_metric_row_period_key(row) for row in bundle),
                         repr(series_key),
                         bundle,
@@ -7870,12 +7975,13 @@ def _select_planned_metric_rows(
         bundles.sort(
             key=lambda item: (
                 not item[0],
-                tuple(-value if isinstance(value, int) else value for value in item[1][:2]),
-                item[2],
+                -item[1],
+                tuple(-value if isinstance(value, int) else value for value in item[2][:2]),
+                item[3],
             )
         )
         selected: list[sqlite3.Row] = []
-        for _conflict, _period_key, _series_key, bundle in bundles:
+        for _conflict, _focus_score, _period_key, _series_key, bundle in bundles:
             remaining = limit_per_group - len(selected)
             if remaining <= 0:
                 break
@@ -7899,6 +8005,103 @@ def _select_planned_metric_rows(
     return result
 
 
+def _planned_metric_dimension_focus_score(
+    dimensions_json: str,
+    focus_terms: Iterable[str],
+) -> int:
+    """Rank dimensioned metric series by the clause's literal member focus.
+
+    Structured metric retrieval deliberately treats unknown issuer-specific
+    product/region labels as a broad dimensioned lookup.  This score restores
+    the specific user's named member at selection time without inventing an
+    exact dimension filter that could turn valid evidence into a false empty
+    result.  Only normalized token overlap is used; ties retain the existing
+    period and stable-ID ordering.
+    """
+    try:
+        dimensions = json.loads(dimensions_json or "{}")
+    except (TypeError, ValueError):
+        return 0
+    if not isinstance(dimensions, Mapping):
+        return 0
+    member_keys: set[str] = set()
+    for value in [*dimensions.keys(), *dimensions.values()]:
+        key = _metric_dimension_key(value)
+        if key:
+            member_keys.add(key)
+    focus_keys = _planned_metric_member_focus_keys(focus_terms)
+    score = 0
+    for focus_key in focus_keys:
+        singular_focus = focus_key.removesuffix("s")
+        compact_focus = singular_focus.replace("_", "")
+        for member_key in member_keys:
+            singular_member = member_key.removesuffix("s")
+            compact_member = singular_member.replace("_", "")
+            if focus_key == member_key or compact_focus == compact_member:
+                score += 100
+            elif singular_focus and singular_focus == singular_member:
+                score += 80
+            elif (
+                len(focus_key) >= 4
+                and (member_key.startswith(f"{focus_key}_") or focus_key in member_key.split("_"))
+            ):
+                score += 40
+            elif (
+                len(singular_focus) >= 4
+                and (
+                    member_key.startswith(f"{singular_focus}_")
+                    or singular_focus in member_key.split("_")
+                )
+            ):
+                score += 40
+    return score
+
+
+def _planned_metric_member_focus_keys(focus_terms: Iterable[str]) -> set[str]:
+    """Return literal member terms after removing generic metric vocabulary."""
+
+    ignored = {"aapl", "segment", "revenue", "net", "sales"}
+    return {
+        key
+        for term in focus_terms
+        if len(str(term).strip()) > 1
+        and str(term).casefold() not in ignored
+        if (key := _metric_dimension_key(term))
+    }
+
+
+def _prefer_member_focused_metric_rows(
+    rows: Sequence[sqlite3.Row],
+    *,
+    metric_scope: str,
+    metric_focus_terms: Iterable[str] | None,
+) -> list[sqlite3.Row]:
+    """Keep matching dimension members when the planned query names one.
+
+    This is a preference rather than a hard filter.  A product label can be
+    issuer-specific or formatted differently in XBRL; if no member matches,
+    callers receive the original broad set and can still surface a qualified
+    result or a useful retrieval diagnostic.
+    """
+
+    values = list(rows)
+    if str(metric_scope or "").strip().casefold() != "dimensioned":
+        return values
+    focus_terms = list(metric_focus_terms or [])
+    if not _planned_metric_member_focus_keys(focus_terms):
+        return values
+    focused = [
+        row
+        for row in values
+        if _planned_metric_dimension_focus_score(
+            str(row["planned_metric_dimensions_json"] or "{}"),
+            focus_terms,
+        )
+        > 0
+    ]
+    return focused or values
+
+
 def _planned_metric_row_period_key(row: sqlite3.Row) -> tuple[int, int, str]:
     return (
         int(row["planned_metric_fiscal_year"] or 0),
@@ -7912,8 +8115,14 @@ def _planned_metric_row_matches_periods(
     periods: Sequence[str],
 ) -> bool:
     observation_period = str(row["planned_metric_observation_period"] or "").casefold()
-    if observation_period in {str(period).casefold() for period in periods}:
+    requested_periods = {str(period).casefold() for period in periods}
+    if observation_period in requested_periods:
         return True
+    # Fiscal and calendar-quarter labels can refer to different end dates for
+    # the same numeric year/quarter.  Coordinate fallback is useful only for
+    # an unqualified period label; it must never turn FY2024Q3 into CY2024Q3.
+    if any(re.match(r"^(?:fy|cy)\s*(?:19|20)\d{2}(?:q[1-4])?$", value) for value in requested_periods):
+        return False
     coordinates = _planned_metric_period_coordinates(periods)
     row_coordinate = (
         int(row["planned_metric_fiscal_year"] or 0),
@@ -8331,6 +8540,33 @@ def _dedupe_object_rows(rows: Sequence[sqlite3.Row], *, limit: int) -> list[sqli
 def _canonical_metric_name(metric: str | None) -> str:
     """Normalize human metric input to the canonical metric_name token shape."""
     return canonical_metric_name(metric)
+
+
+def _metric_candidates_for_request(
+    metrics: Iterable[str],
+    *,
+    metric_scope: str,
+) -> list[str]:
+    """Return physical metric keys for a semantic planned metric request.
+
+    `segment_revenue` is a user-facing ontology metric, while many filings
+    encode product and geographic rows as the canonical `revenue` metric plus
+    a non-company-total dimension.  Broaden only that dimensioned lookup so a
+    segment request can see the data representation actually present in the
+    index.  Company-total requests retain their exact metric identity.
+    """
+    requested = _unique(str(metric).strip() for metric in metrics if str(metric).strip())
+    candidates = _unique(
+        candidate
+        for metric in requested
+        for candidate in (metric, _canonical_metric_name(metric))
+        if candidate
+    )
+    if str(metric_scope).strip().lower() == "dimensioned" and any(
+        _canonical_metric_name(metric) == "segment_revenue" for metric in requested
+    ):
+        candidates = _unique([*candidates, "revenue"])
+    return candidates
 
 
 def _expanded_topic(topic: str) -> str:

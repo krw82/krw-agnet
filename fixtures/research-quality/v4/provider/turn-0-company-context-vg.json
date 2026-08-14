@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "reasoning_content": null,
+  "tool_calls": [
+    {
+      "id": "call-company-context-001",
+      "type": "function",
+      "function": {
+        "name": "krw_ontology_company_context__e69d163e1d28ab8e",
+        "arguments": "{\"ticker\":\"VG\"}"
+      }
+    }
+  ]
+}

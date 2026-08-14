@@ -1,0 +1,11 @@
+{
+  "ticker": "VG",
+  "company_topics": [
+    {
+      "topic": "spaceflight services",
+      "period": "FY2025",
+      "document_type": "10-K",
+      "trace_status": "available"
+    }
+  ]
+}

@@ -868,9 +868,10 @@ impl CapabilitySpec {
             InputDerivation::ResearchProposalToSearchPlanV4 => {
                 "Call this function with exactly one top-level `proposal` field. Its value is one complete ResearchProposal v4, not a SearchPlan. Each objective declares whether evidence is required now or deliberately deferred, its proof quality, interchangeable retrieval alternatives, and exactly one tagged semantic goal such as metric_time_series, metric_change, or qualitative_evidence. Do not create goal IDs, candidate IDs, graph dependencies, retrieval_query, tickers, universe, limits, clauses, comparison axes, calculation windows outside a metric_change goal, or MCP encoding: the kernel constructs and validates all of them. Mark only evidence that can materially change this answer as required; deferred objectives do not expand the initial plan."
             }
-            InputDerivation::Identity
-            | InputDerivation::CompanyContextRequestV1
-            | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
+            InputDerivation::CompanyContextRequestV1 => {
+                "Call this function exactly once with only the trusted ticker. The kernel fetches a bounded company ontology map using the current document landscape; treat it as orientation-only, never as factual support. Do not set periods, document types, limits, internal IDs, or a conclusion. Exact filing scope belongs in the later ResearchProposal."
+            }
+            InputDerivation::Identity | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
                 self.result_ingest.provider_tool_description()
             }
             InputDerivation::SealedGuruCompanyBriefV1 { .. } => {
@@ -1665,6 +1666,59 @@ impl AgentImageManifest {
                 kind: "capability model input contract",
                 id: contract_id.to_owned(),
             })
+    }
+
+    /// Return the output budget held back while a particular workflow is still
+    /// researching.  The image-wide policy is a floor, while the workflow's
+    /// largest composer determines the extra room needed for one complete
+    /// retry.  This keeps a long-form company answer from being cut off by the
+    /// cap chosen for a short-form workflow in the same image.
+    pub fn effective_final_output_reserve_tokens(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Option<u32>, ImageError> {
+        let Some(base_reserve) = self.body.answer_policy.final_output_reserve_tokens else {
+            return Ok(None);
+        };
+        let workflow = self
+            .body
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == workflow_id)
+            .ok_or_else(|| ImageError::UnknownReference {
+                kind: "compiled workflow",
+                id: workflow_id.to_owned(),
+            })?;
+        let max_composer_cap = workflow
+            .states
+            .iter()
+            .filter(|state| state.kind == StateKind::Compose)
+            .filter_map(|state| state.role_id.as_deref())
+            .map(|role_id| {
+                self.body
+                    .roles
+                    .iter()
+                    .find(|role| role.id == role_id)
+                    .ok_or_else(|| ImageError::UnknownReference {
+                        kind: "compose role",
+                        id: role_id.to_owned(),
+                    })?
+                    .execution
+                    .max_output_tokens
+                    .ok_or_else(|| {
+                        ImageError::InvalidSpec(format!(
+                            "compose role {role_id} must declare an output token cap when final output is reserved"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, ImageError>>()?
+            .into_iter()
+            .max()
+            .unwrap_or_default();
+        let retry_reserve = max_composer_cap
+            .checked_mul(2)
+            .ok_or_else(|| ImageError::InvalidSpec("compose retry reserve overflow".into()))?;
+        Ok(Some(base_reserve.max(retry_reserve)))
     }
 
     /// Materialize the closed typed-state program pinned by this immutable
@@ -2835,8 +2889,11 @@ pub fn validate_spec(spec: &AgentSpec) -> Result<(), ImageError> {
 }
 
 /// An image that reserves output for its terminal response must prove that the
-/// reserve can actually be reached.  Without this check a long research turn
-/// could consume the last token and strand the run before composition.
+/// reserve can actually be reached. Without this check a long research turn
+/// could consume the last token and strand the run before composition. The
+/// declared reserve is the common floor. Each workflow raises it to two times
+/// its own composer cap, so a long-form answer does not force every shorter
+/// workflow to carry the same reserve.
 fn validate_final_output_reserve(
     spec: &AgentSpec,
     reserve: u32,
@@ -2889,9 +2946,14 @@ fn validate_final_output_reserve(
                     "compose role {role_id} must declare an output token cap when final output is reserved"
                 ))
             })?;
-            if cap >= reserve {
+            let required_reserve = cap.checked_mul(2).ok_or_else(|| {
+                ImageError::InvalidSpec(format!(
+                    "compose role {role_id} output cap is too large to reserve a full retry"
+                ))
+            })?;
+            if required_reserve > 64_000 {
                 return Err(ImageError::InvalidSpec(format!(
-                    "compose role {role_id} output cap must leave repair space inside the final output reserve"
+                    "compose role {role_id} output cap exceeds the 64,000-token two-attempt reserve"
                 )));
             }
         }
@@ -4360,8 +4422,15 @@ mod tests {
             .iter()
             .find(|role| role.id == "composer")
             .unwrap();
-        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Direct);
-        assert_eq!(composer.execution.max_output_tokens, Some(3072));
+        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(composer.execution.max_output_tokens, Some(16384));
+        assert!(
+            !composer
+                .prompt_segments
+                .iter()
+                .any(|segment| { segment == "ontology_catalog" || segment == "skill_catalog" }),
+            "the final writer cannot call capabilities or load skills, so backend catalogs must not be injected into investor prose"
+        );
         let planner = image
             .body
             .roles
@@ -4369,7 +4438,15 @@ mod tests {
             .find(|role| role.id == "planner")
             .unwrap();
         assert_eq!(planner.execution.reasoning, RoleReasoningMode::Direct);
-        assert_eq!(planner.execution.max_output_tokens, Some(1024));
+        assert_eq!(planner.execution.max_output_tokens, Some(3072));
+        let analyst = image
+            .body
+            .roles
+            .iter()
+            .find(|role| role.id == "analyst")
+            .unwrap();
+        assert_eq!(analyst.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(analyst.execution.max_output_tokens, Some(16384));
         let orienter = image
             .body
             .roles
@@ -4401,6 +4478,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn final_output_reserve_scales_to_each_workflows_composer() {
+        let image = compile_agent_dir(agent_root()).unwrap().manifest;
+        assert_eq!(
+            image
+                .effective_final_output_reserve_tokens("company_research_v2")
+                .unwrap(),
+            Some(32_768)
+        );
+        assert_eq!(
+            image
+                .effective_final_output_reserve_tokens("idea_generation_v1")
+                .unwrap(),
+            Some(8_192)
+        );
     }
 
     #[test]

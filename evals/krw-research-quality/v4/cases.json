@@ -7,26 +7,33 @@
       "run_request": "fixtures/vertical-slice/v1/run-request.json",
       "capability_responses": [
         {
+          "capability_id": "ontology.company_context",
+          "payload": "fixtures/research-quality/v4/company-context-vg.json",
+          "mode": "static"
+        },
+        {
           "capability_id": "ontology.query_context",
           "payload": "fixtures/vertical-slice/v1/mcp/research-state-answerable.json",
           "mode": "materialize_research_state_plan_v2"
         }
       ],
       "recorded_provider_turns": [
+        "fixtures/research-quality/v4/provider/turn-0-company-context-vg.json",
         "fixtures/vertical-slice/v1/provider/turn-1-assistant.json",
         "fixtures/vertical-slice/v1/provider/turn-2-evidence-sufficient.json",
         "fixtures/vertical-slice/v1/provider/turn-3-answer.json"
       ],
       "budget": {
         "max_provider_turns": 8,
-        "max_capability_calls": 1,
+        "max_capability_calls": 2,
         "max_replans": 1,
         "max_repairs": 2,
         "max_input_tokens": 64000,
-        "max_output_tokens": 8000,
+        "max_output_tokens": 56000,
         "max_evidence_bytes": 1048576,
         "deadline_ms": 120000,
         "capability_call_limits": {
+          "ontology.company_context": 1,
           "ontology.query_context": 1
         }
       },
@@ -34,6 +41,7 @@
         "max_provider_turns": 8,
         "min_replans": 0,
         "exact_capability_sequence": [
+          "ontology.company_context",
           "ontology.query_context"
         ],
         "required_evidence_ids": [
@@ -68,26 +76,33 @@
       "run_request": "fixtures/research-quality/v4/company-dual-claim/run-request.json",
       "capability_responses": [
         {
+          "capability_id": "ontology.company_context",
+          "payload": "fixtures/research-quality/v4/company-context-vg.json",
+          "mode": "static"
+        },
+        {
           "capability_id": "ontology.query_context",
           "payload": "fixtures/research-quality/v4/company-dual-claim/mcp/research-state-answerable.json",
           "mode": "materialize_research_state_plan_v2"
         }
       ],
       "recorded_provider_turns": [
+        "fixtures/research-quality/v4/provider/turn-0-company-context-vg.json",
         "fixtures/research-quality/v4/company-dual-claim/provider/turn-1-assistant.json",
         "fixtures/research-quality/v4/company-dual-claim/provider/turn-2-evidence-sufficient.json",
         "fixtures/research-quality/v4/company-dual-claim/provider/turn-3-answer.json"
       ],
       "budget": {
         "max_provider_turns": 8,
-        "max_capability_calls": 1,
+        "max_capability_calls": 2,
         "max_replans": 1,
         "max_repairs": 2,
         "max_input_tokens": 64000,
-        "max_output_tokens": 8000,
+        "max_output_tokens": 56000,
         "max_evidence_bytes": 1048576,
         "deadline_ms": 120000,
         "capability_call_limits": {
+          "ontology.company_context": 1,
           "ontology.query_context": 1
         }
       },
@@ -95,6 +110,7 @@
         "max_provider_turns": 8,
         "min_replans": 0,
         "exact_capability_sequence": [
+          "ontology.company_context",
           "ontology.query_context"
         ],
         "required_evidence_ids": [
@@ -132,6 +148,11 @@
       "run_request": "fixtures/vertical-slice/v1/run-request.json",
       "capability_responses": [
         {
+          "capability_id": "ontology.company_context",
+          "payload": "fixtures/research-quality/v4/company-context-vg.json",
+          "mode": "static"
+        },
+        {
           "capability_id": "ontology.query_context",
           "payload": "fixtures/research-quality/v4/partial-research-replan/mcp/research-state-partial.json",
           "mode": "materialize_research_state_plan_v2"
@@ -148,6 +169,7 @@
         }
       ],
       "recorded_provider_turns": [
+        "fixtures/research-quality/v4/provider/turn-0-company-context-vg.json",
         "fixtures/vertical-slice/v1/provider/turn-1-assistant.json",
         "fixtures/research-quality/v4/partial-research-replan/provider/turn-2-wrong-proposal.json",
         "fixtures/research-quality/v4/partial-research-replan/provider/turn-3-trace.json",
@@ -157,14 +179,15 @@
       ],
       "budget": {
         "max_provider_turns": 8,
-        "max_capability_calls": 3,
+        "max_capability_calls": 4,
         "max_replans": 4,
         "max_repairs": 2,
         "max_input_tokens": 64000,
-        "max_output_tokens": 8000,
+        "max_output_tokens": 56000,
         "max_evidence_bytes": 1048576,
         "deadline_ms": 120000,
         "capability_call_limits": {
+          "ontology.company_context": 1,
           "ontology.query_context": 2,
           "ontology.query": 1,
           "ontology.trace": 1
@@ -174,6 +197,7 @@
         "max_provider_turns": 8,
         "min_replans": 3,
         "exact_capability_sequence": [
+          "ontology.company_context",
           "ontology.query_context",
           "ontology.trace",
           "ontology.query_context"

@@ -55,7 +55,7 @@ entrypoints:
 
 contracts:
   - { id: search-plan/v2, schema_ref: canonical:krw-ontology/search-plan-v2, content_hash: "sha256:276cb60a77b101b7c8fdf862f894aa74ce3be293cd23a071e216c69ed651bd04", semantic_authority: krw-ontology-python, max_items: 12 }
-  - { id: research-proposal/v4, schema_ref: canonical:krw-agent/research-proposal-v4, content_hash: "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49", semantic_authority: krw-agent-research-planner, max_items: 12 }
+  - { id: research-proposal/v4, schema_ref: canonical:krw-agent/research-proposal-v4, content_hash: "sha256:815cd59f1ca832b67141106e3893b25e7ec6b1413226b4778c3b61d8506e0943", semantic_authority: krw-agent-research-planner, max_items: 12 }
   - { id: research-state/v2, schema_ref: canonical:krw-ontology/research-state-v2, content_hash: "sha256:1d5eb5df05f10dbcc3446e1ae683f08fa03a301d5354e13dc99626552e1ec243", semantic_authority: krw-ontology-python }
   - { id: query-context-input-correction/v1, schema_ref: canonical:krw-ontology/query-context-input-correction-v1, content_hash: "sha256:3b692dbc2216793654d8f924a42f6d3ae7b77c7eea492db85f979ea54f6058a4", semantic_authority: krw-ontology-python }
   - { id: ontology-targeted-query/v1, schema_ref: canonical:krw-ontology/ontology-targeted-query-v1, content_hash: "sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63", semantic_authority: krw-ontology-python }
@@ -299,7 +299,7 @@ workflows:
       # Match the ordinary company-research loop: a second context pass is
       # available only when the analyst names a new unresolved evidence need.
       - { id: query_context, kind: capability, capability_id: ontology.query_context, max_visits: 2 }
-      - { id: ingest_company_evidence, kind: ingest, max_visits: 5 }
+      - { id: ingest_company_evidence, kind: ingest, max_visits: 6 }
       - { id: assess_company_gaps, kind: assess, role_id: company_evidence_researcher, max_visits: 5 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }

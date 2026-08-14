@@ -360,7 +360,10 @@ fn validate_request_object(
         });
     }
     if procedure == AgentV1Procedure::HeartbeatDaemon {
-        let valid_provider = matches!(object.get("provider").and_then(Value::as_str), Some("glm" | "deepseek"));
+        let valid_provider = matches!(
+            object.get("provider").and_then(Value::as_str),
+            Some("glm" | "deepseek")
+        );
         let valid_ttl = matches!(
             object.get("heartbeat_ttl_ms").and_then(Value::as_u64),
             Some(30_000..=120_000)
@@ -1972,6 +1975,7 @@ mod tests {
             "source": {
                 "run_id": run_id,
                 "revision": revision,
+                "tickers": ["005930"],
                 "user_message_id": krw_session_memory::deterministic_message_id(run_id, "user"),
                 "assistant_message_id": krw_session_memory::deterministic_message_id(run_id, "assistant"),
                 "final_commit_intent_hash": ContentHash::sha256("final-intent"),
@@ -1986,6 +1990,7 @@ mod tests {
             "resolved_goals": [],
             "recent_turn": {
                 "source_run_id": run_id,
+                "tickers": ["005930"],
                 "user_content_hash": ContentHash::sha256(user_content),
                 "user_content": user_content,
                 "user_content_original_bytes": user_content.len(),

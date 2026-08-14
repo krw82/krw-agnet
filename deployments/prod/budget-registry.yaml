@@ -13,7 +13,7 @@ profiles:
       max_replans: 3
       max_repairs: 3
       max_input_tokens: 176000
-      max_output_tokens: 28000
+      max_output_tokens: 56000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
@@ -29,12 +29,18 @@ profiles:
       max_capability_calls: 5
       max_replans: 3
       max_repairs: 3
-      # Reserve 200,000 combined tokens per GLM turn, leaving 4,800 tokens
-      # below its 204,800-token context capacity for provider framing.
-      max_input_tokens: 176000
-      max_output_tokens: 28000
+      # Keep 200,000 combined tokens, leaving 4,800 for provider framing.
+      # A complex company run needs one full 16,384-token evidence decision
+      # plus two full 16,384-token composition attempts. This is a ceiling,
+      # not a compulsory spend; it prevents a valid final answer from being
+      # retried under a smaller, doomed token cap.
+      max_input_tokens: 144000
+      max_output_tokens: 56000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      # This shared profile is also selected by the production DeepSeek model
+      # registry. Keep its end-to-end wall-clock envelope aligned with local:
+      # a completed evidence phase must have time to produce the final answer.
+      deadline_ms: 1200000
       capability_call_limits:
         ontology.query_context: 2
         ontology.company_context: 1

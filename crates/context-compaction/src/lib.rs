@@ -17,7 +17,7 @@ use krw_agent_evidence::{
 use krw_agent_protocol::ContentHash;
 use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
-use krw_ontology_adapter::ResearchPlanningProjection;
+use krw_ontology_adapter::{Continuation, ResearchPlanningProjection, ResearchRetrievalStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -66,6 +66,8 @@ pub struct CompactedEvidenceIndexEntry {
     pub supports: Vec<String>,
     pub refutes: Vec<String>,
     pub qualifies: Vec<String>,
+    #[serde(default)]
+    pub source_object_ids: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +104,12 @@ pub struct CompactedProviderContext {
     pub state: CompactedStateArtifact,
     pub answerability: Answerability,
     pub research_projection: Option<ResearchPlanningProjection>,
+    /// Bounded retrieval provenance remains visible even to the composer,
+    /// which intentionally does not see open goals. This prevents a
+    /// pagination or dependency warning from turning into a false statement
+    /// that the company did not disclose the fact.
+    #[serde(default)]
+    pub retrieval_status: Option<krw_ontology_adapter::ResearchRetrievalStatus>,
     pub evidence_index: Vec<CompactedEvidenceIndexEntry>,
     pub retained_facts: Vec<CompactedFact>,
     pub omitted_fact_refs: Vec<ContentHash>,
@@ -116,6 +124,7 @@ impl fmt::Debug for CompactedProviderContext {
             .field("boundary_hash", &self.boundary_hash)
             .field("state_artifact_hash", &self.state.artifact_hash)
             .field("answerability", &self.answerability)
+            .field("has_retrieval_status", &self.retrieval_status.is_some())
             .field("evidence_count", &self.evidence_index.len())
             .field("retained_fact_count", &self.retained_facts.len())
             .field("omitted_fact_count", &self.omitted_fact_refs.len())
@@ -225,7 +234,8 @@ impl CompactedProviderContext {
         // Planner (and any unrecognized role) gets the full, unfiltered view.
         // This preserves the prior behavior for every code path that has not
         // been explicitly migrated to role-filtered views.
-        if role_id != ROLE_ANALYST && role_id != ROLE_COMPOSER && role_id != ROLE_REPAIR {
+        let composer_role = is_composer_role(role_id);
+        if role_id != ROLE_ANALYST && !composer_role && role_id != ROLE_REPAIR {
             let canonical = String::from_utf8(serde_jcs::to_vec(self)?)
                 .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))?;
             let byte_len = u64::try_from(canonical.len())
@@ -242,10 +252,40 @@ impl CompactedProviderContext {
         let mut filtered = self.clone();
 
         match role_id {
-            ROLE_COMPOSER => {
+            _ if composer_role => {
                 // Composer assembles the answer from established facts and
                 // calculations; it does not need the open research projection.
                 filtered.research_projection = None;
+                // The settled state artifact is an analyst/control carrier: it
+                // includes raw server vocabulary such as clause status codes,
+                // ontology calendar buckets, object identifiers, and bounded
+                // diagnostics. The composer already receives the exact
+                // investor-facing sources of truth below (retained facts,
+                // citations, calculations, and the answerability boundary),
+                // so showing the raw artifact can only leak implementation
+                // labels into Korean prose. Keep the immutable hash/contract
+                // as a receipt handle but omit its payload from the
+                // composition-only projection.
+                filtered.state.payload = Value::Null;
+                // Pagination still matters: the writer must not turn a
+                // truncated retrieval into a company non-disclosure. Retain
+                // only that semantic signal, not raw warning codes, source
+                // labels, or routing-period aliases.
+                filtered.retrieval_status = filtered
+                    .retrieval_status
+                    .take()
+                    .map(composer_retrieval_status);
+                sanitize_composer_period_aliases(&mut filtered);
+                // Object identifiers are execution handles for analyst
+                // trace/chain calls, not investor-facing evidence. They can
+                // embed source routing buckets such as `CY2026Q1`; retaining
+                // them in the composer view makes it too easy to echo an
+                // internal label even when every factual period is already
+                // normalized. Keep them in the durable context and analyst
+                // view, but strip them from this answer-writing projection.
+                for evidence in &mut filtered.evidence_index {
+                    evidence.source_object_ids.clear();
+                }
                 // Keep evidence_index (citation handles), retained_facts, and
                 // calculations in full — these are exactly what composition
                 // grounds its claims in.
@@ -308,6 +348,114 @@ impl CompactedProviderContext {
         String::from_utf8(serde_jcs::to_vec(self)?)
             .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))
     }
+}
+
+/// Every visible final-writer role uses either `composer` or a specialized
+/// `<workflow>_composer` identifier. They share the same safety requirement:
+/// no backend routing/control fields belong in the investor-facing prompt.
+/// Keep this classification local and deterministic rather than duplicating a
+/// finite list that silently misses a newly added specialized workflow.
+fn is_composer_role(role_id: &str) -> bool {
+    role_id == ROLE_COMPOSER || role_id.ends_with("_composer")
+}
+
+/// Composer-visible retrieval status contains only the fact that the source
+/// set may be incomplete. Raw warning codes and source anchors are planning
+/// diagnostics and routinely contain internal vocabulary (`CY...` buckets,
+/// state names, or provider-specific reason strings) that must not shape
+/// investor prose. The evidence ledger retains public citations separately.
+fn composer_retrieval_status(status: ResearchRetrievalStatus) -> ResearchRetrievalStatus {
+    ResearchRetrievalStatus {
+        source_anchors: Vec::new(),
+        continuation: status.continuation.map(|continuation| Continuation {
+            has_more: continuation.has_more,
+            omitted_evidence_count: continuation.omitted_evidence_count,
+            reason: None,
+        }),
+        warnings: Vec::new(),
+    }
+}
+
+/// `CY2026Q1` is an ontology routing bucket, not an investor-facing fiscal
+/// label. The analyst may need it to choose another retrieval action, but the
+/// composer must rely on an observed end date, a documented fiscal label, or
+/// the filing type instead. Removing these aliases from the composition view
+/// prevents a model from accidentally presenting routing vocabulary as a
+/// reported accounting period while preserving every real number and date.
+fn sanitize_composer_period_aliases(context: &mut CompactedProviderContext) {
+    for evidence in &mut context.evidence_index {
+        evidence.period = public_period_label(evidence.period.take());
+        evidence.citation.period = public_period_label(evidence.citation.period.take());
+        evidence.citation.title = redact_calendar_bucket_tokens(&evidence.citation.title);
+    }
+    for fact in &mut context.retained_facts {
+        fact.period = public_period_label(fact.period.take());
+        redact_calendar_bucket_values(&mut fact.value);
+    }
+    for calculation in &mut context.calculations {
+        calculation.period = public_period_label(calculation.period.take());
+        redact_calendar_bucket_values(&mut calculation.output);
+    }
+}
+
+fn public_period_label(value: Option<String>) -> Option<String> {
+    value.filter(|value| !is_ontology_calendar_bucket(value))
+}
+
+fn redact_calendar_bucket_values(value: &mut Value) {
+    match value {
+        Value::String(text) if is_ontology_calendar_bucket(text) => *value = Value::Null,
+        Value::Array(values) => values.iter_mut().for_each(redact_calendar_bucket_values),
+        Value::Object(values) => values.values_mut().for_each(redact_calendar_bucket_values),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn is_ontology_calendar_bucket(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 6 && bytes.len() != 8 {
+        return false;
+    }
+    if bytes.get(0..2) != Some(b"CY") || !bytes[2..6].iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    bytes.len() == 6 || (bytes[6] == b'Q' && matches!(bytes[7], b'1'..=b'4'))
+}
+
+/// Remove embedded calendar-bucket tokens from a citation title without
+/// changing its document name or issuer text. Titles are advisory context;
+/// `document_type` remains the authoritative public citation field.
+fn redact_calendar_bucket_tokens(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut result = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let candidate_end = if bytes
+            .get(index..index + 6)
+            .is_some_and(|part| part[0..2] == *b"CY" && part[2..6].iter().all(u8::is_ascii_digit))
+        {
+            if bytes
+                .get(index + 6..index + 8)
+                .is_some_and(|part| part[0] == b'Q' && matches!(part[1], b'1'..=b'4'))
+            {
+                Some(index + 8)
+            } else {
+                Some(index + 6)
+            }
+        } else {
+            None
+        };
+        if let Some(end) = candidate_end {
+            result.push_str(&value[cursor..index]);
+            cursor = end;
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    result.push_str(&value[cursor..]);
+    result
 }
 
 /// Keep only the top `max` evidence entries by grade (Strong > Medium > Weak >
@@ -522,6 +670,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             supports: record.supports.clone(),
             refutes: record.refutes.clone(),
             qualifies: record.qualifies.clone(),
+            source_object_ids: record.source_object_ids.clone(),
         });
         for (fact_index, fact) in record.facts.iter().enumerate() {
             let fact_index =
@@ -554,6 +703,9 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
     });
     let calculations = input.calculations.values().cloned().collect::<Vec<_>>();
     let research_projection = input.research_projection.cloned();
+    let retrieval_status = research_projection
+        .as_ref()
+        .map(|projection| projection.retrieval_status.clone());
 
     let mut context = CompactedProviderContext {
         schema_version: COMPACTED_CONTEXT_SCHEMA_VERSION,
@@ -562,6 +714,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
         state,
         answerability: input.ledger.answerability(),
         research_projection,
+        retrieval_status,
         evidence_index,
         retained_facts: candidates
             .iter()
@@ -914,6 +1067,155 @@ mod tests {
         assert!(canonical.contains("6172839.455"));
         assert!(!canonical.contains("PRIVATE_REASONING_CANARY"));
         assert_eq!(output.receipt.source_message_count, 1);
+    }
+
+    #[test]
+    fn compaction_keeps_traceable_object_ids_and_safe_retrieval_status() {
+        let (artifact, boundary) = artifact_and_boundary();
+        let mut record = evidence(
+            "evidence-1",
+            vec![NormalizedFact {
+                subject: "TEST".into(),
+                predicate: "revenue".into(),
+                value: json!(100),
+                unit: Some("USD".into()),
+                period: Some("CY2026Q1".into()),
+            }],
+        );
+        record.source_object_ids = vec!["metric:TEST:revenue:CY2026Q1".into()];
+        let ledger = EvidenceLedger::from_records(vec![record]).unwrap();
+        let projection: ResearchPlanningProjection = serde_json::from_value(json!({
+            "graph": {"version":1,"goals":{},"original_order":[]},
+            "clauses": [],
+            "missing_parts": [],
+            "recommended_actions": [],
+            "exact_precise_query_candidates": [{
+                "clause_id":"segment_revenue",
+                "ticker":"TEST",
+                "topic":"TEST product revenue by segment",
+                "object_types":["MetricObservation"],
+                "response_detail":"full",
+                "limit":20
+            }],
+            "retrieval_status": {
+                "source_anchors": [{
+                    "ticker":"TEST",
+                    "period":"CY2026Q1",
+                    "document_type":"10-Q",
+                    "role":"current_driver",
+                    "source_label":"TEST Form 10-Q"
+                }],
+                "continuation": {"has_more":true,"omitted_evidence_count":4,"reason":"limit"},
+                "warnings": ["planned_evidence_truncated"]
+            }
+        }))
+        .unwrap();
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &ledger,
+            calculations: &BTreeMap::new(),
+            research_projection: Some(&projection),
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+
+        assert_eq!(
+            output.context.evidence_index[0].source_object_ids,
+            ["metric:TEST:revenue:CY2026Q1"]
+        );
+        let status = output.context.retrieval_status.as_ref().unwrap();
+        assert!(status.continuation.as_ref().unwrap().has_more);
+        assert_eq!(status.source_anchors[0].role, "current_driver");
+        let composer = output.context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert!(composer.canonical().contains("\"has_more\":true"));
+        assert!(
+            composer
+                .canonical()
+                .contains("\"omitted_evidence_count\":4")
+        );
+        assert!(!composer.canonical().contains("planned_evidence_truncated"));
+        assert!(!composer.canonical().contains("current_driver"));
+        assert!(!composer.canonical().contains("CY2026Q1"));
+        assert!(
+            !composer
+                .canonical()
+                .contains("metric:TEST:revenue:CY2026Q1")
+        );
+        let analyst = output.context.view_for_role(ROLE_ANALYST).unwrap();
+        assert!(
+            analyst
+                .canonical()
+                .contains("TEST product revenue by segment")
+        );
+        assert!(analyst.canonical().contains("\"response_detail\":\"full\""));
+        assert!(analyst.canonical().contains("metric:TEST:revenue:CY2026Q1"));
+    }
+
+    #[test]
+    fn composer_view_removes_raw_control_state_but_keeps_public_facts() {
+        let mut context = fixture_context_with_projection();
+        context.state.payload = json!({
+            "planner_control": "conditional",
+            "routing_period": "CY2026Q1",
+            "private_clause_id": "revenue_driver"
+        });
+        context.retained_facts[0].period = Some("CY2026Q1".into());
+        context.retained_facts[0].value = json!({
+            "routing_period": "CY2026Q1",
+            "reported_end_date": "2026-03-28",
+            "amount": 123
+        });
+        context.evidence_index[0].citation.title = "TEST CY2026Q1 Form 10-Q".into();
+        context.evidence_index[0].citation.period = Some("CY2026Q1".into());
+
+        let composer = context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert!(composer.canonical().contains("\"payload\":null"));
+        assert!(!composer.canonical().contains("planner_control"));
+        assert!(!composer.canonical().contains("private_clause_id"));
+        assert!(!composer.canonical().contains("conditional"));
+        assert!(!composer.canonical().contains("CY2026Q1"));
+        assert!(composer.canonical().contains("2026-03-28"));
+        assert!(composer.canonical().contains("\"amount\":123"));
+        assert!(composer.canonical().contains("TEST  Form 10-Q"));
+
+        let analyst = context.view_for_role(ROLE_ANALYST).unwrap();
+        assert!(analyst.canonical().contains("planner_control"));
+        assert!(analyst.canonical().contains("CY2026Q1"));
+
+        let specialized_composer = context.view_for_role("earnings_composer").unwrap();
+        assert_eq!(specialized_composer.canonical(), composer.canonical());
+        assert!(!specialized_composer.canonical().contains("planner_control"));
+        assert!(!specialized_composer.canonical().contains("CY2026Q1"));
+    }
+
+    #[test]
+    fn calendar_bucket_detection_does_not_remove_public_dates_or_fiscal_labels() {
+        for bucket in ["CY2026", "CY2026Q1", "CY1999Q4"] {
+            assert!(is_ontology_calendar_bucket(bucket), "{bucket}");
+        }
+        for public_label in [
+            "FY2026",
+            "FY2026Q1",
+            "2026-03-28",
+            "Q1 2026",
+            "CY2026Q5",
+            "CY20261",
+        ] {
+            assert!(
+                !is_ontology_calendar_bucket(public_label),
+                "{public_label} must remain available to the composer"
+            );
+        }
+        assert_eq!(
+            redact_calendar_bucket_tokens("TEST CY2026Q1 Form 10-Q"),
+            "TEST  Form 10-Q"
+        );
+        assert_eq!(
+            redact_calendar_bucket_tokens("FY2026 Form 10-K"),
+            "FY2026 Form 10-K"
+        );
     }
 
     #[test]

@@ -16,6 +16,51 @@ krw_pid_file="$krw_state/dev-stack.pid"
 krw_lock_dir="$krw_state/dev-stack.lock"
 krw_postgres_marker="$krw_state/postgres-lifecycle"
 krw_log_file="$krw_logs/dev-stack.log"
+krw_runtime_ports_file="$krw_state/runtime-ports.env"
+
+# A state directory represents one reusable local stack.  Its ports may have
+# been deliberately offset so several stacks can coexist.  Reload must reuse
+# that map instead of silently falling back to the default ports (which can
+# stop the stack and then collide with an unrelated PostgreSQL instance).
+# Parse the generated file as data rather than sourcing it as shell code.
+load_persisted_runtime_ports() {
+  [[ -f "$krw_runtime_ports_file" ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "${line#\#}" != "$line" ]] && continue
+    [[ "$line" == *=* ]] || {
+      printf 'invalid persisted local port map: %s\n' "$krw_runtime_ports_file" >&2
+      return 1
+    }
+    key=${line%%=*}
+    value=${line#*=}
+    [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) || {
+      printf 'invalid persisted local port value: %s\n' "$krw_runtime_ports_file" >&2
+      return 1
+    }
+    case "$key" in
+      KRW_AGENT_GATEWAY_PORT)
+        [[ "${KRW_AGENT_GATEWAY_PORT+x}" == x ]] || export KRW_AGENT_GATEWAY_PORT="$value"
+        ;;
+      KRW_AGENT_LOCAL_POSTGRES_PORT)
+        [[ "${KRW_AGENT_LOCAL_POSTGRES_PORT+x}" == x ]] || export KRW_AGENT_LOCAL_POSTGRES_PORT="$value"
+        ;;
+      KRW_AGENT_LOCAL_CAPABILITY_PORT)
+        [[ "${KRW_AGENT_LOCAL_CAPABILITY_PORT+x}" == x ]] || export KRW_AGENT_LOCAL_CAPABILITY_PORT="$value"
+        ;;
+      KRW_AGENT_LOCAL_MCP_TLS_PORT)
+        [[ "${KRW_AGENT_LOCAL_MCP_TLS_PORT+x}" == x ]] || export KRW_AGENT_LOCAL_MCP_TLS_PORT="$value"
+        ;;
+      *)
+        printf 'unexpected persisted local port key: %s\n' "$key" >&2
+        return 1
+        ;;
+    esac
+  done < "$krw_runtime_ports_file"
+}
+
+load_persisted_runtime_ports || exit 2
+
 krw_gateway_port=${KRW_AGENT_GATEWAY_PORT:-4318}
 krw_health_url=${KRW_AGENT_LOCAL_GATEWAY_HEALTH_URL:-"http://127.0.0.1:$krw_gateway_port/healthz"}
 krw_provider=${KRW_AGENT_PROVIDER:-glm}
@@ -401,6 +446,12 @@ load_runtime_pins() {
     esac
   done < "$runtime_env"
   export KRW_AGENT_PROVIDER="$krw_provider"
+  # The quality runners default to 4318, but one persistent development stack
+  # can deliberately use an offset port to coexist with another stack. Bind
+  # their default to this wrapper's already-health-checked Gateway so a local
+  # quality command cannot silently send its bearer token to a different
+  # process and report a misleading transport failure.
+  export KRW_AGENT_GATEWAY_URL="http://127.0.0.1:$krw_gateway_port/v1/agent"
 }
 
 run_smoke() {

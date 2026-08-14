@@ -156,7 +156,7 @@ pub const STATE_OPERATION_OUTPUT_V1_SCHEMA_SHA256: &str =
 pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
     "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8";
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
-    "sha256:b0e3e1f3a01636ac6e92d42e8cf9aab5c4bd3dd5fab35263a5bb67a5dde6ea49";
+    "sha256:815cd59f1ca832b67141106e3893b25e7ec6b1413226b4778c3b61d8506e0943";
 pub const COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680";
 pub const MARKET_SNAPSHOT_REQUEST_V1_SCHEMA_SHA256: &str =
@@ -905,7 +905,7 @@ fn validate_research_proposal_v4(value: &Value) -> Result<(), ContractValueError
 fn validate_proposal_alternatives(value: Option<&Value>) -> Result<(), ContractValueError> {
     let alternatives = value
         .and_then(Value::as_array)
-        .filter(|values| (1..=4).contains(&values.len()))
+        .filter(|values| (1..=6).contains(&values.len()))
         .ok_or(ContractValueError::Shape(RESEARCH_PROPOSAL_V4))?;
     for alternative in alternatives {
         let alternative = object(alternative, RESEARCH_PROPOSAL_V4)?;
@@ -1100,6 +1100,9 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
     // repair needs to know whether the problem is its objective, alternative,
     // or tagged goal shape. These paths contain only schema positions.
     let objectives = proposal.get("objectives")?.as_array()?;
+    if !(1..=12).contains(&objectives.len()) {
+        return Some(ResearchProposalViolation::LimitExceeded);
+    }
     for (idx, objective) in objectives.iter().enumerate() {
         let obj = objective.as_object()?;
         let base = format!("/objectives/{idx}");
@@ -1134,6 +1137,9 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
             }
         }
         let alternatives = obj.get("alternatives")?.as_array()?;
+        if !(1..=6).contains(&alternatives.len()) {
+            return Some(ResearchProposalViolation::LimitExceeded);
+        }
         for (alternative_index, alternative) in alternatives.iter().enumerate() {
             let alternative = alternative.as_object()?;
             if let Some(violation) = exact_shape_keys(
@@ -1142,6 +1148,10 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
                 &format!("{base}/alternatives/{alternative_index}"),
             ) {
                 return Some(violation);
+            }
+            let terms = alternative.get("terms")?.as_array()?;
+            if !(1..=16).contains(&terms.len()) {
+                return Some(ResearchProposalViolation::LimitExceeded);
             }
         }
         // Check goal.kind and goal enums.
@@ -2008,6 +2018,46 @@ mod tests {
             research_proposal_v4_validation_code(&qualitative),
             "proposal_required_objective_missing"
         );
+    }
+
+    #[test]
+    fn research_proposal_accepts_six_distinct_filing_alternatives_and_names_overflow() {
+        let mut proposal = serde_json::json!({
+            "intent": "company_research",
+            "answer_scope": "direct",
+            "uncertainty": "low",
+            "document_types": [],
+            "periods": [],
+            "objectives": [{
+                "priority": "required",
+                "alternatives": [
+                    {"terms": ["revenue"]},
+                    {"terms": ["net sales"]},
+                    {"terms": ["sales"]},
+                    {"terms": ["turnover"]},
+                    {"terms": ["total revenue"]},
+                    {"terms": ["revenue growth"]}
+                ],
+                "directness": "direct_required",
+                "object_types": ["MetricObservation"],
+                "goal": {
+                    "kind": "metric_observation",
+                    "metric": "revenue",
+                    "metric_dimensions": []
+                }
+            }]
+        });
+        validate_value(RESEARCH_PROPOSAL_V4, &proposal)
+            .expect("six distinct filing-language alternatives remain bounded and valid");
+
+        proposal["objectives"][0]["alternatives"]
+            .as_array_mut()
+            .expect("fixture alternatives")
+            .push(serde_json::json!({"terms": ["top line"]}));
+        let directive = research_proposal_v4_repair_directive(&proposal)
+            .expect("seventh alternative should receive a bounded repair");
+        assert_eq!(directive.code(), "proposal_limit_exceeded");
+        assert_eq!(directive.repair_mode, ResearchProposalRepairMode::Narrow);
     }
 
     #[test]

@@ -36,8 +36,10 @@ one root key, `proposal`:
       {
         "priority": "required",
         "alternatives": [
-          { "terms": ["net sales", "revenue"] },
-          { "terms": ["total net sales", "annual revenue"] }
+          { "terms": ["net sales"] },
+          { "terms": ["revenue"] },
+          { "terms": ["total net sales"] },
+          { "terms": ["annual revenue"] }
         ],
         "directness": "direct_required",
         "object_types": ["MetricObservation"],
@@ -81,9 +83,12 @@ All are corrected by making one complete `proposal`-only call.
 
 ## Field choices
 
-`intent` is a stable lowercase slug. `document_types` and `periods` state the
-evidence boundary. `alternatives` are interchangeable literal filing phrases,
-not additional research topics. `object_types` is a required ontology-filter
+`intent` is a stable lowercase slug. `document_types` and `periods` state an
+explicit user-requested evidence boundary; leave them empty for a recent/latest
+question without a named filing or period. `alternatives` are interchangeable
+literal filing phrases, one phrase per alternative, not additional research
+topics. Each objective allows 1–6 alternatives; prefer the most distinct 1–3
+phrases. `object_types` is a required ontology-filter
 array; use `[]` when no filter is needed. `goal` is exactly one of the five
 tagged goal types documented in the examples. Every objective has `priority`,
 `alternatives`, `directness`, `object_types`, and `goal`; every metric goal

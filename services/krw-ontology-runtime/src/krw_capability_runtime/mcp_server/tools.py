@@ -95,6 +95,27 @@ _REPEATED_RETRIEVE_GUIDANCE_MESSAGE = (
 
 
 @dataclass(frozen=True)
+class ExecutionScope:
+    """Physical filing scope derived from what the user actually requested.
+
+    ``SearchPlan`` is model-authored and is intentionally useful for semantic
+    retrieval.  It must not be treated as a source of truth for a hard filing
+    period or document filter when the user only said "recent".  That used to
+    make a planner-guessed FY/10-K silently exclude the current 10-Q before
+    the first read even began.
+    """
+
+    document_types: list[str] | None
+    periods: list[str] | None
+    # Narrative objects are keyed by filing/calendar buckets, whereas a
+    # MetricObservation carries the issuer's fiscal observation coordinate.
+    # Keep these filters separate so a requested FY quarter is not either
+    # coerced into a wrong CY quarter or dropped altogether.
+    metric_periods: list[str] | None
+    current_intent: bool
+
+
+@dataclass(frozen=True)
 class _IndexSignature:
     resolved_global_spine_path: str
     mtime_ns: int | None
@@ -526,6 +547,12 @@ MAX_COMPACT_CLAIMS = 3
 MAX_COMPACT_QUOTES = 3
 MAX_COMPACT_SPANS = 1
 MAX_COMPACT_RELATED_OBJECTS = 5
+# Full bundles retain source quotes, nested observations, and calculation
+# lineage. They are only necessary for a targeted gap-closing read, so keep
+# that mode bounded independently of the broader compact-search limit. This
+# prevents a provider from turning one exact read into an unbounded context
+# expansion while still returning enough primary evidence to answer.
+MAX_FULL_DETAIL_LIMIT = 20
 
 TRACE_ONLY_OBJECT_TYPES = frozenset(
     {
@@ -600,6 +627,14 @@ _ALLOWED_OBJECT_TYPES = set(DEFAULT_QUERY_TYPES) | {
     "ChangeEvent",
 }
 _OBJECT_TYPE_ALIASES = {
+    # Legacy planner vocabulary is deliberately accepted at the execution
+    # boundary.  A stale skill must broaden to the closest traceable serving
+    # types, never turn an otherwise valid filing query into an exact SQL
+    # filter that returns zero rows.
+    "narrativeevidence": ("BusinessFactor", "EvidenceQuote", "ResearchClaim"),
+    "narrative_evidence": ("BusinessFactor", "EvidenceQuote", "ResearchClaim"),
+    "numericevidence": ("Calculation", "MetricObservation", "XBRLFact"),
+    "numeric_evidence": ("Calculation", "MetricObservation", "XBRLFact"),
     "quote": ("EvidenceQuote",),
     "quotes": ("EvidenceQuote",),
     "evidencequote": ("EvidenceQuote",),
@@ -745,6 +780,8 @@ def query_tool(
     limit = _bounded_limit(limit)
     offset = _bounded_offset(offset)
     detail = _coerce_response_detail(response_detail)
+    if detail == ResponseDetail.FULL:
+        limit = min(limit, MAX_FULL_DETAIL_LIMIT)
     detail_policy = _response_detail_policy(response_detail, detail)
     normalized_group_by = _coerce_group_by(group_by)
     limit_groups = _bounded_limit_groups(limit_groups)
@@ -870,6 +907,10 @@ def query_tool(
                 object_types=normalized_object_types,
                 include_rejected=include_rejected,
                 limit=fetch_limit,
+                # A kernel-generated exact gap read marks itself as
+                # answer-candidate-only. Keep its full phrase intact instead
+                # of backfilling the page with partial-term results.
+                strict_only=answer_candidate_only,
             )
         else:
             bundles, search_diagnostics = store.query_compact_with_diagnostics(
@@ -1861,12 +1902,17 @@ def query_context_tool(
     original question nor a keyword intent router is allowed to replace it.
     """
     started_at = time.perf_counter()
+    # The echoed state must retain the caller's already validated plan: the
+    # Rust kernel pins it byte-for-byte across the MCP boundary.  Execute a
+    # safe normalized copy instead, so legacy type labels cannot create a
+    # false empty retrieval while the public plan contract remains stable.
     plan = validate_search_plan(search_plan)
+    execution_plan, _execution_warnings = normalize_execution_search_plan(plan)
     index = _runtime_global_spine_path()
     signature = _index_signature(index)
     retrieval_started_at = time.perf_counter()
     with _store(index) as store:
-        raw_payload = _execute_search_plan(store=store, search_plan=plan)
+        raw_payload = _execute_search_plan(store=store, search_plan=execution_plan)
     _attach_chart_series_sidecar_to_search_plan_payload(
         raw_payload=raw_payload,
         question=plan.question,
@@ -2016,6 +2062,7 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
 def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, Any]:
     """Execute only plan-authored compact queries and assemble compiler input."""
     started_at = time.perf_counter()
+    scope = execution_scope_for_plan(search_plan)
     results_by_ticker: dict[str, list[dict[str, Any]]] = {}
     evidence_by_occurrence: dict[tuple[str, str], dict[str, Any]] = {}
     diagnostics: list[Mapping[str, Any]] = []
@@ -2062,35 +2109,13 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
                 filing_document_roles_from_documents(
                     list_documents(
                         tickers=resolved_tickers,
-                        document_types=search_plan.document_types or None,
+                        document_types=scope.document_types,
                     ),
                     tickers=resolved_tickers,
                 )
             )
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             warnings.append("filing_document_roles_unavailable")
-
-    # Augment periods and document_types to include the latest 10-Q and
-    # prior 10-K when the plan did not already request quarterly data.
-    # This follows period_policy: latest 10-Q as main evidence, same-FY
-    # 10-Qs for trend, and latest 10-K as annual baseline.
-    augmented_periods: list[str] = list(search_plan.periods or [])
-    augmented_doc_types: list[str] = list(search_plan.document_types or [])
-    latest_filing_periods = getattr(store, "latest_filing_periods", None)
-    if resolved_tickers and callable(latest_filing_periods):
-        try:
-            filing_periods, filing_doc_types = latest_filing_periods(
-                tickers=resolved_tickers,
-            )
-            for fp in filing_periods:
-                if fp not in augmented_periods:
-                    augmented_periods.append(fp)
-            for fdt in filing_doc_types:
-                fdt_norm = fdt.upper()
-                if fdt_norm not in {dt.upper() for dt in augmented_doc_types}:
-                    augmented_doc_types.append(fdt_norm)
-        except (OSError, RuntimeError, ValueError, sqlite3.Error):
-            warnings.append("latest_filing_periods_unavailable")
 
     def record_clause_rows(
         clause: Any,
@@ -2120,23 +2145,8 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
             if clause.clause_id not in clause_ids:
                 clause_ids.append(clause.clause_id)
             clause_matches = existing.setdefault("_plan_clause_matches", [])
-            # Heuristic relation verification: if the clause has predicates,
-            # check whether all predicate tokens appear in the evidence row's
-            # retrieval text. This is not a full structural relation verifier,
-            # but it unblocks relational clauses that were permanently stuck at
-            # semantic=None because no verifier ever set this flag.
             predicate_terms = list(clause.required_predicates)
-            relation_verified = False
-            if predicate_terms:
-                _evidence_text_parts = []
-                for _field in ("title", "summary", "quote_text", "claim_text", "retrieval_text"):
-                    _val = row.get(_field)
-                    if isinstance(_val, str) and _val:
-                        _evidence_text_parts.append(_val)
-                _joined = " ".join(_evidence_text_parts).lower()
-                relation_verified = all(
-                    term.lower() in _joined for term in predicate_terms
-                )
+            relation_verified = _planned_relation_verified(row, predicate_terms)
             clause_matches.append(
                 {
                     "clause_id": clause.clause_id,
@@ -2153,11 +2163,18 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
 
     batch_query = getattr(store, "query_planned_batch_with_diagnostics", None)
     if callable(batch_query):
-        clauses = [
-            {
-                "clause_id": clause.clause_id,
-                "retrieval_query": clause.retrieval_query,
-                "retrieval_terms": _clause_evidence_terms(clause),
+        clauses = []
+        for clause in search_plan.clauses:
+            clause_scope = execution_scope_for_clause(search_plan, clause.retrieval_query)
+            clauses.append(
+                {
+                    "clause_id": clause.clause_id,
+                    "retrieval_query": clause.retrieval_query,
+                # ``retrieval_query`` already contains the compiler-selected
+                # filing-language alternative plus the required semantics.
+                # Passing a second non-empty hint list made the store discard
+                # that selected alternative and search only generic concepts.
+                "retrieval_terms": None,
                 "predicate_terms": list(clause.required_predicates),
                 "metrics": list(clause.metrics),
                 "metric_dimensions": list(clause.metric_dimensions),
@@ -2167,14 +2184,22 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
                 "tickers": list(clause.tickers),
                 "object_types": clause.object_types or None,
                 "allow_relaxed": search_plan.uncertainty != PlanUncertainty.LOW,
-            }
-            for clause in search_plan.clauses
-        ]
+                    # Internal execution metadata, not a SearchPlan schema
+                    # extension.  The shard router consumes it per clause.
+                    "document_types": clause_scope.document_types,
+                    "periods": clause_scope.periods,
+                    "metric_periods": clause_scope.metric_periods,
+                    "query_intent_text": (
+                        search_plan.question if clause_scope.current_intent else None
+                    ),
+                }
+            )
         batch_payload, batch_diagnostics = batch_query(
             clauses=clauses,
             tickers=resolved_tickers,
-            document_types=augmented_doc_types or None,
-            periods=augmented_periods or None,
+            document_types=scope.document_types,
+            periods=scope.periods,
+            query_intent_text=search_plan.question if scope.current_intent else None,
             include_rejected=False,
             limit=search_plan.limit_results,
         )
@@ -2196,10 +2221,11 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
             record_clause_rows(clause, rows, clause_diagnostics)
     else:
         for clause in search_plan.clauses:
+            clause_scope = execution_scope_for_clause(search_plan, clause.retrieval_query)
             rows, clause_diagnostics = _query_planned_compact(
                 store=store,
                 retrieval_query=clause.retrieval_query,
-                retrieval_terms=_clause_evidence_terms(clause),
+                retrieval_terms=[],
                 predicate_terms=clause.required_predicates,
                 metrics=clause.metrics,
                 metric_dimensions=clause.metric_dimensions,
@@ -2207,8 +2233,12 @@ def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, An
                 calculation_window=clause.calculation_window,
                 comparison_axes=search_plan.comparison_axes,
                 tickers=clause.tickers or resolved_tickers,
-                document_types=augmented_doc_types or None,
-                periods=augmented_periods or None,
+                document_types=clause_scope.document_types,
+                periods=clause_scope.periods,
+                metric_periods=clause_scope.metric_periods,
+                query_intent_text=(
+                    search_plan.question if clause_scope.current_intent else None
+                ),
                 object_types=clause.object_types or None,
                 include_rejected=False,
                 allow_relaxed=search_plan.uncertainty != PlanUncertainty.LOW,
@@ -2316,6 +2346,55 @@ def _clause_evidence_terms(clause: Any) -> list[str]:
     )
 
 
+def _planned_relation_verified(
+    row: Mapping[str, Any], predicate_terms: Sequence[str]
+) -> bool:
+    """Check whether a filing row contains one planned relation wording.
+
+    Planner predicates are lexical alternatives (for example ``due to`` or
+    ``driven by``), not a demand that a single filing sentence repeat every
+    synonym.  Requiring every wording created false negative direct evidence
+    even when the exact causal sentence was present.  This remains a narrow
+    text-presence signal; it never invents an ontology edge or changes the
+    evidence record itself.
+    """
+
+    normalized = [str(term).strip().casefold() for term in predicate_terms if str(term).strip()]
+    if not normalized:
+        return False
+    # The planned-query fast path returns compact bundles: the atomic filing
+    # text lives under `text` and, for exact provenance, under `object`.
+    # Looking only for the old expanded-envelope fields meant a quote with the
+    # requested causal wording was always marked related after compaction.
+    pieces = [
+        str(row.get(field) or "")
+        for field in (
+            "text",
+            "title",
+            "summary",
+            "quote_text",
+            "claim_text",
+            "retrieval_text",
+        )
+    ]
+    object_payload = row.get("object")
+    if isinstance(object_payload, Mapping):
+        pieces.extend(
+            str(object_payload.get(field) or "")
+            for field in (
+                "quote_text",
+                "claim_text",
+                "normalized_claim_text",
+                "description",
+                "mechanism",
+                "text",
+                "raw_text",
+            )
+        )
+    text = " ".join(pieces).casefold()
+    return any(term in text for term in normalized)
+
+
 def _clause_metric_terms(clause: Any) -> list[str]:
     return _dedupe_preserving_order([*list(clause.metrics), *list(clause.metric_dimensions)])
 
@@ -2350,10 +2429,12 @@ def _query_planned_compact(
     tickers: Sequence[str] | None,
     document_types: Sequence[str] | None,
     periods: Sequence[str] | None,
+    query_intent_text: str | None,
     object_types: Sequence[str] | None,
     include_rejected: bool,
     allow_relaxed: bool,
     limit: int,
+    metric_periods: Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Call the v2 planned primitive without falling back to keyword routing."""
     planned_query = getattr(store, "query_planned_compact_with_diagnostics", None)
@@ -2370,6 +2451,8 @@ def _query_planned_compact(
             tickers=tickers,
             document_types=document_types,
             periods=periods,
+            metric_periods=metric_periods,
+            query_intent_text=query_intent_text,
             object_types=object_types,
             include_rejected=include_rejected,
             allow_relaxed=allow_relaxed,
@@ -2400,6 +2483,8 @@ def _query_planned_compact(
                 tickers=[ticker],
                 document_types=document_types,
                 periods=periods,
+                metric_periods=metric_periods,
+                query_intent_text=query_intent_text,
                 object_types=object_types,
                 include_rejected=include_rejected,
                 allow_relaxed=allow_relaxed,
@@ -2534,9 +2619,21 @@ def _planned_execution_telemetry(
 
 def _diagnostic_warnings(diagnostics: Mapping[str, Any]) -> list[str]:
     values: list[str] = []
-    raw = diagnostics.get("warnings")
-    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
-        values.extend(str(value).strip() for value in raw if str(value).strip())
+    containers: list[Mapping[str, Any]] = [diagnostics]
+    routing = _safe_payload_dict(diagnostics.get("routing"))
+    if routing:
+        containers.append(routing)
+    shard_diagnostics = diagnostics.get("shard_diagnostics")
+    if isinstance(shard_diagnostics, Mapping):
+        containers.extend(
+            value for value in shard_diagnostics.values() if isinstance(value, Mapping)
+        )
+    for container in containers:
+        raw = container.get("warnings")
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            values.extend(str(value).strip() for value in raw if str(value).strip())
+        if container.get("clause_query_error"):
+            values.append("planned_clause_query_failed")
     return _dedupe_preserving_order(values)
 
 
@@ -2863,8 +2960,6 @@ def _coerce_response_detail(response_detail: ResponseDetail | str) -> ResponseDe
         detail = ResponseDetail(response_detail)
     except ValueError:
         return ResponseDetail.COMPACT
-    if detail == ResponseDetail.FULL:
-        return ResponseDetail.COMPACT
     return detail
 
 
@@ -2976,6 +3071,225 @@ def _normalize_object_types(
             continue
         invalid.append(value)
     return _unique(normalized), invalid
+
+
+def normalize_execution_search_plan(search_plan: SearchPlan) -> tuple[SearchPlan, list[str]]:
+    """Return the safe physical plan for read-only execution.
+
+    ``SearchPlan`` intentionally keeps object types as an open vocabulary so
+    an older agent image can be decoded without an MCP contract failure.
+    Execution is stricter in a different direction: known legacy aliases are
+    converted to serving types and unknown filters are dropped.  Dropping an
+    unrecognised *narrowing* filter is safer than silently claiming the filing
+    has no evidence because a model used an obsolete ontology label.
+
+    The returned plan remains a normal canonical ``SearchPlan``; no extra
+    model turn, repair protocol, or tool capability is introduced.
+    """
+
+    clauses = []
+    for clause in search_plan.clauses:
+        normalized, _unknown = _normalize_object_types(list(clause.object_types))
+        clauses.append(clause.model_copy(update={"object_types": normalized or []}))
+    return search_plan.model_copy(update={"clauses": clauses}), []
+
+
+_EXPLICIT_DOCUMENT_TYPE_RE = re.compile(
+    r"\b(?:form\s+)?(10\s*[- ]?\s*[kq])\b|\b(annual|quarterly)\s+report\b|"
+    r"(?:사업|분기)\s*보고서",
+    flags=re.IGNORECASE,
+)
+_EXPLICIT_PERIOD_RE = re.compile(
+    r"\b(?:FY|CY)\s*(?:19|20)\d{2}(?:\s*Q[1-4])?\b|"
+    r"\b(?:19|20)\d{2}\s*Q[1-4]\b|"
+    r"\b(?:19|20)\d{2}\b|"
+    r"(?:19|20)\d{2}\s*년(?:\s*[1-4]\s*분기)?|[1-4]\s*분기",
+    flags=re.IGNORECASE,
+)
+_CURRENT_INTENT_RE = re.compile(
+    r"\b(?:latest|recent|current|newest|last\s+quarter|this\s+quarter)\b|"
+    r"최근|최신|현재|직전\s*분기|이번\s*분기|요즘",
+    flags=re.IGNORECASE,
+)
+_AMBIGUOUS_FISCAL_QUARTER_RE = re.compile(
+    r"\bFY\s*(?:19|20)\d{2}\s*Q[1-4]\b|"
+    r"\b(?:19|20)\d{2}\s*(?:fiscal\s+year|fiscal)\s*Q?[1-4]\b|"
+    r"(?:19|20)\d{2}\s*회계\s*연도\s*[1-4]\s*분기|"
+    r"FY\s*(?:19|20)\d{2}\s*[1-4]\s*분기",
+    flags=re.IGNORECASE,
+)
+_EXPLICIT_FISCAL_QUARTER_PATTERNS = (
+    re.compile(
+        r"\bFY\s*(?P<year>(?:19|20)\d{2})\s*Q?\s*(?P<quarter>[1-4])\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<year>(?:19|20)\d{2})\s*(?:fiscal\s+year|fiscal)\s*Q?\s*(?P<quarter>[1-4])\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<year>(?:19|20)\d{2})\s*회계\s*연도\s*(?P<quarter>[1-4])\s*분기",
+        flags=re.IGNORECASE,
+    ),
+)
+
+
+def _explicit_document_types_from_question(question: str) -> list[str]:
+    text = str(question or "")
+    document_types: list[str] = []
+    for match in _EXPLICIT_DOCUMENT_TYPE_RE.finditer(text):
+        normalized = "".join(part for part in match.groups() if part).casefold()
+        if "10" in normalized and "k" in normalized:
+            document_types.append("10-K")
+        elif "10" in normalized and "q" in normalized:
+            document_types.append("10-Q")
+        elif "annual" in normalized or "사업" in match.group(0):
+            document_types.append("10-K")
+        elif "quarterly" in normalized or "분기" in match.group(0):
+            document_types.append("10-Q")
+    return _dedupe_preserving_order(document_types)
+
+
+def _question_period_years(question: str) -> set[str]:
+    return {
+        match.group(0)[:4]
+        for match in re.finditer(r"(?:19|20)\d{2}", str(question or ""))
+    }
+
+
+def _explicit_period_scope(search_plan: SearchPlan, text: str) -> list[str] | None:
+    """Return a physical period filter only when one textual scope is unambiguous."""
+
+    if _AMBIGUOUS_FISCAL_QUARTER_RE.search(text):
+        # An issuer FY quarter and an ontology CY quarter can have different
+        # dates. Do not convert FY2024Q3 -> CY2024Q3 or use the same
+        # coordinate as an exact filter; the broad read retains the confirmed
+        # source label.
+        return None
+    if not _EXPLICIT_PERIOD_RE.search(text):
+        return None
+    requested_years = _question_period_years(text)
+    candidate_periods = [str(period).strip() for period in search_plan.periods if str(period).strip()]
+    compatible_periods = [
+        period
+        for period in candidate_periods
+        if not requested_years or any(year in period for year in requested_years)
+    ]
+    # If the planner could not retain a compatible canonical identifier, do
+    # not invent an FY<->CY mapping. Broad retrieval is truthful and lets
+    # returned source metadata establish the basis later.
+    return _dedupe_preserving_order(compatible_periods) or None
+
+
+def _explicit_metric_period_scope(search_plan: SearchPlan, text: str) -> list[str] | None:
+    """Keep an explicit issuer-fiscal coordinate for metric lookup only.
+
+    Filing narrative rows are indexed by the document's calendar routing
+    bucket, so using ``FY2024Q3`` as their physical filter can create a false
+    empty result. Metric observations have their own issuer fiscal year and
+    quarter, however. Losing the period entirely makes an explicit fiscal
+    question select the newest metric instead. This helper preserves the
+    user-requested label without ever converting it to a calendar quarter.
+    """
+
+    fiscal_quarters = _explicit_fiscal_quarter_labels(text)
+    if fiscal_quarters:
+        return fiscal_quarters
+    if not _EXPLICIT_PERIOD_RE.search(text):
+        return None
+    requested_years = _question_period_years(text)
+    compatible_periods = [
+        str(period).strip()
+        for period in search_plan.periods
+        if str(period).strip()
+        and (
+            not requested_years
+            or any(year in str(period) for year in requested_years)
+        )
+    ]
+    return _dedupe_preserving_order(compatible_periods) or None
+
+
+def _explicit_fiscal_quarter_labels(text: str) -> list[str]:
+    """Extract a user-authored fiscal coordinate without planner conversion."""
+
+    labels: list[str] = []
+    for pattern in _EXPLICIT_FISCAL_QUARTER_PATTERNS:
+        for match in pattern.finditer(str(text or "")):
+            labels.append(f"FY{match.group('year')}Q{match.group('quarter')}")
+    return _dedupe_preserving_order(labels)
+
+
+def execution_scope_for_plan(search_plan: SearchPlan) -> ExecutionScope:
+    """Choose hard filters from explicit user wording, never planner guesses.
+
+    The planner may reasonably include an annual baseline in a "recent"
+    proposal.  Passing that baseline back as an exact physical filter is a
+    category error: it prevents the retrieval layer from selecting the latest
+    compatible document.  Explicit user scope remains exact; ambiguous scope
+    deliberately stays broad and is ranked by the store's deterministic
+    current-document policy.
+    """
+
+    question = str(search_plan.question or "")
+    explicit_document_types = _explicit_document_types_from_question(question)
+    explicit_period = bool(_EXPLICIT_PERIOD_RE.search(question))
+
+    if explicit_document_types:
+        document_types: list[str] | None = explicit_document_types
+    else:
+        document_types = None
+
+    periods = _explicit_period_scope(search_plan, question) if explicit_period else None
+    metric_periods = (
+        _explicit_metric_period_scope(search_plan, question) if explicit_period else None
+    )
+
+    current_intent = bool(_CURRENT_INTENT_RE.search(question)) and not explicit_period
+    return ExecutionScope(
+        document_types=document_types,
+        periods=periods,
+        metric_periods=metric_periods,
+        current_intent=current_intent,
+    )
+
+
+def execution_scope_for_clause(search_plan: SearchPlan, retrieval_query: str) -> ExecutionScope:
+    """Derive a clause-local physical time scope for a mixed user question.
+
+    SearchPlan keeps the original question at plan level, but its clauses are
+    independent evidence obligations.  In a question such as "FY2022 revenue
+    and recent risks", applying FY2022 to every clause silently hides the
+    current risk filing.  The compiler-preserved retrieval query is the only
+    clause-level literal available without extending the ontology wire schema.
+    If it does not retain a historical literal, prefer the question's current
+    intent over incorrectly forcing that clause into another clause's history.
+    """
+
+    question = str(search_plan.question or "")
+    query = str(retrieval_query or "")
+    has_explicit_period = bool(_EXPLICIT_PERIOD_RE.search(question))
+    has_current_intent = bool(_CURRENT_INTENT_RE.search(question))
+    if not (has_explicit_period and has_current_intent):
+        return execution_scope_for_plan(search_plan)
+
+    document_types = _explicit_document_types_from_question(question) or None
+    if _EXPLICIT_PERIOD_RE.search(query):
+        return ExecutionScope(
+            document_types=document_types,
+            periods=_explicit_period_scope(search_plan, query),
+            metric_periods=_explicit_metric_period_scope(search_plan, query),
+            current_intent=False,
+        )
+    # The current wording may live in a different user clause and therefore
+    # not be repeated by every safe retrieval alternative.  Never let an
+    # unrelated historical filter erase the current evidence frontier.
+    return ExecutionScope(
+        document_types=document_types,
+        periods=None,
+        metric_periods=None,
+        current_intent=True,
+    )
 
 
 def _answer_candidate_object_types(object_types: list[str] | None) -> list[str]:

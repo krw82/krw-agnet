@@ -113,7 +113,11 @@ impl std::fmt::Debug for AnthropicSseEvent {
             } => formatter
                 .debug_struct("AnthropicSseEvent::Error")
                 .field("error_type", error_type)
-                .field("message", message)
+                .field("message_len", &message.len())
+                .field(
+                    "message_hash",
+                    &krw_agent_protocol::ContentHash::sha256(message),
+                )
                 .finish(),
         }
     }
@@ -504,6 +508,18 @@ fn parse_event(discriminator: &str, data: &str) -> Result<Option<AnthropicSseEve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_error_debug_redacts_message_content() {
+        let event = AnthropicSseEvent::Error {
+            error_type: "invalid_request".into(),
+            message: "private provider message".into(),
+        };
+
+        let rendered = format!("{event:?}");
+        assert!(rendered.contains("message_hash"));
+        assert!(!rendered.contains("private provider message"));
+    }
 
     /// Concatenate a list of byte slices and feed them through the decoder.
     fn decode_chunks(

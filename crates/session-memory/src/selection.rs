@@ -42,6 +42,32 @@ pub(crate) fn ticker_hits(trusted_tickers: &[String], text: &str) -> usize {
         .count()
 }
 
+/// An explicit prior-turn scope that does not intersect the current fenced
+/// scope is not usable room continuity.  Empty scope is legacy/unknown data:
+/// it may still surface through a relevant lexical match, but is never pinned
+/// merely for recency.
+pub(crate) fn ticker_scope_conflicts(
+    candidate_tickers: &[String],
+    trusted_tickers: &[String],
+) -> bool {
+    !trusted_tickers.is_empty()
+        && !candidate_tickers.is_empty()
+        && !candidate_tickers
+            .iter()
+            .any(|candidate| trusted_tickers.iter().any(|trusted| trusted == candidate))
+}
+
+pub(crate) fn ticker_scope_matches_for_continuity(
+    candidate_tickers: &[String],
+    trusted_tickers: &[String],
+) -> bool {
+    trusted_tickers.is_empty()
+        || (!candidate_tickers.is_empty()
+            && candidate_tickers
+                .iter()
+                .any(|candidate| trusted_tickers.iter().any(|trusted| trusted == candidate)))
+}
+
 pub(crate) fn rank_text(
     question_terms: &BTreeSet<String>,
     candidate_text: &str,

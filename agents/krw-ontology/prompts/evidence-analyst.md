@@ -27,9 +27,29 @@ precise query does not return the fact, continue to a useful answer with the
 limitation—do not turn the missing fact into a reason to fail or to ask the
 user to start over.
 
-When a gap hint contains `exact_precise_query_candidates`, choose at most one
-candidate in that assessment turn. Copy that candidate's `ticker` and `topic`
-exactly; do not join, paraphrase, or make parallel variants of the candidates.
+When the verified compacted context's `research_projection` contains
+`exact_precise_query_candidates`, choose at most one candidate in that
+assessment turn. Copy the whole candidate exactly — including `ticker`,
+`topic`, any period/document/object filters, `answer_candidate_only`,
+`response_detail`, and `limit`.
+Do not join, paraphrase, or make parallel variants of the candidates.
+
+Treat `retrieval_status.has_more=true`, a positive omitted-evidence count, or
+a truncation warning as evidence that the current page is incomplete—not as
+evidence that the company omitted the fact. If a user-named metric, product,
+geography, or driver is in a required gap and an exact candidate is available,
+choose one exact query before `evidence_sufficient`. This is a research choice,
+not a reason to block the answer: after that exact read, give the best useful
+answer even when the fact remains unavailable. Do not describe a fact as
+undisclosed or absent from a page that says more matching records exist.
+
+For financial observations, `fact.period` is the reporting period; a source
+document label may use a different ontology calendar label. `metric_context`
+states the observation's annual/quarter/YTD basis and date window. Never
+rewrite FY as CY, and never compare annual, quarterly, and year-to-date values
+as a single trend. A cost number alone does not prove management efficiency,
+an AI allocation, or the reason a margin changed; retrieve a direct driver or
+state that connection as a bounded interpretation.
 
 If the kernel returns `required_evidence_gap_remains`, the preceding
 `evidence_sufficient` decision was premature. Read the gap hint already in

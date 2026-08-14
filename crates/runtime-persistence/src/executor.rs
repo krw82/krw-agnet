@@ -1379,7 +1379,7 @@ mod tests {
             .owner("company_research_en", "en-US")
             .unwrap()
             .clone();
-        let providers = DeepSeekProviderCatalog::compile_release_set(&releases).unwrap();
+        let providers = fixture_provider_catalog(&releases);
         let catalog = ProductionReleaseCatalog::compile(&releases).unwrap();
         let ko_request: RunRequest = serde_json::from_slice(
             &fs::read(root.join("fixtures/vertical-slice/v1/run-request.json")).unwrap(),
@@ -1390,6 +1390,17 @@ mod tests {
         en_request.run_kind = "company_research_en".into();
         en_request.locale = "en-US".into();
         (catalog, providers, ko_hash, en_hash, ko_request, en_request)
+    }
+
+    /// Fixture-mode runtime resolution deliberately does not retain an
+    /// executable provider credential. These catalog tests still need to
+    /// construct the HTTP-client topology, so supply inert test-only keys at
+    /// that boundary rather than weakening fixture-mode secret isolation.
+    fn fixture_provider_catalog(releases: &ResolvedReleaseSet) -> Arc<DeepSeekProviderCatalog> {
+        let models = releases.models().cloned().collect::<Vec<_>>();
+        let api_keys =
+            build_api_keys_by_base(models.iter(), "fixture-deepseek-key", "fixture-glm-key");
+        DeepSeekProviderCatalog::compile_from(models.iter(), &api_keys, 8).unwrap()
     }
 
     fn receipt(
@@ -1552,7 +1563,7 @@ mod tests {
         )
         .unwrap();
 
-        let providers = DeepSeekProviderCatalog::compile_release_set(&releases).unwrap();
+        let providers = fixture_provider_catalog(&releases);
         for release in releases.releases() {
             CapabilityCatalog::compile(&release.image.manifest, Arc::clone(&release.runtime))
                 .unwrap_or_else(|error| {

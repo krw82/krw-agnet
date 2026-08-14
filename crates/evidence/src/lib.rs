@@ -263,6 +263,31 @@ impl EvidenceLedger {
         self.answerability = answerability;
     }
 
+    /// A precise supplemental read can recover a directly supported fact
+    /// after an earlier broad plan reported that it could not yet support a
+    /// conclusion. Preserve the conservative boundary: this only reopens the
+    /// ledger for qualified claims and can never grant strong-claim permission.
+    ///
+    /// Callers use this only for supplemental evidence mappings whose result
+    /// does not carry a newer, authoritative plan-level answerability verdict.
+    pub fn reopen_qualified_after_substantive_supplement<'a>(
+        &mut self,
+        records: impl IntoIterator<Item = &'a EvidenceRecord>,
+    ) {
+        if self.answerability != Answerability::NotAnswerable {
+            return;
+        }
+        let has_substantive_fact = records.into_iter().any(|record| {
+            matches!(
+                record.directness,
+                Directness::Direct | Directness::MetricLineage
+            ) && !record.facts.is_empty()
+        });
+        if has_substantive_fact {
+            self.answerability = Answerability::QualifiedOnly;
+        }
+    }
+
     pub fn append_calculation(&mut self, calculation: Calculation) -> Result<bool, EvidenceError> {
         if calculation.calculation_id.trim().is_empty() {
             return Err(EvidenceError::EmptyCalculationId);
@@ -1200,6 +1225,44 @@ mod tests {
 
         let error = serde_json::from_value::<EvidenceLedger>(encoded).unwrap_err();
         assert!(error.to_string().contains("duplicate evidence identity"));
+    }
+
+    #[test]
+    fn substantive_supplemental_evidence_reopens_not_answerable_to_qualified_only() {
+        let mut ledger = EvidenceLedger::default();
+        ledger.set_answerability(Answerability::NotAnswerable);
+        let mut targeted = evidence("e-targeted", "tenant-a");
+        targeted.strong_claim_allowed = false;
+        targeted.facts = vec![NormalizedFact {
+            subject: "AAPL".into(),
+            predicate: "services_revenue".into(),
+            value: serde_json::json!(30976),
+            unit: Some("USD millions".into()),
+            period: Some("2026-03-28 종료 분기".into()),
+        }];
+
+        ledger.reopen_qualified_after_substantive_supplement([&targeted]);
+
+        assert_eq!(ledger.answerability(), Answerability::QualifiedOnly);
+    }
+
+    #[test]
+    fn related_or_empty_supplemental_evidence_does_not_reopen_not_answerable() {
+        let mut ledger = EvidenceLedger::default();
+        ledger.set_answerability(Answerability::NotAnswerable);
+        let mut related = evidence("e-related", "tenant-a");
+        related.directness = Directness::Related;
+        related.facts = vec![NormalizedFact {
+            subject: "AAPL".into(),
+            predicate: "ontology_reference".into(),
+            value: serde_json::json!("related object"),
+            unit: None,
+            period: None,
+        }];
+
+        ledger.reopen_qualified_after_substantive_supplement([&related]);
+
+        assert_eq!(ledger.answerability(), Answerability::NotAnswerable);
     }
 
     #[test]

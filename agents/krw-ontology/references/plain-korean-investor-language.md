@@ -49,5 +49,5 @@ Prefer interpretation tables over raw metric grids when a table helps:
 | 현금흐름 | 회사에 남는 현금이 변함 | 투자 여력과 주주환원 여력을 판단하는 단서 |
 ```
 
-Do not expose `ResearchState`, `SearchPlan`, MCP, tool calls, IDs, budgets,
-or internal validation language to the user.
+Do not expose internal system names, data-access mechanics, identifiers,
+budgets, or validation language to the user.

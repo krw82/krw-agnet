@@ -286,7 +286,12 @@ def _execution_error_outcome(error: Exception) -> DispatchOutcome:
     )
 
 
-def _model_from_handler(model_name: str, handler: Handler) -> type[BaseModel]:
+def _model_from_handler(
+    model_name: str,
+    handler: Handler,
+    *,
+    exposed_parameters: frozenset[str] = frozenset(),
+) -> type[BaseModel]:
     """Compile a strict Pydantic input model from one typed read-handler signature."""
 
     signature = inspect.signature(handler)
@@ -300,7 +305,7 @@ def _model_from_handler(model_name: str, handler: Handler) -> type[BaseModel]:
             # extension point for their own callers. It is deliberately not
             # representable on MCP: the descriptor schema remains closed.
             continue
-        if parameter.name in _HIDDEN_PARAMETERS:
+        if parameter.name in _HIDDEN_PARAMETERS and parameter.name not in exposed_parameters:
             continue
         annotation = hints.get(parameter.name, Any)
         default = ... if parameter.default is inspect.Parameter.empty else parameter.default
@@ -340,9 +345,12 @@ def _standard_descriptor(
     source_handler: Handler,
     lane: CapabilityLane,
     runtime_lanes: RuntimeLanes,
+    exposed_parameters: frozenset[str] = frozenset(),
 ) -> ToolDescriptor:
     input_model = _model_from_handler(
-        f"{source_handler.__name__.title().replace('_', '')}Input", source_handler
+        f"{source_handler.__name__.title().replace('_', '')}Input",
+        source_handler,
+        exposed_parameters=exposed_parameters,
     )
 
     async def handler(decoded: DecodedInput) -> DispatchOutcome:
@@ -505,10 +513,19 @@ def build_registry() -> CapabilityRegistry:
             logical_capability_id="ontology.query",
             mcp_tool_name="krw_ontology_query",
             title="Search KRW ontology evidence",
-            description="Search accepted ontology evidence with explicit filters.",
+            description=(
+                "Search accepted ontology evidence with explicit filters. "
+                "Use response_detail=full only for one precise, bounded follow-up "
+                "when compact evidence cannot preserve the required quote or metric basis."
+            ),
             source_handler=ontology_tools.query_tool,
             lane=CapabilityLane.BROAD,
             runtime_lanes=lanes,
+            # Full detail is a bounded exact-read mode, not a presentation
+            # control. The Rust planner emits it only for one canonical gap
+            # candidate so the following model turn receives source quotes,
+            # numeric basis, and lineage rather than a lossy compact row.
+            exposed_parameters=frozenset({"response_detail"}),
         ),
         standard(
             logical_capability_id="ontology.topic_map",

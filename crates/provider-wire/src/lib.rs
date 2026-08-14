@@ -25,6 +25,20 @@ pub use prepared::PreparedMessagesRequest;
 const MAX_PROVIDER_FUNCTION_NAME_BYTES: usize = 64;
 const MAX_TOOL_CALL_ID_BYTES: usize = 256;
 
+/// Provider diagnostics must be explicitly enabled. The local launcher
+/// forwards an empty variable by default, so treating mere variable presence
+/// as enabled leaked a high-volume stream of diagnostic events into logs.
+fn provider_debug_metadata_enabled() -> bool {
+    provider_debug_metadata_enabled_value(std::env::var("KRW_DEBUG_PROVIDER").ok().as_deref())
+}
+
+fn provider_debug_metadata_enabled_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some(value) if value == "1" || value.eq_ignore_ascii_case("true")
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Newtypes copied from deepseek-wire for provider compatibility.
 // ---------------------------------------------------------------------------
@@ -1470,7 +1484,7 @@ mod http_client {
             }
             let request_hash = prepared.request_hash().clone();
 
-            if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+            if provider_debug_metadata_enabled() {
                 eprintln!(
                     "[KRW_DEBUG_PROVIDER] request model={} thinking={:?} tool_choice={:?} stream={} tools={} messages={} request_hash={}",
                     request.model,
@@ -1550,7 +1564,7 @@ mod http_client {
                         break;
                     }
                 }
-                if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                if provider_debug_metadata_enabled() {
                     eprintln!(
                         "[KRW_DEBUG_PROVIDER] error status={} body_hash={} provider_code={:?}",
                         status.as_u16(),
@@ -1599,7 +1613,7 @@ mod http_client {
                     if done {
                         return Err(WireError::DataAfterDone);
                     }
-                    if std::env::var("KRW_DEBUG_PROVIDER").is_ok() {
+                    if provider_debug_metadata_enabled() {
                         eprintln!(
                             "[KRW_DEBUG_PROVIDER] sse event: {:?}",
                             crate::sse::AnthropicSseEvent::clone(&event)
@@ -1802,6 +1816,17 @@ mod tests {
     use krw_agent_protocol::{DEEPSEEK_MODEL_ID, GLM_MODEL_ID};
     #[cfg(feature = "http")]
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn provider_debug_requires_an_explicit_truthy_value() {
+        assert!(!provider_debug_metadata_enabled_value(None));
+        assert!(!provider_debug_metadata_enabled_value(Some("")));
+        assert!(!provider_debug_metadata_enabled_value(Some("0")));
+        assert!(!provider_debug_metadata_enabled_value(Some("verbose")));
+        assert!(provider_debug_metadata_enabled_value(Some("1")));
+        assert!(provider_debug_metadata_enabled_value(Some(" true ")));
+        assert!(provider_debug_metadata_enabled_value(Some("TRUE")));
+    }
 
     #[test]
     fn content_block_roundtrips_through_serde() {

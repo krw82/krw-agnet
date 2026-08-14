@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from contextlib import nullcontext
 
 import pytest
 
+from krw_capability_runtime.mcp_server import tools as ontology_tools
 from krw_capability_runtime.mcp_server.contracts import ResearchState, SearchPlan
 from krw_capability_runtime.transport.mcp.descriptors import _query_context_payload, build_registry
 from krw_capability_runtime.transport.mcp.http import create_http_app
@@ -101,18 +104,107 @@ def test_query_context_keeps_a_complete_canonical_plan_echo() -> None:
     assert "release_id" not in payload
 
 
-def test_deployment_owned_or_expensive_knobs_are_not_mcp_inputs() -> None:
+def test_only_targeted_query_exposes_its_bounded_evidence_detail_control() -> None:
     registry = build_registry()
     forbidden = {
         "root",
         "response_format",
-        "response_detail",
         "include_private_excerpt",
         "allow_expensive",
     }
 
     for tool in registry.list_tools():
         assert forbidden.isdisjoint(tool.inputSchema.get("properties", {})), tool.name
+
+    query_schema = registry.descriptor("krw_ontology_query").input_schema()
+    response_detail = query_schema["properties"]["response_detail"]
+    assert response_detail["default"] == "compact"
+    response_detail_name = response_detail["$ref"].rsplit("/", 1)[-1]
+    assert query_schema["$defs"][response_detail_name]["enum"] == [
+        "ids_only",
+        "compact",
+        "ticker_summary",
+        "full",
+    ]
+    for tool in registry.list_tools():
+        if tool.name != "krw_ontology_query":
+            assert "response_detail" not in tool.inputSchema.get("properties", {}), tool.name
+
+
+def test_targeted_query_preserves_full_detail_and_caps_its_result_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.full_limit: int | None = None
+            self.strict_only: bool | None = None
+
+        def query_with_diagnostics(self, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
+            self.full_limit = int(kwargs["limit"])
+            self.strict_only = bool(kwargs["strict_only"])
+            return (
+                [
+                    {
+                        "id": "metric_1",
+                        "type": "MetricObservation",
+                        "ticker": "AAPL",
+                        "object": {"value": 100, "unit": "USD"},
+                        "evidence": {"quotes": [{"id": "quote_1", "text": "quoted source"}]},
+                    }
+                ],
+                {"result_count": 1},
+            )
+
+        def query_compact_with_diagnostics(self, **_kwargs: object) -> object:
+            raise AssertionError("full targeted read must not be silently downgraded to compact")
+
+    store = Store()
+    monkeypatch.setattr(ontology_tools, "_store", lambda _path: nullcontext(store))
+    payload = json.loads(
+        ontology_tools.query_tool(
+            ticker="AAPL",
+            topic="iPhone revenue",
+            response_detail=ontology_tools.ResponseDetail.FULL,
+            limit=50,
+        )
+    )
+
+    # The store reads one extra row only to make pagination truthful; the
+    # model-visible page remains capped at the bounded full-detail limit.
+    assert store.full_limit == ontology_tools.MAX_FULL_DETAIL_LIMIT + 1
+    assert payload["response_detail"] == "full"
+    assert payload["response_detail_policy"]["action"] == "as_requested"
+    assert payload["pagination"]["limit"] == ontology_tools.MAX_FULL_DETAIL_LIMIT
+    assert payload["results"][0]["object"]["value"] == 100
+    assert payload["results"][0]["evidence"]["quotes"][0]["text"] == "quoted source"
+    assert store.strict_only is False
+
+
+def test_exact_answer_candidate_query_uses_the_internal_strict_match_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.strict_only: bool | None = None
+
+        def query_with_diagnostics(self, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
+            self.strict_only = bool(kwargs["strict_only"])
+            return [], {"result_count": 0}
+
+        def query_compact_with_diagnostics(self, **_kwargs: object) -> object:
+            raise AssertionError("full exact read must not use compact retrieval")
+
+    store = Store()
+    monkeypatch.setattr(ontology_tools, "_store", lambda _path: nullcontext(store))
+    payload = json.loads(
+        ontology_tools.query_tool(
+            ticker="AAPL",
+            topic="iPhone revenue segment",
+            response_detail=ontology_tools.ResponseDetail.FULL,
+            answer_candidate_only=True,
+        )
+    )
+
+    assert store.strict_only is True
+    assert payload["search_diagnostics"]["result_count"] == 0
 
 
 def test_low_level_server_can_be_created_from_registry() -> None:

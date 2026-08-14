@@ -651,6 +651,8 @@ class OntologySpineRouter:
         tickers: Iterable[str],
         document_types: Iterable[str] | None = None,
         periods: Iterable[str] | None = None,
+        metric_periods: Iterable[str] | None = None,
+        query_intent_text: str | None = None,
         object_types: Iterable[str] | None = None,
         include_rejected: bool = False,
         allow_relaxed: bool = False,
@@ -675,6 +677,8 @@ class OntologySpineRouter:
                 tickers=None,
                 document_types=document_types,
                 periods=periods,
+                metric_periods=metric_periods,
+                query_intent_text=query_intent_text,
                 object_types=object_types,
                 include_rejected=include_rejected,
                 allow_relaxed=allow_relaxed,
@@ -741,6 +745,7 @@ class OntologySpineRouter:
         tickers: Iterable[str],
         document_types: Iterable[str] | None = None,
         periods: Iterable[str] | None = None,
+        query_intent_text: str | None = None,
         include_rejected: bool = False,
         limit: int = 20,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
@@ -773,6 +778,22 @@ class OntologySpineRouter:
                 # Isolate each clause query so a single clause failure does
                 # not discard the entire ticker shard's remaining clauses.
                 try:
+                    clause_document_types = (
+                        clause.get("document_types")
+                        if "document_types" in clause
+                        else document_types
+                    )
+                    clause_periods = clause.get("periods") if "periods" in clause else periods
+                    clause_metric_periods = (
+                        clause.get("metric_periods")
+                        if "metric_periods" in clause
+                        else clause_periods
+                    )
+                    clause_query_intent_text = (
+                        clause.get("query_intent_text")
+                        if "query_intent_text" in clause
+                        else query_intent_text
+                    )
                     rows, diagnostics = store.query_planned_compact_with_diagnostics(
                         retrieval_query=str(clause["retrieval_query"]),
                         retrieval_terms=clause.get("retrieval_terms"),
@@ -785,8 +806,10 @@ class OntologySpineRouter:
                         ),
                         comparison_axes=clause.get("comparison_axes"),
                         tickers=None,
-                        document_types=document_types,
-                        periods=periods,
+                        document_types=clause_document_types,
+                        periods=clause_periods,
+                        metric_periods=clause_metric_periods,
+                        query_intent_text=clause_query_intent_text,
                         object_types=clause.get("object_types"),
                         include_rejected=include_rejected,
                         allow_relaxed=bool(clause.get("allow_relaxed")),
@@ -796,12 +819,19 @@ class OntologySpineRouter:
                         "rows": list(rows),
                         "diagnostics": diagnostics,
                     }
-                except Exception:
+                except Exception as exc:
+                    # A clause execution failure is not evidence that the
+                    # filing lacks the requested fact.  Keep the shard alive
+                    # for its other clauses, but return a bounded status that
+                    # survives compilation and prevents an absence claim.
                     clause_payloads[clause_id] = {
                         "rows": [],
                         "diagnostics": {
                             "execution_mode": "planned_shard_batch",
                             "clause_query_error": True,
+                            "query_status": "dependency_error",
+                            "error_class": type(exc).__name__,
+                            "warnings": ["planned_clause_query_failed"],
                         },
                     }
             return clause_payloads

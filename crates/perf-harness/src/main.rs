@@ -34,8 +34,9 @@ use krw_agent_protocol::{
 #[cfg(test)]
 use krw_agent_provider_wire::ToolResultMessage;
 use krw_agent_provider_wire::{
-    AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
-    ProviderMessage, TokenUsage,
+    AssistantMessage, ContentBlock, EpisodeContext, FunctionCall, MessagesRequest,
+    ProviderEpisodeV1, ProviderFunctionName, ProviderMessage, TokenUsage, ToolCall, ToolCallKind,
+    ToolChoice,
 };
 use krw_agent_run_engine::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
@@ -314,6 +315,8 @@ struct ActiveLevel {
     observed_retained_bytes_per_run: usize,
     first_provider_entered: usize,
     first_provider_completed: usize,
+    planner_provider_entered: usize,
+    planner_provider_completed: usize,
     episode_checkpointed: usize,
     capability_entered: usize,
     capability_completed: usize,
@@ -1385,23 +1388,25 @@ fn append_active_gates(
 
 #[derive(Debug)]
 struct ActiveWorkload {
-    assistant: Arc<AssistantMessage>,
-    capability_template: Arc<Value>,
+    orientation_assistant: Arc<AssistantMessage>,
+    planner_assistant: Arc<AssistantMessage>,
+    orientation_template: Arc<Value>,
+    research_template: Arc<Value>,
     retained_payload_bytes: usize,
 }
 
 impl ActiveWorkload {
     fn load(root: &Path, retained_payload_bytes: usize) -> Result<Self, HarnessError> {
         let fixture = root.join("fixtures/vertical-slice/v1");
-        let mut assistant: AssistantMessage =
+        let mut planner_assistant: AssistantMessage =
             serde_json::from_slice(&fs::read(fixture.join("provider/turn-1-assistant.json"))?)?;
-        if !assistant.tool_calls.is_empty() && assistant.content.is_none() {
-            assistant.content = Some(String::new());
+        if !planner_assistant.tool_calls.is_empty() && planner_assistant.content.is_none() {
+            planner_assistant.content = Some(String::new());
         }
-        let mut capability_template: Value = serde_json::from_slice(&fs::read(
+        let mut research_template: Value = serde_json::from_slice(&fs::read(
             fixture.join("mcp/research-state-answerable.json"),
         )?)?;
-        match assistant.tool_calls.as_slice() {
+        match planner_assistant.tool_calls.as_slice() {
             [tool_call]
                 if tool_call.function.name.as_str()
                     == provider_tool_name("ontology.query_context") =>
@@ -1418,15 +1423,55 @@ impl ActiveWorkload {
                 ));
             }
         }
-        let summary = capability_template
+        let summary = research_template
             .pointer_mut("/evidence_units/0/summary")
             .ok_or(HarnessError::InvalidActiveFixture(
                 "research-state summary is missing",
             ))?;
         *summary = Value::String("r".repeat(retained_payload_bytes));
+
+        // A real company run now starts with this narrow, mandatory ontology
+        // orientation read before the planner emits its ResearchProposal. Keep
+        // the active-run fixture on that production path rather than sending
+        // the planner's query_context call into the orienter state.
+        let orientation_assistant = AssistantMessage {
+            content: Some(String::new()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: vec![ToolCall {
+                id: "perf-company-context".into(),
+                kind: ToolCallKind::Function,
+                function: FunctionCall {
+                    name: ProviderFunctionName::parse(provider_tool_name(
+                        "ontology.company_context",
+                    ))
+                    .map_err(|_| {
+                        HarnessError::InvalidActiveFixture(
+                            "company context provider tool name is invalid",
+                        )
+                    })?,
+                    arguments: r#"{"ticker":"VG"}"#.into(),
+                },
+            }],
+        };
+        let orientation_template = json!({
+            "format": "company-context-orientation/v1",
+            "ticker": "VG",
+            "status": "available",
+            "advisory_only": true,
+            "topics": [{
+                "topic_label": "spaceflight services",
+                "period": "FY2025",
+                "document_type": "10-K",
+                "trace_status": "available"
+            }],
+            "usage": "Use these labels only to narrow a later evidence query; do not cite them as company facts."
+        });
         Ok(Self {
-            assistant: Arc::new(assistant),
-            capability_template: Arc::new(capability_template),
+            orientation_assistant: Arc::new(orientation_assistant),
+            planner_assistant: Arc::new(planner_assistant),
+            orientation_template: Arc::new(orientation_template),
+            research_template: Arc::new(research_template),
             retained_payload_bytes,
         })
     }
@@ -1436,6 +1481,8 @@ impl ActiveWorkload {
 struct ActivePhaseCounters {
     first_provider_entered: AtomicUsize,
     first_provider_completed: AtomicUsize,
+    planner_provider_entered: AtomicUsize,
+    planner_provider_completed: AtomicUsize,
     episode_checkpointed: AtomicUsize,
     capability_entered: AtomicUsize,
     capability_completed: AtomicUsize,
@@ -1451,6 +1498,8 @@ struct ActivePhaseCounters {
 struct ActivePhaseSnapshot {
     first_provider_entered: usize,
     first_provider_completed: usize,
+    planner_provider_entered: usize,
+    planner_provider_completed: usize,
     episode_checkpointed: usize,
     capability_entered: usize,
     capability_completed: usize,
@@ -1467,6 +1516,8 @@ impl ActivePhaseCounters {
         ActivePhaseSnapshot {
             first_provider_entered: self.first_provider_entered.load(Ordering::SeqCst),
             first_provider_completed: self.first_provider_completed.load(Ordering::SeqCst),
+            planner_provider_entered: self.planner_provider_entered.load(Ordering::SeqCst),
+            planner_provider_completed: self.planner_provider_completed.load(Ordering::SeqCst),
             episode_checkpointed: self.episode_checkpointed.load(Ordering::SeqCst),
             capability_entered: self.capability_entered.load(Ordering::SeqCst),
             capability_completed: self.capability_completed.load(Ordering::SeqCst),
@@ -1483,6 +1534,7 @@ impl ActivePhaseCounters {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderRequestPhase {
     FirstProvider,
+    PlannerAfterOrientation,
     Measurement,
 }
 
@@ -1540,6 +1592,17 @@ fn provider_message_phase(
     {
         return Err("verified compacted context lacks accepted evidence");
     }
+    // A company-orientation map is deliberately advisory only. It produces a
+    // valid compacted context, but the next provider request must still be the
+    // planner's required query_context call. Only a committed ResearchState
+    // carries the planning projection that makes the following analyst turn
+    // the active-memory measurement boundary.
+    if context
+        .get("research_projection")
+        .is_none_or(Value::is_null)
+    {
+        return Ok(ProviderRequestPhase::PlannerAfterOrientation);
+    }
     Ok(ProviderRequestPhase::Measurement)
 }
 
@@ -1560,7 +1623,8 @@ fn verified_compacted_context(text: &str) -> Result<Option<&str>, &'static str> 
 
 #[derive(Debug)]
 struct PostToolBlockingProvider {
-    assistant: Arc<AssistantMessage>,
+    orientation_assistant: Arc<AssistantMessage>,
+    planner_assistant: Arc<AssistantMessage>,
     counters: Arc<ActivePhaseCounters>,
     release: Arc<Semaphore>,
 }
@@ -1574,6 +1638,7 @@ impl Provider for PostToolBlockingProvider {
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         match provider_request_phase(request) {
             Ok(ProviderRequestPhase::FirstProvider) => {
+                require_active_tool_choice(request, "ontology.company_context")?;
                 self.counters
                     .first_provider_entered
                     .fetch_add(1, Ordering::SeqCst);
@@ -1585,7 +1650,7 @@ impl Provider for PostToolBlockingProvider {
                     requested_model: request.model.clone(),
                     observed_model: request.model.clone(),
                     api_version: context.api_version.clone(),
-                    assistant: (*self.assistant).clone(),
+                    assistant: (*self.orientation_assistant).clone(),
                     tool_results: Vec::new(),
                     tool_schema_hash: context.tool_schema_hash.clone(),
                     agent_image_hash: context.agent_image_hash.clone(),
@@ -1604,6 +1669,41 @@ impl Provider for PostToolBlockingProvider {
                     .map_err(|_| active_fixture_failure("hash first provider episode"))?;
                 self.counters
                     .first_provider_completed
+                    .fetch_add(1, Ordering::SeqCst);
+                Ok(episode)
+            }
+            Ok(ProviderRequestPhase::PlannerAfterOrientation) => {
+                require_active_tool_choice(request, "ontology.query_context")?;
+                self.counters
+                    .planner_provider_entered
+                    .fetch_add(1, Ordering::SeqCst);
+                let request_bytes = serde_jcs::to_vec(request)
+                    .map_err(|_| active_fixture_failure("serialize planner provider request"))?;
+                let mut episode = ProviderEpisodeV1 {
+                    schema_version: 1,
+                    request_hash: ContentHash::sha256(request_bytes),
+                    requested_model: request.model.clone(),
+                    observed_model: request.model.clone(),
+                    api_version: context.api_version.clone(),
+                    assistant: (*self.planner_assistant).clone(),
+                    tool_results: Vec::new(),
+                    tool_schema_hash: context.tool_schema_hash.clone(),
+                    agent_image_hash: context.agent_image_hash.clone(),
+                    finish_reason: "tool_calls".into(),
+                    usage: TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                        prompt_cache_hit_tokens: 5,
+                        prompt_cache_miss_tokens: 5,
+                    },
+                    replay_hash: ContentHash::sha256("pending"),
+                };
+                episode.replay_hash = episode
+                    .calculate_replay_hash()
+                    .map_err(|_| active_fixture_failure("hash planner provider episode"))?;
+                self.counters
+                    .planner_provider_completed
                     .fetch_add(1, Ordering::SeqCst);
                 Ok(episode)
             }
@@ -1635,6 +1735,46 @@ impl Provider for PostToolBlockingProvider {
     }
 }
 
+fn require_active_tool_choice(
+    request: &MessagesRequest,
+    capability_id: &str,
+) -> Result<(), DependencyFailure> {
+    let expected = provider_tool_name(capability_id);
+    if matches!(
+        request.tool_choice.as_ref(),
+        Some(ToolChoice::Tool { name }) if name.as_str() == expected
+    ) {
+        Ok(())
+    } else {
+        let observed = match request.tool_choice.as_ref() {
+            Some(ToolChoice::Any) => "any",
+            Some(ToolChoice::Auto) => "auto",
+            Some(ToolChoice::None) => "none",
+            Some(ToolChoice::Tool { .. }) => "different_tool",
+            None => "missing",
+        };
+        Err(DependencyFailure::redacted(
+            match (capability_id, observed) {
+                ("ontology.company_context", "any") => "active_orientation_tool_choice_any",
+                ("ontology.company_context", "auto") => "active_orientation_tool_choice_auto",
+                ("ontology.company_context", "none") => "active_orientation_tool_choice_none",
+                ("ontology.company_context", "different_tool") => {
+                    "active_orientation_tool_choice_different"
+                }
+                ("ontology.company_context", _) => "active_orientation_tool_choice_missing",
+                (_, "any") => "active_planner_tool_choice_any",
+                (_, "auto") => "active_planner_tool_choice_auto",
+                (_, "none") => "active_planner_tool_choice_none",
+                (_, "different_tool") => "active_planner_tool_choice_different",
+                _ => "active_planner_tool_choice_missing",
+            },
+            "active provider request did not expose its required capability",
+            false,
+            DeliveryCertainty::NotDispatched,
+        ))
+    }
+}
+
 fn active_fixture_failure(reason: &'static str) -> DependencyFailure {
     DependencyFailure::redacted(
         "invalid_active_fixture",
@@ -1646,7 +1786,8 @@ fn active_fixture_failure(reason: &'static str) -> DependencyFailure {
 
 #[derive(Debug)]
 struct RetainedCapability {
-    template: Arc<Value>,
+    orientation_template: Arc<Value>,
+    research_template: Arc<Value>,
     counters: Arc<ActivePhaseCounters>,
 }
 
@@ -1659,74 +1800,150 @@ impl CapabilityRuntime for RetainedCapability {
         self.counters
             .capability_entered
             .fetch_add(1, Ordering::SeqCst);
-        let mut provider_content = (*self.template).clone();
-        // The checked-in MCP fixture predates the kernel-owned ResearchProposal
-        // lowering path and consequently carries its historical clause id.  A
-        // real MCP response echoes the exact physical SearchPlan that it was
-        // given, including every clause reference in coverage and evidence.
-        // Rebase the synthetic response in the same way so this harness keeps
-        // exercising the active provider -> planner -> capability path rather
-        // than measuring an impossible response contract.
-        let clause_id = invocation
-            .arguments
-            .pointer("/clauses/0/clause_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| active_fixture_failure("compiled SearchPlan is missing clause id"))?;
-        replace_active_fixture_clause_reference(
-            &mut provider_content,
-            "cash_generation",
-            clause_id,
-        );
-        provider_content["plan"] = invocation.arguments.clone();
-        let payload_hash = ContentHash::sha256("perf-retained-capability-result");
-        let result = CapabilityResult {
-            provider_content,
-            evidence: vec![EvidenceRecord {
-                evidence_id: format!("perf-evidence-{}", invocation.action_key),
-                content_hash: payload_hash.clone(),
-                source: EvidenceSource {
-                    capability_id: invocation.capability_id.clone(),
-                    action_key: invocation.action_key.clone(),
-                    server_build: invocation.binding.server_build.clone(),
-                    normalized_contract_hash: invocation.normalized_output_contract_hash.clone(),
-                    server_schema_bundle_hash: invocation.binding.server_schema_bundle_hash.clone(),
-                    data_release_hash: invocation.binding.data_release_hash.clone(),
-                },
-                scope: EvidenceScope {
-                    auth_scope: AuthScope::Tenant,
-                    scope_hash: ContentHash::sha256("perf-tenant-scope"),
-                },
-                entity: Some("VG".into()),
-                period: Some("CY2025".into()),
-                as_of: Some("2026-08-02".into()),
-                directness: Directness::Direct,
-                grade: EvidenceGrade::Strong,
-                strong_claim_allowed: true,
-                payload_ref: payload_hash,
-                citation: PublicCitation {
-                    title: "VG 2025 Form 10-K".into(),
-                    document_type: Some("10-K".into()),
-                    period: Some("CY2025".into()),
-                },
-                facts: vec![NormalizedFact {
-                    subject: "VG".into(),
-                    predicate: "cash_generation".into(),
-                    value: Value::Bool(true),
-                    unit: None,
-                    period: Some("CY2025".into()),
-                }],
-                supports: vec![clause_id.to_owned()],
-                refutes: Vec::new(),
-                qualifies: Vec::new(),
-                source_object_ids: Vec::new(),
-            }],
-            answerability: Some(Answerability::StrongAllowed),
-            calculations: Vec::new(),
+        let result = match invocation.capability_id.as_str() {
+            "ontology.company_context" => {
+                orientation_capability_result(&self.orientation_template, invocation)?
+            }
+            "ontology.query_context" => {
+                research_context_capability_result(&self.research_template, invocation)?
+            }
+            _ => {
+                return Err(active_fixture_failure(
+                    "active fixture invoked an unexpected capability",
+                ));
+            }
         };
         self.counters
             .capability_completed
             .fetch_add(1, Ordering::SeqCst);
         Ok(result)
+    }
+}
+
+fn orientation_capability_result(
+    template: &Value,
+    invocation: &CapabilityInvocation,
+) -> Result<CapabilityResult, DependencyFailure> {
+    let ticker = invocation
+        .arguments
+        .get("ticker")
+        .and_then(Value::as_str)
+        .filter(|ticker| *ticker == "VG")
+        .ok_or_else(|| {
+            active_fixture_failure("company orientation did not retain the trusted ticker")
+        })?;
+    let topic_label = template
+        .pointer("/topics/0/topic_label")
+        .and_then(Value::as_str)
+        .ok_or_else(|| active_fixture_failure("orientation template is missing its topic label"))?;
+    let payload_hash = ContentHash::sha256("perf-company-orientation-result");
+    Ok(CapabilityResult {
+        provider_content: template.clone(),
+        evidence: vec![EvidenceRecord {
+            evidence_id: format!("perf-orientation-{}", invocation.action_key),
+            content_hash: payload_hash.clone(),
+            source: evidence_source(invocation),
+            scope: perf_evidence_scope(),
+            entity: Some(ticker.to_owned()),
+            period: Some("FY2025".into()),
+            as_of: None,
+            directness: Directness::Unverified,
+            grade: EvidenceGrade::Unverified,
+            strong_claim_allowed: false,
+            payload_ref: payload_hash,
+            citation: PublicCitation {
+                title: "KRW ontology company orientation: spaceflight services".into(),
+                document_type: Some("10-K".into()),
+                period: Some("FY2025".into()),
+            },
+            facts: vec![NormalizedFact {
+                subject: ticker.to_owned(),
+                predicate: "company_topic_orientation".into(),
+                value: Value::String(topic_label.to_owned()),
+                unit: None,
+                period: Some("FY2025".into()),
+            }],
+            supports: Vec::new(),
+            refutes: Vec::new(),
+            qualifies: Vec::new(),
+            source_object_ids: Vec::new(),
+        }],
+        answerability: None,
+        calculations: Vec::new(),
+    })
+}
+
+fn research_context_capability_result(
+    template: &Value,
+    invocation: &CapabilityInvocation,
+) -> Result<CapabilityResult, DependencyFailure> {
+    let mut provider_content = template.clone();
+    // The checked-in MCP fixture predates the kernel-owned ResearchProposal
+    // lowering path and consequently carries its historical clause id. A real
+    // MCP response echoes the exact physical SearchPlan that it was given,
+    // including every clause reference in coverage and evidence. Rebase the
+    // synthetic response in the same way so this harness keeps exercising the
+    // active provider -> planner -> capability path rather than measuring an
+    // impossible response contract.
+    let clause_id = invocation
+        .arguments
+        .pointer("/clauses/0/clause_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| active_fixture_failure("compiled SearchPlan is missing clause id"))?;
+    replace_active_fixture_clause_reference(&mut provider_content, "cash_generation", clause_id);
+    provider_content["plan"] = invocation.arguments.clone();
+    let payload_hash = ContentHash::sha256("perf-retained-capability-result");
+    Ok(CapabilityResult {
+        provider_content,
+        evidence: vec![EvidenceRecord {
+            evidence_id: format!("perf-evidence-{}", invocation.action_key),
+            content_hash: payload_hash.clone(),
+            source: evidence_source(invocation),
+            scope: perf_evidence_scope(),
+            entity: Some("VG".into()),
+            period: Some("CY2025".into()),
+            as_of: Some("2026-08-02".into()),
+            directness: Directness::Direct,
+            grade: EvidenceGrade::Strong,
+            strong_claim_allowed: true,
+            payload_ref: payload_hash,
+            citation: PublicCitation {
+                title: "VG 2025 Form 10-K".into(),
+                document_type: Some("10-K".into()),
+                period: Some("CY2025".into()),
+            },
+            facts: vec![NormalizedFact {
+                subject: "VG".into(),
+                predicate: "cash_generation".into(),
+                value: Value::Bool(true),
+                unit: None,
+                period: Some("CY2025".into()),
+            }],
+            supports: vec![clause_id.to_owned()],
+            refutes: Vec::new(),
+            qualifies: Vec::new(),
+            source_object_ids: Vec::new(),
+        }],
+        answerability: Some(Answerability::StrongAllowed),
+        calculations: Vec::new(),
+    })
+}
+
+fn evidence_source(invocation: &CapabilityInvocation) -> EvidenceSource {
+    EvidenceSource {
+        capability_id: invocation.capability_id.clone(),
+        action_key: invocation.action_key.clone(),
+        server_build: invocation.binding.server_build.clone(),
+        normalized_contract_hash: invocation.normalized_output_contract_hash.clone(),
+        server_schema_bundle_hash: invocation.binding.server_schema_bundle_hash.clone(),
+        data_release_hash: invocation.binding.data_release_hash.clone(),
+    }
+}
+
+fn perf_evidence_scope() -> EvidenceScope {
+    EvidenceScope {
+        auth_scope: AuthScope::Tenant,
+        scope_hash: ContentHash::sha256("perf-tenant-scope"),
     }
 }
 
@@ -1911,7 +2128,8 @@ async fn measure_active_level(
     let counters = Arc::new(ActivePhaseCounters::default());
     let release = Arc::new(Semaphore::new(0));
     let provider = Arc::new(PostToolBlockingProvider {
-        assistant: Arc::clone(&workload.assistant),
+        orientation_assistant: Arc::clone(&workload.orientation_assistant),
+        planner_assistant: Arc::clone(&workload.planner_assistant),
         counters: Arc::clone(&counters),
         release: Arc::clone(&release),
     });
@@ -1922,7 +2140,8 @@ async fn measure_active_level(
     let engine = Arc::new(RunEngine::new(
         provider,
         Arc::new(RetainedCapability {
-            template: Arc::clone(&workload.capability_template),
+            orientation_template: Arc::clone(&workload.orientation_template),
+            research_template: Arc::clone(&workload.research_template),
             counters: Arc::clone(&counters),
         }),
         Arc::clone(&persistence),
@@ -2014,6 +2233,8 @@ async fn measure_active_level(
         observed_retained_bytes_per_run: at_measurement.observed_result_bytes / runs,
         first_provider_entered: at_measurement.first_provider_entered,
         first_provider_completed: at_measurement.first_provider_completed,
+        planner_provider_entered: at_measurement.planner_provider_entered,
+        planner_provider_completed: at_measurement.planner_provider_completed,
         episode_checkpointed: at_measurement.episode_checkpointed,
         capability_entered: at_measurement.capability_entered,
         capability_completed: at_measurement.capability_completed,
@@ -2045,11 +2266,13 @@ fn validate_active_phase(
     let expected_completed = if released { runs } else { 0 };
     if snapshot.first_provider_entered != runs
         || snapshot.first_provider_completed != runs
-        || snapshot.episode_checkpointed != runs
-        || snapshot.capability_entered != runs
-        || snapshot.capability_completed != runs
-        || snapshot.action_accepted != runs
-        || snapshot.run_state_checkpointed != runs
+        || snapshot.planner_provider_entered != runs
+        || snapshot.planner_provider_completed != runs
+        || snapshot.episode_checkpointed != 2 * runs
+        || snapshot.capability_entered != 2 * runs
+        || snapshot.capability_completed != 2 * runs
+        || snapshot.action_accepted != 2 * runs
+        || snapshot.run_state_checkpointed != 2 * runs
         || snapshot.measurement_phase_entered != runs
         || snapshot.measurement_phase_completed != expected_completed
         || snapshot.rejected_phase_entries != 0
@@ -2064,28 +2287,33 @@ fn validate_active_phase(
 }
 
 fn active_deployment() -> DeploymentBinding {
+    let query_context = CapabilityBinding {
+        binding_key: "krw_ontology_query_context".into(),
+        mcp_tool_name: "krw_ontology_query_context".into(),
+        transport: TransportKind::McpHttp,
+        endpoint_ref: "offline".into(),
+        credential_ref: None,
+        auth_scope: AuthScope::Public,
+        tool_session_reuse: McpToolSessionReuse::RunScoped,
+        server_schema_bundle_hash: ContentHash::sha256("perf-schema"),
+        server_build: "perf-offline".into(),
+        data_release_hash: ContentHash::sha256("perf-release"),
+        max_connections: 1,
+        request_timeout_ms: 1_000,
+    };
+    let mut company_context = query_context.clone();
+    company_context.binding_key = "krw_ontology_company_context".into();
+    company_context.mcp_tool_name = "krw_ontology_company_context".into();
     DeploymentBinding {
         schema_version: 3,
         deployment_id: "perf-offline".into(),
-        capabilities: vec![CapabilityBinding {
-            binding_key: "krw_ontology_query_context".into(),
-            mcp_tool_name: "krw_ontology_query_context".into(),
-            transport: TransportKind::McpHttp,
-            endpoint_ref: "offline".into(),
-            credential_ref: None,
-            auth_scope: AuthScope::Public,
-            tool_session_reuse: McpToolSessionReuse::RunScoped,
-            server_schema_bundle_hash: ContentHash::sha256("perf-schema"),
-            server_build: "perf-offline".into(),
-            data_release_hash: ContentHash::sha256("perf-release"),
-            max_connections: 1,
-            request_timeout_ms: 1_000,
-        }],
+        capabilities: vec![query_context, company_context],
     }
 }
 
 fn active_request(index: usize) -> RunRequest {
     let mut capability_call_limits = BTreeMap::new();
+    capability_call_limits.insert("ontology.company_context".into(), 1);
     capability_call_limits.insert("ontology.query_context".into(), 1);
     RunRequest {
         run_id: format!("perf-run-{index}"),
@@ -2095,25 +2323,29 @@ fn active_request(index: usize) -> RunRequest {
         run_kind: "company_research".into(),
         locale: "ko-KR".into(),
         // Keep the synthetic active-run request aligned with the immutable
-        // fixture's exact user-span anchor. The model fixture is a real
-        // ResearchIntent, so substituting a semantically similar question
-        // would correctly fail the production anchor validator.
+        // ResearchProposal fixture. The model first receives the required
+        // company orientation, then emits this fixture's plan on the same
+        // question-bound production path.
         question: "VG의 현금창출력이 공시 근거로 확인되는지 설명해줘".into(),
         requested_model: "glm-5.2".into(),
         model_profile: "glm_high".into(),
         budget: BudgetLimits {
-            max_provider_turns: 3,
+            // Production company research has four minimum provider decisions:
+            // orientation, planning, evidence assessment, and final composition.
+            // The former three-turn fixture predated the mandatory orientation
+            // read and therefore reserved the composer too early.
+            max_provider_turns: 4,
             max_capability_calls: 2,
             max_replans: 1,
             max_repairs: 1,
             max_input_tokens: 4_096,
-            // The active image reserves 5,120 tokens for a complete final
-            // answer and requires at least one viable 2,048-token research
-            // decision before that reserve is consumed.  A synthetic
+            // Company research reserves two complete 16,384-token composition
+            // attempts and requires at least one viable 2,048-token research
+            // decision before that workflow-specific reserve is consumed. A synthetic
             // benchmark request must satisfy the same immutable execution
             // contract as a real run; otherwise it measures rejected-input
             // handling rather than the post-tool active phase.
-            max_output_tokens: 12_000,
+            max_output_tokens: 56_000,
             max_evidence_bytes: 1024 * 1024,
             deadline_ms: 30_000,
             capability_call_limits,
@@ -2155,10 +2387,16 @@ fn active_snapshot(
         provider_wire_capabilities: ProviderWireCapabilities::glm_5_2(),
         thinking: ThinkingMode::Enabled,
         reasoning_effort: Some(ReasoningEffort::High),
-        capability_release_hashes: BTreeMap::from([(
-            "ontology.query_context".into(),
-            deployment.capabilities[0].data_release_hash.clone(),
-        )]),
+        capability_release_hashes: BTreeMap::from([
+            (
+                "ontology.query_context".into(),
+                deployment.capabilities[0].data_release_hash.clone(),
+            ),
+            (
+                "ontology.company_context".into(),
+                deployment.capabilities[1].data_release_hash.clone(),
+            ),
+        ]),
         budget: request.budget.clone(),
     }
 }
@@ -2874,6 +3112,7 @@ mod tests {
             json!({
                 "schema_version": 1,
                 "authority": "validated_state_and_committed_evidence_only",
+                "research_projection": {"plan": "committed"},
                 "evidence_index": [{"evidence_id": "perf-evidence"}],
                 "retained_facts": [{"fact_ref": "perf-fact"}]
             })
@@ -2881,6 +3120,21 @@ mod tests {
         assert_eq!(
             provider_message_phase(&valid),
             Ok(ProviderRequestPhase::Measurement)
+        );
+
+        let orientation_only = vec![ProviderMessage::user(format!(
+            "<verified-compacted-context>\n{}\n</verified-compacted-context>",
+            json!({
+                "schema_version": 1,
+                "authority": "validated_state_and_committed_evidence_only",
+                "research_projection": null,
+                "evidence_index": [{"evidence_id": "perf-orientation"}],
+                "retained_facts": [{"fact_ref": "perf-orientation-fact"}]
+            })
+        ))];
+        assert_eq!(
+            provider_message_phase(&orientation_only),
+            Ok(ProviderRequestPhase::PlannerAfterOrientation)
         );
 
         let legacy_raw_result = vec![
@@ -2917,7 +3171,8 @@ mod tests {
         let workload = ActiveWorkload::load(&repo_root(), 8).expect("load active workload");
         let counters = Arc::new(ActivePhaseCounters::default());
         let provider = PostToolBlockingProvider {
-            assistant: Arc::clone(&workload.assistant),
+            orientation_assistant: Arc::clone(&workload.orientation_assistant),
+            planner_assistant: Arc::clone(&workload.planner_assistant),
             counters: Arc::clone(&counters),
             release: Arc::new(Semaphore::new(0)),
         };
@@ -2976,11 +3231,13 @@ mod tests {
         assert!(level.observed_retained_bytes_per_run >= 4 * 1024);
         assert_eq!(level.first_provider_entered, 1);
         assert_eq!(level.first_provider_completed, 1);
-        assert_eq!(level.episode_checkpointed, 1);
-        assert_eq!(level.capability_entered, 1);
-        assert_eq!(level.capability_completed, 1);
-        assert_eq!(level.action_accepted, 1);
-        assert_eq!(level.run_state_checkpointed, 1);
+        assert_eq!(level.planner_provider_entered, 1);
+        assert_eq!(level.planner_provider_completed, 1);
+        assert_eq!(level.episode_checkpointed, 2);
+        assert_eq!(level.capability_entered, 2);
+        assert_eq!(level.capability_completed, 2);
+        assert_eq!(level.action_accepted, 2);
+        assert_eq!(level.run_state_checkpointed, 2);
         assert_eq!(level.measurement_phase_entered, 1);
         assert_eq!(level.measurement_phase_completed, 1);
         assert_eq!(level.rejected_phase_entries, 0);

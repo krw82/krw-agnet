@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "suite_id": "supabase-company-research-24-case-corpus",
-  "suite_version": 1,
+  "suite_version": 2,
   "cases": [
     {
       "case_id": "short_google_pullback_long_term",
@@ -50,6 +50,12 @@
       "ticker": "AAPL",
       "question": "오늘 왜 떨어져?",
       "evaluation_focus": ["recent_price_driver", "company_specific_vs_market", "uncertainty"]
+    },
+    {
+      "case_id": "short_aapl_revenue_risk",
+      "ticker": "AAPL",
+      "question": "Apple의 최근 매출 흐름과 핵심 리스크를 공시 근거 중심으로 간단히 정리해줘.",
+      "evaluation_focus": ["recent_revenue", "principal_risks", "filing_grounding"]
     },
     {
       "case_id": "normal_now_genai_risk",

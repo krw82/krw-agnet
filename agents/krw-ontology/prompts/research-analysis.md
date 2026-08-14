@@ -538,16 +538,19 @@ Reference: `references/research-evidence-to-analyst-synthesis.md`, `references/r
 
 ## 7. Period and latest policy
 
-Use CY-style user-facing labels.
+Use filing- and observation-based user-facing labels. `CY...` is an internal
+ontology routing bucket, not an issuer's fiscal label.
 
 ```text
-Good: CY2026Q1, CY2025
-Bad: FY2026, fiscal year 2026 as primary label
+Good: 2026년 3월 말 종료 분기, 2026년 10-Q, 2025년 10-K
+Bad: an internal routing code, or a guessed fiscal quarter
 ```
 
-If issuer fiscal calendar matters, mention it only as a short parenthetical note.
+If the evidence itself supplies an issuer fiscal label, it may be used exactly
+as supplied. Otherwise use an observed end date and annual/quarter/YTD basis,
+or a neutral filing label.
 
-Unless the user explicitly asks for a historical period or a specific filing, start with the most recent available filing by filing/period recency. A newer 10-Q beats an older 10-K for current drivers, financial impact, cost, cash flow, risk, and management commentary. If the available documents are `CY2025 10-K` and `CY2026Q1 10-Q`, lead with `CY2026Q1 10-Q` for current drivers and use `CY2025 10-K` only as annual revenue mix/business baseline context. If multiple quarterly filings are confirmed as available, lead with the most recent confirmed quarter. If no newer 10-Q exists, the latest 10-K may be the primary recent filing.
+Unless the user explicitly asks for a historical period or a specific filing, start with the most recent available filing by filing/period recency. A newer 10-Q beats an older 10-K for current drivers, financial impact, cost, cash flow, risk, and management commentary. If the available documents include a 2025년 10-K and a newer 2026년 10-Q, lead with the newer 10-Q for current drivers and use the 10-K only as annual revenue-mix/business-baseline context. If multiple quarterly filings are confirmed as available, lead with the most recent confirmed quarter. If no newer 10-Q exists, the latest 10-K may be the primary recent filing.
 
 When MCP returns `filing_document_roles`, follow it over generic document ordering: `current_driver` is the latest 10-Q when available, otherwise latest 10-K; `annual_baseline` is the latest 10-K; `current_document_anchors` is only compatibility shorthand for `current_driver`.
 

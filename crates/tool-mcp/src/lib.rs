@@ -724,10 +724,11 @@ impl McpHttpClient {
         name: &str,
         arguments: Value,
     ) -> Result<ToolCallOutcome, McpError> {
-        if std::env::var("KRW_DEBUG_MCP_ARGS").is_ok() {
+        if mcp_debug_metadata_enabled() {
             eprintln!(
-                "[KRW_DEBUG_MCP_ARGS] tool={name} arguments={}",
-                serde_json::to_string(&arguments).unwrap_or_else(|_| "<serialize-failed>".into())
+                "[KRW_DEBUG_MCP] tool={name} phase=arguments bytes={} hash={}",
+                canonical_json_len(&arguments),
+                hash_json(&arguments),
             );
         }
         let result = self
@@ -736,10 +737,11 @@ impl McpHttpClient {
                 serde_json::json!({"name": name, "arguments": arguments}),
             )
             .await?;
-        if std::env::var("KRW_DEBUG_MCP_ARGS").is_ok() {
+        if mcp_debug_metadata_enabled() {
             eprintln!(
-                "[KRW_DEBUG_MCP_ARGS] tool={name} result={}",
-                serde_json::to_string(&result).unwrap_or_else(|_| "<serialize-failed>".into())
+                "[KRW_DEBUG_MCP] tool={name} phase=result bytes={} hash={}",
+                canonical_json_len(&result),
+                hash_json(&result),
             );
         }
         classify_tool_result(result)
@@ -919,6 +921,27 @@ fn hash_json(value: &Value) -> ContentHash {
             ContentHash::sha256(bytes.as_slice())
         },
     )
+}
+
+/// MCP arguments and results can contain a user's question, source excerpts,
+/// and deployment-scoped metadata.  Debug logging may expose only a stable
+/// hash and canonical byte size, never the payload itself.  In particular, an
+/// empty exported variable is disabled: the local launcher always forwards
+/// the variable so that an omitted operator flag cannot accidentally turn on
+/// raw-data logging.
+fn mcp_debug_metadata_enabled() -> bool {
+    mcp_debug_metadata_enabled_value(std::env::var("KRW_DEBUG_MCP_ARGS").ok().as_deref())
+}
+
+fn mcp_debug_metadata_enabled_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some(value) if value == "1" || value.eq_ignore_ascii_case("true")
+    )
+}
+
+fn canonical_json_len(value: &Value) -> usize {
+    serde_jcs::to_vec(value).map_or(0, |bytes| bytes.len())
 }
 
 fn scrub_json(value: &mut Value) {
@@ -1461,6 +1484,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn mcp_debug_requires_an_explicit_truthy_value() {
+        assert!(!mcp_debug_metadata_enabled_value(None));
+        assert!(!mcp_debug_metadata_enabled_value(Some("")));
+        assert!(!mcp_debug_metadata_enabled_value(Some("0")));
+        assert!(!mcp_debug_metadata_enabled_value(Some("yes")));
+        assert!(mcp_debug_metadata_enabled_value(Some("1")));
+        assert!(mcp_debug_metadata_enabled_value(Some(" true ")));
+        assert!(mcp_debug_metadata_enabled_value(Some("TRUE")));
+    }
+
+    #[test]
+    fn debug_payload_summary_is_content_free_and_stable() {
+        let payload = serde_json::json!({"question": "private question", "ticker": "AAPL"});
+
+        assert!(canonical_json_len(&payload) > 0);
+        assert_eq!(hash_json(&payload), hash_json(&payload));
+    }
 
     fn binding(
         auth_scope: AuthScope,

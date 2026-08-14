@@ -1,6 +1,6 @@
 ---
 name: research-period-and-latest-policy
-description: "Period and latest policy. Defines 10-Q as current driver over 10-K, CY labels, and inflection timing rules."
+description: "Period and latest policy. Defines 10-Q as current driver over 10-K, safe reporting-period labels, and inflection timing rules."
 when_to_use: "when the relevant analysis context arises"
 ---
 
@@ -8,35 +8,39 @@ when_to_use: "when the relevant analysis context arises"
 
 ## User-facing labels
 
-Use CY-style ontology labels in final answers.
+Use filing- and observation-based labels in final answers. `CY...` is a stable
+ontology routing bucket, not a user-facing fiscal-period label.
 
 ```text
-Good: CY2026Q1, CY2025
-Bad: FY2026, FY 2026
+Good: 2026년 3월 말 종료 분기, 2026년 10-Q, 2025년 10-K
+Bad: an internal routing code, or a guessed fiscal quarter
 ```
 
-If the issuer fiscal calendar matters, add only a short parenthetical note.
+If the issuer fiscal calendar matters and the evidence explicitly supplies its
+label, use that exact label. Otherwise use an observed end date and basis, or
+a neutral filing label.
 
 ## Fiscal calendar label guard
 
-The ontology period label is the default user-facing label. Some issuers'
-fiscal quarters do not match the calendar quarter in the ontology label.
+The ontology period label is never the default user-facing label. Some issuers'
+fiscal quarters do not match a calendar routing bucket.
 
 When retrieved evidence or source text uses an issuer fiscal label that differs
-from the ontology CY label, show both labels on first mention:
+from a neutral filing label, show the source fiscal label with the filing only
+when it is directly supplied by the evidence:
 
 ```text
-Korean: CY2026Q2 / Micron FY2026 Q3 10-Q
-English: CY2026Q2 (Micron fiscal Q3 2026 10-Q)
+Korean: Micron FY2026 Q3 10-Q
+English: Micron fiscal Q3 2026 10-Q
 ```
 
-After first mention, prefer `the latest 10-Q`, `latest quarter`, or the
-ontology CY label. Do not write `Q3`, `FY2026 Q3`, or `third quarter` alone
-when that can be confused with the ontology period.
+After first mention, prefer `the latest 10-Q`, `latest quarter`, an observed
+end date/basis, or the neutral filing label. Do not derive a fiscal label from
+the routing period.
 
-Do not infer that a newer CY period exists because a filing's source text says
+Do not infer that a newer filing period exists because a source text says
 issuer fiscal Q3/Q4. Treat issuer fiscal labels as aliases for the confirmed
-filing period, not proof of another document.
+filing, not proof of another document.
 
 ## Runtime filing anchor
 
@@ -81,7 +85,7 @@ Do not invent an anchor or filing role that is absent from ResearchState.
 
 Treat the runtime as-of date and filing availability as separate facts. The current date does not prove that a filing, earnings release, or reporting period exists.
 
-Use an explicit period label such as `CY2026Q1` only when it appears in:
+Use an explicit reporting-period label only when it appears in:
 
 ```text
 the runtime Company filing anchor
@@ -130,7 +134,9 @@ most recent
 
 the same default applies with extra force: start with the most recent available filing by filing/period recency. A newer 10-Q beats an older 10-K for current drivers, financial impact, cost, cash flow, risk, and management commentary; a latest 10-K is primary only when no newer 10-Q exists.
 
-Example: if the available documents are `CY2025 10-K` and `CY2026Q1 10-Q`, lead with `CY2026Q1 10-Q` for current drivers and use `CY2025 10-K` as annual mix/business baseline context.
+Example: if the available documents include a 2025년 10-K and a newer 2026년
+10-Q, lead with the newer 10-Q for current drivers and use the 10-K as annual
+mix/business-baseline context.
 
 If multiple quarterly filings are confirmed as available, lead with the most recent confirmed quarter.
 

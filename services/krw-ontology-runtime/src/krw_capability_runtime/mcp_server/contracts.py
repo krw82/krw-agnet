@@ -52,6 +52,9 @@ _DIRECT_EVIDENCE_TOKEN_EQUIVALENTS = {
     "percent": "percent",
     "percentage": "percent",
 }
+_NUMERIC_METRIC_OBJECT_TYPES = frozenset(
+    {"MetricObservation", "XBRLFact", "FinancialMetricValue", "NumericEvidence"}
+)
 EvidenceDirectness = Literal["direct", "metric_lineage", "related", "unverified"]
 EvidenceGrade = Literal["strong", "medium", "weak", "unverified"]
 ComparisonAxis = Literal[
@@ -212,8 +215,10 @@ class QueryClause(ContractModel):
     metric_scope: Literal["company_total", "dimensioned", "any"] = Field(
         default="company_total",
         description=(
-            "Required metric observation scope. Use `dimensioned` with explicit "
-            "metric_dimensions; `any` must be an intentional broad request."
+            "Required metric observation scope. `dimensioned` excludes company-total "
+            "observations. Add explicit metric_dimensions when the issuer label is known; "
+            "otherwise the literal retrieval_query ranks the requested member without "
+            "guessing its internal spelling. `any` must be an intentional broad request."
         ),
     )
     calculation_window: Literal["period_over_period", "year_over_year"] | None = Field(
@@ -288,8 +293,6 @@ class QueryClause(ContractModel):
             raise ValueError(
                 "invalid_plan: metric_dimensions require metric_scope=dimensioned or any"
             )
-        if self.metrics and not self.metric_dimensions and self.metric_scope == "dimensioned":
-            raise ValueError("invalid_plan: metric_scope=dimensioned requires metric_dimensions")
         query_tokens = set(_tokens(self.retrieval_query))
         for dimension in self.metric_dimensions:
             if not set(_tokens(dimension)).issubset(query_tokens):
@@ -1096,12 +1099,19 @@ def compile_research_state(
     omitted_before_compile = max(0, int(raw.get("omitted_evidence_count") or 0))
     truncation_possible = bool(raw.get("truncation_possible"))
     total_evidence = len(enriched) + omitted_before_compile
+    resolved_scope = _mapping(raw.get("resolved_scope"))
+    document_role_priorities = _document_role_priorities(
+        raw,
+        requested_periods=_string_list(resolved_scope.get("periods")),
+        requested_document_types=_string_list(resolved_scope.get("document_types")),
+    )
     selected, protected_evidence_ids = _select_evidence_candidates(
         enriched,
         plan.clauses,
         comparison_axes=plan.comparison_axes,
         requested_periods=plan.periods,
         limit=plan.limit_results,
+        document_role_priorities=document_role_priorities,
     )
     evidence_units = [candidate["unit"] for candidate in selected]
     # Legacy research-pack calculations do not carry the complete metric identity
@@ -1396,10 +1406,7 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
         evidence_terms = _string_list(raw_clause_match.get("planned_evidence_terms"))
         predicate_terms = _string_list(raw_clause_match.get("planned_predicate_terms"))
         metric_terms = _string_list(raw_clause_match.get("planned_metric_terms"))
-        metric_clause_match = (
-            object_type in {"MetricObservation", "XBRLFact", "FinancialMetricValue", "NumericEvidence"}
-            and bool(metric_terms)
-        )
+        metric_clause_match = object_type in _NUMERIC_METRIC_OBJECT_TYPES and bool(metric_terms)
         relation_verified = _truthy(raw_clause_match.get("planned_relation_verified"))
         relevance_terms = metric_terms if metric_clause_match else evidence_terms
         planned_metric_scope = _first_text(raw_clause_match, "planned_metric_scope") or "any"
@@ -1409,9 +1416,13 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
             or planned_metric_scope == row_metric_scope
         )
         if metric_clause_match:
-            terms_visible = scope_visible and _planned_terms_visible_in_evidence(
-                row,
-                relevance_terms,
+            terms_visible = scope_visible and (
+                _planned_metric_matches_clause(
+                    object_payload,
+                    metric_terms,
+                    metric_scope=row_metric_scope,
+                )
+                or _planned_terms_visible_in_evidence(row, relevance_terms)
             )
         else:
             terms_visible = scope_visible and _planned_terms_visible_in_atomic_evidence(
@@ -1450,7 +1461,15 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
                 directness=_directness(
                     semantic,
                     trace_status,
-                    (_first_text(row, "metric_lineage_status") if metric_clause_match else None),
+                    (
+                        _effective_metric_lineage_status(
+                            row,
+                            object_payload,
+                            object_type=object_type,
+                        )
+                        if metric_clause_match
+                        else None
+                    ),
                     match_mode=clause_match_mode,
                     relevance_verified=terms_visible,
                 ),
@@ -1462,7 +1481,11 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
             _directness(
                 base_semantic,
                 trace_status,
-                _first_text(row, "metric_lineage_status"),
+                _effective_metric_lineage_status(
+                    row,
+                    object_payload,
+                    object_type=object_type,
+                ),
                 match_mode=_first_text(row, "planned_match_mode") or "strict",
             )
         ]
@@ -1536,7 +1559,11 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
         or row_period
         or period
     )
-    if object_type == "MetricObservation" and observation_period:
+    if _is_metric_observation_payload(
+        row,
+        object_payload,
+        object_type=object_type,
+    ) and observation_period:
         metric_context = _mapping(object_payload.get("context"))
         metric_points.append(
             MetricPoint(
@@ -1768,6 +1795,64 @@ def _grade_rank(value: EvidenceGrade) -> int:
     return {"strong": 0, "medium": 1, "weak": 2, "unverified": 3}[value]
 
 
+def _document_role_priorities(
+    raw: Mapping[str, Any],
+    *,
+    requested_periods: Sequence[str],
+    requested_document_types: Sequence[str],
+) -> dict[tuple[str, str, str], int]:
+    """Rank otherwise-equivalent filing evidence by the resolved document role.
+
+    This is a selection preference, not a scope expansion or an answer gate.
+    The serving runtime already emits authoritative per-ticker roles after it
+    resolves the actual execution scope.  Without this tie-break, equally
+    strong related facts were ordered by opaque evidence ID, so an old 10-K
+    could displace the current 10-Q even when both were returned for the same
+    clause.  Respect an explicit period request by leaving that order alone;
+    for a 10-K-only request, prefer the annual baseline instead.
+    """
+    if requested_periods:
+        return {}
+    normalized_document_types = {
+        str(value).strip().upper()
+        for value in requested_document_types
+        if str(value).strip()
+    }
+    role_order = (
+        ("annual_baseline", "current_driver", "latest_available")
+        if normalized_document_types == {"10-K"}
+        else ("current_driver", "annual_baseline", "latest_available")
+    )
+    priorities: dict[tuple[str, str, str], int] = {}
+    roles_by_ticker = _mapping(raw.get("filing_document_roles"))
+    for ticker, value in roles_by_ticker.items():
+        roles = _mapping(value)
+        for priority, role in enumerate(role_order):
+            anchor = _mapping(roles.get(role))
+            period = _first_text(anchor, "period")
+            document_type = _first_text(anchor, "document_type")
+            anchor_ticker = _first_text(anchor, "ticker") or str(ticker)
+            if not (anchor_ticker and period and document_type):
+                continue
+            key = (anchor_ticker.upper(), period.upper(), document_type.upper())
+            existing = priorities.get(key)
+            priorities[key] = priority if existing is None else min(existing, priority)
+    return priorities
+
+
+def _document_role_rank(
+    unit: EvidenceUnit,
+    priorities: Mapping[tuple[str, str, str], int],
+) -> int:
+    """Return a neutral rank when a unit has no document-role occurrence."""
+    if not priorities or not unit.ticker or not unit.period or not unit.document_type:
+        return len(priorities) + 1
+    return priorities.get(
+        (unit.ticker.upper(), unit.period.upper(), unit.document_type.upper()),
+        len(priorities) + 1,
+    )
+
+
 def _select_evidence_candidates(
     candidates: Sequence[dict[str, Any]],
     clauses: Sequence[QueryClause],
@@ -1775,11 +1860,13 @@ def _select_evidence_candidates(
     comparison_axes: Sequence[ComparisonAxis],
     requested_periods: Sequence[str],
     limit: int,
+    document_role_priorities: Mapping[tuple[str, str, str], int] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Reserve one best unit per required clause, then quality-fill the budget."""
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
     protected_ids: set[str] = set()
+    document_role_priorities = document_role_priorities or {}
 
     def add(candidate: dict[str, Any], *, protected: bool) -> None:
         unit: EvidenceUnit = candidate["unit"]
@@ -1816,47 +1903,98 @@ def _select_evidence_candidates(
             protected_ids.add(already_selected["unit"].evidence_id)
             continue
 
-        def clause_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+        def clause_key(
+            candidate: dict[str, Any], *, expected_clause: QueryClause = clause
+        ) -> tuple[Any, ...]:
             unit: EvidenceUnit = candidate["unit"]
-            match = next(item for item in unit.clause_matches if item.clause_id == clause.clause_id)
+            match = next(
+                item
+                for item in unit.clause_matches
+                if item.clause_id == expected_clause.clause_id
+            )
+            latest_year, latest_quarter, latest_label = _candidate_latest_period(candidate)
             return (
-                0 if _meets_directness(match.directness, clause.directness) else 1,
-                0 if _metric_matches_clause(unit, clause) else 1,
+                0 if _meets_directness(match.directness, expected_clause.directness) else 1,
+                0 if _metric_matches_clause(unit, expected_clause) else 1,
                 _directness_rank(match.directness),
                 _grade_rank(unit.evidence_grade),
+                _document_role_rank(unit, document_role_priorities),
                 -len(unit.supports_clause_ids),
+                -latest_year,
+                -latest_quarter,
+                latest_label,
                 unit.evidence_id,
             )
 
         add(min(matching, key=clause_key), protected=True)
 
     requested_axes = set(comparison_axes)
-    metric_candidates = [
-        candidate
-        for candidate in candidates
-        if _candidate_is_required_metric_evidence(candidate, clauses)
-    ]
-    metric_windows = _metric_windows_for_clauses(clauses)
-    if requested_axes.intersection({"absolute_change", "growth_rate"}):
-        by_series: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        for candidate in metric_candidates:
+    # Preserve a compact answer set per *requested metric clause*, rather than
+    # pinning every physical dimension/series that a broad metric lookup
+    # happens to return.  A current/prior pair for the best compatible series
+    # per ticker is enough for a year-over-year claim; surplus member series
+    # stay eligible for normal quality fill and can be compacted safely.
+    for clause in [item for item in clauses if item.required and item.metrics]:
+        matching = [
+            candidate
+            for candidate in candidates
+            if _candidate_is_required_metric_evidence(candidate, [clause])
+        ]
+        if not matching:
+            continue
+
+        def metric_clause_key(
+            candidate: dict[str, Any], *, expected_clause: QueryClause = clause
+        ) -> tuple[Any, ...]:
             unit: EvidenceUnit = candidate["unit"]
-            for point in unit.metric_points:
-                key = _metric_series_key(unit, point)
-                by_series.setdefault(key, []).append(candidate)
-        for series_key, group in sorted(by_series.items(), key=lambda item: repr(item[0])):
-            deduped_group = _dedupe_candidates(group)
-            periods = sorted(
-                {
-                    point.period
-                    for candidate in deduped_group
-                    for point in candidate["unit"].metric_points
-                },
-                key=_period_key,
+            match = next(
+                item
+                for item in unit.clause_matches
+                if item.clause_id == expected_clause.clause_id
             )
-            target_periods: set[str] = set()
-            for calculation_window in metric_windows.get(str(series_key[1]), set()):
-                compatible_pairs = [
+            latest_year, latest_quarter, latest_label = _candidate_latest_period(candidate)
+            return (
+                0 if _meets_directness(match.directness, expected_clause.directness) else 1,
+                _directness_rank(match.directness),
+                _grade_rank(unit.evidence_grade),
+                _document_role_rank(unit, document_role_priorities),
+                -latest_year,
+                -latest_quarter,
+                latest_label,
+                unit.evidence_id,
+            )
+
+        by_ticker: dict[str, list[dict[str, Any]]] = {}
+        for candidate in matching:
+            ticker = str(candidate["unit"].ticker or "")
+            by_ticker.setdefault(ticker, []).append(candidate)
+        for _ticker, ticker_candidates in sorted(by_ticker.items()):
+            by_series: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+            for candidate in ticker_candidates:
+                unit: EvidenceUnit = candidate["unit"]
+                for point in unit.metric_points:
+                    key = _metric_series_key(unit, point)
+                    by_series.setdefault(key, []).append(candidate)
+            if not by_series:
+                continue
+
+            def compatible_pairs_for_series(
+                series_candidates: Sequence[dict[str, Any]],
+                primary: dict[str, Any],
+            ) -> list[tuple[str, str]]:
+                if not clause.calculation_window:
+                    return []
+                periods = sorted(
+                    {
+                        point.period
+                        for candidate in series_candidates
+                        for point in candidate["unit"].metric_points
+                    },
+                    key=_period_key,
+                )
+                primary_point = primary["unit"].metric_points[0]
+                series_key = _metric_series_key(primary["unit"], primary_point)
+                return [
                     (previous, current)
                     for previous_index, previous in enumerate(periods)
                     for current in periods[previous_index + 1 :]
@@ -1865,85 +2003,84 @@ def _select_evidence_candidates(
                         current,
                         period_basis=str(series_key[6]),
                         duration_basis=str(series_key[7]),
-                        calculation_window=calculation_window,
+                        calculation_window=clause.calculation_window,
                     )
                 ]
-                if compatible_pairs:
-                    requested = set(requested_periods)
-                    requested_pairs = [
-                        pair
-                        for pair in compatible_pairs
-                        if requested and set(pair).issubset(requested)
-                    ]
-                    if requested_pairs:
-                        for pair in requested_pairs:
-                            target_periods.update(pair)
-                    else:
-                        previous, current = max(
-                            compatible_pairs,
-                            key=lambda pair: (
-                                _period_key(pair[1]),
-                                _period_key(pair[0]),
-                            ),
-                        )
-                        target_periods.update((previous, current))
-            for candidate in sorted(
-                deduped_group,
-                key=lambda item: item["unit"].evidence_id,
-            ):
-                unit: EvidenceUnit = candidate["unit"]
-                if not any(point.period in target_periods for point in unit.metric_points):
-                    continue
-                if len(selected) >= limit and unit.evidence_id not in selected_ids:
-                    break
-                add(candidate, protected=True)
 
-    if requested_axes.intersection({"value", "value_difference"}):
-        by_comparison: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        for candidate in metric_candidates:
-            unit: EvidenceUnit = candidate["unit"]
-            for point in unit.metric_points:
-                key = _metric_comparison_key(unit, point)
-                by_comparison.setdefault(key, []).append(candidate)
-        by_identity: dict[
-            tuple[Any, ...],
-            list[tuple[str, list[dict[str, Any]]]],
-        ] = {}
-        for key, group in by_comparison.items():
-            identity = (key[0], *key[2:])
-            by_identity.setdefault(identity, []).append((str(key[1]), group))
-        for _identity, period_groups in sorted(
-            by_identity.items(),
-            key=lambda item: repr(item[0]),
-        ):
-            _period, group = max(
-                period_groups,
-                key=lambda item: (
-                    len(
-                        {
-                            candidate["unit"].ticker
-                            for candidate in item[1]
-                            if candidate["unit"].ticker
-                        }
-                    ),
-                    _period_key(item[0]),
-                ),
+            series_options = []
+            requested = set(requested_periods)
+            for series_key, group in by_series.items():
+                series_candidates = _dedupe_candidates(group)
+                primary = min(series_candidates, key=metric_clause_key)
+                compatible_pairs = compatible_pairs_for_series(series_candidates, primary)
+                requested_pairs = [
+                    pair
+                    for pair in compatible_pairs
+                    if requested and set(pair).issubset(requested)
+                ]
+                series_options.append(
+                    (series_key, series_candidates, primary, compatible_pairs, requested_pairs)
+                )
+
+            # Prefer a series that can actually answer a temporal request.
+            # The old ordering selected the newest standalone current-quarter
+            # point first, then gave up when it had no adjacent comparable
+            # point. An older FY2025/FY2024 pair was present but was lost to
+            # ordinary quality fill, so the analyst received a single number
+            # and reported that the trend was unavailable.
+            def series_key(
+                item: tuple[
+                    tuple[Any, ...],
+                    list[dict[str, Any]],
+                    dict[str, Any],
+                    list[tuple[str, str]],
+                    list[tuple[str, str]],
+                ],
+            ) -> tuple[Any, ...]:
+                key, _series_candidates, primary, compatible_pairs, requested_pairs = item
+                if not clause.calculation_window:
+                    pair_preference = 0
+                elif requested:
+                    pair_preference = 0 if requested_pairs else 1 if compatible_pairs else 2
+                else:
+                    pair_preference = 0 if compatible_pairs else 1
+                return (pair_preference, metric_clause_key(primary), repr(key))
+
+            _, series_candidates, primary, compatible_pairs, requested_pairs = min(
+                series_options,
+                key=series_key,
             )
-            tickers: set[str] = set()
-            for candidate in sorted(
-                _dedupe_candidates(group),
-                key=lambda item: (
-                    item["unit"].ticker or "",
-                    item["unit"].evidence_id,
-                ),
-            ):
-                unit: EvidenceUnit = candidate["unit"]
-                if not unit.ticker or unit.ticker in tickers:
+            if len(selected) < limit or primary["unit"].evidence_id in selected_ids:
+                add(primary, protected=True)
+
+            # A raw time-series request intentionally stays on the ``value``
+            # axis, but carries a calculation window as selection metadata.
+            # Retain its compatible observations before compact quality-fill
+            # can substitute unrelated narrative evidence.  Numeric change
+            # requests use the same existing window and continue to take this
+            # path without a separate protocol field.
+            if not clause.calculation_window:
+                continue
+            if not compatible_pairs:
+                continue
+            target_pair = max(
+                requested_pairs or compatible_pairs,
+                key=lambda pair: (_period_key(pair[1]), _period_key(pair[0])),
+            )
+            for target_period in target_pair:
+                period_candidates = [
+                    candidate
+                    for candidate in series_candidates
+                    if any(
+                        point.period == target_period
+                        for point in candidate["unit"].metric_points
+                    )
+                ]
+                if not period_candidates:
                     continue
-                if len(selected) >= limit and unit.evidence_id not in selected_ids:
-                    break
-                add(candidate, protected=True)
-                tickers.add(unit.ticker)
+                best_period_candidate = min(period_candidates, key=metric_clause_key)
+                if len(selected) < limit or best_period_candidate["unit"].evidence_id in selected_ids:
+                    add(best_period_candidate, protected=True)
 
     for candidate in candidates:
         if len(selected) >= limit:
@@ -1956,7 +2093,113 @@ def _metric_matches_clause(unit: EvidenceUnit, clause: QueryClause) -> bool:
     if not clause.metrics:
         return False
     unit_metric = _metric_key(unit.metric)
-    return bool(unit_metric) and unit_metric in {_metric_key(metric) for metric in clause.metrics}
+    return _metric_terms_match_observation(
+        unit_metric,
+        clause.metrics,
+        metric_scope=unit.metric_scope or "unspecified",
+    )
+
+
+def _metric_terms_match_observation(
+    observation_metric: str | None,
+    requested_metrics: Sequence[str],
+    *,
+    metric_scope: str,
+) -> bool:
+    """Match a physical metric row to the semantic metric requested by a clause.
+
+    Product and geographic revenue are stored as canonical ``revenue`` with a
+    non-company-total member.  ``segment_revenue`` is the public planning
+    concept for that representation, so the alias is valid only for a
+    dimensioned observation; company-total revenue never satisfies it.
+    """
+
+    observation = _metric_key(observation_metric)
+    requested = {_metric_key(metric) for metric in requested_metrics}
+    if not observation or not requested:
+        return False
+    if observation in requested:
+        return True
+    return (
+        str(metric_scope or "").strip().casefold() == "dimensioned"
+        and observation == "revenue"
+        and "segment_revenue" in requested
+    )
+
+
+def _is_metric_observation_payload(
+    row: Mapping[str, Any],
+    object_payload: Mapping[str, Any],
+    *,
+    object_type: str,
+) -> bool:
+    """Identify numeric evidence that came from the deterministic metric lookup.
+
+    The index can expose a raw ``XBRLFact`` as the physical source of a
+    planned metric rather than materializing a separate ``MetricObservation``
+    object.  The metric lookup has already attached canonical metric, period,
+    unit, dimensions and a private marker to this result.  Preserve that exact
+    numeric observation; do not infer one from an arbitrary numeric XBRL row.
+    """
+
+    if object_type == "MetricObservation":
+        return True
+    if object_type not in _NUMERIC_METRIC_OBJECT_TYPES:
+        return False
+    value = object_payload.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return bool(
+        _truthy(object_payload.get("planned_metric_match"))
+        and _first_text(object_payload, "canonical_metric", "metric_name")
+        and _first_text(object_payload, "observation_period")
+        and _first_text(object_payload, "observation_context_key")
+        and _first_text(row, "planned_match_mode")
+    )
+
+
+def _planned_metric_matches_clause(
+    object_payload: Mapping[str, Any],
+    requested_metrics: Sequence[str],
+    *,
+    metric_scope: str,
+) -> bool:
+    """Verify a planned numeric row matches both the metric and member focus."""
+
+    if not _truthy(object_payload.get("planned_metric_match")):
+        return False
+    if not _metric_terms_match_observation(
+        _first_text(object_payload, "canonical_metric", "metric_name"),
+        requested_metrics,
+        metric_scope=metric_scope,
+    ):
+        return False
+    if _truthy(object_payload.get("planned_metric_member_focus_required")):
+        return _truthy(object_payload.get("planned_metric_member_focus_matched"))
+    return True
+
+
+def _effective_metric_lineage_status(
+    row: Mapping[str, Any],
+    object_payload: Mapping[str, Any],
+    *,
+    object_type: str,
+) -> str | None:
+    """Expose lookup-backed XBRL observations as lineage without changing grade.
+
+    This is deliberately narrower than general XBRL handling.  A row must have
+    been produced by the metric lookup and carry all numeric observation
+    anchors.  Its evidence grade remains the source grade, so the adapter does
+    not turn an unverified record into a strong claim merely by normalizing its
+    shape.
+    """
+
+    existing = _first_text(row, "metric_lineage_status")
+    if _metric_lineage_complete(existing):
+        return existing
+    if _is_metric_observation_payload(row, object_payload, object_type=object_type):
+        return "complete_metric_lineage"
+    return existing
 
 
 def _unit_has_complete_metric_lineage(unit: EvidenceUnit) -> bool:

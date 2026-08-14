@@ -10,7 +10,7 @@ profiles:
       max_replans: 3
       max_repairs: 3
       max_input_tokens: 168000
-      max_output_tokens: 32000
+      max_output_tokens: 56000
       max_evidence_bytes: 8388608
       deadline_ms: 300000
       capability_call_limits:
@@ -22,20 +22,26 @@ profiles:
         ontology.chain: 4
   # GLM-5.2 is the active research profile. Keep local and production on the
   # same bounded envelope: ordinary research completes in 3-7 turns, with
-  # room for a small recovery loop. The 600-second deadline accommodates
-  # slower provider turns without increasing the number of allowed actions.
+  # room for a small recovery loop. High-reasoning provider turns can take
+  # 96–144 seconds and occasionally longer; a 600-second run deadline could
+  # expire after evidence was collected but before the final answer was
+  # written. Twenty minutes preserves the existing bounded turn/action
+  # envelope while leaving enough wall-clock time for the complete workflow.
   - profile_id: company_research_glm
     limits:
       max_provider_turns: 12
       max_capability_calls: 5
       max_replans: 3
       max_repairs: 3
-      # Reserve 200,000 combined tokens per GLM turn, leaving 4,800 tokens
-      # below its 204,800-token context capacity for provider framing.
-      max_input_tokens: 176000
-      max_output_tokens: 28000
+      # Keep 200,000 combined tokens, leaving 4,800 for provider framing.
+      # A complex company run needs one full 16,384-token evidence decision
+      # plus two full 16,384-token composition attempts. This is a ceiling,
+      # not a compulsory spend; it prevents a valid final answer from being
+      # retried under a smaller, doomed token cap.
+      max_input_tokens: 144000
+      max_output_tokens: 56000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      deadline_ms: 1200000
       capability_call_limits:
         ontology.query_context: 2
         ontology.company_context: 1

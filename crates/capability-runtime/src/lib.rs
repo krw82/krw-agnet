@@ -22,7 +22,7 @@ use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilitySpec, IdempotencyPolicy, InputDerivation,
     Permission, ResolvedCapabilityContracts,
 };
-use krw_agent_protocol::{ContentHash, TransportKind};
+use krw_agent_protocol::{ContentHash, TransportKind, is_canonical_ticker};
 use krw_agent_run_engine::{
     CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
     DependencyFailure, deterministic_action_key,
@@ -33,7 +33,7 @@ use krw_agent_tool_mcp::{
 };
 use krw_ontology_adapter::{
     MappingContext, map_company_context, map_market_snapshot, map_research_state,
-    map_targeted_query, map_trace, parse_research_state,
+    map_targeted_query, map_trace, parse_research_state, sanitize_research_state_scope,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -276,6 +276,31 @@ impl fmt::Debug for CapabilityCatalog {
             .field("runtime", &"[REDACTED_DEPLOYMENT]")
             .finish()
     }
+}
+
+/// Derive only the already-authorized company set embedded in the compiled
+/// SearchPlan.  This is intentionally separate from natural-language ticker
+/// extraction: a plan with no ticker scope is a wide discovery request and
+/// must retain its discovered companies.
+fn expected_research_tickers(arguments: &Value) -> Vec<String> {
+    let mut tickers = BTreeSet::new();
+    let mut collect = |values: Option<&Vec<Value>>| {
+        for ticker in values.into_iter().flatten().filter_map(Value::as_str) {
+            if is_canonical_ticker(ticker) {
+                tickers.insert(ticker.to_owned());
+            }
+        }
+    };
+    collect(arguments.get("tickers").and_then(Value::as_array));
+    for clause in arguments
+        .get("clauses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect(clause.get("tickers").and_then(Value::as_array));
+    }
+    tickers.into_iter().take(50).collect()
 }
 
 impl CapabilityCatalog {
@@ -1007,10 +1032,29 @@ impl PooledMcpCapabilityRuntime {
                 let state = parse_research_state(payload_bytes.as_slice()).map_err(|error| {
                     reject("research_state_typed_invalid", format!("{error:?}"))
                 })?;
+                // A fixed-company plan is a trusted scope boundary.  Keep a
+                // malformed cross-company unit from reaching either the
+                // evidence ledger or the next model turn, but preserve the
+                // rest of the successful response as a qualified result.
+                // Discovery plans carry no fixed ticker set and remain
+                // intentionally unfiltered here.
+                let state = sanitize_research_state_scope(
+                    &state,
+                    &expected_research_tickers(&invocation.arguments),
+                );
+                let provider_content = serde_json::to_value(&state).map_err(|error| {
+                    reject("research_state_scope_projection", format!("{error:?}"))
+                })?;
+                validate_value(RESEARCH_STATE_V2, &provider_content).map_err(|error| {
+                    reject(
+                        "research_state_scope_projection_invalid",
+                        format!("{error:?}"),
+                    )
+                })?;
                 let delta = map_research_state(&state, &context)
                     .map_err(|error| reject("research_state_mapping", format!("{error:?}")))?;
                 CapabilityResult {
-                    provider_content: payload,
+                    provider_content,
                     evidence: delta.records,
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
@@ -2516,6 +2560,36 @@ mod tests {
         ledger
             .extend_calculations(result.calculations.clone())
             .expect("normalized calculations must satisfy ledger ABI");
+    }
+
+    #[tokio::test]
+    async fn foreign_company_research_state_is_withheld_but_the_run_can_continue() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let (plan, mut state) = fixture_plan_and_state();
+        state["evidence_units"][0]["ticker"] = Value::String("MSFT".into());
+        state["clause_coverage"][0]["covered_tickers"] = serde_json::json!(["MSFT"]);
+        state["clause_coverage"][0]["missing_tickers"] = serde_json::json!([]);
+        let transport = FakeTransport::new([envelope(&state, false)]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
+
+        let result = runtime
+            .invoke(&invocation(&catalog, "ontology.query_context", plan))
+            .await
+            .expect("foreign evidence is a partial result, not a terminal failure");
+
+        assert!(result.evidence.is_empty());
+        assert_eq!(result.answerability, Some(Answerability::NotAnswerable));
+        assert!(
+            result
+                .provider_content
+                .get("warnings")
+                .and_then(Value::as_array)
+                .is_some_and(|warnings| warnings
+                    .iter()
+                    .any(|warning| { warning.as_str() == Some("out_of_scope_evidence_withheld") }))
+        );
     }
 
     #[tokio::test]
