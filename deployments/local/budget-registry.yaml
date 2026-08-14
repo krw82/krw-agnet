@@ -37,12 +37,11 @@ profiles:
       # detailed multi-objective company question can legitimately reuse its
       # grounded context across several turns before composition. At 80% the
       # kernel stops optional research and moves to the answer phase, so this
-      # GLM-5.3 has a 204800-token context. Keep the 56000-token output
-      # reservation and leave protocol headroom instead of publishing an
-      # impossible 220000+56000 combination that prevents agentd startup.
-      # Keep this equal to the checked-in request contract (144000).
+      # GLM-5.3 has a 204800-token context. Keep the existing 144000-token
+      # input allowance (long follow-ups need it) and expand the cumulative
+      # output tail to 60000: 144000 + 60000 = 204000.
       max_input_tokens: 144000
-      max_output_tokens: 56000
+      max_output_tokens: 60000
       max_evidence_bytes: 8388608
       deadline_ms: 1200000
       capability_call_limits:
