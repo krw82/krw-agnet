@@ -19,8 +19,21 @@ set -euo pipefail
 # hashes. New migrations recorded by this script always carry a real sha256.
 
 set -e
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+# Development runs invoke this file from scripts/, while sealed production
+# bundles place apply_migrations.sh directly beside migrations/. Resolve both
+# layouts explicitly; the old parent-only lookup silently skipped every
+# migration in a sealed release.
+if [[ -d "$SCRIPT_DIR/migrations" ]]; then
+  REPO_ROOT="$SCRIPT_DIR"
+else
+  REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+fi
 MIGRATIONS_DIR="$REPO_ROOT/migrations"
+[[ -d "$MIGRATIONS_DIR" ]] || {
+  echo "apply_migrations: migrations directory is missing: $MIGRATIONS_DIR" >&2
+  exit 1
+}
 
 # Stable advisory-lock key. hashtext('krw_agent_migrations') yields a fixed
 # int4 on every Postgres build, so all invocations of this script contend on
