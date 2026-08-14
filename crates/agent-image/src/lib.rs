@@ -500,7 +500,7 @@ impl CapabilityResultIngest {
     pub const fn provider_tool_description(self) -> &'static str {
         match self {
             Self::ResearchStateV2 => {
-                "Retrieve filing research context for the authenticated in-scope company before drafting an answer. Use the exact provider input schema as the root arguments object; never add a transport wrapper. Use the least sufficient evidence request and never broaden the authenticated scope."
+                "Retrieve filing research context for the authenticated in-scope company before drafting an answer. Use the exact advertised provider input schema: when it exposes a `proposal` field, provide that field exactly once and put the complete semantic proposal inside it. Do not add any other transport wrapper. Use the least sufficient evidence request and never broaden the authenticated scope."
             }
             Self::CompanyContextV1 => {
                 "Retrieve a compact, orientation-only topic map for the already in-scope company only when it can improve the next evidence query. Use it to narrow follow-up research, never as factual support or a final-answer claim. The kernel removes internal routing data and keeps the result advisory."

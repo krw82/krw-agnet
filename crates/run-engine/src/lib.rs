@@ -8812,6 +8812,20 @@ fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
     if contract_id != RESEARCH_PROPOSAL_V4 {
         return;
     }
+    // The provider schema exposes one `proposal` envelope, while the
+    // canonical contract is the proposal itself. A few Anthropic-compatible
+    // models repeat that named envelope inside the valid outer function
+    // argument. It is unambiguous here because `proposal` is not a canonical
+    // ResearchProposal field; unwrap exactly one duplicate layer rather than
+    // wasting a repair turn on an otherwise complete research request.
+    if let Some(duplicate) = value
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .and_then(|object| object.get("proposal"))
+        .cloned()
+    {
+        *value = duplicate;
+    }
     let Some(objectives) = value
         .as_object_mut()
         .and_then(|proposal| proposal.get_mut("objectives"))
@@ -8856,7 +8870,10 @@ fn normalize_provider_model_input(contract_id: &str, value: &mut Value) {
 /// contract accepts it, so stripping it here silently downgraded every exact
 /// query to compact and made known evidence look unavailable.
 fn normalize_physical_capability_arguments(capability_id: &str, value: &mut Value) {
-    if !matches!(capability_id, "ontology.query" | "ontology.trace") {
+    if !matches!(
+        capability_id,
+        "ontology.query" | "ontology.trace" | "ontology.chain"
+    ) {
         return;
     }
     let Some(object) = value.as_object_mut() else {
@@ -12185,7 +12202,15 @@ mod tests {
             serde_json::json!("qualitative_evidence")
         );
 
-        let mut ambiguous = proposal.clone();
+        let mut duplicate_envelope = serde_json::json!({"proposal": proposal});
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut duplicate_envelope);
+        assert_eq!(duplicate_envelope["intent"], serde_json::json!("risk"));
+        assert_eq!(
+            duplicate_envelope["objectives"][0]["goal"]["kind"],
+            serde_json::json!("qualitative_evidence")
+        );
+
+        let mut ambiguous = duplicate_envelope;
         ambiguous["objectives"][0]["goal"]["extra"] = serde_json::json!(true);
         ambiguous["objectives"][0]["goal"]
             .as_object_mut()
@@ -12433,6 +12458,14 @@ mod tests {
         });
         normalize_physical_capability_arguments("ontology.trace", &mut trace);
         assert!(trace.get("response_format").is_none());
+
+        let mut chain = serde_json::json!({
+            "ticker": "AAPL",
+            "object_id": "object-1",
+            "response_format": "json"
+        });
+        normalize_physical_capability_arguments("ontology.chain", &mut chain);
+        assert!(chain.get("response_format").is_none());
 
         let mut context = serde_json::json!({"response_format": "json"});
         normalize_physical_capability_arguments("ontology.query_context", &mut context);
