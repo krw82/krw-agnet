@@ -60,7 +60,8 @@ cash-flow item that is absent is not a cosmetic gap: it is a material gap when
 the user named it. Use the one available precise query before finalizing when
 it can retrieve the missing named facts. Give that query a concise natural-
 language topic containing the ticker, the exact metrics or dimensions, and the
-needed comparable period; request full detail. For example, a missing revenue
+needed comparable period; choose full detail only when the exact source basis
+is material to the user's named ask. For example, a missing revenue
 mix and geography check can be expressed as a precise request for "latest
 quarterly product revenue, services revenue, and revenue by reportable
 geography, with prior-year comparable quarter". Use a second broad context
@@ -71,9 +72,11 @@ user to start over.
 
 When the verified compacted context's `research_projection` contains
 `exact_precise_query_candidates`, choose at most one candidate in that
-assessment turn. Copy the whole candidate exactly — including `ticker`,
-`topic`, any period/document/object filters, `answer_candidate_only`,
-`response_detail`, and `limit`.
+assessment turn. Copy the candidate's `ticker`, `topic`, period/document/object
+filters, `answer_candidate_only`, and `limit` exactly. Choose
+`response_detail=full` only when the named gap needs exact source text, a
+numeric basis, period/scope detail, or lineage; otherwise choose the default
+`compact`. The detail choice must remain in the same bounded call.
 Do not join, paraphrase, or make parallel variants of the candidates.
 
 Treat `retrieval_status.has_more=true`, a positive omitted-evidence count, or

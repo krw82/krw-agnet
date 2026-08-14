@@ -200,6 +200,10 @@ pub const ROLE_REPAIR: &str = "repair";
 /// `repair` views. Keeps the analyst focused on research gaps rather than
 /// re-reading the full evidence corpus.
 const ANALYST_MAX_EVIDENCE: usize = 16;
+const COMPANY_ANALYST_VIEW_MAX_BYTES: usize = 64 * 1024;
+const COMPANY_COMPOSER_VIEW_MAX_BYTES: usize = 64 * 1024;
+const SPECIALIZED_COMPOSER_VIEW_MAX_BYTES: usize = 96 * 1024;
+const MAX_FACTS_PER_VIEW_EVIDENCE: usize = 6;
 /// Cap on retained facts in the minimal `repair` view. Repair reasoning
 /// operates over the validated state artifact plus a small defect-relevant
 /// fact slice; the full fact set remains durable in the receipt.
@@ -253,6 +257,7 @@ impl CompactedProviderContext {
         // Build a filtered clone. We never mutate `self`; the durable context
         // is preserved so the receipt continues to verify.
         let mut filtered = self.clone();
+        let protected_goal_evidence_ids = protected_goal_evidence_ids(self);
 
         match role_id {
             _ if composer_role => {
@@ -299,6 +304,7 @@ impl CompactedProviderContext {
                 // to the top-graded entries so the analyst can scan gaps.
                 filtered.calculations.clear();
                 trim_evidence_by_grade(&mut filtered.evidence_index, ANALYST_MAX_EVIDENCE);
+                retain_facts_for_evidence(&mut filtered);
                 // Retain the full research_projection (goals, missing parts,
                 // recommended actions) and retained_facts (needed to interpret
                 // goal status).
@@ -327,6 +333,18 @@ impl CompactedProviderContext {
             _ => unreachable!("role gate above excludes every other branch"),
         }
 
+        retain_facts_per_evidence(&mut filtered);
+        let max_bytes = if composer_role {
+            if role_id == ROLE_COMPOSER {
+                COMPANY_COMPOSER_VIEW_MAX_BYTES
+            } else {
+                SPECIALIZED_COMPOSER_VIEW_MAX_BYTES
+            }
+        } else {
+            COMPANY_ANALYST_VIEW_MAX_BYTES
+        };
+        shrink_role_view_best_effort(&mut filtered, max_bytes, &protected_goal_evidence_ids)?;
+
         let canonical = String::from_utf8(serde_jcs::to_vec(&filtered)?)
             .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))?;
         let byte_len = u64::try_from(canonical.len())
@@ -351,6 +369,78 @@ impl CompactedProviderContext {
         String::from_utf8(serde_jcs::to_vec(self)?)
             .map_err(|_| CompactionError::Invariant("canonical context is not UTF-8"))
     }
+}
+
+fn protected_goal_evidence_ids(
+    context: &CompactedProviderContext,
+) -> std::collections::BTreeSet<String> {
+    context
+        .research_projection
+        .as_ref()
+        .into_iter()
+        .flat_map(|projection| projection.graph.goals())
+        .flat_map(|goal| goal.evidence_ids.iter().cloned())
+        .collect()
+}
+
+fn retain_facts_for_evidence(context: &mut CompactedProviderContext) {
+    let evidence_ids = context
+        .evidence_index
+        .iter()
+        .map(|entry| entry.evidence_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    context
+        .retained_facts
+        .retain(|fact| evidence_ids.contains(fact.evidence_id.as_str()));
+}
+
+fn retain_facts_per_evidence(context: &mut CompactedProviderContext) {
+    let mut counts = BTreeMap::<String, usize>::new();
+    context.retained_facts.retain(|fact| {
+        let count = counts.entry(fact.evidence_id.clone()).or_default();
+        if *count >= MAX_FACTS_PER_VIEW_EVIDENCE {
+            false
+        } else {
+            *count += 1;
+            true
+        }
+    });
+}
+
+/// Best-effort prompt-view bound. The durable compaction receipt is computed
+/// from the unfiltered context, so a large protected witness set must remain a
+/// valid over-target view rather than becoming a new runtime failure.
+fn shrink_role_view_best_effort(
+    context: &mut CompactedProviderContext,
+    max_bytes: usize,
+    protected: &std::collections::BTreeSet<String>,
+) -> Result<(), CompactionError> {
+    while serde_jcs::to_vec(&*context)?.len() > max_bytes {
+        if let Some(index) = context
+            .evidence_index
+            .iter()
+            .rposition(|entry| !protected.contains(&entry.evidence_id))
+        {
+            let removed = context.evidence_index.remove(index).evidence_id;
+            context
+                .retained_facts
+                .retain(|fact| fact.evidence_id != removed);
+            continue;
+        }
+        if let Some(index) = context
+            .retained_facts
+            .iter()
+            .rposition(|fact| !protected.contains(&fact.evidence_id))
+        {
+            context.retained_facts.remove(index);
+            continue;
+        }
+        // Essential state, protected goal witnesses, and the remaining
+        // investor-facing facts alone exceed the soft role target. Keep them
+        // and let the caller send a valid, slightly larger prompt view.
+        break;
+    }
+    Ok(())
 }
 
 /// Every visible final-writer role uses either `composer` or a specialized

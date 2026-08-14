@@ -30,7 +30,7 @@ use krw_agent_run_engine::{
     ActionIntent, DeliveryCertainty, DependencyFailure, DurableActionObservation, DurableEpisode,
     DurableFinal, DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous,
     Persistence, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, RecoverySnapshot,
-    RunControl, RunIdentity,
+    RunControl, RunIdentity, RunLifecycleStage,
 };
 use krw_session_memory::{
     MAX_SESSION_MEMORY_SNAPSHOT_BYTES, SessionMemoryDeltaV3, SessionMemorySnapshotV3,
@@ -1196,6 +1196,9 @@ impl Persistence for DurableRunPersistence {
                 state_hash: state.state_hash.clone(),
                 state_artifact_ref: artifact.artifact_ref,
                 state_size_bytes: artifact.plaintext_size_bytes,
+                lifecycle_stage: state.lifecycle_stage.map(|stage| match stage {
+                    RunLifecycleStage::Composing => "composing".to_owned(),
+                }),
             })
             .await
             .map_err(|error| map_abi_failure("checkpoint_run_state", &error, true))?;

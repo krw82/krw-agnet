@@ -4054,6 +4054,7 @@ def _compact_bundle(item: dict[str, Any]) -> dict[str, Any]:
     evidence = item.get("evidence") or {}
     document = item.get("document") or {}
     quality = item.get("quality") or {}
+    evidence_summary = _compact_evidence_summary(item, evidence)
     return {
         "id": item.get("id"),
         "type": item.get("type"),
@@ -4073,6 +4074,12 @@ def _compact_bundle(item: dict[str, Any]) -> dict[str, Any]:
         "matched_required_facets": item.get("matched_required_facets"),
         "missing_required_facets": item.get("missing_required_facets"),
         "why_tier": item.get("why_tier"),
+        # The compact path is allowed to omit deep source expansion, but it
+        # must still carry the answer-bearing observation itself.  Without
+        # this small projection a numeric row became only a display string
+        # and the analyst could not tell value, unit, or period apart.
+        "object": _compact_object_summary(item.get("object")),
+        "evidence_summary": evidence_summary,
         "evidence": {
             "claims": [
                 _compact_evidence_object(claim, max_chars=320)
@@ -4104,6 +4111,72 @@ def _compact_bundle(item: dict[str, Any]) -> dict[str, Any]:
             "rejected_objects": (document.get("counts") or {}).get("rejected_objects", 0),
         },
     }
+
+
+_COMPACT_OBJECT_FIELDS = (
+    "id",
+    "type",
+    "metric_name",
+    "canonical_metric",
+    "value",
+    "unit",
+    "currency",
+    "formatted_value",
+    "period_type",
+    "start_date",
+    "end_date",
+    "metric_scope",
+    "dimensions",
+)
+
+
+def _compact_object_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    summary: dict[str, Any] = {
+        key: value[key]
+        for key in _COMPACT_OBJECT_FIELDS
+        if key != "dimensions" and value.get(key) is not None
+    }
+    dimensions = value.get("dimensions")
+    if isinstance(dimensions, Mapping):
+        compact_dimensions: dict[str, Any] = {}
+        for key, dimension_value in list(dimensions.items())[:8]:
+            if isinstance(dimension_value, (str, int, float, bool)):
+                compact_dimensions[_short_text(str(key), 64)] = (
+                    _short_text(str(dimension_value), 128)
+                    if isinstance(dimension_value, str)
+                    else dimension_value
+                )
+        if compact_dimensions:
+            summary["dimensions"] = compact_dimensions
+    return summary
+
+
+def _compact_evidence_summary(
+    item: Mapping[str, Any], evidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    # Fast compact retrieval intentionally skips evidence expansion.  The
+    # traceability counts are therefore the best available indication that
+    # more source material exists behind the row.
+    counts = {
+        "claim_count": max(
+            len(evidence.get("claims") or []), int(item.get("support_claim_count") or 0)
+        ),
+        "quote_count": max(
+            len(evidence.get("quotes") or []), int(item.get("support_quote_count") or 0)
+        ),
+        "span_count": len(evidence.get("spans") or []),
+        "related_object_count": len(evidence.get("related_objects") or []),
+    }
+    counts["truncated"] = (
+        counts["claim_count"] > MAX_COMPACT_CLAIMS
+        or counts["quote_count"] > MAX_COMPACT_QUOTES
+        or counts["span_count"] > MAX_COMPACT_SPANS
+        or counts["related_object_count"] > MAX_COMPACT_RELATED_OBJECTS
+        or bool(item.get("compact_only") and (counts["claim_count"] or counts["quote_count"]))
+    )
+    return counts
 
 
 def _compact_evidence_object(obj: dict[str, Any], *, max_chars: int) -> dict[str, Any]:

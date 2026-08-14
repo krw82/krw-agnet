@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "suite_id": "adaptive-detail-v1",
+  "suite_version": 1,
+  "cases": [
+    {
+      "case_id": "choice_cat_overview",
+      "ticker": "CAT",
+      "question": "Caterpillar는 무슨 기업이야? 투자자가 알아야 할 핵심도 같이 알려줘.",
+      "evaluation_focus": ["company_map", "business_overview", "investor_insight"]
+    },
+    {
+      "case_id": "choice_aapl_revenue_risk",
+      "ticker": "AAPL",
+      "question": "Apple의 최근 매출 흐름과 핵심 리스크를 공시 근거 중심으로 간단히 정리해줘.",
+      "evaluation_focus": ["recent_revenue", "principal_risks", "filing_grounding"]
+    },
+    {
+      "case_id": "choice_avgo_metric_basis",
+      "ticker": "AVGO",
+      "question": "Broadcom의 최근 연간 매출 수치와 증감률을 정확한 기간·단위·계산 근거와 함께 알려줘.",
+      "evaluation_focus": ["reported_metric", "period_unit", "calculation_lineage"]
+    },
+    {
+      "case_id": "choice_aapl_quote",
+      "ticker": "AAPL",
+      "question": "Apple 최신 10-K의 핵심 리스크를 공시 원문 근거와 함께 설명해줘.",
+      "evaluation_focus": ["latest_10k", "risk_factors", "source_quote"]
+    }
+  ]
+}

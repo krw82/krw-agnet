@@ -415,10 +415,8 @@ pub struct ExactTargetedQueryCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub object_types: Vec<String>,
     /// A known required gap must be read using its full phrase. This public
-    /// MCP field selects answer-ready records and, in the bundled runtime,
-    /// disables partial-term fallback for this kernel-generated exact read.
-    /// Default to `true` so a checkpoint created before this field existed
-    /// cannot silently regain the old lossy behavior on recovery.
+    /// MCP field selects the model's evidence depth for the bounded read;
+    /// scope and answer-candidate semantics remain kernel-owned.
     #[serde(default = "exact_targeted_query_answer_candidate_only")]
     pub answer_candidate_only: bool,
     pub response_detail: String,
@@ -702,7 +700,7 @@ fn exact_precise_query_candidates(state: &ResearchStateV2) -> Vec<ExactTargetedQ
             periods: periods.clone(),
             object_types: bounded_plan_values(clause.get("object_types"), 128),
             answer_candidate_only: true,
-            response_detail: "full".into(),
+            response_detail: "compact".into(),
             limit: 20,
         });
     }
@@ -2524,9 +2522,26 @@ fn supplemental_read_status(
         if has_more {
             warning_codes.push("supplemental_truncated".to_owned());
         }
+        if payload
+            .get("results")
+            .and_then(Value::as_array)
+            .is_some_and(|results| {
+                results.iter().any(|result| {
+                    result
+                        .get("evidence_summary")
+                        .and_then(|summary| summary.get("truncated"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+            })
+        {
+            warning_codes.push("compact_evidence_truncated".to_owned());
+        }
         SupplementalReadKind::Retrieved
     };
 
+    warning_codes.sort();
+    warning_codes.dedup();
     SupplementalReadStatus {
         kind,
         result_count: u16::try_from(bounded_count).unwrap_or(u16::MAX),
@@ -3086,7 +3101,7 @@ mod tests {
                 periods: Vec::new(),
                 object_types: Vec::new(),
                 answer_candidate_only: true,
-                response_detail: "full".into(),
+                response_detail: "compact".into(),
                 limit: 20,
             }
         );
@@ -3593,6 +3608,35 @@ mod tests {
         assert_eq!(truncated.status.result_count, 1);
         assert!(truncated.status.has_more);
         assert_eq!(truncated.status.next_offset, Some(20));
+    }
+
+    #[test]
+    fn compact_targeted_result_preserves_truncation_as_status_only() {
+        let delta = map_targeted_query(
+            &serde_json::json!({
+                "results": [{
+                    "id": "claim:AAPL:1",
+                    "ticker": "AAPL",
+                    "text": "Revenue grew.",
+                    "evidence_summary": {
+                        "claim_count": 4,
+                        "quote_count": 4,
+                        "span_count": 0,
+                        "related_object_count": 0,
+                        "truncated": true
+                    },
+                    "evidence": {"quotes": [{"id": "quote:1", "text": "Revenue grew."}]}
+                }]
+            }),
+            &context("ontology.query"),
+        )
+        .unwrap();
+
+        assert_eq!(delta.records.len(), 1);
+        assert_eq!(
+            delta.status.warning_codes,
+            vec!["compact_evidence_truncated".to_owned()]
+        );
     }
 
     #[test]

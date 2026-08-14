@@ -234,6 +234,10 @@ fn embedded_sql_constants_match_on_disk_files() {
             "DAEMON_HEARTBEAT_MIGRATION_SQL",
             krw_agent_persistence::agent_v1::DAEMON_HEARTBEAT_MIGRATION_SQL,
         ),
+        (
+            "LIFECYCLE_OUTBOX_MIGRATION_SQL",
+            krw_agent_persistence::agent_v1::LIFECYCLE_OUTBOX_MIGRATION_SQL,
+        ),
     ];
     for (name, sql) in embedded {
         assert!(
@@ -251,6 +255,7 @@ fn embedded_sql_constants_match_on_disk_files() {
         "0005_session_memory_snapshot.sql",
         "0006_read_final_output.sql",
         "0018_daemon_heartbeat.sql",
+        "0019_lifecycle_outbox.sql",
     ] {
         let path: PathBuf = migrations_dir.join(expected);
         assert!(

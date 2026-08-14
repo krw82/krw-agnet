@@ -137,7 +137,7 @@ roles:
     # enough room to finish the tool arguments instead of being cut mid-call.
     # This is still far below the analyst budget and applies only to the
     # planner's one direct proposal turn.
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - id: analyst
     # The long research-analysis contract is core context for every ordinary
     # company analyst turn. References remain progressive-disclosure material.
@@ -171,7 +171,7 @@ roles:
   - id: earnings_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - id: earnings_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, earnings_skill_catalog, evidence_analyst, earnings_analysis]
     deterministic: false
@@ -179,7 +179,7 @@ roles:
   - id: scenario_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - id: scenario_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, scenario_skill_catalog, evidence_analyst, scenario_analysis]
     deterministic: false
@@ -187,7 +187,7 @@ roles:
   - id: idea_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - id: idea_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, evidence_analyst, idea_screen]
     deterministic: false
@@ -195,7 +195,7 @@ roles:
   - id: wide_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 3072 }
+    execution: { reasoning: direct, max_output_tokens: 8192 }
   - id: wide_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, evidence_analyst, wide_research_analysis]
     deterministic: false

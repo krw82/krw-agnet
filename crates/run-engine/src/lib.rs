@@ -120,6 +120,11 @@ use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
 
+// Anthropic-compatible thinking requests need at least 1,024 private-thinking
+// tokens plus one visible-output token. A run must never fail merely because
+// its final composition tail is smaller than that provider minimum.
+const MIN_THINKING_TURN_MAX_TOKENS: u32 = 1_025;
+
 /// Redacted dependency error safe to retain in ordinary operational traces.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DependencyFailure {
@@ -1310,6 +1315,14 @@ pub struct DurableRunState {
     pub recovery_schema_hash: ContentHash,
     pub state_hash: ContentHash,
     pub state_bytes: Vec<u8>,
+    /// Optional product-facing lifecycle marker. It is not part of the
+    /// encrypted recovery artifact and carries no user/provider content.
+    pub lifecycle_stage: Option<RunLifecycleStage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunLifecycleStage {
+    Composing,
 }
 
 impl fmt::Debug for DurableRunState {
@@ -1322,6 +1335,7 @@ impl fmt::Debug for DurableRunState {
             .field("state_hash", &self.state_hash)
             .field("state_bytes", &"[REDACTED]")
             .field("state_byte_len", &self.state_bytes.len())
+            .field("lifecycle_stage", &self.lifecycle_stage)
             .finish()
     }
 }
@@ -2142,6 +2156,19 @@ where
         loop {
             self.guard_control(&identity, deadline).await?;
             if state.finalize_for_output_reserve_before_next_turn(input.image)? {
+                self.checkpoint_active_state(&identity, &state, deadline)
+                    .await?;
+                continue;
+            }
+            // The ordinary output-reserve path deliberately waits for
+            // substantive filing evidence. That is normally right, but it
+            // must not leave a thinking-enabled analyst with fewer tokens
+            // than the provider can legally accept. When this exact physical
+            // boundary is reached, take the image-declared composition edge
+            // even if the preceding lookup only produced orientation or
+            // partial evidence. The composer receives the bounded limitation
+            // context and can still return an honest user-facing answer.
+            if state.finalize_for_thinking_floor_before_next_turn(&input)? {
                 self.checkpoint_active_state(&identity, &state, deadline)
                     .await?;
                 continue;
@@ -3477,6 +3504,7 @@ where
             recovery_schema_hash: active_run_checkpoint_schema_hash(),
             state_hash,
             state_bytes,
+            lifecycle_stage: state.lifecycle_stage_for_checkpoint()?,
         };
         let checkpoint_t0 = Instant::now();
         let result = dependency_call(
@@ -4484,6 +4512,7 @@ struct ProgramRuntime {
     workflow: CompiledWorkflow,
     typed_program: krw_agent_state_artifact::StateProgram,
     capability_states: BTreeMap<String, u16>,
+    answer_contract: ContractPin,
 }
 
 impl ProgramRuntime {
@@ -4525,11 +4554,13 @@ impl ProgramRuntime {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let typed_program = image.state_program(&workflow.id)?;
+        let answer_contract = ContractPin::canonical(&image.body.answer_policy.internal_format)?;
         Ok(Self {
             image_hash: image.content_hash.clone(),
             workflow: workflow.clone(),
             typed_program,
             capability_states,
+            answer_contract,
         })
     }
 
@@ -5287,6 +5318,18 @@ impl ActiveRun {
         ))
     }
 
+    fn lifecycle_stage_for_checkpoint(&self) -> Result<Option<RunLifecycleStage>, EngineError> {
+        let is_answer_operation = matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision {
+                output_mode: ModelOutputMode::TypedJson | ModelOutputMode::Markdown,
+                output_contracts,
+                ..
+            } if output_contracts.contains(&self.program.answer_contract)
+        );
+        Ok(is_answer_operation.then_some(RunLifecycleStage::Composing))
+    }
+
     fn current_model_output_mode(&self) -> Result<ModelOutputMode, EngineError> {
         match self.interpreter.current_operation()? {
             StateOperation::ModelDecision { output_mode, .. } => Ok(*output_mode),
@@ -5767,10 +5810,42 @@ impl ActiveRun {
         image: &AgentImageManifest,
         provider_episode_hash: &ContentHash,
     ) -> Result<bool, EngineError> {
-        let input_budget_reserved = self.input_budget_answer_reserve_reached();
-        if !self.should_finalize_for_output_reserve(image)?
-            || !self.has_substantive_research_evidence()
+        if !self.should_finalize_for_output_reserve(image)? {
+            return Ok(false);
+        }
+        self.finalize_for_answer_phase_on_budget_boundary(image, provider_episode_hash, false)
+    }
+
+    /// Reserve the answer-producing phase when the next research decision
+    /// cannot meet the provider's minimum thinking request size. Unlike the
+    /// normal reserve path this intentionally permits an evidence-poor
+    /// composition: the alternative is a local request-construction failure
+    /// and no answer at all. The image must still explicitly expose an
+    /// `output_budget_reserved` edge to an answer-producing state.
+    fn finalize_for_thinking_floor_before_next_turn(
+        &mut self,
+        input: &RunInput<'_>,
+    ) -> Result<bool, EngineError> {
+        if self.current_operation_emits_answer(input.image)?
+            || !thinking_turn_is_below_provider_minimum(input, self)?
         {
+            return Ok(false);
+        }
+        let Some(provider_episode_hash) = self.last_provider_episode_hash.clone() else {
+            return Ok(false);
+        };
+        self.finalize_for_answer_phase_on_budget_boundary(input.image, &provider_episode_hash, true)
+    }
+
+    fn finalize_for_answer_phase_on_budget_boundary(
+        &mut self,
+        image: &AgentImageManifest,
+        provider_episode_hash: &ContentHash,
+        allow_without_substantive_evidence: bool,
+    ) -> Result<bool, EngineError> {
+        let input_budget_reserved = self.input_budget_answer_reserve_reached();
+        let substantive_evidence_available = self.has_substantive_research_evidence();
+        if !substantive_evidence_available && !allow_without_substantive_evidence {
             return Ok(false);
         }
         if !matches!(
@@ -5790,7 +5865,8 @@ impl ActiveRun {
         let facts = serde_json::json!({
             "output_budget_reserved": true,
             "input_budget_reserved": input_budget_reserved,
-            "admitted_evidence_available": true,
+            "admitted_evidence_available": substantive_evidence_available,
+            "thinking_floor_recovery": allow_without_substantive_evidence,
         });
         let event = self.unique_available_transition_event(
             Some("output_budget_reserved"),
@@ -7829,9 +7905,10 @@ fn model_research_gap_hint(result: &Value) -> Option<Value> {
         let mut candidate = serde_json::Map::new();
         candidate.insert("ticker".into(), Value::String(ticker));
         candidate.insert("topic".into(), Value::String(topic.to_owned()));
-        // Full detail is part of the canonical targeted-query contract. It
-        // preserves quotes, lineage, and metric basis needed to close the gap.
-        candidate.insert("response_detail".into(), Value::String("full".into()));
+        // Compact is the safe default carried into the candidate. The analyst
+        // may choose full in this same bounded call when the question needs an
+        // exact quote, numeric basis, period/scope detail, or lineage.
+        candidate.insert("response_detail".into(), Value::String("compact".into()));
         // This is a kernel-owned exact-gap read, not a model-selected broad
         // discovery query. The runtime uses the existing public field to keep
         // the complete phrase strict rather than filling a page with partial
@@ -9012,10 +9089,11 @@ fn normalize_physical_capability_arguments(capability_id: &str, value: &mut Valu
 /// * every model topic token must occur in the candidate topic; and
 /// * exactly one current missing-clause candidate may match.
 ///
-/// Once selected, the physical request is the ontology's own bounded full
+/// Once selected, the physical request is the ontology's own bounded
 /// candidate (including period/document/object filters), not the model's
-/// paraphrase. That keeps goal mapping, action idempotency, restart replay,
-/// and evidence scope on one canonical input without adding a model turn.
+/// paraphrase. The model controls only the compact/full evidence depth. That
+/// keeps goal mapping, action idempotency, restart replay, and evidence scope
+/// on one canonical input without adding a model turn.
 fn canonicalize_required_gap_targeted_query(
     capability_id: &str,
     state: &ActiveRun,
@@ -9027,6 +9105,7 @@ fn canonicalize_required_gap_targeted_query(
     let Some(object) = arguments.as_object() else {
         return;
     };
+    let selected_response_detail = selected_targeted_response_detail(object);
     let Some(ticker) = object.get("ticker").and_then(Value::as_str) else {
         return;
     };
@@ -9063,7 +9142,18 @@ fn canonicalize_required_gap_targeted_query(
         })
         .collect::<Vec<_>>();
     if let [candidate] = matches.as_slice() {
-        *arguments = exact_required_gap_arguments(candidate);
+        *arguments = exact_required_gap_arguments(candidate, selected_response_detail);
+    }
+}
+
+fn selected_targeted_response_detail(object: &serde_json::Map<String, Value>) -> &'static str {
+    match object
+        .get("response_detail")
+        .and_then(Value::as_str)
+        .unwrap_or("compact")
+    {
+        "full" => "full",
+        _ => "compact",
     }
 }
 
@@ -9100,13 +9190,23 @@ fn normalized_retrieval_topic_tokens(value: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn exact_required_gap_arguments(candidate: &ExactTargetedQueryCandidate) -> Value {
+fn exact_required_gap_arguments(
+    candidate: &ExactTargetedQueryCandidate,
+    selected_response_detail: &str,
+) -> Value {
     let mut arguments = serde_json::Map::from_iter([
         ("ticker".into(), Value::String(candidate.ticker.clone())),
         ("topic".into(), Value::String(candidate.topic.clone())),
         (
             "response_detail".into(),
-            Value::String(candidate.response_detail.clone()),
+            Value::String(
+                if selected_response_detail == "full" {
+                    "full"
+                } else {
+                    "compact"
+                }
+                .to_owned(),
+            ),
         ),
         (
             "answer_candidate_only".into(),
@@ -10483,7 +10583,7 @@ fn provider_turn_policy(
         .ok_or(EngineError::Invariant(
             "current role is absent from AgentImage",
         ))?;
-    let (thinking, reasoning_effort) = match role.execution.reasoning {
+    let (mut thinking, mut reasoning_effort) = match role.execution.reasoning {
         RoleReasoningMode::Inherit => (input.snapshot.thinking, input.snapshot.reasoning_effort),
         RoleReasoningMode::Direct => (ThinkingMode::Disabled, None),
     };
@@ -10510,11 +10610,43 @@ fn provider_turn_policy(
     if max_output_tokens == 0 {
         return Err(EngineError::NoRemainingOutputBudget);
     }
+
+    // Once the workflow is already at its answer-producing state, a tiny
+    // remaining tail is still more useful as a concise direct answer than as
+    // a fatal provider-input error. This does not add a turn or alter the
+    // model/provider selection; it only disables private thinking for this
+    // one unavoidable tail request. Non-answer states are instead routed by
+    // `finalize_for_thinking_floor_before_next_turn` to the image-declared
+    // composer before request construction.
+    if answer_output
+        && thinking == ThinkingMode::Enabled
+        && max_output_tokens < MIN_THINKING_TURN_MAX_TOKENS
+    {
+        thinking = ThinkingMode::Disabled;
+        reasoning_effort = None;
+    }
     Ok(ProviderTurnPolicy {
         thinking,
         reasoning_effort,
         max_output_tokens,
     })
+}
+
+fn thinking_turn_is_below_provider_minimum(
+    input: &RunInput<'_>,
+    state: &ActiveRun,
+) -> Result<bool, EngineError> {
+    let remaining_output_tokens = state.remaining_output_tokens()?;
+    match provider_turn_policy(input, state, remaining_output_tokens) {
+        Ok(policy) => Ok(policy.thinking == ThinkingMode::Enabled
+            && policy.max_output_tokens < MIN_THINKING_TURN_MAX_TOKENS),
+        // A non-answer turn that cannot preserve the configured final-output
+        // reserve has no viable thinking request. Let the image's existing
+        // output-budget edge take it to composition instead of surfacing a
+        // local input error.
+        Err(EngineError::FinalOutputReserveReached) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10548,7 +10680,7 @@ fn thinking_budget_for_turn(
     let normal_budget = max_tokens
         .checked_sub(1)
         .ok_or(EngineError::InvalidInput("thinking budget underflow"))?;
-    if normal_budget < 1024 {
+    if max_tokens < MIN_THINKING_TURN_MAX_TOKENS {
         return Err(EngineError::InvalidInput(
             "thinking turns require at least 1025 max_tokens",
         ));
@@ -12278,18 +12410,18 @@ mod tests {
 
         let loaded = invoke_skill_load(
             &image,
-            &serde_json::json!({"skill_id": "research_planner_skill"}),
+            &serde_json::json!({"skill_id": "provider_proposal_contract"}),
         )
         .unwrap();
         assert_eq!(
             loaded.provider_content["skill_id"],
-            "research_planner_skill"
+            "provider_proposal_contract"
         );
         assert!(
             loaded.provider_content["content"]
                 .as_str()
                 .unwrap()
-                .contains("# KRW Research Planner")
+                .contains("# Provider proposal contract")
         );
 
         let additional = invoke_skill_load(
@@ -12317,7 +12449,7 @@ mod tests {
                 available,
             }) => {
                 assert_eq!(skill_id, "security_boundary");
-                assert!(available.contains("research_planner_skill"));
+                assert!(available.contains("provider_proposal_contract"));
                 assert!(!available.contains("security_boundary"));
             }
             other => panic!("internal policy must not be loadable: {other:?}"),
@@ -12435,7 +12567,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_research_gap_candidate_keeps_clause_scope_and_requests_full_detail() {
+    fn truncated_research_gap_candidate_defaults_to_compact_detail() {
         let result = serde_json::json!({
             "plan": {
                 "tickers": ["AAPL"],
@@ -12473,7 +12605,7 @@ mod tests {
             candidate["topic"],
             "AAPL iPhone revenue latest comparable quarter"
         );
-        assert_eq!(candidate["response_detail"], "full");
+        assert_eq!(candidate["response_detail"], "compact");
         assert_eq!(candidate["answer_candidate_only"], true);
         assert_eq!(
             candidate["document_types"],
@@ -12661,6 +12793,53 @@ mod tests {
         let mut context = serde_json::json!({"response_format": "json"});
         normalize_physical_capability_arguments("ontology.query_context", &mut context);
         assert!(context.get("response_format").is_some());
+    }
+
+    #[test]
+    fn targeted_detail_choice_is_model_owned_but_narrowly_normalized() {
+        let candidate = ExactTargetedQueryCandidate {
+            clause_id: "revenue".into(),
+            ticker: "AAPL".into(),
+            topic: "AAPL revenue".into(),
+            document_types: vec!["10-K".into()],
+            periods: vec!["FY2025".into()],
+            object_types: vec!["MetricObservation".into()],
+            answer_candidate_only: true,
+            response_detail: "compact".into(),
+            limit: 20,
+        };
+        assert_eq!(
+            exact_required_gap_arguments(&candidate, "full")["response_detail"],
+            "full"
+        );
+        assert_eq!(
+            exact_required_gap_arguments(&candidate, "compact")["response_detail"],
+            "compact"
+        );
+
+        let full = serde_json::json!({"response_detail": "full"});
+        assert_eq!(
+            selected_targeted_response_detail(full.as_object().unwrap()),
+            "full"
+        );
+
+        let compact = serde_json::json!({"response_detail": "compact"});
+        assert_eq!(
+            selected_targeted_response_detail(compact.as_object().unwrap()),
+            "compact"
+        );
+
+        let missing = serde_json::json!({});
+        assert_eq!(
+            selected_targeted_response_detail(missing.as_object().unwrap()),
+            "compact"
+        );
+
+        let invalid = serde_json::json!({"response_detail": "unbounded"});
+        assert_eq!(
+            selected_targeted_response_detail(invalid.as_object().unwrap()),
+            "compact"
+        );
     }
 
     #[test]
@@ -13093,6 +13272,22 @@ mod tests {
             "clause_id": "cash_generation",
             "ticker": "VG"
         }]);
+        state
+    }
+
+    fn unverified_research_state() -> Value {
+        let mut state = fixture_research_state();
+        state["answerability"]["status"] = Value::String("partial".into());
+        state["answerability"]["strong_claim_allowed"] = Value::Bool(false);
+        state["answerability"]["covered_required_clause_count"] = serde_json::json!(0);
+        state["clause_coverage"][0]["status"] = Value::String("partial".into());
+        state["clause_coverage"][0]["best_directness"] = Value::String("unverified".into());
+        state["clause_coverage"][0]["best_evidence_grade"] = Value::String("unverified".into());
+        state["clause_coverage"][0]["strong_claim_ready"] = Value::Bool(false);
+        state["evidence_units"][0]["directness"] = Value::String("unverified".into());
+        state["evidence_units"][0]["evidence_grade"] = Value::String("unverified".into());
+        state["evidence_units"][0]["clause_matches"][0]["directness"] =
+            Value::String("unverified".into());
         state
     }
 
@@ -15272,7 +15467,7 @@ mod tests {
         // the exact follow-up topic as filing text: a quote is not required
         // to repeat the issuer's ticker symbol.
         assert_eq!(physical["topic"], "cash generation");
-        assert_eq!(physical["response_detail"], "full");
+        assert_eq!(physical["response_detail"], "compact");
         assert_eq!(physical["answer_candidate_only"], true);
         assert_eq!(physical["limit"], 20);
     }
@@ -17140,6 +17335,86 @@ mod tests {
         assert_eq!(requests[2].max_tokens, 16_384);
         assert_eq!(requests[3].max_tokens, 16_384);
         assert!(requests[3].system.contains("\"role_id\":\"composer\""));
+    }
+
+    #[tokio::test]
+    async fn thinking_floor_routes_evidence_poor_research_to_composition() {
+        let mut fixture = fixture();
+        // The effective company-composition reserve is 32,768. After the
+        // orienter and planner use 2,800 tokens, an analyst would receive
+        // only 432 tokens (33,200 - 32,768), below the provider's
+        // 1,025-token thinking minimum. The old engine failed while building
+        // that analyst request.
+        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let rig = engine_with_script_results_and_usage(
+            VecDeque::from([
+                company_context_tool_call("company-context"),
+                query_context_tool_call("context", &fixture_research_state()["plan"]),
+                final_answer_message(),
+            ]),
+            VecDeque::from([
+                scripted_token_usage(400),
+                scripted_token_usage(2_400),
+                scripted_token_usage(32),
+            ]),
+            VecDeque::from([fixture_company_context(), unverified_research_state()]),
+            true,
+            None,
+            false,
+        );
+
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(rig.provider.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.answer_bundle.usage.provider_turns, 3);
+        let requests = rig.provider.requests.lock().unwrap();
+        assert!(requests[2].tools.is_empty());
+        assert!(requests[2].system.contains("\"role_id\":\"composer\""));
+    }
+
+    #[test]
+    fn answer_tail_disables_thinking_below_the_provider_minimum() {
+        let fixture = fixture();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.enter_initial_model_state().unwrap();
+        let provider_episode_hash = ContentHash::sha256("tail-transition");
+        state.last_provider_episode_hash = Some(provider_episode_hash.clone());
+        assert!(
+            state
+                .finalize_for_answer_phase_on_budget_boundary(
+                    &fixture.image.manifest,
+                    &provider_episode_hash,
+                    true,
+                )
+                .unwrap()
+        );
+        assert!(
+            state
+                .current_operation_emits_answer(&fixture.image.manifest)
+                .unwrap()
+        );
+        state.usage.output_tokens = fixture.request.budget.max_output_tokens - 1_024;
+
+        let policy = provider_turn_policy(
+            &fixture.input(),
+            &state,
+            state.remaining_output_tokens().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(policy.max_output_tokens, 1_024);
+        assert_eq!(policy.thinking, ThinkingMode::Disabled);
+        assert_eq!(policy.reasoning_effort, None);
     }
 
     #[test]

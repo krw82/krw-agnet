@@ -918,10 +918,26 @@ fn engine_reason_code(error: &EngineError) -> &'static str {
             "ambiguous image entrypoint" => "engine_input_entrypoint_ambiguous",
             "workflow capability is missing from image" => "engine_input_workflow_mismatch",
             "budget deadline overflow" => "engine_input_deadline_overflow",
+            "compiled plan image mismatch" | "compiled plan scope mismatch" => {
+                "engine_input_compiled_plan_mismatch"
+            }
+            "final output reserve has no minimum research turn"
+            | "final output reserve overflow"
+            | "final output reservation exceeds output budget" => {
+                "engine_input_final_output_reservation_invalid"
+            }
+            "provider max_tokens exceeds pinned context capacity"
+            | "model role has no pinned prompt segments" => "engine_input_provider_context_invalid",
+            "thinking budget underflow" | "thinking turns require at least 1025 max_tokens" => {
+                "engine_output_thinking_budget_exhausted"
+            }
             "session memory schema mismatch"
             | "session memory validation failed"
             | "session memory ownership or hash mismatch"
-            | "session memory was not UTF-8" => "engine_input_memory_invalid",
+            | "session memory was not UTF-8"
+            | "session memory delta invalid"
+            | "session memory delta hash invalid"
+            | "session memory frontier invalid" => "engine_input_session_memory_delta_invalid",
             _ => "engine_input_invalid",
         },
         EngineError::InvalidRecoverySnapshot(_)
@@ -1078,6 +1094,36 @@ mod tests {
         for code in [engine_reason_code(&protocol), engine_reason_code(&image)] {
             assert!(!code.contains("private"));
         }
+    }
+
+    #[test]
+    fn durable_failure_codes_separate_lifecycle_safe_input_classes() {
+        assert_eq!(
+            engine_reason_code(&EngineError::InvalidInput("compiled plan scope mismatch")),
+            "engine_input_compiled_plan_mismatch"
+        );
+        assert_eq!(
+            engine_reason_code(&EngineError::InvalidInput(
+                "final output reservation exceeds output budget",
+            )),
+            "engine_input_final_output_reservation_invalid"
+        );
+        assert_eq!(
+            engine_reason_code(&EngineError::InvalidInput(
+                "provider max_tokens exceeds pinned context capacity",
+            )),
+            "engine_input_provider_context_invalid"
+        );
+        assert_eq!(
+            engine_reason_code(&EngineError::InvalidInput("session memory delta invalid")),
+            "engine_input_session_memory_delta_invalid"
+        );
+        assert_eq!(
+            engine_reason_code(&EngineError::InvalidInput(
+                "thinking turns require at least 1025 max_tokens",
+            )),
+            "engine_output_thinking_budget_exhausted"
+        );
     }
 
     #[test]

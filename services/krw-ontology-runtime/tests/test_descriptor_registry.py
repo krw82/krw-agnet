@@ -130,6 +130,106 @@ def test_only_targeted_query_exposes_its_bounded_evidence_detail_control() -> No
         if tool.name != "krw_ontology_query":
             assert "response_detail" not in tool.inputSchema.get("properties", {}), tool.name
 
+    description = registry.descriptor("krw_ontology_query").description
+    assert "Compact is the default" in description
+    assert "Choose response_detail=full" in description
+    assert "does not widen" in description
+
+
+def test_compact_query_keeps_answer_ready_metric_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Store:
+        def query_compact_with_diagnostics(self, **_kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
+            return (
+                [
+                    {
+                        "id": "metric_1",
+                        "type": "MetricObservation",
+                        "ticker": "AVGO",
+                        "document_type": "10-K",
+                        "period": "FY2025",
+                        "object": {
+                            "id": "metric_1",
+                            "type": "MetricObservation",
+                            "metric_name": "revenue",
+                            "value": 15400,
+                            "unit": "USD_millions",
+                            "currency": "USD",
+                            "period_type": "duration",
+                            "start_date": "2024-11-01",
+                            "end_date": "2025-10-31",
+                            "metric_scope": "company_total",
+                            "dimensions": {"company": "AVGO", "private": {"must_not": "leak"}},
+                            "private_field": "must_not_leak",
+                        },
+                        "text": "Revenue 15,400 USD millions",
+                        "evidence": {},
+                        "support_claim_count": 1,
+                        "support_quote_count": 2,
+                    }
+                ],
+                {"result_count": 1},
+            )
+
+    monkeypatch.setattr(ontology_tools, "_store", lambda _path: nullcontext(Store()))
+    payload = json.loads(
+        ontology_tools.query_tool(
+            ticker="AVGO",
+            topic="revenue",
+            response_detail=ontology_tools.ResponseDetail.COMPACT,
+        )
+    )
+    result = payload["results"][0]
+    assert result["object"]["value"] == 15400
+    assert result["object"]["unit"] == "USD_millions"
+    assert result["object"]["currency"] == "USD"
+    assert result["object"]["period_type"] == "duration"
+    assert "private_field" not in result["object"]
+    assert "private" not in result["object"].get("dimensions", {})
+
+
+def test_compact_query_discloses_evidence_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Store:
+        def query_compact_with_diagnostics(self, **_kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
+            return (
+                [
+                    {
+                        "id": "claim_1",
+                        "type": "ResearchClaim",
+                        "ticker": "AAPL",
+                        "evidence": {
+                            "quotes": [
+                                {"id": f"quote_{index}", "text": f"quote {index}"}
+                                for index in range(4)
+                            ],
+                            "related_objects": [
+                                {"id": f"related_{index}", "text": f"related {index}"}
+                                for index in range(4)
+                            ],
+                        },
+                    }
+                ],
+                {"result_count": 1},
+            )
+
+    monkeypatch.setattr(ontology_tools, "_store", lambda _path: nullcontext(Store()))
+    payload = json.loads(
+        ontology_tools.query_tool(
+            ticker="AAPL",
+            topic="risk",
+            response_detail=ontology_tools.ResponseDetail.COMPACT,
+        )
+    )
+    result = payload["results"][0]
+    assert len(result["evidence"]["quotes"]) == ontology_tools.MAX_COMPACT_QUOTES
+    assert len(result["evidence"]["related_objects"]) == 4
+    assert result["evidence_summary"] == {
+        "claim_count": 0,
+        "quote_count": 4,
+        "span_count": 0,
+        "related_object_count": 4,
+        "truncated": True,
+    }
+
 
 def test_targeted_query_preserves_full_detail_and_caps_its_result_count(monkeypatch: pytest.MonkeyPatch) -> None:
     class Store:

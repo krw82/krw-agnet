@@ -515,16 +515,17 @@ def build_registry() -> CapabilityRegistry:
             title="Search KRW ontology evidence",
             description=(
                 "Search accepted ontology evidence with explicit filters. "
-                "Use response_detail=full only for one precise, bounded follow-up "
-                "when compact evidence cannot preserve the required quote or metric basis."
+                "Compact is the default. Choose response_detail=full in this same "
+                "precise, bounded call when the user's main question or a primary "
+                "objective materially benefits from exact source text, numeric basis, "
+                "period/scope detail, or lineage. The choice does not widen the "
+                "authenticated ticker, document, period, or object scope."
             ),
             source_handler=ontology_tools.query_tool,
             lane=CapabilityLane.BROAD,
             runtime_lanes=lanes,
-            # Full detail is a bounded exact-read mode, not a presentation
-            # control. The Rust planner emits it only for one canonical gap
-            # candidate so the following model turn receives source quotes,
-            # numeric basis, and lineage rather than a lossy compact row.
+            # Detail is a model-owned research-depth choice. Scope and limits
+            # remain kernel-canonicalized at the Rust boundary.
             exposed_parameters=frozenset({"response_detail"}),
         ),
         standard(

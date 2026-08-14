@@ -4479,7 +4479,7 @@ mod tests {
             .find(|role| role.id == "planner")
             .unwrap();
         assert_eq!(planner.execution.reasoning, RoleReasoningMode::Direct);
-        assert_eq!(planner.execution.max_output_tokens, Some(3072));
+        assert_eq!(planner.execution.max_output_tokens, Some(8192));
         let analyst = image
             .body
             .roles

@@ -38,6 +38,8 @@ pub const SESSION_MEMORY_RETENTION_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0016_session_memory_source_retention.sql");
 pub const DAEMON_HEARTBEAT_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0018_daemon_heartbeat.sql");
+pub const LIFECYCLE_OUTBOX_MIGRATION_SQL: &str =
+    include_str!("../../../migrations/0019_lifecycle_outbox.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AgentV1Procedure {
@@ -273,6 +275,7 @@ fn validate_request_object(
         ("state_artifact_ref", 2048),
         ("arguments_artifact_ref", 2048),
         ("result_artifact_ref", 2048),
+        ("lifecycle_stage", 32),
     ] {
         if let Some(value) = object.get(key) {
             let Some(value) = value.as_str() else {
@@ -423,6 +426,16 @@ fn validate_request_object(
         return Err(AgentV1Error::InvalidRequest {
             procedure,
             reason: "runtime state artifact size is outside bounds",
+        });
+    }
+    if procedure == AgentV1Procedure::CheckpointRunState
+        && object
+            .get("lifecycle_stage")
+            .is_some_and(|stage| stage.as_str() != Some("composing"))
+    {
+        return Err(AgentV1Error::InvalidRequest {
+            procedure,
+            reason: "runtime lifecycle stage is invalid",
         });
     }
     if procedure == AgentV1Procedure::AckOutbox {
@@ -1014,6 +1027,8 @@ pub struct CheckpointRunStateRequest {
     pub state_hash: ContentHash,
     pub state_artifact_ref: String,
     pub state_size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_stage: Option<String>,
 }
 
 impl fmt::Debug for CheckpointRunStateRequest {
@@ -1032,6 +1047,7 @@ impl fmt::Debug for CheckpointRunStateRequest {
             .field("state_hash", &self.state_hash)
             .field("state_artifact_ref", &"[REDACTED]")
             .field("state_size_bytes", &self.state_size_bytes)
+            .field("lifecycle_stage", &self.lifecycle_stage)
             .finish()
     }
 }
@@ -1896,14 +1912,21 @@ mod tests {
             state_hash: ContentHash::sha256("private runtime state"),
             state_artifact_ref: "cas://private-state-reference".into(),
             state_size_bytes: 21,
+            lifecycle_stage: None,
         };
         let encoded = encode_request(AgentV1Procedure::CheckpointRunState, &request).unwrap();
         assert_eq!(encoded["abi_version"], ABI_VERSION);
         assert!(encoded.get("mutation_hash").is_some());
         assert_eq!(encoded["provider_checkpoint_seq"], 3);
         assert_eq!(encoded["action_frontier_seq"], 5);
+        assert!(encoded.get("lifecycle_stage").is_none());
         let debug = format!("{request:?}");
         assert!(!debug.contains("cas://private-state-reference"));
+
+        let mut composing = request.clone();
+        composing.lifecycle_stage = Some("composing".into());
+        let encoded = encode_request(AgentV1Procedure::CheckpointRunState, &composing).unwrap();
+        assert_eq!(encoded["lifecycle_stage"], "composing");
 
         let mut oversized = request;
         oversized.state_size_bytes = 8 * 1024 * 1024 + 1;
@@ -2356,5 +2379,26 @@ mod tests {
             );
         }
         assert!(!SESSION_MEMORY_RETENTION_MIGRATION_SQL.contains("DROP SCHEMA"));
+    }
+
+    #[test]
+    fn lifecycle_outbox_migration_is_content_free_and_non_blocking() {
+        for required in [
+            "agent_store.enqueue_lifecycle_event",
+            "run.started",
+            "run.progress",
+            "trg_agent_store_lifecycle_started",
+            "trg_agent_store_lifecycle_researching",
+            "lifecycle_stage",
+            "WHEN OTHERS THEN",
+            "ON CONFLICT (event_kind, dedupe_key) DO NOTHING",
+        ] {
+            assert!(
+                LIFECYCLE_OUTBOX_MIGRATION_SQL.contains(required),
+                "missing lifecycle contract: {required}"
+            );
+        }
+        assert!(!LIFECYCLE_OUTBOX_MIGRATION_SQL.contains("provider_content"));
+        assert!(!LIFECYCLE_OUTBOX_MIGRATION_SQL.contains("prompt"));
     }
 }
