@@ -157,6 +157,15 @@ InputInvalid 구분을 regression test로 고정했다.
 
 ## Wave 6 — provider registry 일반화
 
+상태: 완료. `ProviderCatalog`(구 DeepSeekProviderCatalog)가
+`protocol::ProviderKind` descriptor 기반으로 compile하고 failure
+classification도 kind dispatch로 동작한다. model-name if/else,
+이중 api-key 필드, unknown model의 DeepSeek 낙하 분류를 제거했다.
+동일 interface로 GLM/DeepSeek을 compile하며 credential은 선택된
+release에만 요구한다. 잔여: provider_request.rs의 wire-encoding
+model 분기는 PinnedExecutionContract 매트릭스 확장이 필요해 별도
+작업으로 남긴다(문서화됨).
+
 - `DeepSeekProviderCatalog` -> `ProviderCatalog`
 - provider kind/wire codec/credential ref descriptor
 - model-name if/else 제거
