@@ -96,9 +96,16 @@ provider request JCS에 변화가 없다. `agents/check-all.sh`와
 - `runtime-persistence -> execution-contracts`
 - composition은 `krw-agentd`
 
-`Persistence`의 bounded-child default error body를 제거해 구현 누락을 compile error로 바꾼다.
+`Persistence`의 bounded-child default error body를 제거해 구현 누락을
+compile error로 바꾼다.
 
-현재 상태: bounded-child persistence 필수 구현 전환 완료.
+현재 상태: 완료. `crates/execution-contracts`가 ports(DependencyFailure,
+DeliveryCertainty, Provider/CapabilityRuntime/Persistence),
+CapabilityInvocation/Result, durable DTO, recovery snapshot DTO,
+RuntimeStageTimings, deterministic_action_key를 소유한다.
+capability-runtime은 run-engine 의존을 완전히 제거했고(Phase B),
+runtime-persistence bridge/episode_provider도 contract crate를 본다.
+bounded-child persistence 필수 구현 전환은 이전 단계에서 완료.
 
 ## Wave 4 — answer-always finalization
 
