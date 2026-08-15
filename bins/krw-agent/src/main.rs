@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "dev-tools")]
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +22,7 @@ use krw_agent_release_authorization::{
     parse_canonical_trust_registry, public_descriptor_hash, public_key_hex_from_private_key, sign,
     verify_for_descriptor,
 };
+#[cfg(feature = "dev-tools")]
 use krw_agent_research_quality::{
     load_suite, run_fixture_case_with_model, run_recorded_fixture_case,
 };
@@ -69,10 +71,20 @@ enum Command {
         command: ProviderCommand,
     },
     /// Fixture-backed research-quality acceptance tests using GLM-5.3.
+    ///
+    /// Dev-only: this subcommand (and the research-quality dependency
+    /// subgraph it needs) exists only in `--features dev-tools` builds.
+    /// Default release/admin builds do not compile it.
+    #[cfg(feature = "dev-tools")]
     Quality {
         #[command(subcommand)]
         command: QualityCommand,
     },
+    /// Dev-only vertical-slice smoke fixture.
+    ///
+    /// Exists only in `--features dev-tools` builds; default builds do not
+    /// compile the test-support dependency subgraph.
+    #[cfg(feature = "dev-tools")]
     Quickstart {
         #[arg(long)]
         fixture: String,
@@ -233,6 +245,9 @@ impl ProviderProbeArg {
     }
 }
 
+/// Dev-only `quality` subcommand surface, compiled only with
+/// `--features dev-tools`.
+#[cfg(feature = "dev-tools")]
 #[derive(Debug, Subcommand)]
 enum QualityCommand {
     /// Validate a content-addressed quality suite without calling a provider.
@@ -436,6 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let report = probe_glm_structured_admission().await?;
             println!("{}", serde_json::to_string(&report)?);
         }
+        #[cfg(feature = "dev-tools")]
         Command::Quality {
             command: QualityCommand::Check { suite, root },
         } => {
@@ -451,6 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
+        #[cfg(feature = "dev-tools")]
         Command::Quality {
             command:
                 QualityCommand::Run {
@@ -487,6 +504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(std::io::Error::other("research-quality gate failed").into());
             }
         }
+        #[cfg(feature = "dev-tools")]
         Command::Quality {
             command:
                 QualityCommand::Replay {
@@ -515,6 +533,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(std::io::Error::other("research-quality replay gate failed").into());
             }
         }
+        #[cfg(feature = "dev-tools")]
         Command::Quickstart { fixture, root } => {
             if fixture != "vertical-slice" {
                 return Err(format!("unknown fixture: {fixture}").into());
@@ -953,6 +972,9 @@ fn provider_client(
 /// The fixture-backed quality command remains intentionally GLM-only. Live
 /// DeepSeek quality is exercised through the deployed Gateway acceptance
 /// runner, where the exact sealed release descriptor is also verified.
+///
+/// Dev-only, like the `quality` subcommand that calls it.
+#[cfg(feature = "dev-tools")]
 fn glm_52_client() -> Result<ProviderClient, Box<dyn std::error::Error>> {
     provider_client(ProviderProbeArg::Glm)
 }

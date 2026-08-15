@@ -10,9 +10,12 @@ clap.workspace = true
 krw-agent-provider-wire = { path = "../../crates/provider-wire", default-features = false, features = ["http"] }
 krw-agent-image = { path = "../../crates/agent-image" }
 krw-agent-protocol = { path = "../../crates/protocol" }
-krw-agent-research-quality = { path = "../../crates/research-quality" }
+# Dev-only crates: compiled into the CLI only through the `dev-tools`
+# feature so the default (release/admin) build graph stays free of the
+# quality/test dependency subgraphs. See doc/refetoring/06 Wave 7.
+krw-agent-research-quality = { path = "../../crates/research-quality", optional = true }
 krw-agent-release-authorization = { path = "../../crates/release-authorization" }
-krw-agent-test-support = { path = "../../crates/test-support" }
+krw-agent-test-support = { path = "../../crates/test-support", optional = true }
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
@@ -21,6 +24,17 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
+
+[features]
+default = []
+# Manual developer subcommands (`quality`, `quickstart`). The default build
+# (used by agents/check-all.sh, packaging, and the release path) does not
+# compile the research-quality or test-support dependency subgraphs at all;
+# the subcommands and their clap surface exist only when this feature is on.
+dev-tools = [
+    "dep:krw-agent-research-quality",
+    "dep:krw-agent-test-support",
+]
 
 [lints]
 workspace = true
