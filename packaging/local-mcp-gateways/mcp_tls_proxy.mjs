@@ -9,17 +9,43 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import { pathToFileURL } from "node:url";
 
 const STATELESS_CONTRACT_ID = "krw-agent/mcp-tool-session-stateless/v1";
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
+const ORIGIN_PATTERN = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
 
 const configPath = process.env.KRW_MCP_TLS_PROXY_CONFIG;
-if (!configPath) throw new Error("KRW_MCP_TLS_PROXY_CONFIG is required");
-const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
-if (!["run-scoped", "attested-stateless-v1"].includes(config.toolSessionReuse)) {
-  throw new Error("toolSessionReuse must be run-scoped or attested-stateless-v1");
+/**
+ * Fail-closed Origin check. MCP 2026 requires every HTTP connection to carry
+ * and validate an Origin; this gateway is the public protocol boundary, so an
+ * exact string match against the configured allowlist is the only pass
+ * condition. No header, or any near miss (subdomain, scheme, port, path),
+ * never reaches the upstream.
+ */
+export function originAllowed(allowedOrigins, headerValue) {
+  if (!Array.isArray(allowedOrigins)) return false;
+  if (typeof headerValue !== "string" || headerValue.length === 0) return false;
+  return allowedOrigins.includes(headerValue);
 }
+
+export function validateGatewayConfig(config) {
+  if (!["run-scoped", "attested-stateless-v1"].includes(config.toolSessionReuse)) {
+    throw new Error("toolSessionReuse must be run-scoped or attested-stateless-v1");
+  }
+  if (
+    !Array.isArray(config.allowedOrigins) ||
+    config.allowedOrigins.length === 0 ||
+    config.allowedOrigins.some((origin) => typeof origin !== "string" || !ORIGIN_PATTERN.test(origin))
+  ) {
+    throw new Error(
+      "allowedOrigins must be a non-empty array of bare origin strings (scheme://host[:port])",
+    );
+  }
+}
+
+let config = null;
 
 const hopByHop = new Set([
   "connection",
@@ -196,6 +222,14 @@ function isStatelessControlRequest(req) {
 }
 
 async function handleRequest(req, res) {
+  // The gateway is the only public protocol boundary: validate the client
+  // Origin before any upstream work. The value is never forwarded across the
+  // scheme transition (see forwardedHeaders) and never logged.
+  if (!originAllowed(config.allowedOrigins, req.headers.origin)) {
+    sendJson(res, 403, { ok: false, error: "origin_forbidden" });
+    return;
+  }
+
   if (req.url === "/readyz" && config.normalizeReadiness) {
     syntheticReady(req, res);
     return;
@@ -242,24 +276,36 @@ async function handleRequest(req, res) {
   upstreamRequest(req, res, body);
 }
 
-const server = https.createServer(
-  {
-    key: fs.readFileSync(config.tls.keyFile),
-    cert: fs.readFileSync(config.tls.certFile),
-    minVersion: "TLSv1.2",
-  },
-  (req, res) => {
-    void handleRequest(req, res).catch(() => {
-      if (!res.headersSent) sendJson(res, 500, { ok: false, error: "gateway_internal_error" });
-      else if (!res.writableEnded) res.end();
-    });
-  },
-);
+function main() {
+  if (!configPath) throw new Error("KRW_MCP_TLS_PROXY_CONFIG is required");
+  config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  validateGatewayConfig(config);
 
-server.listen(config.listen.port, config.listen.host, () => {
-  process.stdout.write(`${config.service} TLS MCP gateway listening on ${config.listen.host}:${config.listen.port}\n`);
-});
+  const server = https.createServer(
+    {
+      key: fs.readFileSync(config.tls.keyFile),
+      cert: fs.readFileSync(config.tls.certFile),
+      minVersion: "TLSv1.2",
+    },
+    (req, res) => {
+      void handleRequest(req, res).catch(() => {
+        if (!res.headersSent) sendJson(res, 500, { ok: false, error: "gateway_internal_error" });
+        else if (!res.writableEnded) res.end();
+      });
+    },
+  );
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, () => server.close(() => process.exit(0)));
+  server.listen(config.listen.port, config.listen.host, () => {
+    process.stdout.write(
+      `${config.service} TLS MCP gateway listening on ${config.listen.host}:${config.listen.port}\n`,
+    );
+  });
+
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => server.close(() => process.exit(0)));
+  }
 }
+
+const invokedAsMain =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedAsMain) main();
