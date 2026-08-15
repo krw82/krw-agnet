@@ -3,6 +3,10 @@
 //! but are optional and never fail the text answer.
 
 use super::*;
+use krw_agent_evidence::{
+    ClaimKind, ClaimStrength, MAX_ANSWER_CALCULATIONS, MAX_ANSWER_CLAIMS, MAX_ANSWER_SECTIONS,
+    MAX_CLAIMS_PER_SECTION,
+};
 
 /// A private pack is only useful when it came from the same immutable ontology
 /// release as the model-visible ResearchState that accompanied the call.  A
@@ -295,26 +299,402 @@ pub(crate) fn parse_typed_json_content(content: &str) -> Result<Value, serde_jso
     serde_json::from_str(trimmed)
 }
 
+/// Issue classes that protect ledger/contract integrity rather than answer
+/// presentation. These map to the policy's `IntegrityFailure` list and remain
+/// hard failures after sanitization:
+///
+/// - `untrusted_calculation`, `calculation_mismatch`,
+///   `calculation_unknown_evidence`: the answer's calculation array claims
+///   lineage the kernel never committed ("uncommitted calculation lineage").
+/// - `number_not_equal_to_calculation` **with at least one referenced
+///   calculation resolving in the ledger**: the numeric assertion diverges
+///   from a committed calculation output (a forged derived value). The same
+///   code fires vacuously for numeric claims with no lineage at all (the
+///   validator's `any` over zero referenced calculations), which is the
+///   policy's missing-lineage quality class and downgrades to a fact.
+/// - `unsupported_answer_schema`: the payload is not the pinned AnswerIR
+///   contract version (a contract-pin-level violation; the canonical schema
+///   makes this unreachable in practice).
+///
+/// Everything else `validate_answer` reports is a presentation/quality
+/// defect: it must degrade the answer (`AcceptedWithWarnings`), never produce
+/// `run.failed`.
+fn issue_is_integrity(
+    issue: &ValidationIssue,
+    answer: &AnswerIr,
+    ledger: &EvidenceLedger,
+) -> bool {
+    match issue.code {
+        "unsupported_answer_schema"
+        | "untrusted_calculation"
+        | "calculation_mismatch"
+        | "calculation_unknown_evidence" => true,
+        "number_not_equal_to_calculation" => issue
+            .claim_id
+            .as_deref()
+            .and_then(|claim_id| {
+                answer
+                    .claims
+                    .iter()
+                    .find(|claim| claim.claim_id == claim_id)
+            })
+            .is_some_and(|claim| {
+                claim
+                    .calculation_ids
+                    .iter()
+                    .any(|calculation_id| ledger.calculation(calculation_id).is_some())
+            }),
+        _ => false,
+    }
+}
+
+/// Answer-always finalization gate.
+///
+/// Policy mapping (doc/refetoring/03-runtime-failure-policy.md, sanitizer
+/// steps 1-8; step 9's ledger fallback is intentionally NOT implemented
+/// here):
+///
+/// 1. Keep only parseable sections/claims — enforced upstream by the pinned
+///    canonical contract plus `serde` deserialization; this function only
+///    ever sees a structurally parseable `AnswerIr`. Bounded-cardinality
+///    overflows (`too_many_*`) are truncated to the validator's own limits.
+/// 2. Claims referencing evidence outside the current ledger
+///    (`unknown_evidence`, `unknown_counter_evidence`) lose the reference;
+///    a grounded claim left with no evidence at all is dropped.
+/// 3. Numeric claims without usable calculation lineage
+///    (`number_without_*`, `unknown_calculation`,
+///    `calculation_evidence_not_cited`) are downgraded from `number` to a
+///    grounded `fact` claim: the numeric assertion is removed, nothing is
+///    re-derived.
+/// 4. Interpretations without a counter-signal are downgraded to `fact`
+///    (`interpretation_without_counter_signal`).
+/// 5. Unsupported strength bindings (`*_strong_claim_not_allowed`,
+///    `strong_claim_without_required_directness`) are recomputed to the
+///    evidence's actual support: `strong` softens to `qualified`. Kernel
+///    goal bindings stay hard-validated in `validate_kernel_goal_bindings`.
+/// 6. Sections that lose all claims (and empty sections generally) are
+///    dropped, as are claims no longer rendered by any section
+///    (`unrendered_claim`).
+/// 7. Locale and headings are presentation metadata and are normalized
+///    (`answer_locale_mismatch`, `invalid_section_heading`).
+/// 8. Follow-up questions keep only valid ones, truncated to the policy
+///    count when too many; a shortfall is committed as-is because the
+///    sanitizer never invents questions.
+///
+/// The sanitizer never invents evidence and never promotes a claim: it only
+/// drops or weakens model-authored material.
+pub(crate) fn sanitize_answer(
+    answer: &AnswerIr,
+    ledger: &EvidenceLedger,
+    policy: &AnswerPolicy,
+) -> Result<(AnswerIr, ResearchCompletion), Vec<ValidationIssue>> {
+    let issues = match validate_answer(answer, ledger, policy) {
+        Ok(()) => return Ok((answer.clone(), ResearchCompletion::Accepted)),
+        Err(issues) => issues,
+    };
+    // Integrity violations keep today's terminal failure path. The full issue
+    // list is returned so the repair-feedback taxonomy is unchanged.
+    if issues
+        .iter()
+        .any(|issue| issue_is_integrity(issue, answer, ledger))
+    {
+        return Err(issues);
+    }
+    let sanitized = sanitize_answer_ir(answer, ledger, policy, &issues);
+    // Policy step 9 (deterministic ledger fallback) is the NEXT task: when
+    // sanitization leaves no answerable material at all, keep the existing
+    // failure path instead of committing an empty answer.
+    if sanitized.sections.is_empty() || sanitized.claims.is_empty() {
+        return Err(issues);
+    }
+    // Re-validate the degraded answer. Only integrity classes may still fail
+    // the commit; residual quality issues (e.g. a follow-up count below the
+    // exact policy count, which cannot be padded without inventing
+    // questions) are committed together with the warning completion class.
+    if let Err(residual) = validate_answer(&sanitized, ledger, policy)
+        && residual
+            .iter()
+            .any(|issue| issue_is_integrity(issue, &sanitized, ledger))
+    {
+        return Err(residual);
+    }
+    Ok((sanitized, ResearchCompletion::AcceptedWithWarnings))
+}
+
+const SANITIZER_HEADING_FALLBACKS: [&str; 4] = ["결론", "근거", "반대 신호", "확인 조건"];
+
+fn sanitize_answer_ir(
+    answer: &AnswerIr,
+    ledger: &EvidenceLedger,
+    policy: &AnswerPolicy,
+    issues: &[ValidationIssue],
+) -> AnswerIr {
+    let mut sanitized = answer.clone();
+    let codes_for_claim = |claim_id: &str| {
+        issues
+            .iter()
+            .filter(|issue| issue.claim_id.as_deref() == Some(claim_id))
+            .map(|issue| issue.code)
+            .collect::<Vec<_>>()
+    };
+
+    // Step 7: locale is presentation metadata pinned by the contract.
+    if issues
+        .iter()
+        .any(|issue| issue.code == "answer_locale_mismatch")
+    {
+        sanitized.locale = "ko-KR".to_owned();
+    }
+
+    // Step 1 (bounded cardinality): retain a valid, unique, bounded
+    // calculation prefix. Integrity-class calculation defects already failed
+    // above, so this only trims cardinality/shape defects.
+    if issues.iter().any(|issue| {
+        matches!(
+            issue.code,
+            "too_many_calculations" | "empty_calculation_id" | "duplicate_calculation_id"
+        )
+    }) {
+        let mut seen = BTreeSet::new();
+        sanitized.calculations = sanitized
+            .calculations
+            .iter()
+            .filter(|calculation| {
+                !calculation.calculation_id.trim().is_empty()
+                    && seen.insert(calculation.calculation_id.clone())
+            })
+            .take(MAX_ANSWER_CALCULATIONS)
+            .cloned()
+            .collect();
+    }
+    let retained_calculation_ids = sanitized
+        .calculations
+        .iter()
+        .map(|calculation| calculation.calculation_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    // Steps 2-5: per-claim drop / reference-trim / soften / downgrade.
+    let mut dropped_claims = BTreeSet::new();
+    for claim in &mut sanitized.claims {
+        let codes = codes_for_claim(&claim.claim_id);
+        // Claims whose identifier, grounding, or public text is unusable are
+        // dropped whole. A duplicated claim_id drops every copy (the issue
+        // cannot distinguish the first occurrence, and keeping an ambiguous
+        // identifier would risk cross-claim citation confusion).
+        if codes.iter().any(|code| {
+            matches!(
+                *code,
+                "empty_claim_id"
+                    | "duplicate_claim_id"
+                    | "invalid_claim_shape"
+                    | "claim_has_no_evidence"
+                    | "internal_term_exposed"
+                    | "invalid_claim_text"
+                    | "invalid_citation_text"
+            )
+        }) {
+            dropped_claims.insert(claim.claim_id.clone());
+            continue;
+        }
+        // Step 2: drop references to evidence that is not in the current
+        // ledger; mirror the same rule for counter-evidence.
+        claim
+            .evidence_ids
+            .retain(|evidence_id| ledger.active(evidence_id).is_some());
+        claim
+            .counter_evidence_ids
+            .retain(|evidence_id| ledger.active(evidence_id).is_some());
+        if claim.kind != ClaimKind::Uncertainty && claim.evidence_ids.is_empty() {
+            dropped_claims.insert(claim.claim_id.clone());
+            continue;
+        }
+        // Step 5: unsupported strength bindings recompute to actual support.
+        if codes.iter().any(|code| {
+            matches!(
+                *code,
+                "global_strong_claim_not_allowed"
+                    | "strong_claim_not_allowed"
+                    | "strong_claim_without_required_directness"
+            )
+        }) {
+            claim.strength = ClaimStrength::Qualified;
+        }
+        // Step 3: numeric assertions without usable committed lineage lose
+        // the numeric form; step 4: interpretations without a counter-signal
+        // downgrade to facts. `number_not_equal_to_calculation` reaches this
+        // list only in its vacuous form (no referenced calculation resolved
+        // in the ledger): the diverging-lineage form already failed as an
+        // integrity violation above.
+        let numeric_without_lineage = codes.iter().any(|code| {
+            matches!(
+                *code,
+                "number_without_value"
+                    | "number_without_identity"
+                    | "number_without_unit"
+                    | "number_without_period"
+                    | "number_without_calculation"
+                    | "unknown_calculation"
+                    | "calculation_evidence_not_cited"
+                    | "number_not_equal_to_calculation"
+            )
+        }) || claim
+            .calculation_ids
+            .iter()
+            .any(|calculation_id| !retained_calculation_ids.contains(calculation_id));
+        if numeric_without_lineage && claim.kind == ClaimKind::Number {
+            claim.kind = ClaimKind::Fact;
+            claim.calculation_ids.clear();
+        }
+        // Step 4: once counter-evidence references have been trimmed, an
+        // interpretation without any surviving counter-signal downgrades to
+        // a fact. The condition is state-based: the validator's issue code
+        // only exists for the pre-trim shape, and the engine-side
+        // normalizer already applies the same rule before validation.
+        if policy.require_counter_signal_for_interpretation
+            && claim.kind == ClaimKind::Interpretation
+            && claim.counter_evidence_ids.is_empty()
+        {
+            claim.kind = ClaimKind::Fact;
+        }
+    }
+    if issues.iter().any(|issue| issue.code == "too_many_claims") {
+        for claim in sanitized.claims.iter().skip(MAX_ANSWER_CLAIMS) {
+            dropped_claims.insert(claim.claim_id.clone());
+        }
+        sanitized.claims.truncate(MAX_ANSWER_CLAIMS);
+    }
+    sanitized
+        .claims
+        .retain(|claim| !dropped_claims.contains(&claim.claim_id));
+
+    // Steps 6-7 plus section-level shape repairs. Uncertainty must be a
+    // typed claim, so free-text disclosures are cleared wherever they
+    // appear (the issue carries no stable section identifier).
+    let clear_uncertainty_text = issues
+        .iter()
+        .any(|issue| issue.code == "free_uncertainty_text_forbidden");
+    let mut seen_section_ids = BTreeSet::new();
+    let mut sections = Vec::new();
+    for (index, section) in sanitized.sections.iter_mut().enumerate() {
+        if issues.iter().any(|issue| issue.code == "invalid_section_id")
+            && (section.section_id.trim().is_empty()
+                || !section_identifier_is_valid(&section.section_id)
+                || !seen_section_ids.insert(section.section_id.clone()))
+        {
+            continue;
+        }
+        seen_section_ids.insert(section.section_id.clone());
+        if clear_uncertainty_text {
+            section.disclosed_uncertainty = None;
+        }
+        if issues.iter().any(|issue| issue.code == "invalid_section_heading") {
+            section.heading = SANITIZER_HEADING_FALLBACKS
+                .get(index)
+                .map_or_else(|| format!("핵심 판단 {}", index + 1), |value| (*value).to_owned());
+        }
+        // Drop references to claims that no longer exist (including claims
+        // dropped above) and dedupe within the section, mirroring
+        // `duplicate_section_claim` / `section_unknown_claim`.
+        let mut local = BTreeSet::new();
+        section.claim_ids.retain(|claim_id| {
+            sanitized.claims.iter().any(|claim| &claim.claim_id == claim_id)
+                && local.insert(claim_id.clone())
+        });
+        if issues.iter().any(|issue| issue.code == "too_many_section_claims") {
+            section.claim_ids.truncate(MAX_CLAIMS_PER_SECTION);
+        }
+        // Step 6: a section with nothing left to say is empty presentation.
+        if !section.claim_ids.is_empty() {
+            sections.push(section.clone());
+        }
+    }
+    sanitized.sections = sections;
+    if issues.iter().any(|issue| issue.code == "too_many_sections") {
+        sanitized.sections.truncate(MAX_ANSWER_SECTIONS);
+    }
+
+    // Step 6 (reverse direction): claims no longer rendered by any section
+    // are not answer material.
+    let rendered = sanitized
+        .sections
+        .iter()
+        .flat_map(|section| section.claim_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    sanitized.claims.retain(|claim| rendered.contains(&claim.claim_id));
+
+    // Step 8: keep only valid follow-up questions, bounded by the policy
+    // count when too many. A shortfall is left as-is; the sanitizer never
+    // invents questions.
+    if issues
+        .iter()
+        .any(|issue| issue.code == "invalid_follow_up_question")
+    {
+        sanitized
+            .follow_up_questions
+            .retain(|question| follow_up_is_presentable(question, policy));
+    }
+    if issues.iter().any(|issue| issue.code == "follow_up_count_mismatch")
+        && sanitized.follow_up_questions.len() > policy.exact_follow_up_count
+    {
+        sanitized
+            .follow_up_questions
+            .truncate(policy.exact_follow_up_count);
+    }
+    sanitized
+}
+
+/// Mirror of the evidence crate's public-text rule for follow-up questions
+/// (shape, bounded length, terminal question mark, no internal terms).
+fn follow_up_is_presentable(question: &str, policy: &AnswerPolicy) -> bool {
+    let trimmed = question.trim();
+    !trimmed.is_empty()
+        && question.len() <= 300
+        && trimmed.ends_with('?')
+        && !question.chars().any(|character| {
+            character == '\0'
+                || character == '\n'
+                || character == '\r'
+                || (character.is_control() && character != '\t')
+        })
+        && !policy
+            .forbidden_terms
+            .iter()
+            .any(|term| question.to_lowercase().contains(&term.to_lowercase()))
+}
+
+/// Mirror of the evidence crate's bounded identifier rule for section ids.
+fn section_identifier_is_valid(section_id: &str) -> bool {
+    !section_id.is_empty()
+        && section_id.len() <= 128
+        && section_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
 fn validate_typed_output(
     input: &RunInput<'_>,
     state: &ActiveRun,
     contract: &ContractPin,
     output: &Value,
-) -> Result<Option<AnswerIr>, EngineError> {
+) -> Result<Option<(AnswerIr, ResearchCompletion)>, EngineError> {
     verify_pin(&contract.id, &contract.content_hash)
         .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
     validate_fixed_guru_author_payload(selected_entrypoint(input.image, input.request)?, output)?;
 
     let answer_ir = if contract.id == ANSWER_IR_V1 {
         let mut answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
+        let policy = answer_policy(input.image);
         bind_kernel_goal_ids(&mut answer_ir, state);
         normalize_answer_calculation_lineage(&mut answer_ir, state);
-        normalize_answer_section_headings(&mut answer_ir, &answer_policy(input.image));
+        normalize_answer_section_headings(&mut answer_ir, &policy);
         validate_calculations(&answer_ir, &state.calculations)?;
-        validate_answer(&answer_ir, &state.ledger, &answer_policy(input.image))
+        // Answer-always policy: presentation/quality defects degrade the
+        // answer to `AcceptedWithWarnings`; only ledger-integrity classes
+        // still fail here (and keep the repair/terminal taxonomy unchanged).
+        let (answer_ir, completion) = sanitize_answer(&answer_ir, &state.ledger, &policy)
             .map_err(|issues| EngineError::AnswerValidation(issue_codes(&issues)))?;
         validate_kernel_goal_bindings(&answer_ir, state)?;
-        Some(answer_ir)
+        Some((answer_ir, completion))
     } else {
         None
     };
@@ -591,12 +971,19 @@ where
         let output_contract =
             ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
         let final_output_mode = state.current_model_output_mode()?;
-        let (output, answer_ir, rendered_content) = match final_output_mode {
+        let (output, answer_ir, completion, rendered_content) = match final_output_mode {
             ModelOutputMode::Markdown => {
                 let output = Value::String(content.to_owned());
                 validate_canonical_value(&output_contract.id, &output)
                     .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
-                (output, None, content.to_owned())
+                // Direct Markdown has no typed AnswerIR to sanitize; the
+                // canonical contract is its own validation.
+                (
+                    output,
+                    None,
+                    ResearchCompletion::Accepted,
+                    content.to_owned(),
+                )
             }
             ModelOutputMode::TypedJson => {
                 let output: Value = match parse_typed_json_content(content) {
@@ -653,8 +1040,12 @@ where
                 }
 
                 let candidate = validate_typed_output(input, state, &output_contract, &output);
-                let answer_ir = match candidate {
-                    Ok(answer_ir) => answer_ir,
+                let (answer_ir, completion) = match candidate {
+                    Ok(Some((answer_ir, completion))) => (Some(answer_ir), completion),
+                    // Product outputs (routing, notebook, display planning)
+                    // intentionally produce no AnswerIR and no research
+                    // completion class beyond the default.
+                    Ok(None) => (None, ResearchCompletion::Accepted),
                     Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
                         state.append_assistant(episode);
                         state
@@ -684,7 +1075,7 @@ where
                     // failing the product contract at the commit boundary.
                     None => output.clone(),
                 };
-                (normalized_output, answer_ir, rendered_content)
+                (normalized_output, answer_ir, completion, rendered_content)
             }
             _ => {
                 return Err(EngineError::WorkflowResolution {
@@ -793,6 +1184,7 @@ where
             rendered_content: rendered_content.clone(),
             rendered_markdown: rendered_content,
             visualizations,
+            completion,
             usage: state.usage.clone(),
             agent_image_hash: input.image.content_hash.clone(),
         };

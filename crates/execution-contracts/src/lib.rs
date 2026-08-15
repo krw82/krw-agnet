@@ -643,6 +643,38 @@ pub enum FinalStatus {
     Cancelled,
 }
 
+/// Completion class for a research run's committed answer.
+///
+/// A run that passed admission must leave an answer behind in every case
+/// where that is possible; only integrity violations may produce a terminal
+/// research failure. This enum is the answer-side counterpart of
+/// [`FinalStatus`]: `FinalStatus` describes the durability of the commit,
+/// while `ResearchCompletion` describes how much verified material the
+/// committed answer actually carries.
+///
+/// `Accepted` is the default so that answers produced before this field
+/// existed (and answers that needed no degradation) deserialize identically.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchCompletion {
+    /// Full evidence and claims for the question scope; the core final was
+    /// committed without any sanitizer downgrade.
+    #[default]
+    Accepted,
+    /// Some objectives, periods, documents, or citations were insufficient,
+    /// but a useful verified-scope answer exists. Unsupported claims were
+    /// removed or softened and the limitation is carried by the class.
+    AcceptedWithWarnings,
+    /// A provider/MCP/dependency problem was not resolved inside the bounded
+    /// deadline; a deterministic unavailability notice was committed instead
+    /// of a research answer.
+    UnavailableButAnswerable,
+    /// Reserved for the integrity-only failure list (ownership/pin/fence
+    /// mismatch, forged ledger record, uncommitted calculation lineage,
+    /// ambiguous re-dispatch, failed atomic commit).
+    IntegrityFailure,
+}
+
 #[async_trait]
 pub trait Persistence: fmt::Debug + Send + Sync {
     async fn load_recovery(&self, run: &RunIdentity)

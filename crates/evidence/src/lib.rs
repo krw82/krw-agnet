@@ -11,10 +11,14 @@ const MAX_EVIDENCE_RECORD_BYTES: usize = 256 * 1024;
 const MAX_FACTS_PER_RECORD: usize = 128;
 const MAX_RELATIONS_PER_RECORD: usize = 128;
 const MAX_CALCULATION_INPUTS: usize = 128;
-const MAX_ANSWER_SECTIONS: usize = 16;
-const MAX_ANSWER_CLAIMS: usize = 64;
-const MAX_ANSWER_CALCULATIONS: usize = 64;
-const MAX_CLAIMS_PER_SECTION: usize = 64;
+
+/// Bounded answer-shape limits shared with the run-engine answer sanitizer.
+/// The sanitizer must truncate to exactly these limits, so they are public
+/// while every other bound stays crate-private.
+pub const MAX_ANSWER_SECTIONS: usize = 16;
+pub const MAX_ANSWER_CLAIMS: usize = 64;
+pub const MAX_ANSWER_CALCULATIONS: usize = 64;
+pub const MAX_CLAIMS_PER_SECTION: usize = 64;
 const MAX_EVIDENCE_PER_CLAIM: usize = 64;
 const MAX_GOALS_PER_CLAIM: usize = 32;
 

@@ -28,8 +28,9 @@ pub use krw_agent_execution_contracts::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
     DependencyFailure, DurableActionObservation, DurableEpisode, DurableFinal,
     DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous, Persistence,
-    Provider, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, RecoverySnapshot,
-    RunControl, RunIdentity, RunLifecycleStage, RuntimeStageTimingSnapshot, RuntimeStageTimings,
+    Provider, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, ResearchCompletion,
+    RecoverySnapshot, RunControl, RunIdentity, RunLifecycleStage, RuntimeStageTimingSnapshot,
+    RuntimeStageTimings,
 };
 pub use recovery::recovery_budget_usage;
 pub use validation::{CanonicalContractGuard, CanonicalGuardError, StructuralContractGuard};
@@ -66,7 +67,7 @@ use validation::validate_product_context;
 #[cfg(test)]
 use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 #[cfg(test)]
-use finalization::{parse_typed_json_content, validate_product_output_linkage};
+use finalization::{parse_typed_json_content, sanitize_answer, validate_product_output_linkage};
 #[cfg(test)]
 use capability_dispatch::{
     assemble_company_context_request, exact_required_gap_arguments, model_research_gap_hint,
@@ -652,8 +653,18 @@ pub struct AnswerBundle {
     /// list and never fails the committed answer.
     #[serde(default)]
     pub visualizations: Vec<Value>,
+    /// Answer-always completion class for this final answer. Serialized only
+    /// when the sanitizer actually degraded the answer, so the canonical
+    /// bundle bytes (and therefore `answer_bundle_hash`) stay byte-stable for
+    /// every non-degraded path.
+    #[serde(default, skip_serializing_if = "is_accepted_completion")]
+    pub completion: ResearchCompletion,
     pub usage: BudgetUsage,
     pub agent_image_hash: ContentHash,
+}
+
+fn is_accepted_completion(completion: &ResearchCompletion) -> bool {
+    *completion == ResearchCompletion::Accepted
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1697,8 +1708,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use krw_agent_evidence::{
-        Directness, EvidenceGrade, EvidenceRecord, EvidenceScope, EvidenceSource, NormalizedFact,
-        PublicCitation,
+        AnswerSection, Claim, ClaimKind, ClaimStrength, Directness, EvidenceGrade, EvidenceRecord,
+        EvidenceScope, EvidenceSource, NormalizedFact, PublicCitation,
     };
     use krw_agent_image::compile_agent_dir;
     use krw_agent_protocol::{AuthScope, GLM_MODEL_ID, McpToolSessionReuse};
@@ -3125,6 +3136,10 @@ mod tests {
         cancel_after_dispatch: Arc<AtomicBool>,
         should_cancel: bool,
         presentation_packs: Vec<Value>,
+        /// Optional per-call committed calculation batches (one batch per
+        /// capability call, in call order). Empty by default so ordinary
+        /// fixtures are unaffected.
+        calculation_batches: Mutex<VecDeque<Vec<Calculation>>>,
     }
 
     #[async_trait]
@@ -3223,7 +3238,12 @@ mod tests {
                 provider_content,
                 evidence,
                 answerability: (!correction).then_some(Answerability::StrongAllowed),
-                calculations: Vec::new(),
+                calculations: self
+                    .calculation_batches
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_default(),
                 presentation: (invocation.capability_id == "ontology.query_context")
                     .then(|| self.presentation_packs.first().cloned())
                     .flatten(),
@@ -4312,6 +4332,29 @@ mod tests {
         should_cancel: bool,
         presentation_packs: Vec<Value>,
     ) -> TestRig {
+        engine_with_script_usage_results_calculations_and_presentation(
+            script,
+            usage_script,
+            provider_results,
+            echo_context_plan,
+            failure,
+            should_cancel,
+            presentation_packs,
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn engine_with_script_usage_results_calculations_and_presentation(
+        script: VecDeque<AssistantMessage>,
+        usage_script: VecDeque<TokenUsage>,
+        provider_results: VecDeque<Value>,
+        echo_context_plan: bool,
+        failure: Option<FailurePoint>,
+        should_cancel: bool,
+        presentation_packs: Vec<Value>,
+        calculation_batches: Vec<Vec<Calculation>>,
+    ) -> TestRig {
         let log = Arc::new(Mutex::new(Vec::new()));
         let cancelled = Arc::new(AtomicBool::new(false));
         let provider = Arc::new(ScriptedProvider::with_script_and_usage(
@@ -4327,6 +4370,7 @@ mod tests {
             cancel_after_dispatch: Arc::clone(&cancelled),
             should_cancel,
             presentation_packs,
+            calculation_batches: Mutex::new(VecDeque::from(calculation_batches)),
         });
         let persistence = Arc::new(ScriptedPersistence::new(
             Arc::clone(&log),
@@ -4668,6 +4712,352 @@ mod tests {
             assert_eq!(physical["ticker"], "AAPL");
         }
         drop(persisted);
+    }
+
+    /// A Guru run whose typed composer emits `final_message` with the repair
+    /// budget exhausted up front, so a terminal final-answer defect cannot be
+    /// retried away and must resolve through the completion-class policy.
+    fn guru_rig_beyond_repair(
+        final_message: AssistantMessage,
+        calculation_batches: Vec<Vec<Calculation>>,
+    ) -> (Fixture, TestRig) {
+        let mut fixture = guru_fixture();
+        fixture.request.budget.max_repairs = 0;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let script = VecDeque::from([
+            research_tool_call("guru-query", "guru.query_context", &serde_json::json!({})),
+            research_tool_call(
+                "company-brief",
+                "guru.company_brief",
+                &guru_contract_value("krw-guru-investigation-question-draft/v1"),
+            ),
+            query_context_tool_call("company-context", &guru_research_state()["plan"]),
+            workflow_event("context_ready"),
+            research_tool_call(
+                "child-return",
+                "guru.review_company_evidence",
+                &guru_contract_value("krw-guru-agent-evidence-analysis/v1"),
+            ),
+            final_message,
+        ]);
+        let usage_script = (0..script.len()).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_usage_results_calculations_and_presentation(
+            script,
+            usage_script,
+            VecDeque::from([
+                guru_query_context_result(),
+                guru_contract_value("krw-guru-company-brief-result/v1"),
+                guru_research_state(),
+                guru_contract_value("krw-guru-evidence-review-result/v1"),
+            ]),
+            true,
+            None,
+            false,
+            Vec::new(),
+            calculation_batches,
+        );
+        (fixture, rig)
+    }
+
+    /// A composer answer with one fully grounded claim and one claim citing an
+    /// `evidence_id` that was never admitted to the current run's ledger
+    /// (`unknown_evidence`). This is a presentation/quality defect class: the
+    /// answer must be degraded and committed, not failed.
+    fn guru_final_answer_with_unadmitted_evidence() -> AssistantMessage {
+        let goal_id = guru_research_goal_id();
+        let mut answer: Value = serde_json::from_str(&final_answer()).unwrap();
+        answer["claims"][0]["goal_ids"] = serde_json::json!([goal_id]);
+        answer["claims"][0]["evidence_ids"] = serde_json::json!(["evidence-3"]);
+        answer["claims"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "claim_id": "claim-unadmitted",
+                "kind": "fact",
+                "strength": "qualified",
+                "text": "존재하지 않는 근거를 인용한 주장입니다.",
+                "goal_ids": [goal_id],
+                "evidence_ids": ["evidence-404"],
+                "counter_evidence_ids": [],
+                "calculation_ids": [],
+                "subject": "AAPL",
+                "predicate": "unadmitted_reference",
+                "value": null,
+                "unit": null,
+                "period": "FY2025",
+                "comparison_basis": null
+            }));
+        answer["sections"][0]["claim_ids"] = serde_json::json!(["claim-1", "claim-unadmitted"]);
+        answer["follow_up_questions"] = serde_json::json!([]);
+        AssistantMessage {
+            content: Some(answer.to_string()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// A numeric claim that references a committed calculation verbatim but
+    /// asserts a different output value (`number_not_equal_to_calculation`):
+    /// tampering with committed calculation lineage stays an integrity
+    /// failure.
+    fn guru_final_answer_with_tampered_calculation(calculation: &Calculation) -> AssistantMessage {
+        let goal_id = guru_research_goal_id();
+        let mut answer: Value = serde_json::from_str(&final_answer()).unwrap();
+        answer["claims"][0]["goal_ids"] = serde_json::json!([goal_id]);
+        answer["claims"][0]["evidence_ids"] = serde_json::json!(["evidence-3"]);
+        answer["claims"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "claim_id": "claim-tampered-number",
+                "kind": "number",
+                "strength": "qualified",
+                "text": "서비스 매출은 417억 달러입니다.",
+                "goal_ids": [goal_id],
+                "evidence_ids": ["evidence-3"],
+                "counter_evidence_ids": [],
+                "calculation_ids": [calculation.calculation_id],
+                "subject": "AAPL",
+                "predicate": "services_revenue",
+                "value": 417.0,
+                "unit": "USD millions",
+                "period": "FY2025",
+                "comparison_basis": null
+            }));
+        answer["sections"][0]["claim_ids"] =
+            serde_json::json!(["claim-1", "claim-tampered-number"]);
+        answer["calculations"] = serde_json::json!([serde_json::to_value(calculation).unwrap()]);
+        answer["follow_up_questions"] = serde_json::json!([]);
+        AssistantMessage {
+            content: Some(answer.to_string()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_quality_defects_downgrade_to_accepted_with_warnings_instead_of_failing() {
+        let (fixture, rig) = guru_rig_beyond_repair(guru_final_answer_with_unadmitted_evidence(), Vec::new());
+        let outcome = rig
+            .engine
+            .run(fixture.input())
+            .await
+            .unwrap_or_else(|error| panic!("quality defect must not fail the run: {error:?}"));
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert!(rig.persistence.state.lock().unwrap().final_hash.is_some());
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::AcceptedWithWarnings
+        );
+        // The unadmitted claim was dropped; the grounded claim still commits.
+        let committed_ir = outcome.answer_bundle.answer_ir.as_ref().unwrap();
+        assert!(committed_ir
+            .claims
+            .iter()
+            .all(|claim| claim.claim_id != "claim-unadmitted"));
+        assert!(committed_ir
+            .sections
+            .iter()
+            .all(|section| !section.claim_ids.contains(&"claim-unadmitted".to_owned())));
+        assert!(!outcome
+            .answer_bundle
+            .rendered_markdown
+            .contains("존재하지 않는 근거를 인용한 주장입니다."));
+        assert!(outcome
+            .answer_bundle
+            .rendered_markdown
+            .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다."));
+        assert_eq!(outcome.answer_bundle.usage.repairs, 0);
+        // The degraded class is part of the durable bundle; a legacy bundle
+        // without the field still deserializes as `accepted`.
+        let bundle_json = serde_json::to_value(&outcome.answer_bundle).unwrap();
+        assert_eq!(bundle_json["completion"], serde_json::json!("accepted_with_warnings"));
+        let restored: AnswerBundle = serde_json::from_value(bundle_json).unwrap();
+        assert_eq!(restored.completion, ResearchCompletion::AcceptedWithWarnings);
+        let mut legacy = serde_json::to_value(&restored).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("completion");
+        let legacy_bundle: AnswerBundle = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy_bundle.completion, ResearchCompletion::Accepted);
+    }
+
+    #[tokio::test]
+    async fn tampered_committed_calculation_lineage_still_fails_the_run() {
+        let calculation = committed_services_revenue_calculation();
+        // The committed calculation rides the fourth scripted capability
+        // call (guru.review_company_evidence), after evidence-3 was ingested
+        // by the third call.
+        let batches = vec![Vec::new(), Vec::new(), Vec::new(), vec![calculation.clone()]];
+        let (fixture, rig) = guru_rig_beyond_repair(
+            guru_final_answer_with_tampered_calculation(&calculation),
+            batches,
+        );
+        let error = rig.engine.run(fixture.input()).await.unwrap_err();
+        match &error {
+            EngineError::AnswerValidation(codes) => assert!(
+                codes.contains(&"number_not_equal_to_calculation".to_owned()),
+                "expected the calculation-lineage integrity code, got {codes:?}"
+            ),
+            other => panic!("calculation-lineage tampering must stay a hard failure, got {other:?}"),
+        }
+        assert!(rig.persistence.state.lock().unwrap().final_hash.is_none());
+    }
+
+    fn committed_services_revenue_calculation() -> Calculation {
+        Calculation {
+            calculation_id: "calc.fixture.services.revenue".into(),
+            expression: "reported_value".into(),
+            input_evidence_ids: vec!["evidence-3".into()],
+            output: serde_json::json!(416.2),
+            unit: Some("USD millions".into()),
+            rounding: None,
+            subject: Some("AAPL".into()),
+            metric: Some("services_revenue".into()),
+            period: Some("FY2025".into()),
+            currency: Some("USD".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_typed_answer_commits_accepted_without_degradation() {
+        let (fixture, rig) = guru_rig_beyond_repair(guru_final_answer_message(), Vec::new());
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::Accepted
+        );
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+        assert!(outcome
+            .answer_bundle
+            .rendered_markdown
+            .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다."));
+        assert_eq!(outcome.answer_bundle.usage.repairs, 0);
+        assert!(rig.persistence.state.lock().unwrap().final_hash.is_some());
+        // Non-degraded bundles stay byte-compatible with the pre-completion
+        // field format: `Accepted` is skipped on serialize, so checkpoint and
+        // bundle hashes do not move.
+        let bundle_json = serde_json::to_value(&outcome.answer_bundle).unwrap();
+        assert!(bundle_json.get("completion").is_none());
+    }
+
+    #[test]
+    fn sanitizer_softens_and_downgrades_without_inventing() {
+        let mut ledger = EvidenceLedger::default();
+        let mut weak = sanitizer_evidence("evidence-related");
+        weak.directness = Directness::Related;
+        weak.strong_claim_allowed = false;
+        ledger.append(weak).expect("valid evidence");
+        ledger.set_answerability(Answerability::QualifiedOnly);
+        let policy = AnswerPolicy {
+            forbidden_terms: Vec::new(),
+            require_direct_strong_claims: true,
+            require_period_for_numbers: true,
+            require_unit_for_numbers: true,
+            require_counter_signal_for_interpretation: true,
+            exact_follow_up_count: 1,
+        };
+
+        let claim = |claim_id: &str, kind: ClaimKind, strength: ClaimStrength| Claim {
+            claim_id: claim_id.into(),
+            kind,
+            strength,
+            text: format!("{claim_id} 본문입니다."),
+            goal_ids: Vec::new(),
+            evidence_ids: vec!["evidence-related".into()],
+            counter_evidence_ids: Vec::new(),
+            calculation_ids: Vec::new(),
+            subject: Some("AAPL".into()),
+            predicate: Some("metric".into()),
+            value: None,
+            unit: None,
+            period: Some("FY2025".into()),
+            comparison_basis: None,
+        };
+        // Strong claim on qualified-only evidence (soften), a numeric claim
+        // with no calculation lineage (downgrade), an interpretation with no
+        // counter-signal (downgrade), a claim no section renders (drop), and
+        // one more follow-up than the policy allows (truncate).
+        let answer = AnswerIr {
+            schema_version: 1,
+            locale: "ko-KR".into(),
+            sections: vec![AnswerSection {
+                section_id: "summary".into(),
+                heading: "핵심".into(),
+                intent: "answer".into(),
+                claim_ids: vec!["c-strong".into(), "c-number".into(), "c-view".into()],
+                disclosed_uncertainty: None,
+            }],
+            claims: vec![
+                claim("c-strong", ClaimKind::Fact, ClaimStrength::Strong),
+                claim("c-number", ClaimKind::Number, ClaimStrength::Qualified),
+                claim("c-view", ClaimKind::Interpretation, ClaimStrength::Qualified),
+                claim("c-orphan", ClaimKind::Fact, ClaimStrength::Qualified),
+            ],
+            calculations: Vec::new(),
+            follow_up_questions: vec!["첫 번째 질문?".into(), "두 번째 질문?".into()],
+        };
+
+        let (sanitized, completion) =
+            sanitize_answer(&answer, &ledger, &policy).expect("quality issues degrade, not fail");
+        assert_eq!(completion, ResearchCompletion::AcceptedWithWarnings);
+        let by_id = |id: &str| {
+            sanitized
+                .claims
+                .iter()
+                .find(|claim| claim.claim_id == id)
+                .unwrap_or_else(|| panic!("claim {id} survived"))
+        };
+        assert_eq!(by_id("c-strong").strength, ClaimStrength::Qualified);
+        assert_eq!(by_id("c-number").kind, ClaimKind::Fact);
+        assert_eq!(by_id("c-view").kind, ClaimKind::Fact);
+        assert!(sanitized.claims.iter().all(|claim| claim.claim_id != "c-orphan"));
+        assert_eq!(sanitized.follow_up_questions.len(), 1);
+        // A clean answer is returned untouched with the Accepted class.
+        let clean = sanitize_answer(&sanitized, &ledger, &policy).expect("clean answer");
+        assert_eq!(clean.1, ResearchCompletion::Accepted);
+        assert_eq!(clean.0, sanitized);
+    }
+
+    fn sanitizer_evidence(evidence_id: &str) -> EvidenceRecord {
+        let payload_hash = ContentHash::sha256("sanitizer-payload");
+        EvidenceRecord {
+            evidence_id: evidence_id.into(),
+            content_hash: payload_hash.clone(),
+            source: EvidenceSource {
+                capability_id: "ontology.query_context".into(),
+                action_key: "action-1".into(),
+                server_build: "fixture".into(),
+                normalized_contract_hash: ContentHash::sha256("contract"),
+                server_schema_bundle_hash: ContentHash::sha256("schema"),
+                data_release_hash: ContentHash::sha256("release"),
+            },
+            scope: EvidenceScope {
+                auth_scope: AuthScope::Tenant,
+                scope_hash: ContentHash::sha256("tenant"),
+            },
+            entity: Some("AAPL".into()),
+            period: Some("FY2025".into()),
+            as_of: None,
+            directness: Directness::Direct,
+            grade: EvidenceGrade::Strong,
+            strong_claim_allowed: true,
+            payload_ref: payload_hash,
+            citation: PublicCitation {
+                title: "Apple FY2025 Form 10-K".into(),
+                document_type: Some("10-K".into()),
+                period: Some("FY2025".into()),
+            },
+            facts: Vec::new(),
+            supports: Vec::new(),
+            refutes: Vec::new(),
+            qualifies: Vec::new(),
+            source_object_ids: Vec::new(),
+        }
     }
 
     #[tokio::test]
@@ -5027,6 +5417,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -5204,6 +5595,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -5522,6 +5914,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -5920,6 +6313,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -5997,6 +6391,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -6175,6 +6570,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -6224,6 +6620,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -7282,6 +7679,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
