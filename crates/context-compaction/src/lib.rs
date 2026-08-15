@@ -16,6 +16,7 @@ use krw_agent_evidence::{
 };
 use krw_agent_protocol::ContentHash;
 use krw_agent_provider_wire::ProviderMessage;
+use krw_agent_planning::GoalStatus;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
 use krw_ontology_adapter::{
     Continuation, MAX_SUPPLEMENTAL_READ_STATUSES, ResearchPlanningProjection,
@@ -826,9 +827,6 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             });
         }
     }
-    if evidence_index.len() > MAX_ACTIVE_EVIDENCE || candidates.len() > MAX_FACT_CANDIDATES {
-        return Err(CompactionError::Limit("evidence or facts"));
-    }
     evidence_index.sort_by(|left, right| left.evidence_id.cmp(&right.evidence_id));
     candidates.sort_by(|left, right| {
         Reverse(left.priority)
@@ -836,6 +834,13 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             .then_with(|| left.fact.evidence_id.cmp(&right.fact.evidence_id))
             .then_with(|| left.fact.fact_index.cmp(&right.fact.fact_index))
     });
+    // Wave 4 answer-always policy: compaction is a total function. A ledger
+    // beyond the durable count bounds previously aborted the run with
+    // `Limit("evidence or facts")`; it now degrades deterministically to a
+    // bounded ranked view with a reason-coded omission receipt.
+    let mut omissions = CompactionOmissions::default();
+    let protected = unresolved_required_goal_evidence_ids(input.research_projection);
+    enforce_count_bounds(&mut evidence_index, &mut candidates, &protected, &mut omissions)?;
     let calculations = input.calculations.values().cloned().collect::<Vec<_>>();
     let research_projection = input.research_projection.cloned();
     let retrieval_status = research_projection
@@ -855,7 +860,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             .iter()
             .map(|candidate| candidate.fact.clone())
             .collect(),
-        omissions: CompactionOmissions::default(),
+        omissions,
         calculations,
     };
     shrink_to_fit(&mut context, input.max_context_bytes)?;
@@ -909,6 +914,150 @@ fn validate_input(input: &CompactionInput<'_>) -> Result<(), CompactionError> {
     Ok(())
 }
 
+/// Evidence IDs pinned by still-open required goals in the research
+/// projection. These witnesses are the "unresolved required goal" material
+/// that must survive count-bound degradation before any ranked cut.
+fn unresolved_required_goal_evidence_ids(
+    projection: Option<&ResearchPlanningProjection>,
+) -> std::collections::BTreeSet<String> {
+    projection
+        .into_iter()
+        .flat_map(|projection| projection.graph.goals())
+        .filter(|goal| goal.required && goal.status != GoalStatus::Satisfied)
+        .flat_map(|goal| goal.evidence_ids.iter().cloned())
+        .collect()
+}
+
+/// Deterministic count-bound degradation for pathological input volume.
+///
+/// Replaces the previous hard error for ledgers beyond the durable count
+/// bounds (`MAX_ACTIVE_EVIDENCE` / `MAX_FACT_CANDIDATES`). Per the runtime
+/// failure policy (doc/refetoring/03-runtime-failure-policy.md, compaction):
+///
+/// 1. unresolved-required-goal witnesses are reserved first,
+/// 2. one representative per (entity, period) group keeps minimal
+///    ticker/period coverage before any group takes a second slot,
+/// 3. everything else competes on (grade, directness, strong-claim) rank,
+/// 4. every dropped item increments an omitted count and extends the
+///    `lineage_hash` chain with a reason-coded link, so the receipt binds
+///    exactly what was removed without replaying it into the prompt.
+///
+/// Inputs within the bounds keep every entry: this path is a no-op and the
+/// happy-path canonical bytes and receipt hashes are unchanged.
+fn enforce_count_bounds(
+    evidence_index: &mut Vec<CompactedEvidenceIndexEntry>,
+    candidates: &mut Vec<FactCandidate>,
+    protected: &std::collections::BTreeSet<String>,
+    omissions: &mut CompactionOmissions,
+) -> Result<(), CompactionError> {
+    if evidence_index.len() > MAX_ACTIVE_EVIDENCE {
+        let kept = select_evidence_under_count_bound(evidence_index, protected);
+        let mut dropped_evidence = Vec::new();
+        evidence_index.retain(|entry| {
+            if kept.contains(&entry.evidence_id) {
+                true
+            } else {
+                dropped_evidence.push(entry.clone());
+                false
+            }
+        });
+        // Record the removal in canonical id order so the lineage chain is
+        // independent of the ranking pass.
+        dropped_evidence.sort_by(|left, right| left.evidence_id.cmp(&right.evidence_id));
+        for entry in &dropped_evidence {
+            omissions.evidence_entries = omissions.evidence_entries.saturating_add(1);
+            record_omission(omissions, "evidence_overcount", &hash_value(entry)?)?;
+        }
+        // A fact without its evidence entry has no citation handle and cannot
+        // ground a claim; it is omitted alongside its evidence.
+        let mut dropped_facts = Vec::new();
+        candidates.retain(|candidate| {
+            if kept.contains(&candidate.fact.evidence_id) {
+                true
+            } else {
+                dropped_facts.push(candidate.fact.fact_ref.clone());
+                false
+            }
+        });
+        for fact_ref in &dropped_facts {
+            omissions.facts = omissions.facts.saturating_add(1);
+            record_omission(omissions, "fact_evidence_dropped", fact_ref)?;
+        }
+    }
+    if candidates.len() > MAX_FACT_CANDIDATES {
+        // Stable priority partition: unresolved-goal witnesses first, then the
+        // ranked remainder. Both runs keep the deterministic candidate order
+        // (priority desc, evidence_id, fact_index), so the lowest-priority
+        // facts fall off the tail.
+        let mut ordered = Vec::with_capacity(candidates.len());
+        ordered.extend(
+            candidates
+                .iter()
+                .filter(|candidate| protected.contains(&candidate.fact.evidence_id))
+                .cloned(),
+        );
+        ordered.extend(
+            candidates
+                .iter()
+                .filter(|candidate| !protected.contains(&candidate.fact.evidence_id))
+                .cloned(),
+        );
+        let dropped = ordered.split_off(MAX_FACT_CANDIDATES);
+        for candidate in &dropped {
+            omissions.facts = omissions.facts.saturating_add(1);
+            record_omission(omissions, "fact_overcount", &candidate.fact.fact_ref)?;
+        }
+        *candidates = ordered;
+    }
+    Ok(())
+}
+
+/// Rank-then-reserve selection of at most `MAX_ACTIVE_EVIDENCE` entries.
+fn select_evidence_under_count_bound(
+    evidence_index: &[CompactedEvidenceIndexEntry],
+    protected: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let mut ranked: Vec<&CompactedEvidenceIndexEntry> = evidence_index.iter().collect();
+    ranked.sort_by(|left, right| {
+        right
+            .grade
+            .cmp(&left.grade)
+            .then_with(|| right.directness.cmp(&left.directness))
+            .then_with(|| right.strong_claim_allowed.cmp(&left.strong_claim_allowed))
+            .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+    });
+    let mut kept = std::collections::BTreeSet::new();
+    // Pass 1: witnesses of still-open required goals.
+    for entry in &ranked {
+        if kept.len() >= MAX_ACTIVE_EVIDENCE {
+            break;
+        }
+        if protected.contains(&entry.evidence_id) {
+            kept.insert(entry.evidence_id.clone());
+        }
+    }
+    // Pass 2: the highest-ranked entry of every (entity, period) group, so a
+    // single ticker/period flood cannot evict the minimal coverage of every
+    // other group.
+    let mut represented = std::collections::BTreeSet::new();
+    for entry in &ranked {
+        if kept.len() >= MAX_ACTIVE_EVIDENCE {
+            break;
+        }
+        if represented.insert((entry.entity.clone(), entry.period.clone())) {
+            kept.insert(entry.evidence_id.clone());
+        }
+    }
+    // Pass 3: everything else competes on rank.
+    for entry in &ranked {
+        if kept.len() >= MAX_ACTIVE_EVIDENCE {
+            break;
+        }
+        kept.insert(entry.evidence_id.clone());
+    }
+    kept
+}
+
 fn shrink_to_fit(
     context: &mut CompactedProviderContext,
     max_bytes: usize,
@@ -922,6 +1071,34 @@ fn shrink_to_fit(
     // useful evidence facts when it is itself a material part of the budget.
     if serialized_len(&context.state.payload)? > max_bytes / 4 {
         omit_state_payload(context)?;
+    }
+
+    // Facts are the only segment whose count can reach MAX_FACT_CANDIDATES
+    // (8192), so a one-pop-per-full-re-serialization loop is quadratic and
+    // would stall a pathological — but now admissible — compaction for
+    // minutes. JCS arrays are additive: `[a,b]` serializes to brackets plus
+    // each item plus one comma per item, so the serialized length after
+    // popping a suffix of facts can be predicted in O(1) per pop from the
+    // item's standalone length. Pop by prediction first, then let the exact
+    // loop below absorb the residual drift from the omission counter's digit
+    // growth (bounded to a couple of pops).
+    if serialized_len(context)? > max_bytes {
+        let mut predicted = serialized_len(context)?;
+        while predicted > max_bytes {
+            let item = match context.retained_facts.last() {
+                Some(candidate) => {
+                    serde_jcs::to_vec(candidate)?.len()
+                        + usize::from(context.retained_facts.len() > 1)
+                }
+                None => break,
+            };
+            predicted = predicted.saturating_sub(item);
+            let Some(removed) = context.retained_facts.pop() else {
+                break;
+            };
+            context.omissions.facts = context.omissions.facts.saturating_add(1);
+            record_omission(&mut context.omissions, "fact", &removed.fact_ref)?;
+        }
     }
 
     while serialized_len(context)? > max_bytes {
@@ -971,13 +1148,15 @@ fn shrink_to_fit(
     }
 
     // Everything above this line is auxiliary prompt material. What remains
-    // is the compact authority/boundary/artifact contract and omission
-    // receipt. With the configured 32 KiB minimum this should always fit; a
-    // failure here means a violated bounded-contract invariant, not an LLM
-    // quality or content decision.
-    if serialized_len(context)? > max_bytes {
-        return Err(CompactionError::EssentialContextExceedsLimit);
-    }
+    // after these loops is the bounded essential view: the identity core
+    // (boundary hash, state artifact/contract pins, answerability boundary)
+    // plus the omission receipt. Every remaining segment is fixed-size, so
+    // with the configured 32 KiB minimum the essential view always fits and
+    // compaction stays a total function — size pressure alone can never fail
+    // a run. If a future field ever pushes the essential view past a
+    // configured bound, the over-target view is returned unchanged, the same
+    // policy `shrink_role_view_best_effort` applies to role views, instead of
+    // aborting an otherwise answerable run.
     Ok(())
 }
 
@@ -1118,8 +1297,6 @@ impl Drop for CompactedFact {
 pub enum CompactionError {
     #[error("context compaction limit exceeded: {0}")]
     Limit(&'static str),
-    #[error("essential typed context does not fit the configured compaction limit")]
-    EssentialContextExceedsLimit,
     #[error("settled boundary does not match the validated state artifact")]
     BoundaryArtifactMismatch,
     #[error("compaction receipt is invalid")]
@@ -1560,6 +1737,219 @@ mod tests {
         assert!(output.receipt.compacted_bytes <= MIN_COMPACTED_CONTEXT_BYTES as u64);
         assert_eq!(output.context.state.payload, Value::Null);
         assert!(output.context.omissions.state_payload);
+    }
+
+    #[test]
+    fn more_than_512_active_evidence_records_degrade_to_a_bounded_view_with_receipt() {
+        let (artifact, boundary) = artifact_and_boundary();
+        let mut ledger = EvidenceLedger::default();
+        // 530 low-grade filler records spread across 35 (entity, period)
+        // groups plus one weak goal witness that only the unresolved required
+        // goal protects. 531 active records exceed MAX_ACTIVE_EVIDENCE.
+        for index in 0..530 {
+            let mut record = evidence(
+                &format!("evidence-{index:03}"),
+                vec![NormalizedFact {
+                    subject: format!("subject-{index}"),
+                    predicate: "revenue".into(),
+                    value: json!(index),
+                    unit: None,
+                    period: None,
+                }],
+            );
+            record.entity = Some(format!("TICKER{}", index % 7));
+            record.period = Some(format!("FY{}", 2015 + index % 5));
+            record.grade = EvidenceGrade::Weak;
+            record.refutes.clear();
+            ledger.append(record).unwrap();
+        }
+        let mut goal_witness = evidence(
+            "evidence-goal",
+            vec![NormalizedFact {
+                subject: "TEST".into(),
+                predicate: "goal_witness".into(),
+                value: json!(7),
+                unit: Some("USD".into()),
+                period: Some("FY2025".into()),
+            }],
+        );
+        goal_witness.grade = EvidenceGrade::Weak;
+        goal_witness.refutes.clear();
+        ledger.append(goal_witness).unwrap();
+        let projection: ResearchPlanningProjection = serde_json::from_value(json!({
+            "graph": {
+                "version": 1,
+                "goals": {
+                    "goal-coverage": {
+                        "goal_id": "goal-coverage",
+                        "required": true,
+                        "weight": 100,
+                        "dependencies": [],
+                        "directness": "direct",
+                        "calculation_required": false,
+                        "status": "unresolved",
+                        "coverage_ppm": 0,
+                        "evidence_ids": ["evidence-goal"],
+                        "calculation_ids": []
+                    }
+                },
+                "original_order": ["goal-coverage"]
+            },
+            "clauses": [],
+            "missing_parts": [],
+            "recommended_actions": []
+        }))
+        .unwrap();
+
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &ledger,
+            calculations: &BTreeMap::new(),
+            research_projection: Some(&projection),
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .expect("an over-count evidence ledger must degrade to a bounded view, not fail the run");
+
+        output.verify().unwrap();
+        assert!(output.receipt.compacted_bytes <= DEFAULT_MAX_COMPACTED_CONTEXT_BYTES as u64);
+        assert!(output.context.evidence_index.len() <= MAX_ACTIVE_EVIDENCE);
+        assert!(output.context.omissions.evidence_entries >= (531 - MAX_ACTIVE_EVIDENCE) as u32);
+        assert_ne!(
+            output.context.omissions.lineage_hash,
+            CompactionOmissions::default().lineage_hash,
+            "dropped evidence must be hash-recorded in the omission receipt"
+        );
+        // Identity material survives the degradation untouched.
+        assert_eq!(output.context.boundary_hash, boundary.boundary_hash().unwrap());
+        assert_eq!(output.context.state.contract.id, "state-facts/v1");
+        // The unresolved required goal's witness is reserved.
+        assert!(
+            output
+                .context
+                .evidence_index
+                .iter()
+                .any(|entry| entry.evidence_id == "evidence-goal")
+        );
+        // Minimal per-(ticker, period) evidence is reserved: every one of the
+        // 35 filler groups plus the goal witness group is still represented.
+        let mut groups = std::collections::BTreeSet::new();
+        for entry in &output.context.evidence_index {
+            groups.insert((entry.entity.clone(), entry.period.clone()));
+        }
+        assert_eq!(groups.len(), 36);
+    }
+
+    #[test]
+    fn more_than_8192_fact_candidates_degrade_to_a_bounded_view_with_receipt() {
+        let (artifact, boundary) = artifact_and_boundary();
+        let mut ledger = EvidenceLedger::default();
+        // 70 records x 120 low-priority text facts = 8400 candidates, plus
+        // one top-priority numeric fact -> 8401 > MAX_FACT_CANDIDATES while
+        // staying well under the 512-evidence bound.
+        for chunk in 0..70 {
+            let mut record = evidence(
+                &format!("fact-flood-{chunk:02}"),
+                (0..120)
+                    .map(|index| NormalizedFact {
+                        subject: format!("s{chunk}"),
+                        predicate: format!("p{index}"),
+                        value: json!("x"),
+                        unit: None,
+                        period: None,
+                    })
+                    .collect(),
+            );
+            record.grade = EvidenceGrade::Weak;
+            record.refutes.clear();
+            ledger.append(record).unwrap();
+        }
+        ledger
+            .append(evidence(
+                "evidence-keeper",
+                vec![NormalizedFact {
+                    subject: "TEST".into(),
+                    predicate: "revenue".into(),
+                    value: json!(987_654_321),
+                    unit: Some("KRW".into()),
+                    period: Some("FY2025".into()),
+                }],
+            ))
+            .unwrap();
+
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &ledger,
+            calculations: &BTreeMap::new(),
+            research_projection: None,
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .expect("an over-count fact ledger must degrade to a bounded view, not fail the run");
+
+        output.verify().unwrap();
+        assert!(output.receipt.compacted_bytes <= DEFAULT_MAX_COMPACTED_CONTEXT_BYTES as u64);
+        assert!(output.context.omissions.facts >= (8401 - MAX_FACT_CANDIDATES) as u32);
+        assert_ne!(
+            output.context.omissions.lineage_hash,
+            CompactionOmissions::default().lineage_hash
+        );
+        // The evidence set itself fits, so no evidence entry is omitted.
+        assert_eq!(output.context.omissions.evidence_entries, 0);
+        // Highest-priority quantitative material survives the cut.
+        assert!(output.canonical_context().contains("987654321"));
+    }
+
+    #[test]
+    fn pathological_volume_at_minimum_bound_produces_a_bounded_essential_view() {
+        let (artifact, boundary) = artifact_and_boundary_with_payload(json!({
+            "opaque_state": "x".repeat(128 * 1024)
+        }));
+        let mut ledger = EvidenceLedger::default();
+        for index in 0..600 {
+            let mut record = evidence(
+                &format!("bulk-{index:03}"),
+                vec![NormalizedFact {
+                    subject: "TEST".into(),
+                    predicate: "revenue".into(),
+                    value: json!(index),
+                    unit: None,
+                    period: None,
+                }],
+            );
+            record.grade = EvidenceGrade::Weak;
+            record.refutes.clear();
+            ledger.append(record).unwrap();
+        }
+
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &ledger,
+            calculations: &BTreeMap::new(),
+            research_projection: None,
+            max_context_bytes: MIN_COMPACTED_CONTEXT_BYTES,
+        })
+        .expect("pathological volume must produce a bounded essential view, not fail the run");
+
+        output.verify().unwrap();
+        assert!(output.receipt.compacted_bytes <= MIN_COMPACTED_CONTEXT_BYTES as u64);
+        assert!(output.context.evidence_index.len() <= MAX_ACTIVE_EVIDENCE);
+        // The oversized auxiliary payload degrades to its hash handle.
+        assert!(output.context.omissions.state_payload);
+        assert_eq!(output.context.state.payload, Value::Null);
+        // Count- and byte-bound omissions are both receipted.
+        assert!(output.context.omissions.evidence_entries >= (600 - MAX_ACTIVE_EVIDENCE) as u32);
+        assert!(output.context.omissions.facts >= (600 - MAX_ACTIVE_EVIDENCE) as u32);
+        // The irreducible identity core survives.
+        assert_eq!(output.context.boundary_hash, boundary.boundary_hash().unwrap());
+        assert_eq!(
+            output.context.state.artifact_hash,
+            artifact.artifact_hash().unwrap()
+        );
     }
 
     #[test]

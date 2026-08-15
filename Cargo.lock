@@ -1347,6 +1347,7 @@ name = "krw-context-compaction"
 version = "0.1.0"
 dependencies = [
  "krw-agent-evidence",
+ "krw-agent-planning",
  "krw-agent-protocol",
  "krw-agent-provider-wire",
  "krw-agent-state-artifact",
