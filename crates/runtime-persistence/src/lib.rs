@@ -37,8 +37,8 @@ pub use claim::{
 pub use episode_provider::PermitBoundProvider;
 #[cfg(feature = "http")]
 pub use executor::{
-    DeepSeekProviderCatalog, ExecutorBuildError, ProductionClaimedRunExecutor,
-    ProductionReleaseCatalog, ProductionReleaseEntry, ProviderCatalogError, RoutedClaimError,
+    ExecutorBuildError, ProductionClaimedRunExecutor, ProductionReleaseCatalog,
+    ProductionReleaseEntry, ProviderCatalog, ProviderCatalogError, RoutedClaimError,
 };
 pub use memory::{
     MemoryResolutionError, MemoryResolutionReceipt, ResolvedSessionMemory,

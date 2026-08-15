@@ -16,9 +16,7 @@ use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
     ClaimedRunContext, ClaimedRunExecutor, RunExecutionFailure, SuccessfulRunOutcome,
 };
-use krw_agent_protocol::{
-    ALLOWED_MODEL_IDS, BudgetUsage, ContentHash, DeploymentBinding, RunRequest,
-};
+use krw_agent_protocol::{BudgetUsage, ContentHash, DeploymentBinding, RunRequest};
 use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
     CompiledExecutionPlan, EngineConfig, EngineError, RunEngine, RunInput, TrustedMarketSnapshot,
@@ -93,70 +91,72 @@ pub enum ProviderCatalogError {
     MissingApiKey(String),
 }
 
-/// Machine-wide `DeepSeek` clients grouped by exact HTTPS API base. Models on
+/// Machine-wide provider clients grouped by exact HTTPS API base. Models on
 /// the same base share one HTTP/2 connection pool and authorization header.
-pub struct DeepSeekProviderCatalog {
+/// Compilation is descriptor-driven: each model's provider kind comes from the
+/// protocol registry mapping, and the kind selects both the credential and
+/// the concrete wire adapter.
+pub struct ProviderCatalog {
     by_model: BTreeMap<String, Arc<ProviderClient>>,
     permits_by_model: BTreeMap<String, Arc<Semaphore>>,
 }
 
 /// Maps each distinct `api_base` to the API key for the model(s) hosted there.
-/// `DeepSeek` models get the `DeepSeek` key, GLM models get the GLM key. Two models
-/// on the same base must share one key (they share one HTTP pool); if a base
-/// hosts mixed providers that would be a deployment misconfiguration caught
+/// Key selection goes through the provider kind resolved from each model id,
+/// never through a model-name comparison. A model whose id has no provider
+/// kind, or a kind with no resolved credential, simply leaves that base
+/// unmapped so `ProviderCatalog::compile_from` rejects it at startup
+/// (`ModelInventory` / `MissingApiKey`); there is no default provider. Two
+/// models on the same base must share one key (they share one HTTP pool); a
+/// base hosting mixed providers is a deployment misconfiguration caught
 /// downstream as a `MissingApiKey` error.
 fn build_api_keys_by_base<'a>(
     models: impl IntoIterator<Item = &'a krw_agent_protocol::ModelDescriptor>,
-    deepseek_api_key: &str,
-    glm_api_key: &str,
+    api_keys_by_kind: &BTreeMap<krw_agent_protocol::ProviderKind, String>,
 ) -> BTreeMap<String, String> {
     let mut by_base: BTreeMap<String, String> = BTreeMap::new();
     for model in models {
-        let key = if model.model_id == krw_agent_protocol::GLM_MODEL_ID {
-            glm_api_key.to_owned()
-        } else {
-            deepseek_api_key.to_owned()
+        let Some(kind) = krw_agent_protocol::ProviderKind::for_model_id(&model.model_id) else {
+            continue;
         };
-        by_base.entry(model.api_base.clone()).or_insert(key);
+        let Some(key) = api_keys_by_kind.get(&kind) else {
+            continue;
+        };
+        by_base
+            .entry(model.api_base.clone())
+            .or_insert_with(|| key.clone());
     }
     by_base
 }
 
-impl DeepSeekProviderCatalog {
-    pub fn compile(runtime: &ResolvedRuntime) -> Result<Arc<Self>, ProviderCatalogError> {
-        let api_keys_by_base = build_api_keys_by_base(
-            runtime.models(),
-            runtime.deepseek_api_key(),
-            runtime.glm_api_key(),
-        );
-        Self::compile_from(runtime.models(), &api_keys_by_base, 8)
-    }
+/// Collect the startup-resolved per-kind credentials of every provider kind
+/// the registry knows about. Kinds the release does not advertise carry an
+/// empty value that `compile_from` treats as missing.
+fn api_keys_by_kind(releases: &ResolvedReleaseSet) -> BTreeMap<krw_agent_protocol::ProviderKind, String> {
+    krw_agent_protocol::PROVIDER_KINDS
+        .iter()
+        .map(|kind| (*kind, releases.provider_api_key(*kind).to_owned()))
+        .collect()
+}
 
-    /// Backwards-compatible default entry point: keeps the pre-existing
-    /// `max_idle_per_host = 8` semantics for callers that don't have a CLI
-    /// override handy.
+impl ProviderCatalog {
+    /// Compile the catalog for one already-resolved release set. Provider
+    /// credentials are required only for the provider kinds the selected
+    /// release actually advertises.
     pub fn compile_release_set(
         releases: &ResolvedReleaseSet,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
-        let api_keys_by_base = build_api_keys_by_base(
-            releases.models(),
-            releases.deepseek_api_key(),
-            releases.glm_api_key(),
-        );
-        Self::compile_from(releases.models(), &api_keys_by_base, 8)
+        Self::compile_release_set_with_idle(releases, 8)
     }
 
     /// Same as `compile_release_set` but lets the daemon thread a CLI-supplied
-    /// `--deepseek-max-idle-per-host` value into the underlying HTTP pool.
+    /// `--provider-max-idle-per-host` value into the underlying HTTP pool.
     pub fn compile_release_set_with_idle(
         releases: &ResolvedReleaseSet,
         max_idle_per_host: usize,
     ) -> Result<Arc<Self>, ProviderCatalogError> {
-        let api_keys_by_base = build_api_keys_by_base(
-            releases.models(),
-            releases.deepseek_api_key(),
-            releases.glm_api_key(),
-        );
+        let api_keys_by_base =
+            build_api_keys_by_base(releases.models(), &api_keys_by_kind(releases));
         Self::compile_from(releases.models(), &api_keys_by_base, max_idle_per_host)
     }
 
@@ -184,15 +184,15 @@ impl DeepSeekProviderCatalog {
         if seen.is_empty() {
             return Err(ProviderCatalogError::Empty);
         }
-        // The catalog admits any non-empty subset of the protocol's allowed
-        // model inventory.  Pre-multi-provider this was a strict equality
-        // check against the single DeepSeek model; relaxing it to a subset
-        // keeps the original single-model deployment behaving identically
-        // while permitting additional provider models (e.g. GLM) to coexist
-        // in one release set.
+        // The catalog admits any non-empty subset of the compiled provider
+        // kinds. Every model id must resolve to a provider kind through the
+        // protocol registry mapping; an unknown provider fails here at startup
+        // compilation and never surfaces as a mid-turn provider selection
+        // failure. Pre-multi-provider this was a strict equality check
+        // against the single DeepSeek model.
         if !seen
             .iter()
-            .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
+            .all(|model| krw_agent_protocol::ProviderKind::for_model_id(model).is_some())
         {
             return Err(ProviderCatalogError::ModelInventory);
         }
@@ -209,9 +209,18 @@ impl DeepSeekProviderCatalog {
                     models.iter().next().cloned().unwrap_or_default(),
                 ));
             }
+            // All models grouped on one api_base share the pool, so they must
+            // share one provider kind; the kind of the first model pins the
+            // client and `ProviderClient::new` rejects any foreign model.
+            let client_kind = models
+                .iter()
+                .next()
+                .and_then(|model| krw_agent_protocol::ProviderKind::for_model_id(model))
+                .ok_or(ProviderCatalogError::ModelInventory)?;
             let client = Arc::new(
                 ProviderClient::new(
                     ProviderClientConfig::production(
+                        client_kind,
                         api_base,
                         models.iter().cloned(),
                         max_idle_per_host,
@@ -290,10 +299,10 @@ impl DeepSeekProviderCatalog {
     }
 }
 
-impl fmt::Debug for DeepSeekProviderCatalog {
+impl fmt::Debug for ProviderCatalog {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("DeepSeekProviderCatalog")
+            .debug_struct("ProviderCatalog")
             .field("models", &self.by_model.keys().collect::<Vec<_>>())
             .field(
                 "permits",
@@ -468,7 +477,7 @@ pub enum RoutedClaimError {
 pub struct ProductionClaimedRunExecutor {
     releases: Arc<ProductionReleaseCatalog>,
     runtime_version: String,
-    providers: Arc<DeepSeekProviderCatalog>,
+    providers: Arc<ProviderCatalog>,
     capability_transport: Arc<dyn McpToolTransport>,
     store: Arc<dyn DurableRunStore>,
     artifacts: ArtifactRepository,
@@ -480,7 +489,7 @@ impl ProductionClaimedRunExecutor {
     pub fn new(
         releases: Arc<ProductionReleaseCatalog>,
         runtime_version: String,
-        providers: Arc<DeepSeekProviderCatalog>,
+        providers: Arc<ProviderCatalog>,
         capability_transport: Arc<dyn McpToolTransport>,
         store: Arc<dyn DurableRunStore>,
         artifacts: ArtifactRepository,
@@ -1390,7 +1399,7 @@ mod tests {
 
     fn fixture() -> (
         Arc<ProductionReleaseCatalog>,
-        Arc<DeepSeekProviderCatalog>,
+        Arc<ProviderCatalog>,
         ContentHash,
         ContentHash,
         RunRequest,
@@ -1404,7 +1413,7 @@ mod tests {
         protocol_version: &'static str,
     ) -> (
         Arc<ProductionReleaseCatalog>,
-        Arc<DeepSeekProviderCatalog>,
+        Arc<ProviderCatalog>,
         ContentHash,
         ContentHash,
         RunRequest,
@@ -1467,11 +1476,14 @@ mod tests {
     /// executable provider credential. These catalog tests still need to
     /// construct the HTTP-client topology, so supply inert test-only keys at
     /// that boundary rather than weakening fixture-mode secret isolation.
-    fn fixture_provider_catalog(releases: &ResolvedReleaseSet) -> Arc<DeepSeekProviderCatalog> {
+    fn fixture_provider_catalog(releases: &ResolvedReleaseSet) -> Arc<ProviderCatalog> {
         let models = releases.models().cloned().collect::<Vec<_>>();
-        let api_keys =
-            build_api_keys_by_base(models.iter(), "fixture-deepseek-key", "fixture-glm-key");
-        DeepSeekProviderCatalog::compile_from(models.iter(), &api_keys, 8).unwrap()
+        let api_keys_by_kind = BTreeMap::from([
+            (krw_agent_protocol::ProviderKind::Deepseek, "fixture-deepseek-key".to_owned()),
+            (krw_agent_protocol::ProviderKind::Glm, "fixture-glm-key".to_owned()),
+        ]);
+        let api_keys = build_api_keys_by_base(models.iter(), &api_keys_by_kind);
+        ProviderCatalog::compile_from(models.iter(), &api_keys, 8).unwrap()
     }
 
     fn receipt(
@@ -1670,10 +1682,13 @@ mod tests {
         let mut forbidden = models.models[0].clone();
         forbidden.model_id = "forbidden-provider-model".into();
         let descriptors = [models.models[0].clone(), forbidden];
-        let api_keys_by_base =
-            build_api_keys_by_base(descriptors.iter(), "fixture-key", "fixture-key");
+        let api_keys_by_kind = BTreeMap::from([
+            (krw_agent_protocol::ProviderKind::Deepseek, "fixture-key".to_owned()),
+            (krw_agent_protocol::ProviderKind::Glm, "fixture-key".to_owned()),
+        ]);
+        let api_keys_by_base = build_api_keys_by_base(descriptors.iter(), &api_keys_by_kind);
         assert!(matches!(
-            DeepSeekProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8),
+            ProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8),
             Err(ProviderCatalogError::ModelInventory)
         ));
     }
@@ -1690,13 +1705,19 @@ mod tests {
         second.model_id = DEEPSEEK_MODEL_ID.to_string();
         second.api_base = "https://deepseek-provider.invalid/anthropic".to_string();
         let descriptors = [models.models[0].clone(), second];
-        let api_keys_by_base = build_api_keys_by_base(
-            descriptors.iter(),
-            "deepseek-fixture-key",
-            "glm-fixture-key",
-        );
+        let api_keys_by_kind = BTreeMap::from([
+            (
+                krw_agent_protocol::ProviderKind::Deepseek,
+                "deepseek-fixture-key".to_owned(),
+            ),
+            (
+                krw_agent_protocol::ProviderKind::Glm,
+                "glm-fixture-key".to_owned(),
+            ),
+        ]);
+        let api_keys_by_base = build_api_keys_by_base(descriptors.iter(), &api_keys_by_kind);
         let catalog =
-            DeepSeekProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8)
+            ProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8)
                 .expect("multi-model catalog compiles when every model is allowed");
         assert_eq!(catalog.by_model.len(), 2);
         assert!(catalog.exact(DEEPSEEK_MODEL_ID).is_some());

@@ -10,13 +10,13 @@ use krw_agent_image::{
     AgentImageManifest, EntrypointSpec, ImageError, LoadedImage, ScopeCardinality,
 };
 use krw_agent_protocol::{
-    ALLOWED_MODEL_IDS, ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding,
-    ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, GLM_DIRECT_PROFILE_ID,
+    ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding, ContentHash,
+    DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, GLM_DIRECT_PROFILE_ID,
     GLM_HIGH_PROFILE_ID, GLM_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor,
-    ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION,
-    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
-    PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot,
-    RunRequest, ScopeCardinalityKind, ThinkingMode,
+    ModelExecutionProfile, ModelRegistry, PROVIDER_KINDS, PROTOCOL_VERSION,
+    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderKind,
+    ProviderWireCapabilities, PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort,
+    ResolvedExecutionSnapshot, RunRequest, ScopeCardinalityKind, ThinkingMode,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -190,8 +190,10 @@ pub struct ResolvedRuntime {
     model_registry: Arc<ModelRegistry>,
     budget_registry_hash: ContentHash,
     budget_profiles: BTreeMap<String, BudgetProfile>,
-    deepseek_api_key: Arc<Zeroizing<String>>,
-    glm_api_key: Arc<Zeroizing<String>>,
+    /// Live provider credentials resolved once per advertised provider kind.
+    /// Lookup is descriptor-driven: a kind absent from the compiled registry
+    /// has no entry, and no second ad-hoc key field exists.
+    provider_api_keys: BTreeMap<ProviderKind, Arc<Zeroizing<String>>>,
     /// Logical `AgentImage` capability id -> shared physical deployment binding.
     pub capabilities: BTreeMap<String, Arc<ResolvedCapability>>,
     /// Logical capability id -> immutable data-release hash.  The broader
@@ -226,8 +228,7 @@ pub struct ResolvedReleaseSet {
     entrypoint_owners: BTreeMap<(String, String), ContentHash>,
     model_registry: Arc<ModelRegistry>,
     model_registry_hash: ContentHash,
-    deepseek_api_key: Arc<Zeroizing<String>>,
-    glm_api_key: Arc<Zeroizing<String>>,
+    provider_api_keys: BTreeMap<ProviderKind, Arc<Zeroizing<String>>>,
 }
 
 impl std::fmt::Debug for ResolvedReleaseSet {
@@ -238,9 +239,8 @@ impl std::fmt::Debug for ResolvedReleaseSet {
             .field("image_hashes", &self.releases.keys().collect::<Vec<_>>())
             .field("entrypoint_owners", &self.entrypoint_owners)
             .field("model_registry_hash", &self.model_registry_hash)
-            .field("deepseek_api_key", &"[REDACTED]")
-            .field("glm_api_key", &"[REDACTED]")
-            .finish_non_exhaustive()
+            .field("provider_api_keys", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -252,10 +252,9 @@ impl std::fmt::Debug for ResolvedRuntime {
             .field("binding_hash", &self.binding_hash)
             .field("registry_hash", &self.registry_hash)
             .field("model_registry", &self.model_registry)
-            .field("deepseek_api_key", &"[REDACTED]")
-            .field("glm_api_key", &"[REDACTED]")
+            .field("provider_api_keys", &"[REDACTED]")
             .field("capabilities", &self.capabilities)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
@@ -404,8 +403,7 @@ pub fn resolve_release_set(
         entrypoint_owners,
         model_registry: Arc::clone(&globals.model_registry),
         model_registry_hash: globals.registry_hash.clone(),
-        deepseek_api_key: Arc::clone(&globals.deepseek_api_key),
-        glm_api_key: Arc::clone(&globals.glm_api_key),
+        provider_api_keys: globals.provider_api_keys.clone(),
     })
 }
 
@@ -414,8 +412,7 @@ struct PreparedGlobals {
     budget_profiles: BTreeMap<String, BudgetProfile>,
     model_registry: Arc<ModelRegistry>,
     registry_hash: ContentHash,
-    deepseek_api_key: Arc<Zeroizing<String>>,
-    glm_api_key: Arc<Zeroizing<String>>,
+    provider_api_keys: BTreeMap<ProviderKind, Arc<Zeroizing<String>>>,
     resolved_bindings: BTreeMap<String, Arc<ResolvedCapability>>,
 }
 
@@ -450,12 +447,16 @@ fn prepare_globals(
     if model_ids.len() != registry.models.len() || registry.models.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModel);
     }
-    // Admit any non-empty subset of the protocol's allowed model inventory.
-    // Pre-multi-provider this was a strict equality check against the single
-    // DeepSeek model; relaxing it to a subset keeps single-model deployments
-    // behaving identically while permitting additional provider models
-    // (e.g. GLM-5.3) to coexist in one release set.
-    if !model_ids.iter().all(|id| ALLOWED_MODEL_IDS.contains(id)) {
+    // Admit any non-empty subset of the compiled provider-kind inventory. The
+    // protocol kind mapping is the single authority: every model id must
+    // resolve to a known provider kind here at startup, so an unknown provider
+    // fails release compilation and can never surface mid provider turn.
+    let advertised_kinds = registry
+        .models
+        .iter()
+        .filter_map(|model| ProviderKind::for_model_id(&model.model_id))
+        .collect::<BTreeSet<_>>();
+    if advertised_kinds.len() != registry.models.len() {
         return Err(ConfigError::ModelInventoryMismatch);
     }
     for model in &registry.models {
@@ -472,28 +473,17 @@ fn prepare_globals(
     // Each provider admitted by this release must carry the one provider-
     // neutral high/max/direct profile triad. A provider registry changes the
     // model bound to a slot, never the logical profile vocabulary.
-    let mut required_profiles = BTreeSet::new();
-    if model_ids.contains(DEEPSEEK_MODEL_ID) {
-        let deepseek_profiles_complete = [
+    if !advertised_kinds.is_empty() {
+        let profiles_complete = [
             GLM_DIRECT_PROFILE_ID,
             GLM_HIGH_PROFILE_ID,
             GLM_MAX_PROFILE_ID,
         ]
         .iter()
         .all(|profile_id| profile_ids.contains(profile_id));
-        if !deepseek_profiles_complete {
+        if !profiles_complete {
             return Err(ConfigError::ModelProfileInventoryMismatch);
         }
-    }
-    if model_ids.contains(GLM_MODEL_ID) {
-        required_profiles.extend([
-            GLM_DIRECT_PROFILE_ID,
-            GLM_HIGH_PROFILE_ID,
-            GLM_MAX_PROFILE_ID,
-        ]);
-    }
-    if !profile_ids.is_superset(&required_profiles) {
-        return Err(ConfigError::ModelProfileInventoryMismatch);
     }
     if !profile_ids
         .iter()
@@ -542,28 +532,22 @@ fn prepare_globals(
     }
 
     let mut secret_cache = BTreeMap::<String, Arc<Zeroizing<String>>>::new();
-    // A live registry requires credentials only for providers it actually
-    // advertises. Descriptor and database checks do not construct a provider
-    // client, so they intentionally validate the same immutable release
-    // without requiring a dormant execution credential. These empty values
-    // remain startup-local and are never exposed to a run.
-    let deepseek_api_key = if mode.requires_provider_credentials()
-        && registry
-            .models
-            .iter()
-            .any(|model| model.model_id == DEEPSEEK_MODEL_ID)
-    {
-        read_secret_once(secrets, &mut secret_cache, "DEEPSEEK_API_KEY")?
-    } else {
-        Arc::new(Zeroizing::new(String::new()))
-    };
-    let glm_api_key = if mode.requires_provider_credentials()
-        && registry.models.iter().any(|m| m.model_id == GLM_MODEL_ID)
-    {
-        read_secret_once(secrets, &mut secret_cache, "GLM_API_KEY")?
-    } else {
-        Arc::new(Zeroizing::new(String::new()))
-    };
+    // A live registry requires credentials only for the provider kinds it
+    // actually advertises, resolved once per kind through the kind's
+    // `credential_ref` (`DEEPSEEK_API_KEY` / `GLM_API_KEY`). Descriptor and
+    // database checks do not construct a provider client, so they validate
+    // the same immutable release without requiring a dormant execution
+    // credential. Kind-absent entries simply have no key in the map; the
+    // values remain startup-local and are never exposed to a run.
+    let mut provider_api_keys = BTreeMap::<ProviderKind, Arc<Zeroizing<String>>>::new();
+    if mode.requires_provider_credentials() {
+        for kind in PROVIDER_KINDS {
+            if advertised_kinds.contains(kind) {
+                let key = read_secret_once(secrets, &mut secret_cache, kind.credential_env())?;
+                provider_api_keys.insert(*kind, key);
+            }
+        }
+    }
     let mut resolved_bindings = BTreeMap::new();
     for key in required_binding_keys {
         let capability = bindings
@@ -645,8 +629,7 @@ fn prepare_globals(
         budget_profiles,
         model_registry: Arc::new(registry.clone()),
         registry_hash: semantic_model_registry_hash(registry)?,
-        deepseek_api_key,
-        glm_api_key,
+        provider_api_keys,
         resolved_bindings,
     })
 }
@@ -772,8 +755,7 @@ fn resolve_image(
         entrypoints,
         model_registry: Arc::clone(&globals.model_registry),
         budget_profiles,
-        deepseek_api_key: Arc::clone(&globals.deepseek_api_key),
-        glm_api_key: Arc::clone(&globals.glm_api_key),
+        provider_api_keys: globals.provider_api_keys.clone(),
         capabilities: resolved_capabilities,
         capability_release_hashes: release_hashes,
     };
@@ -942,16 +924,14 @@ impl ResolvedRuntime {
         &self.budget_registry_hash
     }
 
-    /// Startup-owned API key. Callers may borrow it to build one provider
-    /// catalog, but no run receives or clones the secret.
-    pub fn deepseek_api_key(&self) -> &str {
-        self.deepseek_api_key.as_str()
-    }
-
-    /// Startup-owned GLM API key. Empty when the model registry does not
-    /// advertise GLM-5.3; callers should branch on emptiness before use.
-    pub fn glm_api_key(&self) -> &str {
-        self.glm_api_key.as_str()
+    /// Startup-owned credential for one provider kind, resolved once from the
+    /// kind's `credential_ref` environment. Empty when the compiled registry
+    /// does not advertise that kind. Callers may borrow it to build one
+    /// provider catalog, but no run receives or clones the secret.
+    pub fn provider_api_key(&self, kind: ProviderKind) -> &str {
+        self.provider_api_keys
+            .get(&kind)
+            .map_or("", |key| key.as_str())
     }
 
     pub fn physical_binding_count(&self) -> usize {
@@ -1083,13 +1063,13 @@ impl ResolvedReleaseSet {
         self.model_registry.models.iter()
     }
 
-    pub fn deepseek_api_key(&self) -> &str {
-        self.deepseek_api_key.as_str()
-    }
-
-    /// Startup-owned GLM API key. Empty when GLM is not in the registry.
-    pub fn glm_api_key(&self) -> &str {
-        self.glm_api_key.as_str()
+    /// Startup-owned credential for one provider kind, resolved once from the
+    /// kind's `credential_ref` environment. Empty when the release set does
+    /// not advertise that kind.
+    pub fn provider_api_key(&self, kind: ProviderKind) -> &str {
+        self.provider_api_keys
+            .get(&kind)
+            .map_or("", |key| key.as_str())
     }
 
     /// Produce the only host-visible deployment contract from the same
@@ -1176,15 +1156,15 @@ impl ResolvedReleaseSet {
 }
 
 fn validate_model(model: &ModelDescriptor) -> Result<(), ConfigError> {
-    // The model_id is the closed dispatch key: each branch applies one
-    // provider's exact wire contract. Falling through to the catch-all error
-    // preserves the historical "reject anything that is not the single pinned
-    // production provider" behavior for unknown ids while still admitting GLM
-    // alongside DeepSeek.
-    match model.model_id.as_str() {
-        DEEPSEEK_MODEL_ID => validate_deepseek_model(model),
-        GLM_MODEL_ID => validate_glm_model(model),
-        _ => Err(ConfigError::InvalidDeepSeekModel(model.model_id.clone())),
+    // The provider kind is derived once through the protocol registry mapping
+    // and selects the branch; each branch applies that provider's exact wire
+    // contract. An id with no kind is rejected with the provider-neutral
+    // unknown-model error instead of being classified as a drifted DeepSeek
+    // or GLM deployment.
+    match ProviderKind::for_model_id(&model.model_id) {
+        Some(ProviderKind::Deepseek) => validate_deepseek_model(model),
+        Some(ProviderKind::Glm) => validate_glm_model(model),
+        None => Err(ConfigError::UnknownProviderModel(model.model_id.clone())),
     }
 }
 
@@ -1225,15 +1205,15 @@ fn validate_model_profile(
     profile: &ModelExecutionProfile,
     model: &ModelDescriptor,
 ) -> Result<(), ConfigError> {
-    // Same provider-dispatch pattern as `validate_model`: the model_id pinned
-    // on the descriptor selects the branch, and each branch keeps the exact
-    // per-profile semantic checks (thinking mode + reasoning effort) that the
-    // deployment contract requires. The historical DeepSeek behavior is
-    // preserved verbatim in its branch.
-    match model.model_id.as_str() {
-        DEEPSEEK_MODEL_ID => validate_deepseek_model_profile(profile, model),
-        GLM_MODEL_ID => validate_glm_model_profile(profile, model),
-        _ => Err(ConfigError::InvalidModelProfile(profile.profile_id.clone())),
+    // Same provider-dispatch pattern as `validate_model`: the kind derived
+    // from the descriptor's model_id selects the branch, and each branch
+    // keeps the exact per-profile semantic checks (thinking mode + reasoning
+    // effort) that the deployment contract requires. The historical DeepSeek
+    // behavior is preserved verbatim in its branch.
+    match ProviderKind::for_model_id(&model.model_id) {
+        Some(ProviderKind::Deepseek) => validate_deepseek_model_profile(profile, model),
+        Some(ProviderKind::Glm) => validate_glm_model_profile(profile, model),
+        None => Err(ConfigError::UnknownProviderModel(model.model_id.clone())),
     }
 }
 
@@ -1487,6 +1467,8 @@ pub enum ConfigError {
     InvalidDeepSeekModel(String),
     #[error("model is not an exact supported GLM deployment: {0}")]
     InvalidGlmModel(String),
+    #[error("model id has no provider kind in the compiled registry: {0}")]
+    UnknownProviderModel(String),
     #[error("model registry has no model or repeats a model id")]
     DuplicateOrEmptyModel,
     #[error("model registry contains a model outside the pinned provider set")]
@@ -2013,10 +1995,11 @@ mod tests {
         ));
     }
 
-    /// Unknown model ids fall through to the historical catch-all error so the
-    /// validator never silently admits an unrecognised provider.
+    /// Unknown model ids are rejected with a provider-neutral error: an
+    /// unrecognised provider is never classified as a drifted DeepSeek (or
+    /// GLM) deployment. The provider kind mapping is the single authority.
     #[test]
-    fn unknown_model_id_is_rejected_with_deepseek_error() {
+    fn unknown_model_id_is_rejected_with_a_provider_neutral_error() {
         let mut unknown = ModelDescriptor {
             model_id: DEEPSEEK_MODEL_ID.into(),
             api_base: DEEPSEEK_API_BASE.into(),
@@ -2029,7 +2012,7 @@ mod tests {
         unknown.model_id = "qwen-3.5".into();
         assert!(matches!(
             validate_model(&unknown),
-            Err(ConfigError::InvalidDeepSeekModel(_))
+            Err(ConfigError::UnknownProviderModel(model)) if model == "qwen-3.5"
         ));
     }
 
@@ -2233,7 +2216,7 @@ mod tests {
             ValidationMode::ProductionDescriptor,
         )
         .expect("descriptor validation must not construct a GLM provider client");
-        assert!(descriptor_only.glm_api_key().is_empty());
+        assert!(descriptor_only.provider_api_key(ProviderKind::Glm).is_empty());
 
         assert!(matches!(
             resolve_release_set(

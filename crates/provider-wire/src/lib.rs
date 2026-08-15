@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 #[cfg(feature = "http")]
 use std::time::Duration;
 
-use krw_agent_protocol::{ALLOWED_MODEL_IDS, ContentHash, ReasoningEffort, ThinkingMode};
+use krw_agent_protocol::{ContentHash, ProviderKind, ReasoningEffort, ThinkingMode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
@@ -1179,7 +1179,7 @@ pub struct TokenUsage {
 
 impl ProviderEpisodeV1 {
     pub fn verify_model_identity(&self) -> Result<(), WireError> {
-        if !ALLOWED_MODEL_IDS.contains(&self.requested_model.as_str()) {
+        if ProviderKind::for_model_id(&self.requested_model).is_none() {
             return Err(WireError::UnknownModel(self.requested_model.clone()));
         }
         if self.requested_model != self.observed_model {
@@ -1290,7 +1290,13 @@ mod http_client {
     /// for field so the runtime can swap clients without touching the limits
     /// plumbing. The factory [`ProviderClientConfig::production`] chooses sane
     /// defaults tuned for the Anthropic Messages API streaming contract.
+    ///
+    /// `provider_kind` pins the client to one concrete provider family: every
+    /// model in `allowed_models` must resolve to exactly that kind through the
+    /// protocol registry, so a client can never be compiled for a provider it
+    /// was not constructed for.
     pub struct ProviderClientConfig {
+        pub provider_kind: ProviderKind,
         pub api_base: String,
         pub allowed_models: BTreeSet<String>,
         pub connect_timeout: Duration,
@@ -1307,6 +1313,7 @@ mod http_client {
         /// to match `DeepSeekClientConfig::production` so the runtime can route to
         /// either provider without re-tuning.
         pub fn production(
+            provider_kind: ProviderKind,
             api_base: impl Into<String>,
             allowed_models: impl IntoIterator<Item = String>,
             max_idle_per_host: usize,
@@ -1316,12 +1323,12 @@ mod http_client {
             // remains open for up to ten minutes. The run engine still applies
             // each run's hard deadline; this client timeout only prevents a
             // provider request from being cut off before that outer fence.
-            let request_timeout = if api_base == "https://api.deepseek.com/anthropic" {
-                Duration::from_secs(590)
-            } else {
-                Duration::from_secs(130)
+            let request_timeout = match provider_kind {
+                ProviderKind::Deepseek => Duration::from_secs(590),
+                ProviderKind::Glm => Duration::from_secs(130),
             };
             Self {
+                provider_kind,
                 api_base,
                 allowed_models: allowed_models.into_iter().collect(),
                 connect_timeout: Duration::from_secs(10),
@@ -1346,6 +1353,7 @@ mod http_client {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter
                 .debug_struct("ProviderClientConfig")
+                .field("provider_kind", &self.provider_kind)
                 .field("api_base_hash", &ContentHash::sha256(&self.api_base))
                 .field("allowed_models", &self.allowed_models)
                 .field("connect_timeout", &self.connect_timeout)
@@ -1371,6 +1379,7 @@ mod http_client {
     /// `reqwest::Client` connection pool; one client can serve many concurrent
     /// requests.
     pub struct ProviderClient {
+        provider_kind: ProviderKind,
         http: reqwest::Client,
         endpoint: String,
         allowed_models: BTreeSet<String>,
@@ -1385,6 +1394,7 @@ mod http_client {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter
                 .debug_struct("ProviderClient")
+                .field("provider_kind", &self.provider_kind)
                 .field("endpoint_hash", &ContentHash::sha256(&self.endpoint))
                 .field("allowed_models", &self.allowed_models)
                 .field("request_timeout", &self.request_timeout)
@@ -1394,6 +1404,13 @@ mod http_client {
     }
 
     impl ProviderClient {
+        /// The provider family this client was compiled for. Wire failure
+        /// classification dispatches on this kind; it never compares
+        /// model-name strings.
+        pub const fn provider_kind(&self) -> ProviderKind {
+            self.provider_kind
+        }
+
         /// Construct a client. Performs URL validation (HTTPS, no userinfo, no
         /// query/fragment), API-key validation, and limit sanity checks. Installs
         /// the rustls ring provider as a side effect.
@@ -1421,11 +1438,14 @@ mod http_client {
             {
                 return Err(WireError::InvalidClientLimits);
             }
+            // Every admitted model must belong to the configured provider kind.
+            // The protocol kind mapping is the single inventory authority; a
+            // model of a different provider fails closed here at construction
+            // instead of routing a foreign model through this client mid-turn.
             if config.allowed_models.is_empty()
-                || !config
-                    .allowed_models
-                    .iter()
-                    .all(|model| ALLOWED_MODEL_IDS.contains(&model.as_str()))
+                || !config.allowed_models.iter().all(|model| {
+                    ProviderKind::for_model_id(model) == Some(config.provider_kind)
+                })
             {
                 return Err(WireError::InvalidAllowedModel);
             }
@@ -1451,6 +1471,7 @@ mod http_client {
                 .build()?;
 
             Ok(Self {
+                provider_kind: config.provider_kind,
                 http,
                 endpoint: format!("{}/v1/messages", config.api_base.trim_end_matches('/')),
                 allowed_models: config.allowed_models,
@@ -2449,5 +2470,48 @@ mod tests {
         assert_eq!(parse_retry_after_ms(&headers), None);
         headers.insert("retry-after", HeaderValue::from_static("9"));
         assert_eq!(parse_retry_after_ms(&headers), None);
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn client_construction_is_pinned_to_one_provider_kind() {
+        use krw_agent_protocol::ProviderKind;
+
+        // A model id that is admitted by the protocol inventory but belongs to
+        // a different provider kind than the client must fail closed at
+        // construction instead of silently compiling a cross-provider client.
+        let cross_kind = ProviderClientConfig::production(
+            ProviderKind::Glm,
+            "https://api.z.ai/api/anthropic",
+            [DEEPSEEK_MODEL_ID.to_owned()],
+            8,
+        );
+        assert!(matches!(
+            ProviderClient::new(cross_kind, "fixture-key"),
+            Err(WireError::InvalidAllowedModel)
+        ));
+
+        // A model id outside the closed inventory is rejected identically.
+        let unknown = ProviderClientConfig::production(
+            ProviderKind::Glm,
+            "https://api.z.ai/api/anthropic",
+            ["qwen-3.5".to_owned()],
+            8,
+        );
+        assert!(matches!(
+            ProviderClient::new(unknown, "fixture-key"),
+            Err(WireError::InvalidAllowedModel)
+        ));
+
+        // A matching kind/model pair compiles and remembers its kind so wire
+        // failure classification never has to compare model-name strings.
+        let glm = ProviderClientConfig::production(
+            ProviderKind::Glm,
+            "https://api.z.ai/api/anthropic",
+            [GLM_MODEL_ID.to_owned()],
+            8,
+        );
+        let client = ProviderClient::new(glm, "fixture-key").expect("same-kind client compiles");
+        assert_eq!(client.provider_kind(), ProviderKind::Glm);
     }
 }

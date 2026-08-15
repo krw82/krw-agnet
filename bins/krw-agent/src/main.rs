@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use krw_agent_image::{compile_agent_dir, load_image, validate_spec, write_image};
 use krw_agent_protocol::ThinkingMode;
 use krw_agent_protocol::{
-    ALLOWED_MODEL_IDS, ContentHash, DEEPSEEK_MODEL_ID, GLM_MODEL_ID,
-    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PublicReleaseDescriptor,
+    ALLOWED_MODEL_IDS, ContentHash, GLM_MODEL_ID, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
+    ProviderKind, PublicReleaseDescriptor,
 };
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, ProviderClient, ProviderClientConfig, ProviderFunctionName,
@@ -32,9 +32,7 @@ use gateway::{AgentGatewayClient, GatewayRunState};
 
 const MAX_DESCRIPTOR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
-const GLM_API_KEY_ENV: &str = "GLM_API_KEY";
 const GLM_API_BASE: &str = "https://api.z.ai/api/anthropic";
-const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/anthropic";
 const PROVIDER_PROBE_PROMPT: &str = "Reply with only: OK";
 const PROVIDER_PROBE_MAX_TOKENS: u32 = 16;
@@ -210,11 +208,17 @@ enum ProviderProbeArg {
 }
 
 impl ProviderProbeArg {
-    const fn model_id(self) -> &'static str {
+    /// The provider kind this CLI label selects; the protocol registry owns
+    /// the kind-to-model and kind-to-credential mappings.
+    const fn kind(self) -> ProviderKind {
         match self {
-            Self::Glm => GLM_MODEL_ID,
-            Self::Deepseek => DEEPSEEK_MODEL_ID,
+            Self::Glm => ProviderKind::Glm,
+            Self::Deepseek => ProviderKind::Deepseek,
         }
+    }
+
+    const fn model_id(self) -> &'static str {
+        self.kind().model_id()
     }
 
     const fn api_base(self) -> &'static str {
@@ -225,10 +229,7 @@ impl ProviderProbeArg {
     }
 
     const fn api_key_env(self) -> &'static str {
-        match self {
-            Self::Glm => GLM_API_KEY_ENV,
-            Self::Deepseek => DEEPSEEK_API_KEY_ENV,
-        }
+        self.kind().credential_env()
     }
 }
 
@@ -938,7 +939,12 @@ fn provider_client(
     }
 
     let client = ProviderClient::new(
-        ProviderClientConfig::production(provider.api_base(), [provider.model_id().to_owned()], 8),
+        ProviderClientConfig::production(
+            provider.kind(),
+            provider.api_base(),
+            [provider.model_id().to_owned()],
+            8,
+        ),
         api_key.as_str(),
     )?;
     Ok(client)
@@ -1129,15 +1135,15 @@ fn write_new_file(path: &Path, bytes: &[u8], private: bool) -> Result<(), std::i
 #[cfg(test)]
 mod tests {
     use super::{
-        DEEPSEEK_MODEL_ID, GLM_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT,
-        ProviderProbeArg, provider_probe_context, provider_probe_request,
+        GLM_MODEL_ID, PROVIDER_PROBE_MAX_TOKENS, PROVIDER_PROBE_PROMPT, ProviderProbeArg,
+        provider_probe_context, provider_probe_request,
     };
     use krw_agent_protocol::ThinkingMode;
     use krw_agent_provider_wire::ProviderMessage;
 
     #[test]
     fn provider_probe_is_exact_for_each_admitted_provider_and_has_no_tools() {
-        for model_id in [GLM_MODEL_ID, DEEPSEEK_MODEL_ID] {
+        for model_id in [GLM_MODEL_ID, ProviderProbeArg::Deepseek.model_id()] {
             let request = provider_probe_request(model_id);
             assert_eq!(request.model, model_id);
             assert!(request.stream);
@@ -1163,7 +1169,10 @@ mod tests {
             "https://api.z.ai/api/anthropic"
         );
         assert_eq!(ProviderProbeArg::Glm.api_key_env(), "GLM_API_KEY");
-        assert_eq!(ProviderProbeArg::Deepseek.model_id(), DEEPSEEK_MODEL_ID);
+        assert_eq!(
+            ProviderProbeArg::Deepseek.model_id(),
+            krw_agent_protocol::DEEPSEEK_MODEL_ID
+        );
         assert_eq!(
             ProviderProbeArg::Deepseek.api_base(),
             "https://api.deepseek.com/anthropic"

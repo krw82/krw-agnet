@@ -22,6 +22,63 @@ pub const GLM_MODEL_ID: &str = "glm-5.3";
 /// backed by one of these exact ids so that downstream codecs can dispatch on
 /// `model_id` without a hidden fallback.
 pub const ALLOWED_MODEL_IDS: &[&str] = &[DEEPSEEK_MODEL_ID, GLM_MODEL_ID];
+
+/// Concrete provider families the runtime can compile. This enum is the single
+/// compile-time registry input: it maps an exact model id to its provider kind
+/// once, so every downstream layer (catalog compilation, credential
+/// resolution, wire failure classification) dispatches on the kind instead of
+/// re-deriving provider identity by comparing model-name strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Deepseek,
+    Glm,
+}
+
+/// Every provider kind the registry can compile, in stable order.
+pub const PROVIDER_KINDS: &[ProviderKind] = &[ProviderKind::Deepseek, ProviderKind::Glm];
+
+impl ProviderKind {
+    /// The single name-to-kind authority. `None` means the model id is not in
+    /// the closed protocol inventory; callers must reject it at startup
+    /// compilation rather than falling back to a default provider.
+    pub fn for_model_id(model_id: &str) -> Option<Self> {
+        if model_id == DEEPSEEK_MODEL_ID {
+            Some(Self::Deepseek)
+        } else if model_id == GLM_MODEL_ID {
+            Some(Self::Glm)
+        } else {
+            None
+        }
+    }
+
+    /// The exact pinned model id backing this provider kind.
+    pub const fn model_id(self) -> &'static str {
+        match self {
+            Self::Deepseek => DEEPSEEK_MODEL_ID,
+            Self::Glm => GLM_MODEL_ID,
+        }
+    }
+
+    /// Environment variable holding this kind's live credential. Resolution
+    /// goes through `SecretSource` exactly once per startup.
+    pub const fn credential_env(self) -> &'static str {
+        match self {
+            Self::Deepseek => "DEEPSEEK_API_KEY",
+            Self::Glm => "GLM_API_KEY",
+        }
+    }
+
+    /// Lower-case prefix used by the closed wire-failure code vocabulary
+    /// (`{prefix}_http_400_...`). Classification dispatches on the kind, not
+    /// on a model-name comparison.
+    pub const fn failure_code_prefix(self) -> &'static str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::Glm => "glm",
+        }
+    }
+}
 /// Provider-neutral execution profile ids. Both GLM and DeepSeek registries
 /// bind these logical slots to their own exact model descriptor.
 pub const GLM_HIGH_PROFILE_ID: &str = "glm_high";
@@ -467,7 +524,7 @@ impl ModelRegistry {
         profile_id: &str,
         requested: &str,
     ) -> Result<(&ModelExecutionProfile, &ModelDescriptor), ContractError> {
-        if !ALLOWED_MODEL_IDS.contains(&requested) {
+        if ProviderKind::for_model_id(requested).is_none() {
             return Err(ContractError::UnknownModel(requested.to_owned()));
         }
         let profile = self
@@ -475,10 +532,7 @@ impl ModelRegistry {
             .iter()
             .find(|profile| profile.profile_id == profile_id)
             .ok_or_else(|| ContractError::UnknownModelProfile(profile_id.to_owned()))?;
-        if !ALLOWED_MODEL_IDS
-            .iter()
-            .any(|allowed| *allowed == profile.model_id)
-        {
+        if ProviderKind::for_model_id(&profile.model_id).is_none() {
             return Err(ContractError::UnknownModel(profile.model_id.clone()));
         }
         let model = self

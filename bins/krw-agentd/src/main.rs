@@ -23,9 +23,7 @@ use krw_agent_persistence::metrics;
 use krw_agent_persistence::postgres::{
     PostgresJsonExecutor, PostgresPoolOptions, PostgresTlsMode, ProcessEnvironmentDatabaseSecrets,
 };
-use krw_agent_protocol::{
-    DEEPSEEK_MODEL_ID, DeploymentBinding, GLM_MODEL_ID, ModelRegistry, PublicReleaseDescriptor,
-};
+use krw_agent_protocol::{DeploymentBinding, ModelRegistry, PublicReleaseDescriptor};
 use krw_agent_release_authorization::{
     ReleaseAuthorizationError, VerificationContext, parse_canonical_authorization,
     parse_canonical_trust_registry, public_descriptor_hash, verify_for_descriptor,
@@ -35,8 +33,8 @@ use krw_agent_runtime_config::{
     ResolvedReleaseSet, ValidationMode, load_yaml, resolve_release_set,
 };
 use krw_agent_runtime_persistence::{
-    ArtifactRepository, ArtifactTtlPolicy, DeepSeekProviderCatalog, DurableRunStore,
-    FinalizationPolicy, ProductionClaimedRunExecutor, ProductionReleaseCatalog,
+    ArtifactRepository, ArtifactTtlPolicy, DurableRunStore, FinalizationPolicy,
+    ProductionClaimedRunExecutor, ProductionReleaseCatalog, ProviderCatalog,
 };
 use krw_agent_tool_mcp::{McpClientPool, McpHttpConfig, PoolKey, PoolScope};
 use thiserror::Error;
@@ -71,18 +69,21 @@ enum ProviderArg {
 }
 
 impl ProviderArg {
-    const fn model_id(self) -> &'static str {
+    /// The provider kind this CLI label selects; the protocol registry owns
+    /// the kind-to-model mapping.
+    const fn kind(self) -> krw_agent_protocol::ProviderKind {
         match self {
-            Self::Glm => GLM_MODEL_ID,
-            Self::Deepseek => DEEPSEEK_MODEL_ID,
+            Self::Glm => krw_agent_protocol::ProviderKind::Glm,
+            Self::Deepseek => krw_agent_protocol::ProviderKind::Deepseek,
         }
     }
 
+    const fn model_id(self) -> &'static str {
+        self.kind().model_id()
+    }
+
     const fn label(self) -> &'static str {
-        match self {
-            Self::Glm => "glm",
-            Self::Deepseek => "deepseek",
-        }
+        self.kind().failure_code_prefix()
     }
 }
 
@@ -354,7 +355,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // immutable configuration. Provider credentials are deliberately needed
     // only when this process can execute a live claim; otherwise a missing
     // inactive-provider key would block sealing the other provider's release.
-    let providers = DeepSeekProviderCatalog::compile_release_set_with_idle(
+    let providers = ProviderCatalog::compile_release_set_with_idle(
         &releases,
         args.provider_max_idle_per_host,
     )?;

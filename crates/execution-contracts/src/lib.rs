@@ -33,7 +33,7 @@ use serde_json::Value;
 use zeroize::Zeroize;
 
 #[cfg(feature = "http")]
-use krw_agent_protocol::GLM_MODEL_ID;
+use krw_agent_protocol::ProviderKind;
 #[cfg(feature = "http")]
 use krw_agent_provider_wire::{ProviderClient, WireError};
 
@@ -285,7 +285,7 @@ impl Provider for ProviderClient {
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         self.complete_stream(request, context)
             .await
-            .map_err(|error| provider_failure(&request.model, &error))
+            .map_err(|error| provider_failure(self.provider_kind(), &error))
     }
 
     async fn complete_prepared(
@@ -295,22 +295,21 @@ impl Provider for ProviderClient {
     ) -> Result<ProviderEpisodeV1, DependencyFailure> {
         self.complete_stream_prepared(prepared, context)
             .await
-            .map_err(|error| provider_failure(&prepared.request().model, &error))
+            .map_err(|error| provider_failure(self.provider_kind(), &error))
     }
 }
 
+/// Classify a wire failure using the compiled provider kind plus the wire
+/// phase captured by the `WireError` variant. The provider family is known
+/// from client construction; no model-name comparison happens here. The
+/// closed per-kind failure-code vocabularies (`deepseek_*`, `glm_*`) and the
+/// retry/delivery semantics are identical to the historical classifiers.
 #[cfg(feature = "http")]
-fn provider_failure(model: &str, error: &WireError) -> DependencyFailure {
-    let is_glm = model == GLM_MODEL_ID;
-    let (retryable, delivery) = if is_glm {
-        classify_glm_failure(error)
-    } else {
-        classify_deepseek_failure(error)
-    };
-    let code = if is_glm {
-        glm_failure_code(error)
-    } else {
-        deepseek_failure_code(error)
+fn provider_failure(kind: ProviderKind, error: &WireError) -> DependencyFailure {
+    let (retryable, delivery) = classify_wire_failure(error);
+    let code = match kind {
+        ProviderKind::Deepseek => deepseek_failure_code(error),
+        ProviderKind::Glm => glm_failure_code(error),
     };
     DependencyFailure::redacted(code, format!("{error:?}"), retryable, delivery)
 }
@@ -365,11 +364,6 @@ fn deepseek_failure_code(error: &WireError) -> String {
 }
 
 #[cfg(feature = "http")]
-fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
-    classify_wire_failure(error)
-}
-
-#[cfg(feature = "http")]
 fn glm_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -416,11 +410,6 @@ fn glm_failure_code(error: &WireError) -> String {
         | WireError::TooManyToolCalls(_) => "glm_protocol_invalid".into(),
         WireError::StreamError { .. } => "glm_stream_error".into(),
     }
-}
-
-#[cfg(feature = "http")]
-fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
-    classify_wire_failure(error)
 }
 
 #[cfg(feature = "http")]
@@ -1028,5 +1017,37 @@ mod tests {
                 checkpoint_total_ms: 19,
             }
         );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn provider_failure_dispatches_on_provider_kind_not_model_names() {
+        use krw_agent_protocol::ProviderKind;
+
+        // The historical closed failure-code vocabularies stay byte-identical
+        // for both existing providers; only the dispatch input changed from a
+        // model-name comparison to the compiled provider kind.
+        assert_eq!(
+            provider_failure(ProviderKind::Glm, &WireError::MissingMessageStop).code,
+            "glm_missing_done_event"
+        );
+        assert_eq!(
+            provider_failure(ProviderKind::Deepseek, &WireError::MissingMessageStop).code,
+            "deepseek_missing_done_event"
+        );
+        assert_eq!(
+            provider_failure(ProviderKind::Glm, &WireError::MissingObservedModel).code,
+            "glm_model_missing"
+        );
+        assert_eq!(
+            provider_failure(ProviderKind::Deepseek, &WireError::MissingObservedModel).code,
+            "deepseek_model_stream_invalid"
+        );
+        let classified = provider_failure(ProviderKind::Glm, &WireError::InvalidEndpoint);
+        assert!(!classified.retryable);
+        assert_eq!(classified.delivery, DeliveryCertainty::NotDispatched);
+        let classified = provider_failure(ProviderKind::Deepseek, &WireError::InvalidEndpoint);
+        assert!(!classified.retryable);
+        assert_eq!(classified.delivery, DeliveryCertainty::NotDispatched);
     }
 }

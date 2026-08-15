@@ -41,9 +41,9 @@ use krw_agent_runtime_config::{
     load_yaml, resolve_release_set,
 };
 use krw_agent_runtime_persistence::{
-    ArtifactRepository, ArtifactTtlPolicy, DeepSeekProviderCatalog, DurableRunStore,
-    FinalizationPolicy, ImmutableRunClaimV1, ProductionClaimedRunExecutor,
-    ProductionReleaseCatalog, RunResourceProfileV1,
+    ArtifactRepository, ArtifactTtlPolicy, DurableRunStore, FinalizationPolicy,
+    ImmutableRunClaimV1, ProductionClaimedRunExecutor, ProductionReleaseCatalog,
+    ProviderCatalog, RunResourceProfileV1,
 };
 use krw_agent_tool_mcp::McpClientPool;
 use tokio::time::{sleep, timeout};
@@ -268,8 +268,8 @@ async fn flash_real_ontology_and_postgres_commit_final() {
     .expect("private artifact store");
     let artifacts = ArtifactRepository::new(Arc::new(artifact_store), ArtifactTtlPolicy::default())
         .expect("artifact repository");
-    let providers = DeepSeekProviderCatalog::compile_release_set(&releases)
-        .expect("Flash-only provider catalog");
+    let providers =
+        ProviderCatalog::compile_release_set(&releases).expect("Flash-only provider catalog");
     let release_catalog = ProductionReleaseCatalog::compile(&releases).expect("release catalog");
     let mcp_pool =
         Arc::new(McpClientPool::new(4, Duration::from_secs(90)).expect("bounded MCP pool"));
