@@ -214,17 +214,43 @@ frontend의 `prod:deploy:full`은 controller adapter만 남긴다.
 
 ## Wave 9 — legacy deletion
 
-새 controller가 dry-run과 production에서 검증된 후 즉시 삭제한다.
+상태: agent-side 삭제 완료, frontend-side는 계획된 전제 조건 대기 중.
 
-- old deploy/pause/recover scripts
-- rollback branches
-- dual/newest candidate selection
-- old provider alias
-- old transport variants
-- source crawler compatibility checks
-- `.deploy` state machine
+agent repo에서 이미 제거된 항목(Wave 1~7에서 수행):
+- `krw_skill_local` phantom binding과 local skill MCP 경로
+- `TransportKind::McpStdio/Native` 등 미지원 transport selector
+- `flash_*` profile alias와 암묵 `model-registry.yaml`(local/prod 모두)
+- launchd installer의 rollback 저장/`--rollback` 경로(forward-only +
+  `test_forward_only_launchd_installers.py`)
+- `KRW_ONTOLOGY_ROOT` ambient sibling build fallback과 empty mapping 경로
+- frontend source crawler `check_product_projection_compat.py`
+- dead `DeepSeekProviderCatalog::compile`
+
+frontend repo에 남아 있고 계획된 전제("새 controller가 dry-run과
+production에서 검증된 후 즉시 삭제")를 만족하면 삭제할 항목:
+- old deploy/pause/recover scripts(deploy-all-production.sh 등)
+- `.deploy` phase state machine과 rollback image, newest candidate selection
+- frontend `prod:deploy:full`을 controller adapter로 전환
+
+이 전제는 Wave 8 controller의 stage 3-11 실구현과 production 검증을
+선행한다(05문서의 forward-only 원칙).
 
 ## 검증 명령
+
+최종 검증 결과(2026-08-16, branch `refactor/final-form-waves`):
+
+- `cargo check --workspace --all-targets`: 0 errors
+- `cargo test --workspace`: 703 passed, 0 failed
+  (run-engine 112, capability-runtime 32, context-compaction 15,
+  krw-agent-deploy 73, runtime-persistence 35, tool-mcp 30+1 등)
+- `agents/check-all.sh`: all direct-authored agent sources and images verified
+- `python3 scripts/test_dual_provider_release.py`: 8/8 OK
+- `python3 scripts/test_sealed_metric_build_inputs.py`: OK
+- `python3 scripts/test_frontend_deployment_contract.py`: OK
+- `python3 scripts/test_forward_only_launchd_installers.py`: 4/4 OK
+- `bash -n agents/check-all.sh scripts/dev-stack.sh
+  scripts/build_sealed_dual_provider_release.sh`: OK
+  (packaging/launchd installer는 forward-only python 검증이 내용을 커버)
 
 ```bash
 env PATH=~/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin:$PATH \

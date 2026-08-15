@@ -87,3 +87,29 @@
 8. migration 이후 구 release 복구 코드는 없다.
 9. 실패한 배포도 terminal failure receipt를 남기며 admission은 닫힌 상태로 끝난다.
 10. 집중 테스트, workspace check, agent source validation, deployment dry-run이 모두 통과한다.
+
+### 2026-08-16 상태 감사 (branch `refactor/final-form-waves`)
+
+- (1) 완료 — lib.rs 18,761줄에서 8,753줄(tests 포함)로; recovery/
+  capability_dispatch/provider_request/finalization/active_run/
+  orchestrator/validation 모듈 분리.
+- (2) 완료 — `CapabilityExecution::{Remote,Local}` + closed builtin enum.
+- (3) 선택/분류 완료 — `ProviderKind` descriptor 분기. 잔여:
+  provider_request.rs의 wire-encoding 두 곳(output_config.effort,
+  response_format)은 pinned wire-capability 매트릭스 확장(계약 버전
+  변경)이 필요한 인코딩 성형 조건으로 문서화됨.
+- (4) 완료 — 품질 결함은 sanitize 후 AcceptedWithWarnings 커밋,
+  integrity만 run.failed.
+- (5) 완료 — total compaction, optional projection isolation,
+  post-commit infallibility.
+- (6) agent-side 완료(crawler 스크립트 삭제). frontend-side 전환은
+  Wave 9 전제와 함께 대기.
+- (7) 대기 — controller core(`bins/krw-agent-deploy`)는 fail-closed로
+  dry-run receipt까지 검증됨. stage 3-11 실구현 후 frontend adapter
+  전환.
+- (8) agent-side 완료(launchd forward-only, rollback 경로 제거).
+  frontend repo 구 스크립트/.deploy rollback은 (7) 검증 후 삭제.
+- (9) 완료 — controller가 terminal failure receipt + admission closed
+  원칙을 구현.
+- (10) 완료 — workspace 703 tests, check-all.sh, python 검증 4종,
+  controller dry-run 73 tests 모두 green.
