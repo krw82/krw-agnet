@@ -173,12 +173,6 @@ provider_matches() {
     if [[ "$command" == *"--provider $krw_provider"* ]]; then
       return 0
     fi
-    # Older stacks predate the explicit selector and always used the
-    # canonical GLM registry. Treat that exact compatibility command as GLM
-    # only; a DeepSeek selection still requires an explicit restart.
-    if [[ "$krw_provider" == glm && "$command" == *"/deployments/local/model-registry.yaml"* ]]; then
-      return 0
-    fi
   done < <(pgrep -f -- "$krw_root/target/debug/krw-agentd --image-dir" 2>/dev/null || true)
   return 1
 }

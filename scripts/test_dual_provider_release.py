@@ -45,7 +45,6 @@ EXPECTED_TOOL_SESSION_REUSE = {
     "krw_ontology_query": "attested-stateless-v1",
     "krw_ontology_trace": "attested-stateless-v1",
     "krw_ontology_chain": "attested-stateless-v1",
-    "krw_skill_local": "attested-stateless-v1",
     "krw_guru_query_context": "attested-stateless-v1",
     "krw_guru_company_brief": "attested-stateless-v1",
     "krw_guru_review_company_evidence": "attested-stateless-v1",
@@ -172,6 +171,13 @@ class DualProviderReleaseTest(unittest.TestCase):
             "deepseek": "deepseek-v4-flash",
         })
 
+    def test_source_registries_require_an_explicit_provider(self) -> None:
+        for environment in ("local", "prod"):
+            deployment_root = pathlib.Path("deployments") / environment
+            self.assertFalse((deployment_root / "model-registry.yaml").exists())
+            self.assertTrue((deployment_root / "model-registry.glm.yaml").is_file())
+            self.assertTrue((deployment_root / "model-registry.deepseek.yaml").is_file())
+
     def test_fixture_dual_root_is_verified_and_common_bytes_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -224,8 +230,8 @@ class DualProviderReleaseTest(unittest.TestCase):
         binding = pathlib.Path("deployments/prod/deployment-binding.example.yaml").read_text(
             encoding="utf-8"
         ).replace(
-            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    transport: mcp-http\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: run-scoped",
-            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    transport: mcp-http\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: attested-stateless-v1",
+            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: run-scoped",
+            "binding_key: get_feed_context\n    mcp_tool_name: get_feed_context\n    endpoint_ref: krw-feed-local\n    credential_ref: KRW_FEED_MCP_TOKEN\n    auth_scope: tenant\n    tool_session_reuse: attested-stateless-v1",
         )
         with self.assertRaisesRegex(ValueError, "MCP reuse matrix mismatch"):
             validate_tool_session_matrix(binding)
@@ -239,9 +245,10 @@ class DualProviderReleaseTest(unittest.TestCase):
         self.assertIn('"allowedOrigins": [origin]', installer)
         self.assertNotIn('"https://krw-agent.local"', installer)
         self.assertNotIn('"toolSessionReuse": "attested-stateless-v1"', installer)
-        self.assertIn('"guru": ("mcp_initialize", "/mcp"),', installer)
-        self.assertIn('config["upstreamReadinessMode"] = mode', installer)
-        self.assertIn('"upstreamMcpPath"] = endpoint_path', installer)
+        self.assertIn('"component":"krw-capabilityd"', installer)
+        self.assertIn("write_activation_status failed", installer)
+        self.assertNotIn("rollback)", installer)
+        self.assertNotIn("plist.previous", installer)
 
 
 def main() -> int:

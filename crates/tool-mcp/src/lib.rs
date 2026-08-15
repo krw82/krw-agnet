@@ -7,9 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use krw_agent_protocol::{
-    AuthScope, CapabilityBinding, ContentHash, McpToolSessionReuse, TransportKind,
-};
+use krw_agent_protocol::{AuthScope, CapabilityBinding, ContentHash, McpToolSessionReuse};
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, ORIGIN,
 };
@@ -41,7 +39,6 @@ pub struct PoolKey {
     endpoint_url_hash: ContentHash,
     readiness_url_hash: ContentHash,
     origin_hash: ContentHash,
-    transport: TransportKind,
     protocol_version: String,
     server_build: String,
     server_schema_bundle_hash: ContentHash,
@@ -84,7 +81,6 @@ impl PoolKey {
             endpoint_url_hash: ContentHash::sha256(endpoint),
             readiness_url_hash: ContentHash::sha256(readiness_endpoint),
             origin_hash: ContentHash::sha256(origin),
-            transport: binding.transport.clone(),
             protocol_version,
             server_build: binding.server_build.clone(),
             server_schema_bundle_hash: binding.server_schema_bundle_hash.clone(),
@@ -101,9 +97,6 @@ impl PoolKey {
     }
 
     fn validate_for(&self, config: &McpHttpConfig) -> Result<(), McpError> {
-        if self.transport != TransportKind::McpHttp {
-            return Err(McpError::PoolKeyMismatch("transport"));
-        }
         if self.endpoint_url_hash != ContentHash::sha256(&config.endpoint) {
             return Err(McpError::PoolKeyMismatch("endpoint_url_hash"));
         }
@@ -1067,11 +1060,7 @@ impl McpClientPool {
 
     /// Drop a broken initialized client without disturbing a newer connection
     /// that may have been admitted for the same deployment key.
-    pub async fn invalidate_if_current(
-        &self,
-        key: &PoolKey,
-        client: &Arc<McpHttpClient>,
-    ) -> bool {
+    pub async fn invalidate_if_current(&self, key: &PoolKey, client: &Arc<McpHttpClient>) -> bool {
         self.inner.remove_if_current(key, client).await
     }
 }
@@ -1557,10 +1546,13 @@ mod tests {
         // The server may have observed (and acted on) the request id before a
         // stream-level failure surfaces, so a second POST would risk duplicate
         // dispatch against non-idempotent tools.
-        assert!(!RequestRetry::for_method("tools/call")
-            .should_retry_after(0, &McpError::MissingStreamResponse));
-        assert!(!RequestRetry::for_method("tools/call")
-            .should_retry_after(0, &McpError::IncompleteSse));
+        assert!(
+            !RequestRetry::for_method("tools/call")
+                .should_retry_after(0, &McpError::MissingStreamResponse)
+        );
+        assert!(
+            !RequestRetry::for_method("tools/call").should_retry_after(0, &McpError::IncompleteSse)
+        );
     }
 
     #[test]
@@ -1570,15 +1562,23 @@ mod tests {
             RequestRetry::BoundedControl
         );
         assert_eq!(RequestRetry::for_method("tools/list").max_attempts(), 3);
-        assert!(RequestRetry::for_method("tools/list")
-            .should_retry_after(0, &McpError::MissingStreamResponse));
-        assert!(RequestRetry::for_method("tools/list")
-            .should_retry_after(1, &McpError::MissingStreamResponse));
-        assert!(!RequestRetry::for_method("tools/list")
-            .should_retry_after(2, &McpError::MissingStreamResponse));
+        assert!(
+            RequestRetry::for_method("tools/list")
+                .should_retry_after(0, &McpError::MissingStreamResponse)
+        );
+        assert!(
+            RequestRetry::for_method("tools/list")
+                .should_retry_after(1, &McpError::MissingStreamResponse)
+        );
+        assert!(
+            !RequestRetry::for_method("tools/list")
+                .should_retry_after(2, &McpError::MissingStreamResponse)
+        );
         // Non-retryable classification still fails fast for control reads.
-        assert!(!RequestRetry::for_method("tools/list")
-            .should_retry_after(0, &McpError::InvalidToolResult));
+        assert!(
+            !RequestRetry::for_method("tools/list")
+                .should_retry_after(0, &McpError::InvalidToolResult)
+        );
     }
 
     #[test]
@@ -1607,7 +1607,6 @@ mod tests {
         CapabilityBinding {
             binding_key: "ontology.query_context".into(),
             mcp_tool_name: "krw_ontology_query_context".into(),
-            transport: TransportKind::McpHttp,
             endpoint_ref: "krw-ontology-prod".into(),
             credential_ref: None,
             auth_scope,
@@ -1659,7 +1658,6 @@ mod tests {
             endpoint_url_hash: ContentHash::sha256("https://mcp.example.test/rpc"),
             readiness_url_hash: ContentHash::sha256("https://mcp.example.test/readyz"),
             origin_hash: ContentHash::sha256("https://krw-agent.example.test"),
-            transport: TransportKind::McpHttp,
             protocol_version: "2025-06-18".into(),
             server_build: "build-1".into(),
             server_schema_bundle_hash: ContentHash::sha256(format!("schema-{name}")),

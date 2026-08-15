@@ -66,7 +66,8 @@ The first command reads `GLM_API_KEY`, and the second reads
 `DEEPSEEK_API_KEY`, from the mode-0600 `.env.local` file. The selected key is
 the only provider key passed to the daemon. `model-registry.glm.yaml` and
 `model-registry.deepseek.yaml` are explicit lane variants; the historical
-`model-registry.yaml` remains as a GLM compatibility default.
+Provider selection is always explicit: use `model-registry.glm.yaml` or
+`model-registry.deepseek.yaml`.
 
 Switching providers requires `scripts/dev-stack.sh down` followed by `up` so
 the daemon, release descriptor, and signed authorization are rebuilt as one

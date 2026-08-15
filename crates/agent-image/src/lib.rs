@@ -806,8 +806,10 @@ fn valid_provider_envelope_field(field: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct CapabilitySpec {
     pub id: String,
-    /// Symbolic key resolved only by `DeploymentBinding`. Never a URL.
-    pub binding_key: String,
+    /// Closed execution target. Remote capabilities resolve one symbolic
+    /// deployment binding; local builtins execute from the immutable image
+    /// and deliberately have no endpoint, credential, or MCP lifecycle.
+    pub execution: CapabilityExecution,
     pub permission: Permission,
     /// Canonical contract sent to the physical capability implementation.
     pub input_contract: String,
@@ -861,7 +863,39 @@ pub struct CapabilitySpec {
     pub prerequisites: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CapabilityExecution {
+    Remote {
+        /// Symbolic key resolved only by `DeploymentBinding`. Never a URL.
+        binding_key: String,
+    },
+    Local {
+        builtin: LocalCapability,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalCapability {
+    SkillLoad,
+}
+
 impl CapabilitySpec {
+    pub fn remote_binding_key(&self) -> Option<&str> {
+        match &self.execution {
+            CapabilityExecution::Remote { binding_key } => Some(binding_key),
+            CapabilityExecution::Local { .. } => None,
+        }
+    }
+
+    pub fn local_builtin(&self) -> Option<LocalCapability> {
+        match &self.execution {
+            CapabilityExecution::Remote { .. } => None,
+            CapabilityExecution::Local { builtin } => Some(*builtin),
+        }
+    }
+
     pub fn model_input_contract_id(&self) -> &str {
         self.model_input_contract
             .as_deref()
@@ -2829,9 +2863,19 @@ pub fn validate_spec(spec: &AgentSpec) -> Result<(), ImageError> {
         }
     }
     for capability in &spec.capabilities {
-        if capability.binding_key.contains("://") {
+        if let Some(binding_key) = capability.remote_binding_key()
+            && binding_key.contains("://")
+        {
             return Err(ImageError::InvalidSpec(format!(
                 "capability {} embeds an endpoint instead of a symbolic binding key",
+                capability.id
+            )));
+        }
+        if let Some(LocalCapability::SkillLoad) = capability.local_builtin()
+            && capability.id != "skill.load"
+        {
+            return Err(ImageError::InvalidSpec(format!(
+                "local skill loader must use the skill.load capability id, found {}",
                 capability.id
             )));
         }

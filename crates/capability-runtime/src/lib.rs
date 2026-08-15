@@ -22,7 +22,7 @@ use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilitySpec, IdempotencyPolicy, InputDerivation,
     Permission, ResolvedCapabilityContracts,
 };
-use krw_agent_protocol::{ContentHash, TransportKind, is_canonical_ticker};
+use krw_agent_protocol::{ContentHash, is_canonical_ticker};
 use krw_agent_run_engine::{
     CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
     DependencyFailure, deterministic_action_key,
@@ -236,7 +236,7 @@ impl fmt::Debug for CapabilityDescriptor {
         formatter
             .debug_struct("CapabilityDescriptor")
             .field("capability_id", &self.specification.id)
-            .field("binding_key", &self.specification.binding_key)
+            .field("binding_key", &self.specification.remote_binding_key())
             .field("input_schema_hash", &self.contracts.input.content_hash)
             .field(
                 "output_schema_hash",
@@ -315,6 +315,9 @@ impl CapabilityCatalog {
 
         let mut descriptors = BTreeMap::new();
         for capability in &image.body.capabilities {
+            if capability.remote_binding_key().is_none() {
+                continue;
+            }
             let mapping = EvidenceMapping::from_result_ingest(capability.result_ingest);
             validate_capability_semantics(capability, mapping)?;
             let contracts = image.resolve_capability_contracts(capability)?;
@@ -538,8 +541,12 @@ fn validate_resolved_binding(
     capability: &CapabilitySpec,
     resolved: &ResolvedCapability,
 ) -> Result<(), CatalogError> {
-    if resolved.binding.binding_key != capability.binding_key
-        || resolved.binding.transport != TransportKind::McpHttp
+    let Some(binding_key) = capability.remote_binding_key() else {
+        return Err(CatalogError::IncompatibleResolvedBinding(
+            capability.id.clone(),
+        ));
+    };
+    if resolved.binding.binding_key != binding_key
         || resolved.binding.max_connections == 0
         || resolved.binding.request_timeout_ms == 0
     {
@@ -707,9 +714,7 @@ impl McpToolTransport for PooledMcpTransport {
                 // failed call remains at-most-once, but future calls should
                 // establish a fresh session instead of inheriting a broken
                 // HTTP/MCP connection.
-                self.pool
-                    .invalidate_if_current(&pool_key, &client)
-                    .await;
+                self.pool.invalidate_if_current(&pool_key, &client).await;
                 Err(mcp_failure(
                     "mcp_call",
                     &error,
@@ -847,7 +852,8 @@ impl PooledMcpCapabilityRuntime {
             .get(&invocation.capability_id)
             .ok_or_else(|| reject("missing_resolved_binding", "deployment binding is absent"))?;
         if invocation.binding != resolved.binding
-            || invocation.binding.binding_key != descriptor.specification.binding_key
+            || Some(invocation.binding.binding_key.as_str())
+                != descriptor.specification.remote_binding_key()
             || invocation.input_schema_hash != descriptor.contracts.input.content_hash
             || invocation.output_schema_hash != descriptor.contracts.output_contract_set_hash
             || invocation.normalized_output_contract_hash
@@ -2105,13 +2111,13 @@ mod tests {
         let release = ContentHash::sha256("fixture-release");
         let schema = ContentHash::sha256("fixture-server-schema");
         let deployment = DeploymentBinding {
-            schema_version: 3,
+            schema_version: 4,
             deployment_id: "fixture".into(),
             capabilities: image
                 .body
                 .capabilities
                 .iter()
-                .map(|capability| capability.binding_key.clone())
+                .filter_map(|capability| capability.remote_binding_key().map(str::to_owned))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .map(|binding_key| CapabilityBinding {
@@ -2121,7 +2127,6 @@ mod tests {
                     // symbol, never infer a tool name from a capability.
                     mcp_tool_name: format!("fixture_{binding_key}_v3"),
                     binding_key,
-                    transport: TransportKind::McpHttp,
                     endpoint_ref: "krw-ontology-test".into(),
                     credential_ref: Some("KRW_TEST_MCP_TOKEN".into()),
                     auth_scope: AuthScope::Tenant,
@@ -2135,7 +2140,8 @@ mod tests {
                 .collect(),
         };
         let registry: ModelRegistry =
-            load_yaml(root.join("deployments/local/model-registry.yaml")).expect("model registry");
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml"))
+                .expect("model registry");
         let base_budget: BudgetRegistry =
             load_yaml(root.join("deployments/local/budget-registry.yaml"))
                 .expect("budget registry");
@@ -2355,17 +2361,23 @@ mod tests {
         let (plan, state) = fixture_plan_and_state();
         let pack = presentation_pack();
         let transport = FakeTransport::new([
-            envelope_with_meta(&state, serde_json::json!({
-                "com.krwontology/presentationSeries": pack
-            })),
+            envelope_with_meta(
+                &state,
+                serde_json::json!({
+                    "com.krwontology/presentationSeries": pack
+                }),
+            ),
             envelope(&state, false),
         ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let first = runtime
-            .invoke(&invocation(&catalog, "ontology.query_context", plan.clone()))
+            .invoke(&invocation(
+                &catalog,
+                "ontology.query_context",
+                plan.clone(),
+            ))
             .await
             .expect("query with presentation pack");
         assert!(!first.evidence.is_empty(), "evidence mapping is unchanged");
@@ -2392,9 +2404,8 @@ mod tests {
             &state,
             serde_json::json!({"com.krwontology/presentationSeries": bad_version}),
         )]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let result = runtime
             .invoke(&invocation(&catalog, "ontology.query_context", plan))
@@ -2421,7 +2432,9 @@ mod tests {
         let payload = serde_json::json!({"ok": true});
         let mut oversized = presentation_pack();
         oversized["series"] = serde_json::json!(
-            (0..9).map(|index| serde_json::json!({"series_key": index})).collect::<Vec<_>>()
+            (0..9)
+                .map(|index| serde_json::json!({"series_key": index}))
+                .collect::<Vec<_>>()
         );
         let extracted = extract_json_tool_payload(
             envelope_with_meta(
@@ -2452,7 +2465,6 @@ mod tests {
         assert!(extracted.presentation.is_none());
     }
 
-
     #[test]
     fn front_and_guru_agents_compile_into_the_closed_production_catalog() {
         for directory in [
@@ -2466,7 +2478,13 @@ mod tests {
             let runtime = fixture_runtime(&image);
             let catalog = CapabilityCatalog::compile(&image, runtime)
                 .expect("image must use only closed mappings");
-            assert_eq!(catalog.capability_count(), image.body.capabilities.len());
+            let remote_capability_count = image
+                .body
+                .capabilities
+                .iter()
+                .filter(|capability| capability.remote_binding_key().is_some())
+                .count();
+            assert_eq!(catalog.capability_count(), remote_capability_count);
         }
     }
 

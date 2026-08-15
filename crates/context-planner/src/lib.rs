@@ -620,9 +620,10 @@ fn compile_state_context(
     // Catalog IDs are image-authored role boundaries. Keep the legacy
     // `skill_catalog` name working while allowing each planner/analyst role
     // to receive only its own reference catalog.
-    let include_skill_load = role.prompt_segments.iter().any(|segment_id| {
-        segment_id == "skill_catalog" || segment_id.ends_with("_skill_catalog")
-    });
+    let include_skill_load = role
+        .prompt_segments
+        .iter()
+        .any(|segment_id| segment_id == "skill_catalog" || segment_id.ends_with("_skill_catalog"));
     let (tool_definitions, capability_schemas) =
         build_frontier_tools(image, &frontier, include_skill_load)?;
     let provider_output_schema = match &state.operation {
@@ -1022,10 +1023,12 @@ mod tests {
         // Composer has no capability frontier and therefore receives its
         // writing references statically; it never needs a skill-load detour.
         let compose = planner.for_request(&request, "compose_ir").unwrap();
-        assert!(compose
-            .capability_schemas
-            .iter()
-            .all(|schema| schema.capability_id != "skill.load"));
+        assert!(
+            compose
+                .capability_schemas
+                .iter()
+                .all(|schema| schema.capability_id != "skill.load")
+        );
     }
 
     #[test]

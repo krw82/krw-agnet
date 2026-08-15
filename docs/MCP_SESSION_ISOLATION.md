@@ -57,16 +57,15 @@ audit rather than be reported as skipped.
 | `krw_ontology_query` | `attested-stateless-v1` | tenant | pure read, no session state |
 | `krw_ontology_trace` | `attested-stateless-v1` | tenant | pure read, no session state |
 | `krw_ontology_chain` | `attested-stateless-v1` | tenant | pure read, no session state |
-| `krw_skill_local` | `attested-stateless-v1` | tenant | resolution placeholder, stateless |
 | `krw_guru_query_context` | `attested-stateless-v1` | tenant | pure read, no session state |
 | `krw_guru_company_brief` | `attested-stateless-v1` | tenant | pure read, no session state |
 | `krw_guru_review_company_evidence` | `attested-stateless-v1` | tenant | pure read, no session state |
 | `list_feed_items`, `get_feed_items`, `get_feed_context` | `run-scoped` | tenant | feed service may carry session state |
 | `search_catalog_filings`, `get_filing`, `get_filing_brief`, `list_filing_sections`, `read_filing_section`, `list_filing_documents`, `read_filing_document`, `get_form4_insider_transactions` | `run-scoped` | tenant | filings service may carry cursor/personalization state |
 
-The `deployments/prod/deployment-binding.krw-ontology.example.yaml` profile
-ships all five of its capabilities (the four `krw_ontology_*` tools plus
-`krw_skill_local`) as `attested-stateless-v1`.
+`skill.load` is not part of this matrix. It is a closed local builtin resolved
+from the immutable AgentImage and has no endpoint, credential, MCP session, or
+deployment binding.
 
 ## Attestation contract identifier
 

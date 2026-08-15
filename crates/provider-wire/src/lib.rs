@@ -28,10 +28,12 @@ const MAX_TOOL_CALL_ID_BYTES: usize = 256;
 /// Provider diagnostics must be explicitly enabled. The local launcher
 /// forwards an empty variable by default, so treating mere variable presence
 /// as enabled leaked a high-volume stream of diagnostic events into logs.
+#[cfg(feature = "http")]
 fn provider_debug_metadata_enabled() -> bool {
     provider_debug_metadata_enabled_value(std::env::var("KRW_DEBUG_PROVIDER").ok().as_deref())
 }
 
+#[cfg(any(feature = "http", test))]
 fn provider_debug_metadata_enabled_value(value: Option<&str>) -> bool {
     matches!(
         value.map(str::trim),

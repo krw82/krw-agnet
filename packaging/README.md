@@ -87,8 +87,14 @@ verifier는 manifest hash, file inventory/hash/size, symlink, extra file과 phys
 fail-closed로 검사한다. bundle을 설치한 뒤에도 release authorization과 trust registry는 별도로
 검증해야 한다.
 
-local activation은 front deployer가 호출하는 다음 두 단계로 제한한다. `activate`가 loopback
-`/metrics`에서 daemon 시작을 확인하지 못하면 이전 local release를 복구한다.
+local activation은 front deployer가 호출하는 다음 두 단계로 제한한다. 설치기는 forward-only다.
+`activate`가 loopback `/metrics`에서 daemon 시작을 확인하지 못해도 이미 선택한 새 release,
+plist, runtime 설정을 과거 버전으로 되돌리지 않는다. 대신
+`~/.local/share/krw-agent/deploy-state/<id>/activation-status.json`에 `failed`를 남긴다.
+capability runtime도 동일하게
+`deploy-state/capabilityd-<id>/activation-status.json`에 상태를 남긴다. 운영자는 원인을 수정한
+새 release id로 다시 배포한다. 설치기가 자동으로 복구하는 대상은 `.staging` 아래의 임시
+복사본뿐이다.
 
 ```bash
 /absolute/sealed-dual-release/deepseek/packaging/launchd/install-local-mac-agentd-release.sh \

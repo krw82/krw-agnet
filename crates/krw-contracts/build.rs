@@ -5,9 +5,9 @@
 //! contract validator and the planner share one authoritative list instead of
 //! a hand-maintained parallel copy.
 //!
-//! The checked-in runtime snapshot is used first so the planner and runtime
-//! share one schema in normal builds. `KRW_ONTOLOGY_ROOT` remains only as a
-//! standalone-package fallback.
+//! The checked-in runtime snapshot is the only build input. A release build
+//! must be reproducible from this repository and must fail if that snapshot is
+//! absent or invalid.
 
 use std::env;
 use std::fs;
@@ -21,54 +21,38 @@ struct MetricDictionary {
 }
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=KRW_ONTOLOGY_ROOT");
-    if let Some(yaml) = metric_dictionary_path() {
-        println!("cargo:rerun-if-changed={}", yaml.display());
-    }
+    let yaml = metric_dictionary_path();
+    println!("cargo:rerun-if-changed={}", yaml.display());
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let dest = out_dir.join("ontology_metrics.rs");
 
-    let source = match metric_dictionary_path() {
-        Some(path) => match fs::read_to_string(&path) {
-            Ok(text) => match serde_yaml_ng::from_str::<MetricDictionary>(&text) {
-                Ok(dict) => generate_metrics_const(&dict),
-                Err(err) => {
-                    panic!(
-                        "metric_dictionary.yaml at {} failed to parse: {err}",
-                        path.display()
-                    );
-                }
-            },
-            Err(err) => {
-                panic!(
-                    "metric_dictionary.yaml at {} could not be read: {err}",
-                    path.display()
-                );
-            }
-        },
-        None => String::from(
-            "// No metric dictionary was available; emitting empty metric list.\n\
-             pub(crate) const RESEARCH_PROPOSAL_V4_METRICS: &[&str] = &[];\n",
-        ),
-    };
+    let text = fs::read_to_string(&yaml).unwrap_or_else(|err| {
+        panic!(
+            "sealed metric_dictionary.yaml at {} could not be read: {err}",
+            yaml.display()
+        )
+    });
+    let dict = serde_yaml_ng::from_str::<MetricDictionary>(&text).unwrap_or_else(|err| {
+        panic!(
+            "sealed metric_dictionary.yaml at {} failed to parse: {err}",
+            yaml.display()
+        )
+    });
+    assert!(
+        !dict.canonical_metrics.is_empty(),
+        "sealed metric_dictionary.yaml must contain canonical metrics"
+    );
+    let source = generate_metrics_const(&dict);
 
     if let Err(err) = fs::write(&dest, source) {
         panic!("failed to write {}: {err}", dest.display());
     }
 }
 
-fn metric_dictionary_path() -> Option<PathBuf> {
-    let bundled = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?)
-        .join("../../services/krw-ontology-runtime/src/krw_capability_runtime/resources/ontology/schema/metric_dictionary.yaml");
-    if bundled.exists() {
-        return Some(bundled);
-    }
-    let root = env::var("KRW_ONTOLOGY_ROOT")
-        .ok()
-        .filter(|root| !root.is_empty())?;
-    let external = PathBuf::from(root).join("ontology/schema/metric_dictionary.yaml");
-    external.exists().then_some(external)
+fn metric_dictionary_path() -> PathBuf {
+    PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"))
+        .join("../../services/krw-ontology-runtime/src/krw_capability_runtime/resources/ontology/schema/metric_dictionary.yaml")
 }
 
 fn generate_metrics_const(dict: &MetricDictionary) -> String {

@@ -98,7 +98,7 @@ fn live_ontology_binding(root: &Path) -> DeploymentBinding {
     let schema_hash = required_hash("KRW_LIVE_MCP_TOOL_SCHEMA_SHA256");
     let release_hash = required_hash("KRW_LIVE_MCP_RELEASE_MANIFEST_SHA256");
     let server_build = required("KRW_LIVE_MCP_SERVER_BUILD");
-    assert_eq!(binding.capabilities.len(), 7);
+    assert_eq!(binding.capabilities.len(), 6);
     for capability in &mut binding.capabilities {
         assert!(matches!(
             capability.binding_key.as_str(),
@@ -108,7 +108,6 @@ fn live_ontology_binding(root: &Path) -> DeploymentBinding {
                 | "krw_ontology_query"
                 | "krw_ontology_trace"
                 | "krw_ontology_chain"
-                | "krw_skill_local"
         ));
         capability.server_schema_bundle_hash = schema_hash.clone();
         capability.data_release_hash = release_hash.clone();
@@ -200,7 +199,7 @@ async fn flash_real_ontology_and_postgres_commit_final() {
         .into_loaded()
         .expect("load verified company agent image");
     let models: ModelRegistry =
-        load_yaml(root.join("deployments/local/model-registry.yaml")).expect("model registry");
+        load_yaml(root.join("deployments/local/model-registry.glm.yaml")).expect("model registry");
     let budgets: BudgetRegistry =
         load_yaml(root.join("deployments/local/budget-registry.yaml")).expect("budget registry");
     let releases = resolve_release_set(

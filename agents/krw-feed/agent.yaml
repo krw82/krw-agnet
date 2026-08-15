@@ -86,7 +86,7 @@ prompt_segments:
 
 capabilities:
   - id: feed.list_items
-    binding_key: list_feed_items
+    execution: { kind: remote, binding_key: list_feed_items }
     permission: read
     input_contract: krw-feed-list-items-input/v1
     output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
@@ -100,7 +100,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: feed.list_market_items
-    binding_key: list_feed_items
+    execution: { kind: remote, binding_key: list_feed_items }
     permission: read
     input_contract: krw-feed-list-items-input/v1
     output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
@@ -113,7 +113,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: feed.get_items
-    binding_key: get_feed_items
+    execution: { kind: remote, binding_key: get_feed_items }
     permission: read
     input_contract: krw-feed-get-items-input/v1
     output_contracts: [krw-feed-get-items-result/v1, normalized-capability-result/v1]
@@ -123,7 +123,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: feed.get_context
-    binding_key: get_feed_context
+    execution: { kind: remote, binding_key: get_feed_context }
     permission: read
     input_contract: krw-feed-context-input/v2
     output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
@@ -142,7 +142,7 @@ capabilities:
   # the same physical feed MCP binding so the release adds no new endpoint or
   # failure surface.
   - id: news.search_context
-    binding_key: get_feed_context
+    execution: { kind: remote, binding_key: get_feed_context }
     permission: read
     input_contract: krw-feed-context-input/v2
     output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
@@ -158,7 +158,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: filing.search_catalog
-    binding_key: search_catalog_filings
+    execution: { kind: remote, binding_key: search_catalog_filings }
     permission: read
     input_contract: krw-filing-search-input/v1
     output_contracts: [krw-filing-search-result/v1, normalized-capability-result/v1]
@@ -172,7 +172,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [feed.get_items]
   - id: ontology.query_context
-    binding_key: krw_ontology_query_context
+    execution: { kind: remote, binding_key: krw_ontology_query_context }
     permission: read
     input_contract: search-plan/v2
     model_input_contract: research-proposal/v4
@@ -196,7 +196,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: ontology.query
-    binding_key: krw_ontology_query
+    execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
     input_contract: ontology-targeted-query/v1
     output_contracts: [normalized-capability-result/v1]
@@ -215,7 +215,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: ontology.trace
-    binding_key: krw_ontology_trace
+    execution: { kind: remote, binding_key: krw_ontology_trace }
     permission: read
     input_contract: ontology-trace-input/v1
     output_contracts: [normalized-capability-result/v1]

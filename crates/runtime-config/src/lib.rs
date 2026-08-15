@@ -11,24 +11,23 @@ use krw_agent_image::{
 };
 use krw_agent_protocol::{
     ALLOWED_MODEL_IDS, ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding,
-    ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, FLASH_DIRECT_PROFILE_ID,
-    FLASH_HIGH_PROFILE_ID, FLASH_MAX_PROFILE_ID, GLM_DIRECT_PROFILE_ID, GLM_HIGH_PROFILE_ID,
-    GLM_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor, ModelExecutionProfile,
-    ModelRegistry, PROTOCOL_VERSION, PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION,
-    PinnedExecutionContract, ProviderWireCapabilities, PublicReleaseDescriptor,
-    PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot, RunRequest,
-    ScopeCardinalityKind, ThinkingMode, TransportKind,
+    ContentHash, DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, GLM_DIRECT_PROFILE_ID,
+    GLM_HIGH_PROFILE_ID, GLM_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor,
+    ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION,
+    PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderWireCapabilities,
+    PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort, ResolvedExecutionSnapshot,
+    RunRequest, ScopeCardinalityKind, ThinkingMode,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
 const CONFIG_SCHEMA_VERSION: u16 = 1;
-const DEPLOYMENT_BINDING_SCHEMA_VERSION: u16 = 3;
+const DEPLOYMENT_BINDING_SCHEMA_VERSION: u16 = 4;
 const MODEL_REGISTRY_SCHEMA_VERSION: u16 = 4;
 const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 pub const MAX_RELEASE_IMAGES: usize = 64;
-pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 4;
+pub const RESOLVED_CAPABILITY_FINGERPRINT_SCHEMA_VERSION: u16 = 5;
 const TLS_PROFILE_SYSTEM_ROOTS_V1: &str = "system-roots-v1";
 const TLS_PROFILE_SYSTEM_PLUS_PINNED_CA_V1: &str = "system-plus-pinned-ca-v1";
 
@@ -106,7 +105,6 @@ pub struct ResolvedCapabilityFingerprint {
     pub credential_version: String,
     pub tls_profile: String,
     pub tls_ca_pem_hash: Option<ContentHash>,
-    pub transport: TransportKind,
     pub auth_scope: AuthScope,
     pub tool_session_reuse: McpToolSessionReuse,
     pub server_schema_bundle_hash: ContentHash,
@@ -120,7 +118,7 @@ impl ResolvedCapabilityFingerprint {
     pub fn content_hash(&self) -> Result<ContentHash, ConfigError> {
         Ok(ContentHash::sha256(serde_jcs::to_vec(
             &ResolvedCapabilityFingerprintHashEnvelope {
-                format: "krw.agent/resolved-capability-fingerprint-v4",
+                format: "krw.agent/resolved-capability-fingerprint-v5",
                 fingerprint: self,
             },
         )?))
@@ -471,29 +469,19 @@ fn prepare_globals(
     if profile_ids.len() != registry.profiles.len() || registry.profiles.is_empty() {
         return Err(ConfigError::DuplicateOrEmptyModelProfile);
     }
-    // Each provider admitted by this release must carry a complete
-    // high/max/direct profile triad. The historical `glm_*` ids are now
-    // logical execution slots shared by both provider registries so the same
-    // AgentImage can be used for GLM test runs and DeepSeek production runs.
-    // DeepSeek keeps accepting the historical `flash_*` ids for fixture and
-    // migration compatibility.
+    // Each provider admitted by this release must carry the one provider-
+    // neutral high/max/direct profile triad. A provider registry changes the
+    // model bound to a slot, never the logical profile vocabulary.
     let mut required_profiles = BTreeSet::new();
     if model_ids.contains(DEEPSEEK_MODEL_ID) {
-        let deepseek_flash_complete = [
-            FLASH_DIRECT_PROFILE_ID,
-            FLASH_HIGH_PROFILE_ID,
-            FLASH_MAX_PROFILE_ID,
-        ]
-        .iter()
-        .all(|profile_id| profile_ids.contains(profile_id));
-        let deepseek_logical_complete = [
+        let deepseek_profiles_complete = [
             GLM_DIRECT_PROFILE_ID,
             GLM_HIGH_PROFILE_ID,
             GLM_MAX_PROFILE_ID,
         ]
         .iter()
         .all(|profile_id| profile_ids.contains(profile_id));
-        if !deepseek_flash_complete && !deepseek_logical_complete {
+        if !deepseek_profiles_complete {
             return Err(ConfigError::ModelProfileInventoryMismatch);
         }
     }
@@ -624,7 +612,6 @@ fn prepare_globals(
             credential_version: descriptor.credential_version.clone(),
             tls_profile: descriptor.tls_profile.clone(),
             tls_ca_pem_hash: tls_ca_pem_hash.clone(),
-            transport: capability.transport.clone(),
             auth_scope: capability.auth_scope.clone(),
             tool_session_reuse: capability.tool_session_reuse,
             server_schema_bundle_hash: capability.server_schema_bundle_hash.clone(),
@@ -721,7 +708,7 @@ fn resolve_image(
         .body
         .capabilities
         .iter()
-        .map(|capability| capability.binding_key.clone())
+        .filter_map(|capability| capability.remote_binding_key().map(str::to_owned))
         .collect::<BTreeSet<_>>();
     let effective_binding = DeploymentBinding {
         schema_version: global_binding.schema_version,
@@ -751,10 +738,13 @@ fn resolve_image(
     let mut resolved_capabilities = BTreeMap::new();
     let mut release_hashes = BTreeMap::new();
     for capability in &image.body.capabilities {
+        let Some(binding_key) = capability.remote_binding_key() else {
+            continue;
+        };
         let resolved = globals
             .resolved_bindings
-            .get(&capability.binding_key)
-            .ok_or_else(|| ConfigError::MissingBindingKey(capability.binding_key.clone()))?;
+            .get(binding_key)
+            .ok_or_else(|| ConfigError::MissingBindingKey(binding_key.to_owned()))?;
         if resolved_capabilities
             .insert(capability.id.clone(), Arc::clone(resolved))
             .is_some()
@@ -796,7 +786,7 @@ fn required_binding_keys<'a>(
     images
         .into_iter()
         .flat_map(|image| image.body.capabilities.iter())
-        .map(|capability| capability.binding_key.clone())
+        .filter_map(|capability| capability.remote_binding_key().map(str::to_owned))
         .collect()
 }
 
@@ -1251,10 +1241,11 @@ fn validate_deepseek_model_profile(
     profile: &ModelExecutionProfile,
     model: &ModelDescriptor,
 ) -> Result<(), ConfigError> {
-    // `glm_*` is the shared logical profile vocabulary used by the checked-in
-    // AgentImages. `flash_*` remains accepted for older DeepSeek fixtures.
     let exact_profile =
-        profile_semantics(&profile.profile_id).is_some_and(|(thinking, reasoning_effort)| {
+        matches!(
+            profile.profile_id.as_str(),
+            GLM_HIGH_PROFILE_ID | GLM_MAX_PROFILE_ID | GLM_DIRECT_PROFILE_ID
+        ) && profile_semantics(&profile.profile_id).is_some_and(|(thinking, reasoning_effort)| {
             profile.model_id == DEEPSEEK_MODEL_ID
                 && profile.thinking == thinking
                 && profile.reasoning_effort == reasoning_effort
@@ -1302,13 +1293,9 @@ fn validate_glm_model_profile(
 
 fn profile_semantics(profile_id: &str) -> Option<(ThinkingMode, Option<ReasoningEffort>)> {
     match profile_id {
-        FLASH_HIGH_PROFILE_ID | GLM_HIGH_PROFILE_ID => {
-            Some((ThinkingMode::Enabled, Some(ReasoningEffort::High)))
-        }
-        FLASH_MAX_PROFILE_ID | GLM_MAX_PROFILE_ID => {
-            Some((ThinkingMode::Enabled, Some(ReasoningEffort::Max)))
-        }
-        FLASH_DIRECT_PROFILE_ID | GLM_DIRECT_PROFILE_ID => Some((ThinkingMode::Disabled, None)),
+        GLM_HIGH_PROFILE_ID => Some((ThinkingMode::Enabled, Some(ReasoningEffort::High))),
+        GLM_MAX_PROFILE_ID => Some((ThinkingMode::Enabled, Some(ReasoningEffort::Max))),
+        GLM_DIRECT_PROFILE_ID => Some((ThinkingMode::Disabled, None)),
         _ => None,
     }
 }
@@ -1330,8 +1317,7 @@ fn validate_versions(
 }
 
 fn validate_binding(binding: &CapabilityBinding, mode: ValidationMode) -> Result<(), ConfigError> {
-    if binding.transport != TransportKind::McpHttp
-        || binding.max_connections == 0
+    if binding.max_connections == 0
         || binding.request_timeout_ms == 0
         || !valid_mcp_tool_name(&binding.mcp_tool_name)
     {
@@ -1672,7 +1658,7 @@ mod tests {
         let binding =
             load_yaml(root.join("deployments/local/deployment-binding.krw-ontology.example.yaml"))
                 .unwrap();
-        let registry = load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        let registry = load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let budget: BudgetRegistry =
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         let endpoint_registry = EndpointRegistry {
@@ -1747,7 +1733,7 @@ mod tests {
         let root = root();
         (
             load_yaml(root.join("deployments/local/deployment-binding.example.yaml")).unwrap(),
-            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap(),
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap(),
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap(),
             load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap(),
         )
@@ -1794,11 +1780,19 @@ mod tests {
         assert_eq!(snapshot.requested_model, GLM_MODEL_ID);
         assert_eq!(snapshot.resolved_model, GLM_MODEL_ID);
         assert_eq!(snapshot.fencing_token, 9);
-        assert_eq!(runtime.capabilities.len(), image.body.capabilities.len());
+        assert_eq!(
+            runtime.capabilities.len(),
+            image
+                .body
+                .capabilities
+                .iter()
+                .filter(|capability| capability.remote_binding_key().is_some())
+                .count()
+        );
         assert_eq!(
             runtime.physical_binding_count(),
-            7,
-            "universe aliases share the query bindings; company context, market snapshot, chain, and local skill loading are separate bindings"
+            6,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1809,6 +1803,28 @@ mod tests {
         ));
         assert!(!format!("{runtime:?}").contains("fixture-glm"));
         assert!(!format!("{runtime:?}").contains("ontology.invalid"));
+    }
+
+    #[test]
+    fn local_skill_loading_requires_no_physical_deployment_binding() {
+        let (image, mut binding, registry, budget, endpoints, _request, secrets) = fixture();
+        binding
+            .capabilities
+            .retain(|capability| capability.binding_key != "krw_skill_local");
+
+        let runtime = resolve_runtime(
+            &image,
+            &binding,
+            &registry,
+            &budget,
+            &endpoints,
+            &secrets,
+            ValidationMode::Fixture,
+        )
+        .expect("local skill.load must not depend on a physical MCP deployment binding");
+
+        assert!(!runtime.capabilities.contains_key("skill.load"));
+        assert_eq!(runtime.physical_binding_count(), 6);
     }
 
     #[test]
@@ -1884,6 +1900,24 @@ mod tests {
                 ValidationMode::Fixture,
             ),
             Err(ConfigError::InvalidModelProfile(profile)) if profile == GLM_HIGH_PROFILE_ID
+        ));
+    }
+
+    #[test]
+    fn deepseek_rejects_retired_flash_profile_aliases() {
+        let registry: ModelRegistry =
+            load_yaml(root().join("deployments/local/model-registry.deepseek.yaml")).unwrap();
+        let model = registry.model(DEEPSEEK_MODEL_ID).unwrap();
+        let retired = ModelExecutionProfile {
+            profile_id: "flash_high".into(),
+            model_id: DEEPSEEK_MODEL_ID.into(),
+            thinking: ThinkingMode::Enabled,
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+
+        assert!(matches!(
+            validate_model_profile(&retired, model),
+            Err(ConfigError::InvalidModelProfile(profile)) if profile == "flash_high"
         ));
     }
 
@@ -2000,9 +2034,9 @@ mod tests {
     }
 
     #[test]
-    fn deployment_binding_v1_is_rejected_after_required_session_policy_upgrade() {
+    fn deployment_binding_v3_is_rejected_after_transport_selector_removal() {
         let (image, mut binding, registry, budget, endpoints, _request, secrets) = fixture();
-        binding.schema_version = 1;
+        binding.schema_version = 3;
         assert!(matches!(
             resolve_runtime(
                 &image,
@@ -2459,7 +2493,6 @@ mod tests {
         assert_fingerprint_drift!(credential_version, "other-credential-version".into());
         assert_fingerprint_drift!(tls_profile, "other-tls-profile".into());
         assert_fingerprint_drift!(tls_ca_pem_hash, Some(ContentHash::sha256("other CA")));
-        assert_fingerprint_drift!(transport, TransportKind::Native);
         assert_fingerprint_drift!(auth_scope, AuthScope::Run);
         assert_fingerprint_drift!(tool_session_reuse, McpToolSessionReuse::AttestedStatelessV1);
         assert_fingerprint_drift!(

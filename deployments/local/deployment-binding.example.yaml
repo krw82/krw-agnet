@@ -1,9 +1,8 @@
-schema_version: 3
+schema_version: 4
 deployment_id: local-contract
 capabilities:
   - binding_key: krw_ontology_query_context
     mcp_tool_name: krw_ontology_query_context
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -15,7 +14,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: krw_ontology_company_context
     mcp_tool_name: krw_ontology_company_context
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -27,7 +25,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: krw_market_snapshot
     mcp_tool_name: krw_market_snapshot
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -39,7 +36,6 @@ capabilities:
     request_timeout_ms: 10000
   - binding_key: krw_ontology_query
     mcp_tool_name: krw_ontology_query
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -51,7 +47,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: krw_ontology_trace
     mcp_tool_name: krw_ontology_trace
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -63,19 +58,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: krw_ontology_chain
     mcp_tool_name: krw_ontology_chain
-    transport: mcp-http
-    endpoint_ref: krw-ontology-local
-    credential_ref: null
-    auth_scope: tenant
-    tool_session_reuse: attested-stateless-v1
-    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
-    server_build: fixture
-    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
-    max_connections: 4
-    request_timeout_ms: 30000
-  - binding_key: krw_skill_local
-    mcp_tool_name: krw_skill_local
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -87,7 +69,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: krw_guru_query_context
     mcp_tool_name: krw_guru_query_context
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -99,7 +80,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: krw_guru_company_brief
     mcp_tool_name: krw_guru_company_brief
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -111,7 +91,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: krw_guru_review_company_evidence
     mcp_tool_name: krw_guru_review_company_evidence
-    transport: mcp-http
     endpoint_ref: krw-ontology-local
     credential_ref: null
     auth_scope: tenant
@@ -123,7 +102,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: list_feed_items
     mcp_tool_name: list_feed_items
-    transport: mcp-http
     endpoint_ref: krw-feed-local
     credential_ref: KRW_FEED_MCP_TOKEN
     auth_scope: tenant
@@ -135,7 +113,6 @@ capabilities:
     request_timeout_ms: 10000
   - binding_key: get_feed_items
     mcp_tool_name: get_feed_items
-    transport: mcp-http
     endpoint_ref: krw-feed-local
     credential_ref: KRW_FEED_MCP_TOKEN
     auth_scope: tenant
@@ -147,7 +124,6 @@ capabilities:
     request_timeout_ms: 10000
   - binding_key: get_feed_context
     mcp_tool_name: get_feed_context
-    transport: mcp-http
     endpoint_ref: krw-feed-local
     credential_ref: KRW_FEED_MCP_TOKEN
     auth_scope: tenant
@@ -159,7 +135,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: search_catalog_filings
     mcp_tool_name: search_catalog_filings
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -171,7 +146,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: get_filing
     mcp_tool_name: get_filing
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -183,7 +157,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: get_filing_brief
     mcp_tool_name: get_filing_brief
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -195,7 +168,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: list_filing_sections
     mcp_tool_name: list_filing_sections
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -207,7 +179,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: read_filing_section
     mcp_tool_name: read_filing_section
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -219,7 +190,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: list_filing_documents
     mcp_tool_name: list_filing_documents
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -231,7 +201,6 @@ capabilities:
     request_timeout_ms: 15000
   - binding_key: read_filing_document
     mcp_tool_name: read_filing_document
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant
@@ -243,7 +212,6 @@ capabilities:
     request_timeout_ms: 30000
   - binding_key: get_form4_insider_transactions
     mcp_tool_name: get_form4_insider_transactions
-    transport: mcp-http
     endpoint_ref: krw-filings-local
     credential_ref: KRW_FILINGS_MCP_TOKEN
     auth_scope: tenant

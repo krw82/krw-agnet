@@ -26,8 +26,8 @@ use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
 
-pub const COMPACTION_RECEIPT_SCHEMA_VERSION: u16 = 1;
-pub const COMPACTED_CONTEXT_SCHEMA_VERSION: u16 = 1;
+pub const COMPACTION_RECEIPT_SCHEMA_VERSION: u16 = 2;
+pub const COMPACTED_CONTEXT_SCHEMA_VERSION: u16 = 2;
 pub const DEFAULT_MAX_COMPACTED_CONTEXT_BYTES: usize = 512 * 1024;
 pub const MIN_COMPACTED_CONTEXT_BYTES: usize = 32 * 1024;
 pub const MAX_COMPACTED_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -35,7 +35,8 @@ pub const MAX_COMPACTED_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SOURCE_MESSAGES: usize = 1_024;
 const MAX_ACTIVE_EVIDENCE: usize = 512;
 const MAX_FACT_CANDIDATES: usize = 8_192;
-const MAX_OMITTED_FACT_REFS: usize = 8_192;
+
+const OMISSION_LINEAGE_DOMAIN: &[u8] = b"krw-context-compaction-omissions/v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +72,40 @@ pub struct CompactedEvidenceIndexEntry {
     pub qualifies: Vec<String>,
     #[serde(default)]
     pub source_object_ids: Vec<String>,
+}
+
+/// Fixed-size disclosure of information removed only to satisfy a hard
+/// provider-context bound.  The previous representation retained every
+/// omitted fact hash in the prompt; with a large ledger that omission list
+/// could itself exceed the bound and abort an otherwise answerable run.
+///
+/// Counts remain human/model-readable while `lineage_hash` cryptographically
+/// binds the exact deterministic removal sequence without replaying it into
+/// the model context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionOmissions {
+    pub state_payload: bool,
+    pub research_projection: bool,
+    pub retrieval_status: bool,
+    pub evidence_entries: u32,
+    pub facts: u32,
+    pub calculations: u32,
+    pub lineage_hash: ContentHash,
+}
+
+impl Default for CompactionOmissions {
+    fn default() -> Self {
+        Self {
+            state_payload: false,
+            research_projection: false,
+            retrieval_status: false,
+            evidence_entries: 0,
+            facts: 0,
+            calculations: 0,
+            lineage_hash: ContentHash::sha256(OMISSION_LINEAGE_DOMAIN),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -115,7 +150,7 @@ pub struct CompactedProviderContext {
     pub retrieval_status: Option<krw_ontology_adapter::ResearchRetrievalStatus>,
     pub evidence_index: Vec<CompactedEvidenceIndexEntry>,
     pub retained_facts: Vec<CompactedFact>,
-    pub omitted_fact_refs: Vec<ContentHash>,
+    pub omissions: CompactionOmissions,
     pub calculations: Vec<Calculation>,
 }
 
@@ -130,7 +165,7 @@ impl fmt::Debug for CompactedProviderContext {
             .field("has_retrieval_status", &self.retrieval_status.is_some())
             .field("evidence_count", &self.evidence_index.len())
             .field("retained_fact_count", &self.retained_facts.len())
-            .field("omitted_fact_count", &self.omitted_fact_refs.len())
+            .field("omissions", &self.omissions)
             .field("calculation_count", &self.calculations.len())
             .finish_non_exhaustive()
     }
@@ -315,19 +350,13 @@ impl CompactedProviderContext {
                 // evidence; cap facts.
                 filtered.research_projection = None;
                 filtered.calculations.clear();
-                filtered.omitted_fact_refs.clear();
                 trim_evidence_by_grade(&mut filtered.evidence_index, REPAIR_MAX_FACTS);
                 if filtered.retained_facts.len() > REPAIR_MAX_FACTS {
                     let split = filtered.retained_facts.len() - REPAIR_MAX_FACTS;
-                    let drained: Vec<_> = filtered.retained_facts.drain(split..).collect();
-                    // The dropped facts are not erased from the durable record
-                    // (the receipt still accounts for them); we only narrow the
-                    // runtime view. Stash their refs under omitted_fact_refs so
-                    // the view remains internally honest about what was hidden.
-                    filtered
-                        .omitted_fact_refs
-                        .extend(drained.into_iter().map(|fact| fact.fact_ref.clone()));
-                    filtered.omitted_fact_refs.sort();
+                    // This is only a prompt-time role projection. The durable
+                    // canonical context and its omission receipt remain
+                    // unchanged and continue to bind the full retained set.
+                    filtered.retained_facts.drain(split..);
                 }
             }
             _ => unreachable!("role gate above excludes every other branch"),
@@ -602,11 +631,10 @@ pub struct CompactionReceipt {
     pub research_projection_hash: Option<ContentHash>,
     pub evidence_index_hash: ContentHash,
     pub retained_fact_set_hash: ContentHash,
-    pub omitted_fact_set_hash: ContentHash,
+    pub omission_summary_hash: ContentHash,
     pub calculation_set_hash: ContentHash,
     pub active_evidence_count: u16,
     pub retained_fact_count: u16,
-    pub omitted_fact_count: u16,
     pub calculation_count: u16,
 }
 
@@ -621,7 +649,6 @@ impl CompactionReceipt {
             || self.source_message_count as usize > MAX_SOURCE_MESSAGES
             || self.active_evidence_count as usize > MAX_ACTIVE_EVIDENCE
             || self.retained_fact_count as usize > MAX_FACT_CANDIDATES
-            || self.omitted_fact_count as usize > MAX_OMITTED_FACT_REFS
             || self.compacted_bytes == 0
             || self.compacted_bytes
                 > u64::try_from(MAX_COMPACTED_CONTEXT_BYTES)
@@ -671,11 +698,10 @@ impl CompactionOutput {
                 != self.receipt.research_projection_hash
             || hash_slice(&self.context.evidence_index)? != self.receipt.evidence_index_hash
             || hash_slice(&self.context.retained_facts)? != self.receipt.retained_fact_set_hash
-            || hash_slice(&self.context.omitted_fact_refs)? != self.receipt.omitted_fact_set_hash
+            || hash_value(&self.context.omissions)? != self.receipt.omission_summary_hash
             || hash_slice(&self.context.calculations)? != self.receipt.calculation_set_hash
             || usize::from(self.receipt.active_evidence_count) != self.context.evidence_index.len()
             || usize::from(self.receipt.retained_fact_count) != self.context.retained_facts.len()
-            || usize::from(self.receipt.omitted_fact_count) != self.context.omitted_fact_refs.len()
             || usize::from(self.receipt.calculation_count) != self.context.calculations.len()
         {
             return Err(CompactionError::ReceiptMismatch);
@@ -829,7 +855,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             .iter()
             .map(|candidate| candidate.fact.clone())
             .collect(),
-        omitted_fact_refs: Vec::new(),
+        omissions: CompactionOmissions::default(),
         calculations,
     };
     shrink_to_fit(&mut context, input.max_context_bytes)?;
@@ -851,14 +877,12 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
         research_projection_hash: hash_optional(context.research_projection.as_ref())?,
         evidence_index_hash: hash_slice(&context.evidence_index)?,
         retained_fact_set_hash: hash_slice(&context.retained_facts)?,
-        omitted_fact_set_hash: hash_slice(&context.omitted_fact_refs)?,
+        omission_summary_hash: hash_value(&context.omissions)?,
         calculation_set_hash: hash_slice(&context.calculations)?,
         active_evidence_count: u16::try_from(context.evidence_index.len())
             .map_err(|_| CompactionError::Limit("active evidence"))?,
         retained_fact_count: u16::try_from(context.retained_facts.len())
             .map_err(|_| CompactionError::Limit("retained facts"))?,
-        omitted_fact_count: u16::try_from(context.omitted_fact_refs.len())
-            .map_err(|_| CompactionError::Limit("omitted facts"))?,
         calculation_count: u16::try_from(context.calculations.len())
             .map_err(|_| CompactionError::Limit("calculations"))?,
     };
@@ -889,16 +913,106 @@ fn shrink_to_fit(
     context: &mut CompactedProviderContext,
     max_bytes: usize,
 ) -> Result<(), CompactionError> {
-    while serde_jcs::to_vec(&*context)?.len() > max_bytes {
+    if serialized_len(context)? <= max_bytes {
+        return Ok(());
+    }
+
+    // A large workflow payload is control state, not answer evidence. Keep its
+    // immutable artifact/payload hashes and remove the bytes before sacrificing
+    // useful evidence facts when it is itself a material part of the budget.
+    if serialized_len(&context.state.payload)? > max_bytes / 4 {
+        omit_state_payload(context)?;
+    }
+
+    while serialized_len(context)? > max_bytes {
         let Some(removed) = context.retained_facts.pop() else {
-            return Err(CompactionError::EssentialContextExceedsLimit);
+            break;
         };
-        context.omitted_fact_refs.push(removed.fact_ref.clone());
-        if context.omitted_fact_refs.len() > MAX_OMITTED_FACT_REFS {
-            return Err(CompactionError::Limit("omitted fact refs"));
+        context.omissions.facts = context.omissions.facts.saturating_add(1);
+        record_omission(&mut context.omissions, "fact", &removed.fact_ref)?;
+    }
+
+    if serialized_len(context)? > max_bytes {
+        omit_state_payload(context)?;
+    }
+
+    if serialized_len(context)? > max_bytes {
+        if let Some(projection) = context.research_projection.take() {
+            let hash = hash_value(&projection)?;
+            context.omissions.research_projection = true;
+            record_omission(&mut context.omissions, "research_projection", &hash)?;
         }
     }
-    context.omitted_fact_refs.sort();
+
+    if serialized_len(context)? > max_bytes {
+        if let Some(status) = context.retrieval_status.take() {
+            let hash = hash_value(&status)?;
+            context.omissions.retrieval_status = true;
+            record_omission(&mut context.omissions, "retrieval_status", &hash)?;
+        }
+    }
+
+    while serialized_len(context)? > max_bytes {
+        let Some(calculation) = context.calculations.pop() else {
+            break;
+        };
+        let hash = hash_value(&calculation)?;
+        context.omissions.calculations = context.omissions.calculations.saturating_add(1);
+        record_omission(&mut context.omissions, "calculation", &hash)?;
+    }
+
+    while serialized_len(context)? > max_bytes {
+        let Some(evidence) = context.evidence_index.pop() else {
+            break;
+        };
+        let hash = hash_value(&evidence)?;
+        context.omissions.evidence_entries = context.omissions.evidence_entries.saturating_add(1);
+        record_omission(&mut context.omissions, "evidence", &hash)?;
+    }
+
+    // Everything above this line is auxiliary prompt material. What remains
+    // is the compact authority/boundary/artifact contract and omission
+    // receipt. With the configured 32 KiB minimum this should always fit; a
+    // failure here means a violated bounded-contract invariant, not an LLM
+    // quality or content decision.
+    if serialized_len(context)? > max_bytes {
+        return Err(CompactionError::EssentialContextExceedsLimit);
+    }
+    Ok(())
+}
+
+fn serialized_len<T: Serialize>(value: &T) -> Result<usize, CompactionError> {
+    Ok(serde_jcs::to_vec(value)?.len())
+}
+
+fn omit_state_payload(context: &mut CompactedProviderContext) -> Result<(), CompactionError> {
+    if context.omissions.state_payload || context.state.payload.is_null() {
+        return Ok(());
+    }
+    let payload_hash = context.state.payload_hash.clone();
+    context.state.payload = Value::Null;
+    context.omissions.state_payload = true;
+    record_omission(&mut context.omissions, "state_payload", &payload_hash)
+}
+
+fn record_omission(
+    summary: &mut CompactionOmissions,
+    kind: &'static str,
+    item_hash: &ContentHash,
+) -> Result<(), CompactionError> {
+    #[derive(Serialize)]
+    struct OmissionLink<'a> {
+        domain: &'static str,
+        previous: &'a ContentHash,
+        kind: &'static str,
+        item_hash: &'a ContentHash,
+    }
+    summary.lineage_hash = ContentHash::sha256(serde_jcs::to_vec(&OmissionLink {
+        domain: "krw-context-compaction-omission-link/v2",
+        previous: &summary.lineage_hash,
+        kind,
+        item_hash,
+    })?);
     Ok(())
 }
 
@@ -961,6 +1075,10 @@ fn hash_optional<T: Serialize>(value: Option<&T>) -> Result<Option<ContentHash>,
         .map(|value| serde_jcs::to_vec(value).map(ContentHash::sha256))
         .transpose()
         .map_err(CompactionError::from)
+}
+
+fn hash_value<T: Serialize>(value: &T) -> Result<ContentHash, CompactionError> {
+    Ok(ContentHash::sha256(serde_jcs::to_vec(value)?))
 }
 
 fn hash_slice<T: Serialize>(value: &[T]) -> Result<ContentHash, CompactionError> {
@@ -1074,7 +1192,9 @@ mod tests {
         }
     }
 
-    fn artifact_and_boundary() -> (
+    fn artifact_and_boundary_with_payload(
+        payload: Value,
+    ) -> (
         krw_agent_state_artifact::ValidatedArtifact,
         PhaseCompactionBoundaryV1,
     ) {
@@ -1101,7 +1221,7 @@ mod tests {
                     },
                     event: "evidence_sufficient".into(),
                     declared_contract: contract,
-                    payload: json!({"period":"FY2025","not_deteriorating":false}),
+                    payload,
                     lineage_refs: Vec::new(),
                 },
             )
@@ -1115,6 +1235,16 @@ mod tests {
         )
         .unwrap();
         (artifact, boundary)
+    }
+
+    fn artifact_and_boundary() -> (
+        krw_agent_state_artifact::ValidatedArtifact,
+        PhaseCompactionBoundaryV1,
+    ) {
+        artifact_and_boundary_with_payload(json!({
+            "period":"FY2025",
+            "not_deteriorating":false
+        }))
     }
 
     #[test]
@@ -1404,9 +1534,32 @@ mod tests {
             max_context_bytes: 128 * 1024,
         })
         .unwrap();
-        assert!(!output.context.omitted_fact_refs.is_empty());
+        assert!(output.context.omissions.facts > 0);
         assert!(output.canonical_context().contains("999999999"));
         assert!(output.canonical_context().contains("FY2025"));
+    }
+
+    #[test]
+    fn oversized_state_payload_degrades_to_a_hash_bound_context_instead_of_failing() {
+        let (artifact, boundary) = artifact_and_boundary_with_payload(json!({
+            "opaque_state": "x".repeat(128 * 1024)
+        }));
+
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &EvidenceLedger::default(),
+            calculations: &BTreeMap::new(),
+            research_projection: None,
+            max_context_bytes: MIN_COMPACTED_CONTEXT_BYTES,
+        })
+        .expect("oversized auxiliary state payload must not abort the research run");
+
+        output.verify().unwrap();
+        assert!(output.receipt.compacted_bytes <= MIN_COMPACTED_CONTEXT_BYTES as u64);
+        assert_eq!(output.context.state.payload, Value::Null);
+        assert!(output.context.omissions.state_payload);
     }
 
     #[test]

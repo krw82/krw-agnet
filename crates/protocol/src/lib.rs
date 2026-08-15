@@ -22,21 +22,13 @@ pub const GLM_MODEL_ID: &str = "glm-5.3";
 /// backed by one of these exact ids so that downstream codecs can dispatch on
 /// `model_id` without a hidden fallback.
 pub const ALLOWED_MODEL_IDS: &[&str] = &[DEEPSEEK_MODEL_ID, GLM_MODEL_ID];
-pub const FLASH_HIGH_PROFILE_ID: &str = "flash_high";
-pub const FLASH_MAX_PROFILE_ID: &str = "flash_max";
-pub const FLASH_DIRECT_PROFILE_ID: &str = "flash_direct";
-/// GLM-5.3 execution profile ids — the GLM mirror of the `flash_*` set.
+/// Provider-neutral execution profile ids. Both GLM and DeepSeek registries
+/// bind these logical slots to their own exact model descriptor.
 pub const GLM_HIGH_PROFILE_ID: &str = "glm_high";
 pub const GLM_MAX_PROFILE_ID: &str = "glm_max";
 pub const GLM_DIRECT_PROFILE_ID: &str = "glm_direct";
-/// Complete set of profile ids the runtime is permitted to accept. Pre
-/// multi-provider this was exactly the three `flash_*` ids; GLM profiles are
-/// optional (a deployment may omit GLM entirely) so the inventory check in
-/// `prepare_globals` admits any subset that is contained in this list.
+/// Complete set of profile ids the runtime is permitted to accept.
 pub const ALLOWED_PROFILE_IDS: &[&str] = &[
-    FLASH_HIGH_PROFILE_ID,
-    FLASH_MAX_PROFILE_ID,
-    FLASH_DIRECT_PROFILE_ID,
     GLM_HIGH_PROFILE_ID,
     GLM_MAX_PROFILE_ID,
     GLM_DIRECT_PROFILE_ID,
@@ -251,14 +243,6 @@ pub enum AuthScope {
     Run,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TransportKind {
-    McpHttp,
-    McpStdio,
-    Native,
-}
-
 /// Controls whether one initialized MCP tool session may cross a run
 /// boundary. This is a deployment property, not an agent or prompt choice.
 ///
@@ -284,7 +268,6 @@ pub struct CapabilityBinding {
     /// endpoint/pool/credential tuple, while this field is the ABI symbol on
     /// that endpoint.  Changing either changes the frozen execution contract.
     pub mcp_tool_name: String,
-    pub transport: TransportKind,
     pub endpoint_ref: String,
     pub credential_ref: Option<String>,
     pub auth_scope: AuthScope,
@@ -1180,6 +1163,22 @@ pub enum ContractError {
 mod tests {
     use super::*;
 
+    fn mcp_http_binding_json() -> serde_json::Value {
+        serde_json::json!({
+            "binding_key": "ontology_query_context",
+            "mcp_tool_name": "query_context",
+            "endpoint_ref": "krw-ontology-local",
+            "credential_ref": null,
+            "auth_scope": "public",
+            "tool_session_reuse": "run-scoped",
+            "server_schema_bundle_hash": ContentHash::sha256("schema"),
+            "server_build": "fixture",
+            "data_release_hash": ContentHash::sha256("data"),
+            "max_connections": 4,
+            "request_timeout_ms": 30_000
+        })
+    }
+
     #[test]
     fn hash_is_stable_and_validated() {
         let first = ContentHash::sha256(b"krw");
@@ -1187,6 +1186,29 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(ContentHash::parse(first.to_string()).unwrap(), first);
         assert!(ContentHash::parse("sha256:nope").is_err());
+    }
+
+    #[test]
+    fn capability_binding_roundtrip_has_no_transport_selector() {
+        // Break caught: reintroducing a deployment-selectable transport would
+        // make one logical remote capability ambiguous at runtime again.
+        let binding: CapabilityBinding =
+            serde_json::from_value(mcp_http_binding_json()).expect("canonical MCP binding");
+        let encoded = serde_json::to_value(binding).unwrap();
+        assert_eq!(encoded.get("endpoint_ref").unwrap(), "krw-ontology-local");
+        assert!(encoded.get("transport").is_none());
+    }
+
+    #[test]
+    fn legacy_transport_selector_is_rejected() {
+        // Break caught: accepting the deleted field would silently preserve a
+        // legacy schema that can select unsupported transport implementations.
+        let mut legacy = mcp_http_binding_json();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .insert("transport".into(), serde_json::json!("mcp-http"));
+        assert!(serde_json::from_value::<CapabilityBinding>(legacy).is_err());
     }
 
     #[test]
@@ -1253,7 +1275,7 @@ mod tests {
                 provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
             }],
             profiles: vec![ModelExecutionProfile {
-                profile_id: "flash_high".into(),
+                profile_id: "glm_high".into(),
                 model_id: "deepseek-v4-flash".into(),
                 thinking: ThinkingMode::Enabled,
                 reasoning_effort: Some(ReasoningEffort::High),
@@ -1262,11 +1284,11 @@ mod tests {
 
         assert!(
             registry
-                .resolve_profile_exact("flash_high", "deepseek-v4-flash")
+                .resolve_profile_exact("glm_high", "deepseek-v4-flash")
                 .is_ok()
         );
         assert!(matches!(
-            registry.resolve_profile_exact("flash_high", "claude-sonnet"),
+            registry.resolve_profile_exact("glm_high", "claude-sonnet"),
             Err(ContractError::UnknownModel(_))
         ));
 
@@ -1274,7 +1296,7 @@ mod tests {
         non_flash.models[0].model_id = "forbidden-provider-model".into();
         non_flash.profiles[0].model_id = "forbidden-provider-model".into();
         assert!(matches!(
-            non_flash.resolve_profile_exact("flash_high", "deepseek-v4-flash"),
+            non_flash.resolve_profile_exact("glm_high", "deepseek-v4-flash"),
             Err(ContractError::UnknownModel(_))
         ));
     }
@@ -1306,28 +1328,28 @@ mod tests {
             ],
             profiles: vec![
                 ModelExecutionProfile {
-                    profile_id: "flash_high".into(),
+                    profile_id: "glm_high".into(),
                     model_id: "deepseek-v4-flash".into(),
                     thinking: ThinkingMode::Enabled,
                     reasoning_effort: Some(ReasoningEffort::High),
                 },
                 ModelExecutionProfile {
-                    profile_id: "glm_high".into(),
+                    profile_id: "glm_max".into(),
                     model_id: "glm-5.3".into(),
                     thinking: ThinkingMode::Enabled,
-                    reasoning_effort: Some(ReasoningEffort::High),
+                    reasoning_effort: Some(ReasoningEffort::Max),
                 },
             ],
         };
 
         let (deepseek_profile, deepseek_model) = registry
-            .resolve_profile_exact("flash_high", "deepseek-v4-flash")
+            .resolve_profile_exact("glm_high", "deepseek-v4-flash")
             .expect("deepseek still resolves");
         assert_eq!(deepseek_profile.model_id, "deepseek-v4-flash");
         assert_eq!(deepseek_model.model_id, "deepseek-v4-flash");
 
         let (glm_profile, glm_model) = registry
-            .resolve_profile_exact("glm_high", "glm-5.3")
+            .resolve_profile_exact("glm_max", "glm-5.3")
             .expect("glm-5.3 resolves under the generalized allow-list");
         assert_eq!(glm_profile.model_id, "glm-5.3");
         assert_eq!(glm_model.model_id, "glm-5.3");
@@ -1340,7 +1362,7 @@ mod tests {
         // A profile that requests GLM through a deepseek-only profile id must
         // still surface the model mismatch rather than silently substituting.
         assert!(matches!(
-            registry.resolve_profile_exact("flash_high", "glm-5.3"),
+            registry.resolve_profile_exact("glm_high", "glm-5.3"),
             Err(ContractError::ModelMismatch { .. })
         ));
     }

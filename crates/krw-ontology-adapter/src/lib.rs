@@ -187,7 +187,6 @@ pub struct ComputedValue {
     pub source_object_ids: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalculationCoverage {

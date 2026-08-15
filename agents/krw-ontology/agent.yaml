@@ -322,7 +322,7 @@ prompt_segments:
     private: true
 capabilities:
   - id: ontology.query_context
-    binding_key: krw_ontology_query_context
+    execution: { kind: remote, binding_key: krw_ontology_query_context }
     permission: read
     input_contract: search-plan/v2
     model_input_contract: research-proposal/v4
@@ -346,7 +346,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: ontology.company_context
-    binding_key: krw_ontology_company_context
+    execution: { kind: remote, binding_key: krw_ontology_company_context }
     permission: read
     # The model sees only ticker plus optional topic filters. The kernel fixes
     # internal IDs off and the runtime returns a sanitized orientation map.
@@ -366,7 +366,7 @@ capabilities:
     # proposal. It is not evidence and never substitutes for filing retrieval.
     prerequisites: []
   - id: market.snapshot
-    binding_key: krw_market_snapshot
+    execution: { kind: remote, binding_key: krw_market_snapshot }
     permission: read
     # The ticker is the whole model input. The provider and cache policy are
     # kernel-owned, so this cannot become an arbitrary external fetch surface.
@@ -382,7 +382,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: ontology.query
-    binding_key: krw_ontology_query
+    execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
     input_contract: ontology-targeted-query/v1
     output_contracts: [normalized-capability-result/v1]
@@ -401,7 +401,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: ontology.trace
-    binding_key: krw_ontology_trace
+    execution: { kind: remote, binding_key: krw_ontology_trace }
     permission: read
     input_contract: ontology-trace-input/v1
     output_contracts: [normalized-capability-result/v1]
@@ -419,7 +419,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: ontology.query_context_universe
-    binding_key: krw_ontology_query_context
+    execution: { kind: remote, binding_key: krw_ontology_query_context }
     permission: read
     input_contract: search-plan/v2
     model_input_contract: research-proposal/v4
@@ -443,7 +443,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: ontology.query_universe
-    binding_key: krw_ontology_query
+    execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
     input_contract: ontology-targeted-query/v1
     output_contracts: [normalized-capability-result/v1]
@@ -461,7 +461,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context_universe]
   - id: ontology.trace_universe
-    binding_key: krw_ontology_trace
+    execution: { kind: remote, binding_key: krw_ontology_trace }
     permission: read
     input_contract: ontology-trace-input/v1
     output_contracts: [normalized-capability-result/v1]
@@ -478,7 +478,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context_universe]
   - id: ontology.chain
-    binding_key: krw_ontology_chain
+    execution: { kind: remote, binding_key: krw_ontology_chain }
     permission: read
     # Chain is an object-centered follow-up.  Its physical MCP surface is
     # object_id + ticker (with server-side depth/direction defaults), so use
@@ -499,7 +499,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: skill.load
-    binding_key: krw_skill_local
+    execution: { kind: local, builtin: skill_load }
     permission: read
     # Local skill-body lookup. The body is resolved from the immutable image
     # blob store (progressive disclosure); no MCP round trip occurs.

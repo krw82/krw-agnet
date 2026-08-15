@@ -44,7 +44,7 @@ prompt_segments:
 
 capabilities:
   - id: ontology.query_context
-    binding_key: krw_ontology_query_context
+    execution: { kind: remote, binding_key: krw_ontology_query_context }
     permission: read
     input_contract: search-plan/v2
     model_input_contract: research-proposal/v4
@@ -68,7 +68,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: ontology.query
-    binding_key: krw_ontology_query
+    execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
     input_contract: ontology-targeted-query/v1
     output_contracts: [normalized-capability-result/v1]
@@ -87,7 +87,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: ontology.trace
-    binding_key: krw_ontology_trace
+    execution: { kind: remote, binding_key: krw_ontology_trace }
     permission: read
     input_contract: ontology-trace-input/v1
     output_contracts: [normalized-capability-result/v1]

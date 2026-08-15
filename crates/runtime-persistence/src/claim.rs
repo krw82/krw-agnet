@@ -359,7 +359,7 @@ mod tests {
             load_yaml(root.join("deployments/local/deployment-binding.krw-ontology.example.yaml"))
                 .unwrap();
         let registry: ModelRegistry =
-            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let mut budget: BudgetRegistry =
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         budget

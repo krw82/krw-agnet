@@ -16,6 +16,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
+use krw_agent_bounded_child::{
+    CancelChildMutation, ChildExecutionError, ChildExecutionReceipt, CompleteChildMutation,
+    InvokeChildMutation, ReserveChildMutation,
+};
 use krw_agent_evidence::{
     Answerability, Directness, EvidenceGrade, EvidenceRecord, EvidenceScope, EvidenceSource,
     NormalizedFact, PublicCitation,
@@ -28,8 +32,7 @@ use krw_agent_persistence::{
 use krw_agent_protocol::{
     AuthScope, BudgetLimits, CapabilityBinding, ContentHash, DeploymentBinding,
     McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
-    ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, TransportKind,
-    provider_tool_name,
+    ResolvedExecutionSnapshot, RunContextV1, RunRequest, ThinkingMode, provider_tool_name,
 };
 #[cfg(test)]
 use krw_agent_provider_wire::ToolResultMessage;
@@ -1965,6 +1968,7 @@ fn replace_active_fixture_clause_reference(value: &mut Value, from: &str, to: &s
 #[derive(Debug)]
 struct ActivePersistence {
     actions: Mutex<BTreeMap<(String, String), ActionReceipt>>,
+    children: Mutex<BTreeMap<(String, String), ChildExecutionReceipt>>,
     counters: Arc<ActivePhaseCounters>,
 }
 
@@ -1974,7 +1978,40 @@ impl ActivePersistence {
             .lock()
             .map_err(|_| HarnessError::ActiveStart("persistence lock poisoned".into()))?
             .clear();
+        self.children
+            .lock()
+            .map_err(|_| HarnessError::ActiveStart("persistence lock poisoned".into()))?
+            .clear();
         Ok(())
+    }
+
+    fn transition_child(
+        &self,
+        run_id: &str,
+        child_id: &str,
+        code: &str,
+        transition: impl FnOnce(
+            &ChildExecutionReceipt,
+        ) -> Result<ChildExecutionReceipt, ChildExecutionError>,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        let key = (run_id.to_owned(), child_id.to_owned());
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| active_fixture_failure("persistence child lock poisoned"))?;
+        let current = children
+            .get(&key)
+            .ok_or_else(|| active_fixture_failure("bounded child is missing"))?;
+        let next = transition(current).map_err(|error| {
+            DependencyFailure::redacted(
+                code,
+                error.to_string(),
+                false,
+                DeliveryCertainty::NotDispatched,
+            )
+        })?;
+        children.insert(key, next.clone());
+        Ok(next)
     }
 }
 
@@ -2009,6 +2046,69 @@ impl Persistence for ActivePersistence {
             .run_state_checkpointed
             .fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn reserve_child(
+        &self,
+        mutation: &ReserveChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        let proposed = krw_agent_bounded_child::reserve(mutation).map_err(|error| {
+            DependencyFailure::redacted(
+                "perf_child_reserve",
+                error.to_string(),
+                false,
+                DeliveryCertainty::NotDispatched,
+            )
+        })?;
+        let key = (mutation.run_id.clone(), mutation.child_id.clone());
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| active_fixture_failure("persistence child lock poisoned"))?;
+        match children.get(&key) {
+            Some(existing) if existing == &proposed => Ok(existing.clone()),
+            Some(_) => Err(active_fixture_failure("bounded child reserve conflict")),
+            None => {
+                children.insert(key, proposed.clone());
+                Ok(proposed)
+            }
+        }
+    }
+
+    async fn invoke_child(
+        &self,
+        mutation: &InvokeChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "perf_child_invoke",
+            |current| krw_agent_bounded_child::invoke(current, mutation),
+        )
+    }
+
+    async fn complete_child(
+        &self,
+        mutation: &CompleteChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "perf_child_complete",
+            |current| krw_agent_bounded_child::complete(current, mutation),
+        )
+    }
+
+    async fn cancel_child(
+        &self,
+        mutation: &CancelChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "perf_child_cancel",
+            |current| krw_agent_bounded_child::cancel(current, mutation),
+        )
     }
 
     async fn begin_action(
@@ -2137,6 +2237,7 @@ async fn measure_active_level(
     });
     let persistence = Arc::new(ActivePersistence {
         actions: Mutex::new(BTreeMap::new()),
+        children: Mutex::new(BTreeMap::new()),
         counters: Arc::clone(&counters),
     });
     let engine = Arc::new(RunEngine::new(
@@ -2292,7 +2393,6 @@ fn active_deployment() -> DeploymentBinding {
     let query_context = CapabilityBinding {
         binding_key: "krw_ontology_query_context".into(),
         mcp_tool_name: "krw_ontology_query_context".into(),
-        transport: TransportKind::McpHttp,
         endpoint_ref: "offline".into(),
         credential_ref: None,
         auth_scope: AuthScope::Public,
@@ -2307,7 +2407,7 @@ fn active_deployment() -> DeploymentBinding {
     company_context.binding_key = "krw_ontology_company_context".into();
     company_context.mcp_tool_name = "krw_ontology_company_context".into();
     DeploymentBinding {
-        schema_version: 3,
+        schema_version: 4,
         deployment_id: "perf-offline".into(),
         capabilities: vec![query_context, company_context],
     }
@@ -2517,7 +2617,6 @@ fn mcp_binding() -> CapabilityBinding {
     CapabilityBinding {
         binding_key: "krw_ontology_query_context".into(),
         mcp_tool_name: "krw_ontology_query_context".into(),
-        transport: TransportKind::McpHttp,
         endpoint_ref: "offline-invalid".into(),
         credential_ref: None,
         auth_scope: AuthScope::Principal,

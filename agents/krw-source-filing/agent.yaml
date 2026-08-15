@@ -46,7 +46,7 @@ prompt_segments:
 
 capabilities:
   - id: filing.get
-    binding_key: get_filing
+    execution: { kind: remote, binding_key: get_filing }
     permission: read
     input_contract: krw-filing-get-input/v1
     output_contracts: [krw-filing-metadata/v1, normalized-capability-result/v1]
@@ -56,7 +56,7 @@ capabilities:
     parallel_safe: false
     prerequisites: []
   - id: filing.get_brief
-    binding_key: get_filing_brief
+    execution: { kind: remote, binding_key: get_filing_brief }
     permission: read
     input_contract: krw-filing-brief-input/v1
     output_contracts: [krw-filing-brief-result/v1, normalized-capability-result/v1]
@@ -66,7 +66,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [filing.get]
   - id: filing.list_sections
-    binding_key: list_filing_sections
+    execution: { kind: remote, binding_key: list_filing_sections }
     permission: read
     input_contract: krw-filing-sections-input/v1
     output_contracts: [krw-filing-sections-result/v1, normalized-capability-result/v1]
@@ -76,7 +76,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [filing.get, filing.get_brief]
   - id: filing.read_section
-    binding_key: read_filing_section
+    execution: { kind: remote, binding_key: read_filing_section }
     permission: read
     input_contract: krw-filing-read-section-input/v1
     output_contracts: [krw-filing-read-section-result/v1, normalized-capability-result/v1]
@@ -86,7 +86,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [filing.list_sections]
   - id: filing.list_documents
-    binding_key: list_filing_documents
+    execution: { kind: remote, binding_key: list_filing_documents }
     permission: read
     input_contract: krw-filing-documents-input/v1
     output_contracts: [krw-filing-documents-result/v1, normalized-capability-result/v1]
@@ -96,7 +96,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [filing.read_section]
   - id: filing.read_document
-    binding_key: read_filing_document
+    execution: { kind: remote, binding_key: read_filing_document }
     permission: read
     input_contract: krw-filing-read-document-input/v1
     output_contracts: [krw-filing-read-document-result/v1, normalized-capability-result/v1]
@@ -106,7 +106,7 @@ capabilities:
     parallel_safe: false
     prerequisites: [filing.list_documents]
   - id: filing.get_form4
-    binding_key: get_form4_insider_transactions
+    execution: { kind: remote, binding_key: get_form4_insider_transactions }
     permission: read
     input_contract: krw-form4-transactions-input/v1
     output_contracts: [krw-form4-transactions-result/v1, normalized-capability-result/v1]

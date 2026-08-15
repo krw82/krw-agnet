@@ -1420,7 +1420,7 @@ mod tests {
         let binding: DeploymentBinding =
             load_yaml(root.join("deployments/local/deployment-binding.example.yaml")).unwrap();
         let models: ModelRegistry =
-            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let budgets: BudgetRegistry =
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         let mut endpoints: EndpointRegistry =
@@ -1616,7 +1616,7 @@ mod tests {
         .collect();
         let binding =
             load_yaml(root.join("deployments/local/deployment-binding.example.yaml")).unwrap();
-        let models = load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+        let models = load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let budgets = load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         let endpoints =
             load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap();
@@ -1663,7 +1663,7 @@ mod tests {
     fn provider_catalog_rejects_any_unpinned_inventory() {
         let root = root();
         let models: ModelRegistry =
-            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let mut forbidden = models.models[0].clone();
         forbidden.model_id = "forbidden-provider-model".into();
         let descriptors = [models.models[0].clone(), forbidden];
@@ -1679,7 +1679,7 @@ mod tests {
     fn provider_catalog_accepts_multiple_allowed_models() {
         let root = root();
         let models: ModelRegistry =
-            load_yaml(root.join("deployments/local/model-registry.yaml")).unwrap();
+            load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         // Build a second allowed descriptor on a distinct api_base so the
         // catalog has to materialise two independent ProviderClient instances
         // and two independent permit semaphores.

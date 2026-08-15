@@ -20,8 +20,6 @@ Usage:
   install-local-mac-agentd-release.sh --mode start \
     --release-id ID --provider glm|deepseek [--metrics-port 15520]
 
-  install-local-mac-agentd-release.sh --mode rollback --release-id ID
-
 Optional environment:
   KRW_AGENT_LOCAL_INSTALL_ROOT  (default: ~/.local/share/krw-agent)
 EOF
@@ -256,53 +254,6 @@ bootout_label() {
   launchctl bootout "$LAUNCHD_DOMAIN" "$PLIST" >/dev/null 2>&1 || true
 }
 
-restore_previous_activation() {
-  state_dir=$1
-  previous_current="$state_dir/current.previous"
-  previous_overlay="$state_dir/overlay.previous"
-  previous_plist="$state_dir/plist.previous"
-  previous_plist_exists=$(cat "$state_dir/plist.existed" 2>/dev/null || true)
-  previous_metrics_port=$METRICS_PORT
-  if [ -f "$previous_overlay" ]; then
-    previous_metrics_bind=$(awk -F= '$1 == "KRW_AGENT_METRICS_BIND" { print $2; exit }' "$previous_overlay")
-    case "$previous_metrics_bind" in
-      127.0.0.1:*)
-        candidate_port=${previous_metrics_bind#127.0.0.1:}
-        if valid_metrics_port "$candidate_port"; then
-          previous_metrics_port=$candidate_port
-        fi
-        ;;
-    esac
-  fi
-
-  bootout_label
-  if [ -f "$previous_current" ]; then
-    target=$(cat "$previous_current")
-    if [ -n "$target" ]; then
-      real_directory "$target" || fail "Previous local release target is unavailable"
-      ln -s "$target" "$INSTALL_ROOT/current.next"
-      # BSD mv follows a symlink-to-directory unless -h is present. This is
-      # the atomic replacement of `current`, not a move into the old bundle.
-      mv -h -f "$INSTALL_ROOT/current.next" "$INSTALL_ROOT/current"
-    else
-      [ ! -L "$INSTALL_ROOT/current" ] || rm -f "$INSTALL_ROOT/current"
-    fi
-  fi
-  if [ -f "$previous_overlay" ]; then
-    install -m 0600 "$previous_overlay" "$OVERLAY_FILE"
-  else
-    rm -f "$OVERLAY_FILE"
-  fi
-  if [ "$previous_plist_exists" = "1" ] && [ -f "$previous_plist" ]; then
-    install -m 0644 "$previous_plist" "$PLIST"
-    launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST"
-    launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL"
-    wait_for_metrics_port "$previous_metrics_port" || fail "Previous local krw-agentd release did not become ready"
-  else
-    rm -f "$PLIST"
-  fi
-}
-
 MODE=''
 SOURCE_RELEASE_ROOT=''
 RELEASE_ID=''
@@ -338,7 +289,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$MODE" in stage|activate|start|rollback) ;; *) usage >&2; exit 2 ;; esac
+case "$MODE" in stage|activate|start) ;; *) usage >&2; exit 2 ;; esac
 if [ "$DEFER_START" = "1" ] && [ "$MODE" != "activate" ]; then
   fail '--defer-start is valid only with --mode activate'
 fi
@@ -365,6 +316,27 @@ ARTIFACT_KEY_FILE="$RUNTIME_ROOT/agentd-artifact-key.env"
 LOG_DIR="$HOME/Library/Logs/krw-agent"
 TARGET_RELEASE_ROOT="$RELEASES_ROOT/$RELEASE_ID"
 STATE_DIR="$STATE_ROOT/$RELEASE_ID"
+
+write_activation_status() {
+  status=$1
+  exit_code=$2
+  temporary=$(mktemp "$STATE_DIR/.activation-status.XXXXXX")
+  printf '{"schema_version":1,"component":"krw-agentd","release_id":"%s","provider":"%s","status":"%s","exit_code":%s}\n' \
+    "$RELEASE_ID" "$PROVIDER" "$status" "$exit_code" > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$STATE_DIR/activation-status.json"
+}
+
+ACTIVATION_FAILURE_ARMED=0
+record_activation_failure() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ "$ACTIVATION_FAILURE_ARMED" = "1" ]; then
+    ACTIVATION_FAILURE_ARMED=0
+    write_activation_status failed "$status" || true
+  fi
+  exit "$status"
+}
 
 stage_release() {
   real_directory "$SOURCE_RELEASE_ROOT" || fail "Source release root is missing or unsafe"
@@ -409,6 +381,9 @@ activate_release() {
   [ ! -e "$STATE_DIR" ] || fail "Activation state already exists for this release"
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR"
+  write_activation_status activating 0
+  ACTIVATION_FAILURE_ARMED=1
+  trap record_activation_failure EXIT INT TERM
 
   if [ -f "$ARTIFACT_KEY_FILE" ]; then
     ARTIFACT_KEY=$(awk -F= '$1 == "KRW_AGENT_ARTIFACT_KEY_V1" { print $2; exit }' "$ARTIFACT_KEY_FILE")
@@ -420,51 +395,27 @@ activate_release() {
   printf '%s' "$ARTIFACT_KEY" | grep -Eq '^[0-9a-f]{64}$' || fail "Local artifact key is invalid"
 
   if [ -L "$INSTALL_ROOT/current" ]; then
-    previous_target=$(python3 - "$INSTALL_ROOT/current" <<'PY'
+    existing_target=$(python3 - "$INSTALL_ROOT/current" <<'PY'
 import pathlib, sys
 print(pathlib.Path(sys.argv[1]).resolve())
 PY
 )
-    real_directory "$previous_target" || fail "Existing current release target is unavailable"
+    real_directory "$existing_target" || fail "Existing current release target is unavailable"
   elif [ -e "$INSTALL_ROOT/current" ]; then
     fail "Existing current release path is not a symlink"
-  else
-    previous_target=''
   fi
-  printf '%s\n' "$previous_target" > "$STATE_DIR/current.previous"
-  if [ -f "$OVERLAY_FILE" ]; then
-    install -m 0600 "$OVERLAY_FILE" "$STATE_DIR/overlay.previous"
-  fi
-  if [ -f "$PLIST" ]; then
-    install -m 0644 "$PLIST" "$STATE_DIR/plist.previous"
-    printf '%s\n' 1 > "$STATE_DIR/plist.existed"
-  else
-    printf '%s\n' 0 > "$STATE_DIR/plist.existed"
-  fi
-  chmod 0600 "$STATE_DIR"/*
 
-  activation_armed=1
-  rollback_activation() {
-    status=$?
-    if [ "$activation_armed" = "1" ]; then
-      activation_armed=0
-      set +e
-      restore_previous_activation "$STATE_DIR"
-    fi
-    exit "$status"
-  }
-  trap rollback_activation EXIT INT TERM
-
-  # Stop the old daemon before changing the symlink, overlay, or plist that it
-  # reads. This lets launchd deliver SIGTERM to the old release and prevents a
-  # single process from ever observing a mixed release path and environment.
+  # Activation is forward-only. After this point a failure leaves the new
+  # release selected and records `failed`; no previous binary or plist is
+  # restarted against contracts that may already have moved forward.
   bootout_label
   write_overlay "$OVERLAY_FILE" "$PROVIDER"
   write_plist "$PLIST" "$ENV_FILE" "$OVERLAY_FILE" "$LOG_DIR"
   ln -s "$bundle" "$INSTALL_ROOT/current.next"
   mv -h -f "$INSTALL_ROOT/current.next" "$INSTALL_ROOT/current"
   if [ "$DEFER_START" = "1" ]; then
-    activation_armed=0
+    write_activation_status prepared 0
+    ACTIVATION_FAILURE_ARMED=0
     trap - EXIT INT TERM
     printf '%s\n' "Prepared local krw-agentd release without starting daemon: $RELEASE_ID ($PROVIDER)"
     return 0
@@ -474,7 +425,8 @@ PY
   launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL"
   wait_for_metrics || fail "New local krw-agentd release did not become ready"
 
-  activation_armed=0
+  write_activation_status active 0
+  ACTIVATION_FAILURE_ARMED=0
   trap - EXIT INT TERM
   printf '%s\n' "Activated local krw-agentd release: $RELEASE_ID ($PROVIDER)"
 }
@@ -491,25 +443,23 @@ PY
 )
   [ "$current_target" = "$TARGET_RELEASE_ROOT/$PROVIDER" ] || fail "Current local release does not match the requested provider bundle"
   [ -f "$PLIST" ] || fail "Prepared local krw-agentd launchd plist is missing"
+  [ -d "$STATE_DIR" ] || fail "Prepared local activation state is missing"
+  write_activation_status starting 0
+  ACTIVATION_FAILURE_ARMED=1
+  trap record_activation_failure EXIT INT TERM
   bootout_label
   launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST"
   launchctl enable "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
   launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL"
   wait_for_metrics || fail "Prepared local krw-agentd release did not become ready"
+  write_activation_status active 0
+  ACTIVATION_FAILURE_ARMED=0
+  trap - EXIT INT TERM
   printf '%s\n' "Started prepared local krw-agentd release: $RELEASE_ID ($PROVIDER)"
-}
-
-rollback_release() {
-  require_command launchctl
-  require_command curl
-  [ -d "$STATE_DIR" ] || fail "No saved activation state exists for this release"
-  restore_previous_activation "$STATE_DIR"
-  printf '%s\n' "Rolled back local krw-agentd release: $RELEASE_ID"
 }
 
 case "$MODE" in
   stage) stage_release ;;
   activate) activate_release ;;
   start) start_release ;;
-  rollback) rollback_release ;;
 esac

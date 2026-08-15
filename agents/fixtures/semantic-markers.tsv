@@ -1,7 +1,7 @@
 # relative_path	invariant	literal_marker
 krw-ontology/agent.yaml	query-context-first order	before: query_context, after: targeted_query
 krw-ontology/agent.yaml	covered-universe isolation	id: ontology.query_context_universe
-krw-ontology/prompts/earnings-analysis.md	earnings thesis classification	strengthened, intact, mixed, weakened, or requiring re-underwriting
+krw-ontology/prompts/earnings-analysis.md	earnings thesis classification	strengthened, intact, mixed, weakened, or requires re-underwriting
 krw-ontology/prompts/scenario-analysis.md	scenario provenance	reported fact, filing-derived assumption, supplied assumption, or conditional analyst inference
 krw-ontology/prompts/idea-screen.md	idea priority is not a rating	these labels are not ratings or portfolio actions
 krw-feed/agent.yaml	feed precedes company research	before: load_feed_anchor, after: query_context

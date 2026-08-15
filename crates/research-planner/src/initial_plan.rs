@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 // Auto-generated metric prose mapping from the ontology metric dictionary.
-// Built by build.rs from `$KRW_ONTOLOGY_ROOT/ontology/schema/metric_dictionary.yaml`.
+// Built by build.rs from the repository-sealed runtime metric dictionary.
 include!(concat!(env!("OUT_DIR"), "/metric_prose.rs"));
 
 use krw_agent_contracts::{RESEARCH_PROPOSAL_V4, SEARCH_PLAN_V2, validate_value};

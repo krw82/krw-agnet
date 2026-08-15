@@ -1,5 +1,5 @@
-use std::fs::{self, File, OpenOptions};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -38,9 +38,7 @@ use krw_agent_runtime_persistence::{
     ArtifactRepository, ArtifactTtlPolicy, DeepSeekProviderCatalog, DurableRunStore,
     FinalizationPolicy, ProductionClaimedRunExecutor, ProductionReleaseCatalog,
 };
-use krw_agent_tool_mcp::{
-    McpClientPool, McpHttpConfig, PoolKey, PoolScope,
-};
+use krw_agent_tool_mcp::{McpClientPool, McpHttpConfig, PoolKey, PoolScope};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -1034,14 +1032,6 @@ async fn run_mcp_preflight_inner(
 
     for release in releases.releases() {
         for (capability_id, resolved) in &release.runtime.capabilities {
-            // The sealed runtime currently exposes MCP HTTP capabilities. If
-            // another transport is added later, it must get its own explicit
-            // preflight rather than being silently treated as healthy here.
-            if resolved.binding.transport != krw_agent_protocol::TransportKind::McpHttp {
-                return Err(mcp_preflight_error(format!(
-                    "MCP preflight encountered unsupported transport for {capability_id}"
-                )));
-            }
             let endpoint_ref = resolved.binding.endpoint_ref.clone();
             if let Some(target) = targets.get_mut(&endpoint_ref) {
                 if !same_physical_mcp_binding(target.resolved.as_ref(), resolved.as_ref()) {
@@ -1070,7 +1060,9 @@ async fn run_mcp_preflight_inner(
     }
 
     if targets.is_empty() {
-        return Err(mcp_preflight_error("MCP preflight found no HTTP capabilities"));
+        return Err(mcp_preflight_error(
+            "MCP preflight found no HTTP capabilities",
+        ));
     }
 
     let mut checked_count = 0usize;
@@ -1109,15 +1101,12 @@ async fn run_mcp_preflight_inner(
             max_response_bytes: 8 * 1024 * 1024,
         };
         let pool_key = key.clone();
-        let client = pool
-            .get_or_connect(key, config)
-            .await
-            .map_err(|error| {
-                mcp_preflight_error(format!(
-                    "MCP preflight connection failed for {}: {error}",
-                    target.capability_ids.join(",")
-                ))
-            })?;
+        let client = pool.get_or_connect(key, config).await.map_err(|error| {
+            mcp_preflight_error(format!(
+                "MCP preflight connection failed for {}: {error}",
+                target.capability_ids.join(",")
+            ))
+        })?;
         let result = match client.list_tools().await {
             Ok(result) => result,
             Err(error) => {
@@ -1159,7 +1148,10 @@ async fn run_mcp_preflight_inner(
         }
         checked_count += 1;
     }
-    info!(checked_endpoints = checked_count, "MCP startup preflight completed");
+    info!(
+        checked_endpoints = checked_count,
+        "MCP startup preflight completed"
+    );
     Ok(())
 }
 

@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
+krw-agent-bounded-child = { path = "../bounded-child" }
 krw-agent-provider-wire = { path = "../provider-wire" }
 krw-agent-evidence = { path = "../evidence" }
 krw-agent-image = { path = "../agent-image" }

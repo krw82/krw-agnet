@@ -16,6 +16,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use krw_agent_bounded_child::{
+    CancelChildMutation, ChildExecutionError, ChildExecutionReceipt, CompleteChildMutation,
+    InvokeChildMutation, ReserveChildMutation,
+};
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{CapabilityResultIngest, LoadedImage, compile_agent_dir};
 use krw_agent_persistence::{
@@ -25,7 +29,7 @@ use krw_agent_persistence::{
 use krw_agent_protocol::{
     AuthScope, BudgetLimits, BudgetUsage, CapabilityBinding, ContentHash, DeploymentBinding,
     GLM_MODEL_ID, McpToolSessionReuse, PROTOCOL_VERSION, ProviderWireCapabilities, ReasoningEffort,
-    ResolvedExecutionSnapshot, RunRequest, ThinkingMode, TransportKind,
+    ResolvedExecutionSnapshot, RunRequest, ThinkingMode,
 };
 use krw_agent_provider_wire::{
     AssistantMessage, ContentBlock, EpisodeContext, MessagesRequest, ProviderEpisodeV1,
@@ -703,10 +707,14 @@ fn fixture_deployment(
                 .ok_or_else(|| {
                     QualityError::Fixture("fixture capability is absent from AgentImage".into())
                 })?;
+            let binding_key = specification.remote_binding_key().ok_or_else(|| {
+                QualityError::Fixture(
+                    "local capability must not be materialized as a fixture transport".into(),
+                )
+            })?;
             Ok(CapabilityBinding {
-                binding_key: specification.binding_key.clone(),
+                binding_key: binding_key.to_owned(),
                 mcp_tool_name: format!("quality_fixture_{index}"),
-                transport: TransportKind::Native,
                 endpoint_ref: "quality-fixture".into(),
                 credential_ref: None,
                 auth_scope: AuthScope::Tenant,
@@ -720,7 +728,7 @@ fn fixture_deployment(
         })
         .collect::<Result<Vec<_>, QualityError>>()?;
     Ok(DeploymentBinding {
-        schema_version: 3,
+        schema_version: 4,
         deployment_id: format!("quality-fixture-{}", case.id),
         capabilities,
     })
@@ -752,10 +760,11 @@ fn fixture_snapshot(
         .capabilities
         .iter()
         .filter_map(|capability| {
+            let binding_key = capability.remote_binding_key()?;
             deployment
                 .capabilities
                 .iter()
-                .find(|binding| binding.binding_key == capability.binding_key)
+                .find(|binding| binding.binding_key == binding_key)
                 .map(|binding| (capability.id.clone(), binding.data_release_hash.clone()))
         })
         .collect::<BTreeMap<_, _>>();
@@ -2149,6 +2158,15 @@ fn fixture_dependency(code: &str) -> DependencyFailure {
     )
 }
 
+fn fixture_child_dependency(code: &str, error: ChildExecutionError) -> DependencyFailure {
+    DependencyFailure::redacted(
+        code,
+        error.to_string(),
+        false,
+        DeliveryCertainty::NotDispatched,
+    )
+}
+
 #[derive(Debug, Default)]
 struct FixturePersistence {
     state: Mutex<FixturePersistenceState>,
@@ -2157,9 +2175,35 @@ struct FixturePersistence {
 #[derive(Debug, Default)]
 struct FixturePersistenceState {
     actions: BTreeMap<String, ActionReceipt>,
+    children: BTreeMap<(String, String), ChildExecutionReceipt>,
     finalizations: BTreeMap<String, (ActionDisposition, ContentHash, ContentHash)>,
     results: BTreeMap<String, Vec<u8>>,
     final_hash: Option<ContentHash>,
+}
+
+impl FixturePersistence {
+    fn transition_child(
+        &self,
+        run_id: &str,
+        child_id: &str,
+        code: &str,
+        transition: impl FnOnce(
+            &ChildExecutionReceipt,
+        ) -> Result<ChildExecutionReceipt, ChildExecutionError>,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        let key = (run_id.to_owned(), child_id.to_owned());
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| fixture_dependency("quality_persistence_poisoned"))?;
+        let current = state
+            .children
+            .get(&key)
+            .ok_or_else(|| fixture_dependency("quality_child_missing"))?;
+        let next = transition(current).map_err(|error| fixture_child_dependency(code, error))?;
+        state.children.insert(key, next.clone());
+        Ok(next)
+    }
 }
 
 #[async_trait]
@@ -2190,6 +2234,63 @@ impl Persistence for FixturePersistence {
         _state: &DurableRunState,
     ) -> Result<(), DependencyFailure> {
         Ok(())
+    }
+
+    async fn reserve_child(
+        &self,
+        mutation: &ReserveChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        let proposed = krw_agent_bounded_child::reserve(mutation)
+            .map_err(|error| fixture_child_dependency("quality_child_reserve", error))?;
+        let key = (mutation.run_id.clone(), mutation.child_id.clone());
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| fixture_dependency("quality_persistence_poisoned"))?;
+        match state.children.get(&key) {
+            Some(existing) if existing == &proposed => Ok(existing.clone()),
+            Some(_) => Err(fixture_dependency("quality_child_reserve_conflict")),
+            None => {
+                state.children.insert(key, proposed.clone());
+                Ok(proposed)
+            }
+        }
+    }
+
+    async fn invoke_child(
+        &self,
+        mutation: &InvokeChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "quality_child_invoke",
+            |current| krw_agent_bounded_child::invoke(current, mutation),
+        )
+    }
+
+    async fn complete_child(
+        &self,
+        mutation: &CompleteChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "quality_child_complete",
+            |current| krw_agent_bounded_child::complete(current, mutation),
+        )
+    }
+
+    async fn cancel_child(
+        &self,
+        mutation: &CancelChildMutation,
+    ) -> Result<ChildExecutionReceipt, DependencyFailure> {
+        self.transition_child(
+            &mutation.run_id,
+            &mutation.child_id,
+            "quality_child_cancel",
+            |current| krw_agent_bounded_child::cancel(current, mutation),
+        )
     }
 
     async fn begin_action(

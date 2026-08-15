@@ -33,7 +33,6 @@ guru_binding_keys=(
   krw_ontology_query
   krw_ontology_trace
   krw_ontology_chain
-  krw_skill_local
   krw_guru_review_company_evidence
 )
 
@@ -87,9 +86,14 @@ while IFS= read -r package; do
   esac
   for expected_binding_key in "${expected_binding_keys[@]}"; do
     test -n "$expected_binding_key" || continue
-    observed_count="$(rg -c "^[[:space:]]+binding_key: ${expected_binding_key}$" "$spec" || true)"
+    observed_count="$(rg -c "binding_key: ${expected_binding_key}([[:space:]}]|$)" "$spec" || true)"
     test "$observed_count" -eq 1 || fail "$package must declare binding $expected_binding_key exactly once"
   done
+
+  if rg -q '^  - id: skill\.load$' "$spec"; then
+    rg -q 'execution: \{ kind: local, builtin: skill_load \}' "$spec" \
+      || fail "$package skill.load must be a local builtin"
+  fi
 
   if rg "kind: (plan|assess|compose)" "$spec" | rg -q -v "role_id"; then
     fail "$package has a model-driven state without role_id"

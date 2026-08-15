@@ -7,7 +7,7 @@ set -euo pipefail
 # the Supabase queue.
 
 usage() {
-  printf '%s\n' 'usage: install-local-mac-capabilityd-release.sh --mode activate|rollback --release-id ID --provider glm|deepseek --operator-root /absolute/krw-agent-prod'
+  printf '%s\n' 'usage: install-local-mac-capabilityd-release.sh --mode activate --release-id ID --provider glm|deepseek --operator-root /absolute/krw-agent-prod'
 }
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$MODE" in activate|rollback) ;; *) usage >&2; exit 2 ;; esac
+case "$MODE" in activate) ;; *) usage >&2; exit 2 ;; esac
 case "$RELEASE_ID" in ''|*[!A-Za-z0-9._-]*) fail 'Invalid release id' ;; esac
 case "$PROVIDER" in glm|deepseek) ;; *) fail 'Provider must be glm or deepseek' ;; esac
 [[ "$OPERATOR_ROOT" == /* && -d "$OPERATOR_ROOT" && ! -L "$OPERATOR_ROOT" ]] || fail 'Operator root is missing or unsafe'
@@ -49,7 +49,6 @@ STATE_DIR="$INSTALL_ROOT/deploy-state/capabilityd-$RELEASE_ID"
 CURRENT="$INSTALL_ROOT/current"
 CAPABILITY_ENV="$OPERATOR_ROOT/runtime/capabilityd.env"
 GATEWAY_CONFIG="$OPERATOR_ROOT/config/runtime/ontology-tls.json"
-GATEWAY_CONFIG_NAMES=(ontology feed filings guru)
 MATERIALIZED_RUNTIME="$STATE_DIR/runtime"
 
 [[ -f "$CAPABILITY_ENV" && ! -L "$CAPABILITY_ENV" ]] || fail 'Capability runtime environment is missing or unsafe'
@@ -216,13 +215,6 @@ safe_remove_runtime_staging() {
   esac
 }
 
-safe_remove_materialized_runtime() {
-  case "$1" in
-    "$STATE_DIR"/runtime) [ -d "$1" ] && rm -rf -- "$1" ;;
-    *) fail 'Refusing to remove an unexpected materialized capability runtime' ;;
-  esac
-}
-
 rewrite_runtime_home() {
   python3 - "$MATERIALIZED_RUNTIME/.venv/pyvenv.cfg" "$MATERIALIZED_RUNTIME/.python/bin" <<'PY'
 import os
@@ -271,7 +263,6 @@ materialize_runtime() {
   fi
   mv -- "$runtime_staging" "$MATERIALIZED_RUNTIME"
   if ! rewrite_runtime_home || ! "$MATERIALIZED_RUNTIME/.venv/bin/python" -c 'import krw_capability_runtime' >/dev/null; then
-    safe_remove_materialized_runtime "$MATERIALIZED_RUNTIME"
     fail 'Capability runtime archive cannot import the canonical capability service'
   fi
 }
@@ -439,74 +430,25 @@ if actual.get("ok") is not True:
   return 1
 }
 
-restore() {
-  launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
-  for gateway_name in "${GATEWAY_CONFIG_NAMES[@]}"; do
-    previous_gateway="$STATE_DIR/gateway.previous.$gateway_name.json"
-    gateway_config="$OPERATOR_ROOT/config/runtime/$gateway_name-tls.json"
-    if [ -f "$previous_gateway" ]; then
-      install -m 0600 "$previous_gateway" "$gateway_config"
-    fi
-  done
-  # Rollback may restore operator JSON written before the current gateway
-  # readiness contract.  Normalize before the gateway supervisor is allowed
-  # to restart: otherwise an old Guru config can make every local MCP route
-  # flap even though the old capability release itself is healthy.
-  python3 - "$OPERATOR_ROOT/config/runtime" <<'PY'
-import json
-import os
-import pathlib
-import tempfile
-import sys
-
-root = pathlib.Path(sys.argv[1])
-defaults = {
-    "ontology": ("http_json", "/healthz"),
-    "feed": ("http_json", "/readyz"),
-    "filings": ("http_json", "/readyz"),
-    "guru": ("mcp_initialize", "/mcp"),
+write_activation_status() {
+  status=$1
+  exit_code=$2
+  temporary=$(mktemp "$STATE_DIR/.activation-status.XXXXXX")
+  printf '{"schema_version":1,"component":"krw-capabilityd","release_id":"%s","provider":"%s","status":"%s","exit_code":%s}\n' \
+    "$RELEASE_ID" "$PROVIDER" "$status" "$exit_code" > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$STATE_DIR/activation-status.json"
 }
-for name, (mode, endpoint_path) in defaults.items():
-    path = root / f"{name}-tls.json"
-    if not path.is_file() or path.is_symlink():
-        raise SystemExit(f"gateway config is missing or unsafe during rollback: {path}")
-    config = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(config, dict):
-        raise SystemExit(f"gateway config is invalid during rollback: {path}")
-    config["checkUpstreamReady"] = True
-    config["normalizeReadiness"] = True
-    config["upstreamReadinessMode"] = mode
-    if mode == "mcp_initialize":
-        config["upstreamMcpPath"] = endpoint_path
-        config.pop("upstreamReadinessPath", None)
-    else:
-        config["upstreamReadinessPath"] = endpoint_path
-    fd, temporary = tempfile.mkstemp(prefix=f".{name}-tls.", dir=root)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        directory_fd = os.open(root, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-PY
-  if [ "$(cat "$STATE_DIR/plist.existed" 2>/dev/null || true)" = 1 ] && [ -f "$STATE_DIR/plist.previous" ]; then
-    install -m 0644 "$STATE_DIR/plist.previous" "$PLIST"
-    launchctl bootstrap "$DOMAIN" "$PLIST"
-    launchctl kickstart -k "$DOMAIN/$LABEL"
-  else
-    rm -f "$PLIST"
+
+ACTIVATION_FAILURE_ARMED=0
+record_activation_failure() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ "$ACTIVATION_FAILURE_ARMED" = 1 ]; then
+    ACTIVATION_FAILURE_ARMED=0
+    write_activation_status failed "$status" || true
   fi
-  launchctl kickstart -k "$DOMAIN/com.krw.agent.local-mcp-gateways" >/dev/null 2>&1 || true
+  exit "$status"
 }
 
 case "$MODE" in
@@ -518,35 +460,18 @@ case "$MODE" in
     # fails closed and follows the full activation path below.
     capability_reuse=0
     if capability_runtime_is_active; then capability_reuse=1; fi
-    mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR" "$STATE_DIR"
-    chmod 0700 "$LOG_DIR" "$STATE_DIR"
-    [ ! -e "$STATE_DIR/gateway.previous.ontology.json" ] || fail 'Capability activation state already exists'
-    for gateway_name in "${GATEWAY_CONFIG_NAMES[@]}"; do
-      gateway_config="$OPERATOR_ROOT/config/runtime/$gateway_name-tls.json"
-      [ -f "$gateway_config" ] && [ ! -L "$gateway_config" ] \
-        || fail "Gateway config is missing or unsafe: $gateway_config"
-      install -m 0600 "$gateway_config" "$STATE_DIR/gateway.previous.$gateway_name.json"
-    done
-    if [ -f "$PLIST" ]; then
-      install -m 0644 "$PLIST" "$STATE_DIR/plist.previous"
-      printf '%s\n' 1 > "$STATE_DIR/plist.existed"
-    else
-      printf '%s\n' 0 > "$STATE_DIR/plist.existed"
-    fi
-    armed=1
-    rollback_on_error() {
-      status=$?
-      if [ "$armed" = 1 ]; then restore; fi
-      exit "$status"
-    }
-    trap rollback_on_error EXIT INT TERM
+    mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+    chmod 0700 "$LOG_DIR"
+    [ ! -e "$STATE_DIR" ] || fail 'Capability activation state already exists'
+    mkdir -p "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
+    write_activation_status activating 0
+    ACTIVATION_FAILURE_ARMED=1
+    trap record_activation_failure EXIT INT TERM
     if [ "$capability_reuse" = 1 ]; then
-      # The process and its plist are already healthy, but the deployment has
-      # still replaced the gateway JSON. Save that previous JSON in the same
-      # activation state so a later daemon/front failure can restore a fully
-      # coherent old capability boundary instead of leaving mixed identities.
       verify_identity_and_materialize_gateway
-      armed=0
+      write_activation_status active 0
+      ACTIVATION_FAILURE_ARMED=0
       trap - EXIT INT TERM
       printf '%s\n' "Reusing healthy canonical capability runtime: $RELEASE_ID ($PROVIDER)"
       exit 0
@@ -559,13 +484,9 @@ case "$MODE" in
     launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
     launchctl kickstart -k "$DOMAIN/$LABEL"
     wait_for_ready || fail 'Canonical capability runtime did not become ready'
-    armed=0
+    write_activation_status active 0
+    ACTIVATION_FAILURE_ARMED=0
     trap - EXIT INT TERM
     printf '%s\n' "Activated sealed canonical capability runtime: $RELEASE_ID ($PROVIDER)"
-    ;;
-  rollback)
-    [ -d "$STATE_DIR" ] || fail 'No capability activation state exists for this release'
-    restore
-    printf '%s\n' "Rolled back canonical capability runtime: $RELEASE_ID"
     ;;
 esac
