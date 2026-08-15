@@ -8,10 +8,14 @@
       {
         "clause_id": "cash_generation",
         "retrieval_query": "VG cash generation",
-        "required_concepts": ["cash generation"],
+        "required_concepts": [
+          "cash generation"
+        ],
         "required_predicates": [],
         "required": true,
-        "tickers": ["VG"],
+        "tickers": [
+          "VG"
+        ],
         "directness": "direct_required",
         "object_types": [],
         "metrics": [],
@@ -22,10 +26,14 @@
       {
         "clause_id": "debt_burden",
         "retrieval_query": "VG debt burden",
-        "required_concepts": ["debt burden"],
+        "required_concepts": [
+          "debt burden"
+        ],
         "required_predicates": [],
         "required": true,
-        "tickers": ["VG"],
+        "tickers": [
+          "VG"
+        ],
         "directness": "direct_required",
         "object_types": [],
         "metrics": [],
@@ -34,24 +42,38 @@
         "calculation_window": null
       }
     ],
-    "tickers": ["VG"],
-    "document_types": ["10-K"],
+    "tickers": [
+      "VG"
+    ],
+    "document_types": [
+      "10-K"
+    ],
     "periods": [],
     "universe": null,
-    "comparison_axes": ["directness"],
+    "comparison_axes": [
+      "directness"
+    ],
     "answer_scope": "direct",
     "uncertainty": "low",
     "limit_results": 8,
     "limit_tickers": 20
   },
   "resolved_scope": {
-    "requested_tickers": ["VG"],
-    "resolved_tickers": ["VG"],
+    "requested_tickers": [
+      "VG"
+    ],
+    "resolved_tickers": [
+      "VG"
+    ],
     "unknown_tickers": [],
     "missing_tickers": [],
     "failed_tickers": [],
-    "document_types": ["10-K"],
-    "periods": ["CY2025"],
+    "document_types": [
+      "10-K"
+    ],
+    "periods": [
+      "CY2025"
+    ],
     "universe": null
   },
   "source_anchors": [
@@ -77,8 +99,12 @@
       "required": true,
       "directness_required": "direct_required",
       "status": "covered",
-      "evidence_ids": ["ev-vg-cash-001"],
-      "covered_tickers": ["VG"],
+      "evidence_ids": [
+        "ev-vg-cash-001"
+      ],
+      "covered_tickers": [
+        "VG"
+      ],
       "missing_tickers": [],
       "best_directness": "direct",
       "best_evidence_grade": "strong",
@@ -90,8 +116,12 @@
       "required": true,
       "directness_required": "direct_required",
       "status": "covered",
-      "evidence_ids": ["ev-vg-debt-001"],
-      "covered_tickers": ["VG"],
+      "evidence_ids": [
+        "ev-vg-debt-001"
+      ],
+      "covered_tickers": [
+        "VG"
+      ],
       "missing_tickers": [],
       "best_directness": "direct",
       "best_evidence_grade": "strong",
@@ -119,7 +149,9 @@
       "dimensions": {},
       "metric_scope": null,
       "metric_points": [],
-      "supports_clause_ids": ["cash_generation"],
+      "supports_clause_ids": [
+        "cash_generation"
+      ],
       "clause_matches": [
         {
           "clause_id": "cash_generation",
@@ -128,9 +160,15 @@
         }
       ],
       "source": {
-        "object_ids": ["claim:vg:cash-generation:2025"],
-        "quote_ids": ["quote:vg:cash-generation:2025"],
-        "span_ids": ["span:vg:cash-generation:2025"],
+        "object_ids": [
+          "claim:vg:cash-generation:2025"
+        ],
+        "quote_ids": [
+          "quote:vg:cash-generation:2025"
+        ],
+        "span_ids": [
+          "span:vg:cash-generation:2025"
+        ],
         "source_label": "VG 2025 Form 10-K"
       }
     },
@@ -153,7 +191,9 @@
       "dimensions": {},
       "metric_scope": null,
       "metric_points": [],
-      "supports_clause_ids": ["debt_burden"],
+      "supports_clause_ids": [
+        "debt_burden"
+      ],
       "clause_matches": [
         {
           "clause_id": "debt_burden",
@@ -162,15 +202,20 @@
         }
       ],
       "source": {
-        "object_ids": ["claim:vg:debt-burden:2025"],
-        "quote_ids": ["quote:vg:debt-burden:2025"],
-        "span_ids": ["span:vg:debt-burden:2025"],
+        "object_ids": [
+          "claim:vg:debt-burden:2025"
+        ],
+        "quote_ids": [
+          "quote:vg:debt-burden:2025"
+        ],
+        "span_ids": [
+          "span:vg:debt-burden:2025"
+        ],
         "source_label": "VG 2025 Form 10-K"
       }
     }
   ],
   "computed_values": [],
-  "metric_series_pack": null,
   "calculation_coverage": [],
   "missing_parts": [],
   "recommended_actions": [],

@@ -1507,7 +1507,6 @@ fn validate_research_state(value: &Value) -> Result<(), ContractValueError> {
             "continuation",
             "contract_version",
             "evidence_units",
-            "metric_series_pack",
             "missing_parts",
             "plan",
             "recommended_actions",

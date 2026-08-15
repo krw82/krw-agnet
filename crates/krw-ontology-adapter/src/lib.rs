@@ -24,11 +24,6 @@ const MAX_MARKET_SNAPSHOT_METRICS: usize = 6;
 const MAX_MARKET_METRIC_ABS: f64 = 1.0e18;
 const MAX_RESEARCH_FACTS_PER_RECORD: usize = 128;
 const MAX_RESEARCH_CALCULATIONS: usize = 64;
-// The ontology contract already caps this renderer-neutral sidecar at eight
-// series with twelve observations each. Keep the same bounds in the adapter
-// so a malformed payload cannot expand the trusted evidence context.
-const MAX_METRIC_SERIES_RECORDS: usize = 8;
-const MAX_METRIC_SERIES_POINTS: usize = 12;
 const MAX_NORMALIZED_RECORD_BYTES: usize = 256 * 1024;
 const MAX_PLANNING_GAPS: usize = 256;
 // A compacted analyst turn must retain the exact, server-normalized follow-up
@@ -61,7 +56,6 @@ pub struct ResearchStateV2 {
     pub evidence_units: Vec<EvidenceUnit>,
     #[serde(default)]
     pub computed_values: Vec<ComputedValue>,
-    pub metric_series_pack: Option<Value>,
     #[serde(default)]
     pub calculation_coverage: Vec<CalculationCoverage>,
     #[serde(default)]
@@ -193,60 +187,6 @@ pub struct ComputedValue {
     pub source_object_ids: Vec<String>,
 }
 
-/// Renderer-neutral, filing-anchored metric series returned alongside a
-/// `ResearchState`. These values used to be visible only in the raw MCP
-/// payload, which is removed at the next compaction boundary. Keeping a
-/// bounded evidence projection lets the composer use product, service, and
-/// geographic series that the ontology already retrieved.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetricSeriesPack {
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    series: Vec<MetricSeries>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetricSeries {
-    series_key: String,
-    label: String,
-    #[serde(default)]
-    canonical_metric: Option<String>,
-    #[serde(default)]
-    metric_name: Option<String>,
-    #[serde(default)]
-    ticker: Option<String>,
-    #[serde(default)]
-    unit: Option<String>,
-    #[serde(default)]
-    period_type: Option<String>,
-    #[serde(default)]
-    duration: Option<String>,
-    scope: MetricSeriesScope,
-    #[serde(default)]
-    points: Vec<MetricSeriesPoint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetricSeriesScope {
-    key: String,
-    kind: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetricSeriesPoint {
-    period: String,
-    value: Value,
-    object_id: String,
-    #[serde(default)]
-    formatted_value: Option<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1099,14 +1039,6 @@ pub fn sanitize_research_state_scope(
     withheld |= sanitized.missing_parts.len() != missing_before
         || sanitized.recommended_actions.len() != actions_before;
 
-    if let Some(series_pack) = sanitized.metric_series_pack.as_mut()
-        && let Some(series) = series_pack.get_mut("series").and_then(Value::as_array_mut)
-    {
-        let before = series.len();
-        series.retain(|item| ticker_in_scope(item.get("ticker").and_then(Value::as_str)));
-        withheld |= series.len() != before;
-    }
-
     for coverage in &mut sanitized.clause_coverage {
         let evidence_before = coverage.evidence_ids.len();
         coverage
@@ -1239,12 +1171,7 @@ pub fn map_research_state(
         })
         .collect::<Vec<_>>();
     let mut object_to_evidence = BTreeMap::new();
-    let mut records = Vec::with_capacity(
-        state
-            .evidence_units
-            .len()
-            .saturating_add(MAX_METRIC_SERIES_RECORDS),
-    );
+    let mut records = Vec::with_capacity(state.evidence_units.len());
     for unit in &state.evidence_units {
         if !valid_identifier(&unit.evidence_id)
             || unit
@@ -1404,19 +1331,6 @@ pub fn map_research_state(
         ensure_record_bound(&record)?;
         records.push(record);
     }
-    let series_records =
-        map_metric_series_pack_records(state.metric_series_pack.as_ref(), context)?;
-    for record in &series_records {
-        for object_id in &record.source_object_ids {
-            // A primary EvidenceUnit has the authoritative clause linkage.
-            // The sidecar can back a calculation only when that primary unit
-            // was not returned in the bounded evidence page.
-            object_to_evidence
-                .entry(object_id.clone())
-                .or_insert_with(|| record.evidence_id.clone());
-        }
-    }
-    records.extend(series_records);
     if state
         .computed_values
         .iter()
@@ -1687,129 +1601,6 @@ fn research_metric_context(unit: &EvidenceUnit, document_period: Option<&str>) -
         context.insert("observations".into(), Value::Array(observations));
     }
     (!context.is_empty()).then_some(Value::Object(context))
-}
-
-/// Admit the verified chart-series sidecar as ordinary, bounded metric
-/// evidence. The sidecar is already attached to the canonical ResearchState;
-/// not projecting it here used to discard exact product/service/geography
-/// observations at the next compaction boundary.
-///
-/// A malformed or future sidecar must never prevent the primary filing
-/// evidence from reaching the user. It is therefore ignored rather than
-/// promoted into a new failure path. Its records never grant strong-claim
-/// permission because the server did not bind them to a clause-coverage
-/// verdict.
-fn map_metric_series_pack_records(
-    payload: Option<&Value>,
-    context: &MappingContext,
-) -> Result<Vec<EvidenceRecord>, AdapterError> {
-    let Some(payload) = payload else {
-        return Ok(Vec::new());
-    };
-    let Ok(pack) = serde_json::from_value::<MetricSeriesPack>(payload.clone()) else {
-        return Ok(Vec::new());
-    };
-    if pack
-        .mode
-        .as_deref()
-        .is_some_and(|mode| mode != "chart_series_sidecar")
-    {
-        return Ok(Vec::new());
-    }
-
-    let mut records = Vec::new();
-    for series in pack.series.into_iter().take(MAX_METRIC_SERIES_RECORDS) {
-        let entity = clean_optional(series.ticker.as_deref(), 128);
-        let subject = entity.clone().unwrap_or_else(|| "company".into());
-        let label = safe_single_line(&series.label, 256, "filing metric");
-        let unit = clean_optional(series.unit.as_deref(), 64);
-        let period_type = clean_optional(series.period_type.as_deref(), 64);
-        let mut facts = Vec::new();
-        let mut source_object_ids = Vec::new();
-        let mut source_seen = BTreeSet::new();
-        for point in series.points.into_iter().take(MAX_METRIC_SERIES_POINTS) {
-            if !point.value.is_number()
-                || !valid_identifier(&point.object_id)
-                || clean_optional(Some(point.period.as_str()), 128).is_none()
-            {
-                continue;
-            }
-            let period = presentation_observation_period(
-                Some(point.period.as_str()),
-                period_type.as_deref(),
-                None,
-            );
-            facts.push(NormalizedFact {
-                subject: safe_single_line(&subject, 256, "company"),
-                predicate: label.clone(),
-                value: point.value,
-                unit: unit.clone(),
-                period,
-            });
-            if source_seen.insert(point.object_id.clone()) {
-                source_object_ids.push(point.object_id);
-            }
-        }
-        if facts.is_empty() || source_object_ids.is_empty() {
-            continue;
-        }
-
-        let scope_label = clean_optional(series.scope.label.as_deref(), 128);
-        let series_key = safe_single_line(&series.series_key, 512, "metric_series");
-        let metric = clean_optional(series.canonical_metric.as_deref(), 128)
-            .or_else(|| clean_optional(series.metric_name.as_deref(), 128));
-        let content_hash = ContentHash::sha256(serde_jcs::to_vec(&(
-            &series_key,
-            &label,
-            &metric,
-            &scope_label,
-            &entity,
-            &unit,
-            &facts,
-            &source_object_ids,
-        ))?);
-        let evidence_id = format!(
-            "metric-series:{}",
-            content_hash
-                .as_str()
-                .strip_prefix("sha256:")
-                .expect("ContentHash always has sha256 prefix")
-        );
-        let period = facts.last().and_then(|fact| fact.period.clone());
-        let record = EvidenceRecord {
-            evidence_id,
-            content_hash,
-            source: EvidenceSource {
-                capability_id: context.capability_id.clone(),
-                action_key: context.action_key.clone(),
-                server_build: context.server_build.clone(),
-                normalized_contract_hash: context.normalized_contract_hash.clone(),
-                server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
-                data_release_hash: context.data_release_hash.clone(),
-            },
-            scope: context.scope.clone(),
-            entity,
-            period: period.clone(),
-            as_of: None,
-            directness: Directness::MetricLineage,
-            grade: EvidenceGrade::Strong,
-            strong_claim_allowed: false,
-            payload_ref: context.payload_ref.clone(),
-            citation: PublicCitation {
-                title: format!("{label} filing metric series"),
-                document_type: None,
-                period,
-            },
-            facts,
-            supports: Vec::new(),
-            refutes: Vec::new(),
-            qualifies: Vec::new(),
-            source_object_ids,
-        };
-        ensure_record_bound(&record)?;
-        records.push(record);
-    }
-    Ok(records)
 }
 
 /// Conservatively project the untyped search response into supplemental
@@ -3716,89 +3507,36 @@ mod tests {
     }
 
     #[test]
-    fn verified_metric_series_sidecar_survives_as_bounded_metric_evidence() {
-        let mut state = answerable_fixture();
-        state.metric_series_pack = Some(serde_json::json!({
-            "mode": "chart_series_sidecar",
-            "series": [{
-                "series_key": "AAPL|revenue|product:iphone|usd|annual",
-                "label": "iPhone Revenue",
-                "canonical_metric": "revenue",
-                "metric_name": "revenue",
-                "ticker": "AAPL",
-                "unit": "USD",
-                "period_type": "annual",
-                "duration": "period",
-                "scope": {"key": "iphone", "kind": "product", "label": "iPhone"},
-                "points": [
-                    {
-                        "period": "FY2024",
-                        "value": 201_183_000_000_u64,
-                        "object_id": "metric_observation:AAPL:FY2024:10K:iphone"
-                    },
-                    {
-                        "period": "FY2025",
-                        "value": 209_586_000_000_u64,
-                        "object_id": "metric_observation:AAPL:FY2025:10K:iphone"
-                    }
-                ]
-            }]
-        }));
+    fn metric_series_sidecar_is_not_ingested_as_evidence() {
+        // Chart-ready series leave through the private presentation channel
+        // (MCP `_meta`), never through the model-visible ResearchState. The
+        // mapped delta therefore contains only primary filing evidence.
+        let state = answerable_fixture();
 
         let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
-        let series = delta
-            .records
-            .iter()
-            .find(|record| record.evidence_id.starts_with("metric-series:"))
-            .expect("sidecar series is retained as evidence");
-        assert_eq!(series.entity.as_deref(), Some("AAPL"));
-        assert_eq!(series.directness, Directness::MetricLineage);
-        assert_eq!(series.grade, EvidenceGrade::Strong);
-        assert!(!series.strong_claim_allowed);
-        assert_eq!(series.facts.len(), 2);
-        assert!(series.facts.iter().any(|fact| {
-            fact.predicate == "iPhone Revenue"
-                && fact.period.as_deref() == Some("FY2025")
-                && fact.value == serde_json::json!(209586000000_u64)
-        }));
         assert!(
-            series
-                .source_object_ids
-                .contains(&"metric_observation:AAPL:FY2025:10K:iphone".into())
+            delta
+                .records
+                .iter()
+                .all(|record| !record.evidence_id.starts_with("metric-series:"))
         );
+        assert_eq!(delta.records.len(), state.evidence_units.len());
         EvidenceLedger::from_records(delta.records).unwrap();
     }
 
     #[test]
-    fn calendar_routing_series_never_reaches_the_model_as_a_fiscal_label() {
-        let mut state = answerable_fixture();
-        state.metric_series_pack = Some(serde_json::json!({
+    fn research_state_rejects_a_smuggled_metric_series_pack() {
+        // deny_unknown_fields makes the cutover fail closed: a stale server
+        // cannot push chart data back into the model path under the old key.
+        let state = answerable_fixture();
+        let mut payload = serde_json::to_value(&state).unwrap();
+        payload["metric_series_pack"] = serde_json::json!({
             "mode": "chart_series_sidecar",
-            "series": [{
-                "series_key": "AAPL|revenue|product:iphone|usd|quarter",
-                "label": "iPhone Revenue",
-                "canonical_metric": "revenue",
-                "ticker": "AAPL",
-                "unit": "USD",
-                "period_type": "quarterly",
-                "scope": {"key": "iphone", "kind": "product", "label": "iPhone"},
-                "points": [{
-                    "period": "CY2026Q1",
-                    "value": 56_994_000_000_u64,
-                    "object_id": "metric_observation:AAPL:CY2026Q1:10Q:iphone"
-                }]
-            }]
-        }));
-
-        let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
-        let series = delta
-            .records
-            .iter()
-            .find(|record| record.evidence_id.starts_with("metric-series:"))
-            .expect("sidecar series is retained as evidence");
-        assert_eq!(series.period.as_deref(), Some("2026년 분기"));
-        assert_eq!(series.citation.period.as_deref(), Some("2026년 분기"));
-        assert_eq!(series.facts[0].period.as_deref(), Some("2026년 분기"));
+            "series": []
+        });
+        let error = serde_json::from_value::<ResearchStateV2>(payload)
+            .expect_err("metric_series_pack is not part of ResearchStateV2");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -3881,9 +3619,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_metric_series_sidecar_never_blocks_primary_filing_evidence() {
-        let mut state = answerable_fixture();
-        state.metric_series_pack = Some(serde_json::json!({"series": "not-an-array"}));
+    fn research_state_maps_primary_evidence_without_a_sidecar_pack() {
+        let state = answerable_fixture();
 
         let delta = map_research_state(&state, &context("ontology.query_context")).unwrap();
         assert_eq!(delta.records.len(), state.evidence_units.len());

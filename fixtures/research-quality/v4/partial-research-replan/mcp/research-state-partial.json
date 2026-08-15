@@ -8,10 +8,14 @@
       {
         "clause_id": "cash_generation",
         "retrieval_query": "VG cash generation",
-        "required_concepts": ["cash generation"],
+        "required_concepts": [
+          "cash generation"
+        ],
         "required_predicates": [],
         "required": true,
-        "tickers": ["VG"],
+        "tickers": [
+          "VG"
+        ],
         "directness": "direct_required",
         "object_types": [],
         "metrics": [],
@@ -20,24 +24,40 @@
         "calculation_window": null
       }
     ],
-    "tickers": ["VG"],
-    "document_types": ["10-K"],
+    "tickers": [
+      "VG"
+    ],
+    "document_types": [
+      "10-K"
+    ],
     "periods": [],
     "universe": null,
-    "comparison_axes": ["directness"],
+    "comparison_axes": [
+      "directness"
+    ],
     "answer_scope": "direct",
     "uncertainty": "low",
     "limit_results": 8,
     "limit_tickers": 20
   },
   "resolved_scope": {
-    "requested_tickers": ["VG"],
-    "resolved_tickers": ["VG"],
+    "requested_tickers": [
+      "VG"
+    ],
+    "resolved_tickers": [
+      "VG"
+    ],
     "unknown_tickers": [],
-    "missing_tickers": ["VG"],
+    "missing_tickers": [
+      "VG"
+    ],
     "failed_tickers": [],
-    "document_types": ["10-K"],
-    "periods": ["CY2025"],
+    "document_types": [
+      "10-K"
+    ],
+    "periods": [
+      "CY2025"
+    ],
     "universe": null
   },
   "source_anchors": [
@@ -55,7 +75,9 @@
     "required_clause_count": 1,
     "covered_required_clause_count": 0,
     "requires_direct_evidence": true,
-    "reason_codes": ["fixture_missing_direct_evidence"]
+    "reason_codes": [
+      "fixture_missing_direct_evidence"
+    ]
   },
   "clause_coverage": [
     {
@@ -65,7 +87,9 @@
       "status": "missing",
       "evidence_ids": [],
       "covered_tickers": [],
-      "missing_tickers": ["VG"],
+      "missing_tickers": [
+        "VG"
+      ],
       "best_directness": null,
       "best_evidence_grade": null,
       "strong_claim_ready": false,
@@ -74,7 +98,6 @@
   ],
   "evidence_units": [],
   "computed_values": [],
-  "metric_series_pack": null,
   "calculation_coverage": [],
   "missing_parts": [
     {
