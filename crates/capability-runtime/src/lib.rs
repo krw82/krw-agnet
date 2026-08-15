@@ -17,16 +17,16 @@ use krw_agent_contracts::{
     ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
     RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
+use krw_agent_execution_contracts::{
+    CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
+    DependencyFailure, deterministic_action_key,
+};
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilitySpec, IdempotencyPolicy, InputDerivation,
     Permission, ResolvedCapabilityContracts,
 };
 use krw_agent_protocol::{ContentHash, is_canonical_ticker};
-use krw_agent_run_engine::{
-    CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
-    DependencyFailure, deterministic_action_key,
-};
 use krw_agent_runtime_config::{ResolvedCapability, ResolvedRuntime};
 use krw_agent_tool_mcp::{
     McpClientPool, McpError, McpHttpConfig, PoolKey, PoolScope, ToolCallOutcome,

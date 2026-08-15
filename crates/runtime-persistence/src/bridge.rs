@@ -26,7 +26,7 @@ use krw_agent_persistence::{
     ActionFinalizationReceipt, ActionReceipt, ActionStage, FinalizeActionMutation,
 };
 use krw_agent_protocol::{ALLOWED_MODEL_IDS, BudgetUsage, ContentHash};
-use krw_agent_run_engine::{
+use krw_agent_execution_contracts::{
     ActionIntent, DeliveryCertainty, DependencyFailure, DurableActionObservation, DurableEpisode,
     DurableFinal, DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous,
     Persistence, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, RecoverySnapshot,

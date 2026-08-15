@@ -12,7 +12,7 @@ use krw_agent_contracts::{
     validate_evidence_review_exchange, validate_evidence_review_input_origin,
     validate_guru_company_search_plan, validate_guru_query_exchange, validate_value,
 };
-use krw_agent_run_engine::DependencyFailure;
+use krw_agent_execution_contracts::DependencyFailure;
 use serde_json::{Value, json};
 
 use super::reject;

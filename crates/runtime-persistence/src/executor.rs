@@ -7,6 +7,10 @@ use async_trait::async_trait;
 use krw_agent_capability_runtime::{
     CapabilityCatalog, McpToolTransport, PooledMcpCapabilityRuntime, RunScope,
 };
+use krw_agent_execution_contracts::{
+    CapabilityRuntime, DeliveryCertainty, FinalStatus, Persistence, RunIdentity,
+    RuntimeStageTimings,
+};
 use krw_agent_image::LoadedImage;
 use krw_agent_persistence::agent_v1::{ClaimReceipt, SessionMemoryReadMode};
 use krw_agent_persistence::daemon::{
@@ -17,10 +21,8 @@ use krw_agent_protocol::{
 };
 use krw_agent_provider_wire::{ProviderClient, ProviderClientConfig};
 use krw_agent_run_engine::{
-    CapabilityRuntime, CompiledExecutionPlan, DeliveryCertainty, EngineConfig, EngineError,
-    FinalStatus, Persistence, RunEngine, RunIdentity, RunInput, RuntimeStageTimings,
-    TrustedMarketSnapshot, durable_failure_diagnostic, recovery_budget_usage,
-    state_artifact_failure_code,
+    CompiledExecutionPlan, EngineConfig, EngineError, RunEngine, RunInput, TrustedMarketSnapshot,
+    durable_failure_diagnostic, recovery_budget_usage, state_artifact_failure_code,
 };
 use krw_agent_runtime_config::{ResolvedReleaseSet, ResolvedRuntime};
 use krw_context_planner::ContextPlanner;
@@ -803,7 +805,7 @@ fn session_memory_execution_failure(_: MemoryResolutionError) -> RunExecutionFai
 
 fn execution_failure_from_dependency(
     origin: &'static str,
-    failure: &krw_agent_run_engine::DependencyFailure,
+    failure: &krw_agent_execution_contracts::DependencyFailure,
 ) -> RunExecutionFailure {
     if failure.retryable {
         RunExecutionFailure::deferred("dependency_unavailable", Duration::from_secs(2))
@@ -1170,7 +1172,7 @@ mod tests {
 
     #[test]
     fn dependency_failure_retains_hashes_but_not_dependency_content() {
-        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+        let dependency = krw_agent_execution_contracts::DependencyFailure::redacted(
             "private-dependency-code",
             "private dependency detail",
             false,
@@ -1197,7 +1199,7 @@ mod tests {
 
     #[test]
     fn provider_dependency_failure_retains_only_the_closed_provider_code() {
-        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+        let dependency = krw_agent_execution_contracts::DependencyFailure::redacted(
             "deepseek_http_400_invalid_param",
             "provider body that must remain private",
             false,
@@ -1215,7 +1217,7 @@ mod tests {
 
     #[test]
     fn provider_dependency_failure_retains_the_active_glm_code() {
-        let dependency = krw_agent_run_engine::DependencyFailure::redacted(
+        let dependency = krw_agent_execution_contracts::DependencyFailure::redacted(
             "glm_http_400_invalid_param",
             "provider body that must remain private",
             false,
@@ -1240,18 +1242,18 @@ mod tests {
     #[derive(Debug)]
     struct FixtureMarketCapability {
         provider_content: serde_json::Value,
-        invocations: Mutex<Vec<krw_agent_run_engine::CapabilityInvocation>>,
+        invocations: Mutex<Vec<krw_agent_execution_contracts::CapabilityInvocation>>,
     }
 
     #[async_trait]
     impl CapabilityRuntime for FixtureMarketCapability {
         async fn invoke(
             &self,
-            invocation: &krw_agent_run_engine::CapabilityInvocation,
-        ) -> Result<krw_agent_run_engine::CapabilityResult, krw_agent_run_engine::DependencyFailure>
+            invocation: &krw_agent_execution_contracts::CapabilityInvocation,
+        ) -> Result<krw_agent_execution_contracts::CapabilityResult, krw_agent_execution_contracts::DependencyFailure>
         {
             self.invocations.lock().unwrap().push(invocation.clone());
-            Ok(krw_agent_run_engine::CapabilityResult {
+            Ok(krw_agent_execution_contracts::CapabilityResult {
                 provider_content: self.provider_content.clone(),
                 evidence: Vec::new(),
                 answerability: None,

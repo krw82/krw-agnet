@@ -9,9 +9,9 @@ license.workspace = true
 async-trait.workspace = true
 krw-agent-contracts = { path = "../krw-contracts" }
 krw-agent-evidence = { path = "../evidence" }
+krw-agent-execution-contracts = { path = "../execution-contracts" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-protocol = { path = "../protocol" }
-krw-agent-run-engine = { path = "../run-engine" }
 krw-agent-runtime-config = { path = "../runtime-config" }
 krw-agent-tool-mcp = { path = "../tool-mcp" }
 krw-ontology-adapter = { path = "../krw-ontology-adapter" }

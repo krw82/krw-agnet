@@ -12,7 +12,9 @@ use async_trait::async_trait;
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, PreparedMessagesRequest, ProviderEpisodeV1,
 };
-use krw_agent_run_engine::{DeliveryCertainty, DependencyFailure, Provider, RuntimeStageTimings};
+use krw_agent_execution_contracts::{
+    DeliveryCertainty, DependencyFailure, Provider, RuntimeStageTimings,
+};
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]

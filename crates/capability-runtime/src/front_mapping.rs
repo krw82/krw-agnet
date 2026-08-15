@@ -19,7 +19,7 @@ use krw_agent_evidence::{
     PublicCitation,
 };
 use krw_agent_protocol::ContentHash;
-use krw_agent_run_engine::DependencyFailure;
+use krw_agent_execution_contracts::DependencyFailure;
 use krw_ontology_adapter::MappingContext;
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;

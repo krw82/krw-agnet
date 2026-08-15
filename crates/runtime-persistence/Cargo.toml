@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["http"]
-http = ["krw-agent-provider-wire/http", "krw-agent-run-engine/http"]
+http = ["krw-agent-provider-wire/http", "krw-agent-execution-contracts/http"]
 postgres = ["krw-agent-persistence/postgres"]
 
 [dependencies]
@@ -17,6 +17,7 @@ krw-agent-bounded-child = { path = "../bounded-child" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-artifact-store = { path = "../artifact-store" }
 krw-agent-capability-runtime = { path = "../capability-runtime" }
+krw-agent-execution-contracts = { path = "../execution-contracts", default-features = false }
 krw-context-planner = { path = "../context-planner" }
 krw-agent-persistence = { path = "../persistence", default-features = false }
 krw-agent-protocol = { path = "../protocol" }
