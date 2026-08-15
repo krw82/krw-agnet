@@ -414,7 +414,11 @@ async function readRun(
     session_id: ownership.session_id,
     run_id: runId,
     state: "final",
-    final_output: { markdown: finalOutput.markdown, final_output_hash: finalOutput.final_output_hash },
+    final_output: {
+      markdown: finalOutput.markdown,
+      final_output_hash: finalOutput.final_output_hash,
+      visualizations: finalOutput.visualizations,
+    },
     usage: projectPublicRunUsage(finalOutput.usage),
     retry_message: null,
   };

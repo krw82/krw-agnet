@@ -268,6 +268,8 @@ export interface ReadFinalOutputResponse {
   readonly run_id: string;
   readonly final_output_hash: ContentHash;
   readonly markdown: string;
+  /** Deterministic visualization artifacts; empty for pre-cutover bundles. */
+  readonly visualizations: readonly JsonValue[];
 }
 
 /**
@@ -284,6 +286,8 @@ export interface ReadFinalProjectionResponse {
   readonly answer_bundle_hash: ContentHash;
   readonly final_output_hash: ContentHash;
   readonly markdown: string;
+  /** Deterministic visualization artifacts; empty for pre-cutover bundles. */
+  readonly visualizations: readonly JsonValue[];
   readonly usage: JsonValue;
   readonly evidence_ledger_hash: ContentHash | null;
   readonly memory_revision: number | null;

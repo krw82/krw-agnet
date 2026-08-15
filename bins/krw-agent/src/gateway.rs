@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use krw_agent_protocol::{ContentHash, is_canonical_ticker};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use zeroize::Zeroizing;
 
 const SCHEMA_VERSION: u16 = 1;
@@ -25,7 +26,7 @@ pub(crate) struct SubmittedRun {
     pub state: GatewayRunState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RunStatus {
     pub session_id: String,
     pub run_id: String,
@@ -35,10 +36,13 @@ pub(crate) struct RunStatus {
     pub retry_message: Option<RetryMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FinalOutput {
     pub markdown: String,
     pub final_output_hash: ContentHash,
+    /// Deterministic visualization artifacts compiled by the run engine.
+    /// Empty for pre-cutover (schema v3) bundles.
+    pub visualizations: Vec<Value>,
 }
 
 /// Public, credit-oriented usage counters returned for a committed final or
@@ -289,6 +293,8 @@ struct StatusResponse {
 struct FinalOutputResponse {
     markdown: String,
     final_output_hash: ContentHash,
+    #[serde(default)]
+    visualizations: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -335,6 +341,7 @@ async fn parse_status_response(
             Some(FinalOutput {
                 markdown: final_output.markdown,
                 final_output_hash: final_output.final_output_hash,
+                visualizations: final_output.visualizations,
             })
         }
         (GatewayRunState::Final, None | Some(_)) => {

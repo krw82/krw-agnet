@@ -10,7 +10,7 @@ import {
   type SessionMemoryRetirementInput,
   type SessionMemoryRetirementResponse,
 } from "./contracts.js";
-import { canonicalHash, isContentHash, type JsonObject } from "./json.js";
+import { canonicalHash, isContentHash, type JsonObject, type JsonValue } from "./json.js";
 import {
   validatePreparedCancelRun,
   validatePreparedEnqueueRun,
@@ -276,7 +276,12 @@ function parseOutcomeResponse(value: unknown, runId: string): ReadCommittedOutco
 }
 
 function parseFinalOutputResponse(value: unknown, runId: string): ReadFinalOutputResponse {
-  const object = exactObject(value, ["run_id", "final_output_hash", "markdown"]);
+  const object = exactObject(value, [
+    "run_id",
+    "final_output_hash",
+    "markdown",
+    "visualizations",
+  ]);
   if (object.run_id !== runId || !isContentHash(object.final_output_hash)) {
     throw new ContractViolation("invalid_final_output_identity");
   }
@@ -288,7 +293,18 @@ function parseFinalOutputResponse(value: unknown, runId: string): ReadFinalOutpu
   ) {
     throw new ContractViolation("invalid_final_output_markdown");
   }
+  assertVisualizations(object.visualizations);
   return object as unknown as ReadFinalOutputResponse;
+}
+
+function assertVisualizations(value: unknown): asserts value is readonly JsonValue[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 16 ||
+    !value.every((item) => isJsonValue(item) && typeof item === "object" && item !== null)
+  ) {
+    throw new ContractViolation("invalid_final_output_visualizations");
+  }
 }
 
 function parseFinalProjectionResponse(
@@ -300,6 +316,7 @@ function parseFinalProjectionResponse(
     "answer_bundle_hash",
     "final_output_hash",
     "markdown",
+    "visualizations",
     "usage",
     "evidence_ledger_hash",
     "memory_revision",
@@ -320,6 +337,7 @@ function parseFinalProjectionResponse(
   ) {
     throw new ContractViolation("invalid_final_projection_markdown");
   }
+  assertVisualizations(object.visualizations);
   if (!isJsonValue(object.usage)) {
     throw new ContractViolation("invalid_final_projection_usage");
   }

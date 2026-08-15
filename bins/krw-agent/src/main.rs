@@ -627,6 +627,7 @@ async fn run_through_gateway(
                         "state": terminal.state,
                         "final_output_hash": final_output.final_output_hash,
                         "markdown": final_output.markdown,
+                        "visualizations": final_output.visualizations,
                         "usage": usage,
                     }))?
                 );
