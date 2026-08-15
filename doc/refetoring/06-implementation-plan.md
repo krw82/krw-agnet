@@ -189,6 +189,16 @@ replay/quickstart 하위명령은 `dev-tools` feature(비기본) 뒤로 분리�
 
 ## Wave 8 — deployment controller
 
+상태: controller core 완료. `bins/krw-agent-deploy`(신규 workspace member)가
+명시적 config parser(schema v1, provider 필수, 절대 경로), 15개 read-only
+preflight 검사, immutable preflight/terminal receipt, 12단계 forward-only
+stage table을 갖는다. `preflight`/`dry-run`/`deploy` CLI에서 build/seal/
+activation 단계는 이번 revision에서 fail-closed로 terminal failure
+receipt(admission closed)를 남긴다 — 절반 활성화는 불가능하다. 73 테스트.
+잔여(별도 세션): stage 3-11 실구현, frontend `prod:deploy:full`의 얇은
+adapter 전환, 그 후 Wave 9 삭제. 완료 경로는
+`bins/krw-agent-deploy/README.md`에 문서화됐다.
+
 agent repo에 단일 controller를 둔다.
 
 - config parser
