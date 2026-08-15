@@ -21,6 +21,7 @@ members = [
   "crates/persistence",
   "crates/tool-mcp",
   "crates/krw-ontology-adapter",
+  "crates/krw-presentation",
   "crates/capability-runtime",
   "crates/runtime-persistence",
   "crates/artifact-store",

@@ -1376,6 +1376,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "krw-presentation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "krw-session-memory"
 version = "0.1.0"
 dependencies = [
