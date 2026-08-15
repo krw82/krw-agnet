@@ -2014,6 +2014,11 @@ pub struct AnswerBundle {
     /// Compatibility alias retained for the existing host/SSE boundary. For
     /// non-Markdown outputs it is identical to `rendered_content`.
     pub rendered_markdown: String,
+    /// Deterministic visualization artifacts compiled from the private
+    /// presentation channel. Chart failure or a data-poor pack yields an empty
+    /// list and never fails the committed answer.
+    #[serde(default)]
+    pub visualizations: Vec<Value>,
     pub usage: BudgetUsage,
     pub agent_image_hash: ContentHash,
 }
@@ -4203,8 +4208,9 @@ where
             .iter()
             .map(|(evidence_id, _)| evidence_id.to_owned())
             .collect::<Vec<_>>();
+        let visualizations = self.compile_visualizations();
         let answer_bundle = AnswerBundle {
-            schema_version: 3,
+            schema_version: 4,
             output_contract: output_contract.clone(),
             output: output.clone(),
             evidence_ledger_hash,
@@ -4212,6 +4218,7 @@ where
             answer_ir,
             rendered_content: rendered_content.clone(),
             rendered_markdown: rendered_content,
+            visualizations,
             usage: state.usage.clone(),
             agent_image_hash: input.image.content_hash.clone(),
         };
@@ -4363,6 +4370,37 @@ where
             logical_action_keys: state.logical_action_keys.iter().cloned().collect(),
             evidence_count: state.ledger.len(),
         }))
+    }
+
+    /// Compile deterministic visualizations from the private presentation
+    /// channel. Presentation is best-effort by construction: a data-poor or
+    /// malformed pack records `presentation_omitted` (visible under
+    /// KRW_DEBUG_PRESENTATION) and never fails the committed answer.
+    fn compile_visualizations(&self) -> Vec<Value> {
+        const MAX_TOTAL_ARTIFACTS: usize = 4;
+        let mut artifacts = Vec::new();
+        for pack in self.capabilities.presentation_packs() {
+            match krw_presentation::compile(&pack) {
+                Ok(compiled) => {
+                    if compiled.is_empty()
+                        && std::env::var("KRW_DEBUG_PRESENTATION").ok().as_deref() == Some("1")
+                    {
+                        eprintln!("[KRW_DEBUG_PRESENTATION] presentation_omitted: pack cannot support a chart");
+                    }
+                    artifacts.extend(compiled);
+                }
+                Err(_) => {
+                    if std::env::var("KRW_DEBUG_PRESENTATION").ok().as_deref() == Some("1") {
+                        eprintln!("[KRW_DEBUG_PRESENTATION] presentation_omitted: pack failed structured validation");
+                    }
+                }
+            }
+            if artifacts.len() >= MAX_TOTAL_ARTIFACTS {
+                artifacts.truncate(MAX_TOTAL_ARTIFACTS);
+                break;
+            }
+        }
+        artifacts
     }
 
     async fn guard_control(
@@ -13822,10 +13860,15 @@ mod tests {
         echo_context_plan: bool,
         cancel_after_dispatch: Arc<AtomicBool>,
         should_cancel: bool,
+        presentation_packs: Vec<Value>,
     }
 
     #[async_trait]
     impl CapabilityRuntime for ScriptedCapability {
+        fn presentation_packs(&self) -> Vec<Value> {
+            self.presentation_packs.clone()
+        }
+
         async fn invoke(
             &self,
             invocation: &CapabilityInvocation,
@@ -14980,6 +15023,26 @@ mod tests {
         failure: Option<FailurePoint>,
         should_cancel: bool,
     ) -> TestRig {
+        engine_with_script_results_usage_and_presentation(
+            script,
+            usage_script,
+            provider_results,
+            echo_context_plan,
+            failure,
+            should_cancel,
+            Vec::new(),
+        )
+    }
+
+    fn engine_with_script_results_usage_and_presentation(
+        script: VecDeque<AssistantMessage>,
+        usage_script: VecDeque<TokenUsage>,
+        provider_results: VecDeque<Value>,
+        echo_context_plan: bool,
+        failure: Option<FailurePoint>,
+        should_cancel: bool,
+        presentation_packs: Vec<Value>,
+    ) -> TestRig {
         let log = Arc::new(Mutex::new(Vec::new()));
         let cancelled = Arc::new(AtomicBool::new(false));
         let provider = Arc::new(ScriptedProvider::with_script_and_usage(
@@ -14994,6 +15057,7 @@ mod tests {
             echo_context_plan,
             cancel_after_dispatch: Arc::clone(&cancelled),
             should_cancel,
+            presentation_packs,
         });
         let persistence = Arc::new(ScriptedPersistence::new(
             Arc::clone(&log),
@@ -15627,6 +15691,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -15803,6 +15868,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -16120,6 +16186,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -16517,6 +16584,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -16593,6 +16661,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -16770,6 +16839,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -16818,6 +16888,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -17874,6 +17945,7 @@ mod tests {
             echo_context_plan: true,
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
+            presentation_packs: Vec::new(),
         });
         let resumed = RunEngine::new(
             Arc::clone(&provider),
@@ -17980,6 +18052,89 @@ mod tests {
             2,
             "one malformed composer turn must be followed by one bounded repair"
         );
+    }
+
+    fn trend_presentation_pack() -> Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "mode": "chart_series_sidecar",
+            "series": [{
+                "series_key": "AAPL:revenue",
+                "label": "Revenue",
+                "ticker": "AAPL",
+                "canonical_metric": "revenue",
+                "metric_name": "Revenue",
+                "unit": "USD_millions",
+                "basis": "consolidated",
+                "duration": "fy",
+                "period_type": "annual",
+                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple"},
+                "points": [
+                    {"period": "FY2023", "value": 383.3, "object_id": "obj-1"},
+                    {"period": "FY2024", "value": 391.0, "object_id": "obj-2"},
+                    {"period": "FY2025", "value": 416.2, "object_id": "obj-3"}
+                ]
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn committed_answer_carries_deterministic_visualizations() {
+        let fixture = fixture();
+        let pack = trend_presentation_pack();
+        let usage_script = (0..4).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_results_usage_and_presentation(
+            provider_script(),
+            usage_script,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+            vec![pack.clone()],
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.answer_bundle.schema_version, 4);
+        assert_eq!(
+            outcome.answer_bundle.visualizations,
+            krw_presentation::compile(&pack).expect("trend pack compiles"),
+            "the bundle carries exactly what the deterministic compiler produced"
+        );
+        assert!(outcome.answer_bundle.visualizations[0]["artifact_ref"]
+            .as_str()
+            .is_some_and(|reference| reference.starts_with("viz_")));
+    }
+
+    #[tokio::test]
+    async fn unchartable_presentation_pack_never_fails_the_answer() {
+        let fixture = fixture();
+        let single_point = serde_json::json!({
+            "schema_version": 1,
+            "mode": "chart_series_sidecar",
+            "series": [{
+                "series_key": "AAPL:revenue",
+                "label": "Revenue",
+                "ticker": "AAPL",
+                "canonical_metric": "revenue",
+                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple"},
+                "points": [{"period": "FY2025", "value": 416.2, "object_id": "obj-1"}]
+            }]
+        });
+        let usage_script = (0..4).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_results_usage_and_presentation(
+            provider_script(),
+            usage_script,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+            vec![single_point],
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert!(outcome.answer_bundle.visualizations.is_empty());
+        assert!(outcome
+            .answer_bundle
+            .rendered_markdown
+            .contains("## 결론"));
     }
 
     #[tokio::test]
