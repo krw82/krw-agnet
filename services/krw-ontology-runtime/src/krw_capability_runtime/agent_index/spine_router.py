@@ -18,7 +18,6 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from krw_capability_runtime.agent_index.chart_series import (
     CHART_SERIES_RELATIVE_PATH,
     chart_series_index_status,
-    query_chart_series_pack,
 )
 from krw_capability_runtime.agent_index.router_coherence import ROUTER_COHERENCE_RELATIVE_PATH
 from krw_capability_runtime.agent_index.router_sidecar import (
@@ -1013,13 +1012,6 @@ class OntologySpineRouter:
                 available_tickers=candidate_tickers,
                 documents=self.list_documents(),
             )
-            _attach_chart_series_pack(
-                payload,
-                question=question,
-                requested_tickers=route_tickers,
-                chart_series_path=self._chart_series_path,
-                chart_series_status=self._chart_series_status,
-            )
             return payload
         routing = self._route_payload("global_spine_fanout", route_tickers)
         routing["candidate_routing"] = candidate_routing
@@ -1049,13 +1041,6 @@ class OntologySpineRouter:
             requested_tickers=route_tickers,
             available_tickers=candidate_tickers,
             documents=self.list_documents(),
-        )
-        _attach_chart_series_pack(
-            payload,
-            question=question,
-            requested_tickers=route_tickers,
-            chart_series_path=self._chart_series_path,
-            chart_series_status=self._chart_series_status,
         )
         return payload
 
@@ -3016,100 +3001,9 @@ def _attach_spine_cross_company_pack(
     }
 
 
-def _attach_chart_series_pack(
-    payload: dict[str, Any],
-    *,
-    question: str,
-    requested_tickers: Sequence[str] | None,
-    chart_series_path: Path,
-    chart_series_status: Mapping[str, Any],
-) -> None:
-    if not _chart_series_runtime_enabled():
-        return
-    if not _should_attach_chart_series(question):
-        return
-    research_pack = payload.setdefault("research_pack", {})
-    if not isinstance(research_pack, dict):
-        return
-    diagnostics = payload.setdefault("search_diagnostics", {})
-    if not isinstance(diagnostics, dict):
-        diagnostics = {}
-        payload["search_diagnostics"] = diagnostics
-    diagnostics["chart_series"] = {
-        "available": bool(chart_series_status.get("available")),
-        "path": str(chart_series_path),
-        "source": "chart_series_sidecar",
-    }
-    if not chart_series_status.get("available"):
-        diagnostics["chart_series"]["disabled_reason"] = chart_series_status.get("reason")
-        return
-    pack = query_chart_series_pack(
-        chart_series_path,
-        question=question,
-        tickers=[ticker for ticker in (requested_tickers or []) if ticker],
-    )
-    if not pack:
-        diagnostics["chart_series"]["matched"] = False
-        return
-    diagnostics["chart_series"]["matched"] = True
-    diagnostics["chart_series"]["series_count"] = len(pack.get("series") or [])
-    existing = research_pack.get("metric_series_pack")
-    if isinstance(existing, Mapping) and existing.get("series"):
-        research_pack["dynamic_metric_series_pack"] = existing
-    research_pack["chart_series_pack"] = pack
-    research_pack["metric_series_pack"] = pack
-
-
 def _chart_series_runtime_enabled() -> bool:
     raw = os.getenv(_CHART_SERIES_ENABLED_ENV)
     return str(raw or "").strip().lower() in _TRUE_ENV_VALUES
-
-
-def _should_attach_chart_series(question: str) -> bool:
-    text = str(question or "").lower()
-    # The presentation runtime, not the query router, decides whether a visual
-    # is warranted.  Attach a bounded verified metric pack for any question
-    # that names a supported metric so the agent can later choose prose, a
-    # table, or a visualization without a second retrieval pass.  Explicit
-    # trend/chart language still helps discovery, but is no longer required.
-    metric_terms = (
-        "revenue",
-        "sales",
-        "income",
-        "margin",
-        "cash flow",
-        "fcf",
-        "capex",
-        "debt",
-        "eps",
-        "repurchase",
-        "buyback",
-        "sbc",
-        "r&d",
-        "m&a",
-        "매출",
-        "영업이익",
-        "순이익",
-        "마진",
-        "비중",
-        "비용",
-        "판관비",
-        "영업비용",
-        "현금흐름",
-        "잉여현금",
-        "설비투자",
-        "자본지출",
-        "부채",
-        "서비스",
-        "아이폰",
-        "제품별",
-        "지역별",
-        "자사주",
-        "주식보상",
-        "연구개발",
-        "인수",
-    )
-    return any(term in text for term in metric_terms)
 
 
 def _merge_discovery_payloads(

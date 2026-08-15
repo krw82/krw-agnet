@@ -27,7 +27,6 @@ from krw_capability_runtime.agent_index import (
 )
 from krw_capability_runtime.agent_index.spine_router import (
     _chart_series_runtime_enabled,
-    _should_attach_chart_series,
 )
 from krw_capability_runtime.agent_index.retrieval_text import format_metric_compact
 from krw_capability_runtime.agent_index.research_kernel import ResearchKernel, research_request_from_plan_fields
@@ -1894,12 +1893,14 @@ def raw_query_context_tool(
 def query_context_tool(
     *,
     search_plan: SearchPlan | Mapping[str, Any],
-) -> ResearchState:
+) -> "QueryContextResult":
     """Execute an explicit agent plan and return a compact ResearchState v2.
 
     The plan is required and validated with extra fields forbidden.  Each
-    clause's retrieval_query is sent directly to compact retrieval; neither the
-    original question nor a keyword intent router is allowed to replace it.
+    clause's retrieval_query is sent directly to compact retrieval; neither
+    the original question nor a keyword intent router is allowed to replace it.
+    Chart-ready series, when the verified sidecar has them, ride the private
+    presentation channel instead of the model-visible state.
     """
     started_at = time.perf_counter()
     # The echoed state must retain the caller's already validated plan: the
@@ -1917,7 +1918,9 @@ def query_context_tool(
         raw_payload=raw_payload,
         question=plan.question,
         requested_tickers=plan.tickers,
+        metric_names=_plan_metric_names(plan),
     )
+    presentation_pack = raw_payload.pop("presentation_series_pack", None)
     retrieval_elapsed_ms = _elapsed_ms(retrieval_started_at)
     compile_started_at = time.perf_counter()
     state = compile_research_state(
@@ -1974,10 +1977,34 @@ def query_context_tool(
         mcp_wire_bytes=research_state_wire_bytes(state),
         execution=execution_telemetry,
     )
-    return state
+    return QueryContextResult(state=state, presentation_pack=presentation_pack)
 
 
-def query_context_from_search_plan(search_plan: SearchPlan) -> ResearchState:
+@dataclass(frozen=True)
+class QueryContextResult:
+    """Canonical query_context return: model state plus private presentation data.
+
+    ``presentation_pack`` is carried in the MCP result ``_meta`` under
+    ``com.krwontology/presentationSeries`` and never serialized into the
+    model-visible ResearchState.
+    """
+
+    state: ResearchState
+    presentation_pack: dict[str, Any] | None = None
+
+
+def _plan_metric_names(plan: SearchPlan) -> list[str]:
+    """Collect the plan's canonical metric identities for sidecar selection."""
+    names: list[str] = []
+    for clause in plan.clauses:
+        for metric in clause.metrics or []:
+            text = str(metric).strip().lower()
+            if text and text not in names:
+                names.append(text)
+    return names
+
+
+def query_context_from_search_plan(search_plan: SearchPlan) -> QueryContextResult:
     """Canonical in-process entrypoint for an already validated SearchPlan.
 
     This is not an MCP tool and intentionally has no object envelope.  The
@@ -1996,15 +2023,19 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
     raw_payload: dict[str, Any],
     question: str,
     requested_tickers: Sequence[str],
+    metric_names: Sequence[str] | None = None,
 ) -> None:
-    """Attach a bounded sidecar pack before compiling public ResearchState v2.
+    """Attach a bounded presentation pack for the private MCP ``_meta`` channel.
 
     SearchPlan v2 deliberately executes directly against the shard store, rather
-    than through ``OntologySpineRouter.query_context``.  Keep its visualization
-    input on the same opt-in, verified sidecar path as the router without
-    exposing the raw filing payload to the model.
+    than through ``OntologySpineRouter.query_context``.  The verified sidecar
+    pack is presentation data, not research evidence: it is stored on the raw
+    payload under ``presentation_series_pack`` and never enters the
+    model-visible ResearchState.  Attachment is not gated by question keywords;
+    chart-worthiness is decided later by the deterministic presentation
+    compiler in the Rust harness.
     """
-    if not _chart_series_runtime_enabled() or not _should_attach_chart_series(question):
+    if not _chart_series_runtime_enabled():
         return
 
     routing = _safe_payload_dict(raw_payload.get("routing"))
@@ -2039,6 +2070,7 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
         chart_series_path,
         question=question,
         tickers=resolved_tickers,
+        metric_names=metric_names,
         limit_series=8,
         limit_points=12,
     )
@@ -2048,15 +2080,7 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
 
     chart_diagnostics["matched"] = True
     chart_diagnostics["series_count"] = len(pack.get("series") or [])
-    research_pack = raw_payload.setdefault("research_pack", {})
-    if not isinstance(research_pack, dict):
-        research_pack = {}
-        raw_payload["research_pack"] = research_pack
-    existing = research_pack.get("metric_series_pack")
-    if isinstance(existing, Mapping) and existing.get("series"):
-        research_pack["dynamic_metric_series_pack"] = existing
-    research_pack["chart_series_pack"] = pack
-    research_pack["metric_series_pack"] = pack
+    raw_payload["presentation_series_pack"] = pack
 
 
 def _execute_search_plan(*, store: Any, search_plan: SearchPlan) -> dict[str, Any]:

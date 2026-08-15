@@ -525,55 +525,6 @@ class MetricPoint(ContractModel):
     conflict_value_count: int = Field(default=1, ge=1)
 
 
-class VisualizationMetricPoint(ContractModel):
-    """A chart-safe numeric observation with an immutable evidence anchor."""
-
-    period: str
-    value: float
-    formatted_value: str | None = None
-    object_id: str
-
-
-class VisualizationMetricScope(ContractModel):
-    """Stable semantic ownership for one renderer-neutral metric series.
-
-    The chart sidecar already indexes company totals, geographic segments,
-    products, and other dimensions separately.  Preserve that distinction in
-    the public MCP contract so presentation code can choose a total or a
-    breakdown without parsing a technical ``series_key``.
-    """
-
-    kind: str
-    key: str
-    label: str | None = None
-
-
-class VisualizationMetricSeries(ContractModel):
-    """One bounded, renderer-neutral metric series from the verified sidecar."""
-
-    series_key: str
-    label: str
-    ticker: str | None = None
-    metric_name: str | None = None
-    canonical_metric: str | None = None
-    unit: str | None = None
-    period_type: str | None = None
-    duration: str | None = None
-    scope: VisualizationMetricScope
-    points: list[VisualizationMetricPoint] = Field(default_factory=list, max_length=12)
-
-
-class VisualizationMetricSeriesPack(ContractModel):
-    """Public, bounded projection of chart-series sidecar data.
-
-    This intentionally excludes filing text and sidecar internals.  The
-    renderer receives only numbers, labels, units, periods, and evidence ids.
-    """
-
-    mode: Literal["chart_series_sidecar"] = "chart_series_sidecar"
-    series: list[VisualizationMetricSeries] = Field(default_factory=list, max_length=8)
-
-
 class ClauseEvidenceMatch(ContractModel):
     """Clause-specific relevance and directness for one deduplicated unit."""
 
@@ -725,7 +676,6 @@ class ResearchState(ContractModel):
     clause_coverage: list[ClauseCoverage]
     evidence_units: list[EvidenceUnit]
     computed_values: list[ComputedValue] = Field(default_factory=list)
-    metric_series_pack: VisualizationMetricSeriesPack | None = None
     calculation_coverage: list[CalculationCoverage] = Field(default_factory=list)
     missing_parts: list[MissingPart] = Field(default_factory=list)
     recommended_actions: list[RecommendedAction] = Field(default_factory=list)
@@ -1119,7 +1069,6 @@ def compile_research_state(
     # derives every model-visible numeric value from selected, complete-lineage
     # metric evidence below.
     raw_computed_values: list[ComputedValue] = []
-    metric_series_pack = _compact_visualization_metric_series_pack(raw)
     warnings = _warnings(raw)
     while True:
         source_anchors = _source_anchors(raw, evidence_units)
@@ -1191,7 +1140,6 @@ def compile_research_state(
             clause_coverage=coverage,
             evidence_units=evidence_units,
             computed_values=computed_values,
-            metric_series_pack=metric_series_pack,
             calculation_coverage=calculation_coverage,
             missing_parts=missing_parts,
             recommended_actions=actions,
@@ -1203,11 +1151,6 @@ def compile_research_state(
             and research_state_wire_bytes(state) <= MAX_RESEARCH_STATE_WIRE_BYTES
         ):
             return state
-        if metric_series_pack is not None:
-            metric_series_pack = None
-            if "visualization_metric_series_omitted_for_size" not in warnings:
-                warnings.append("visualization_metric_series_omitted_for_size")
-            continue
         removable_index = next(
             (
                 index
@@ -1221,70 +1164,6 @@ def compile_research_state(
                 "research_state_too_large: required-clause evidence exceeds the 180KB MCP wire budget"
             )
         evidence_units.pop(removable_index)
-
-
-def _compact_visualization_metric_series_pack(
-    raw: Mapping[str, Any],
-) -> VisualizationMetricSeriesPack | None:
-    """Return only the chart-safe slice of an internal metric sidecar pack."""
-    research_pack = _mapping(raw.get("research_pack"))
-    raw_pack = _mapping(research_pack.get("metric_series_pack"))
-    if raw_pack.get("mode") != "chart_series_sidecar":
-        return None
-
-    series: list[VisualizationMetricSeries] = []
-    for raw_series in _mapping_list(raw_pack.get("series"))[:8]:
-        series_key = _first_text(raw_series, "series_key")
-        if not series_key:
-            continue
-        raw_scope = _mapping(raw_series.get("scope"))
-        scope = VisualizationMetricScope(
-            kind=_first_text(raw_scope, "kind") or "unspecified",
-            key=_first_text(raw_scope, "key") or series_key,
-            label=_first_text(raw_scope, "label"),
-        )
-        canonical_metric = _first_text(raw_series, "canonical_metric")
-        label = _first_text(raw_series, "label") or canonical_metric or series_key
-        points: list[VisualizationMetricPoint] = []
-        for raw_point in _mapping_list(raw_series.get("points"))[:12]:
-            period = _first_text(raw_point, "period")
-            object_id = _first_text(raw_point, "object_id")
-            value = raw_point.get("value")
-            if not period or not object_id or isinstance(value, bool):
-                continue
-            try:
-                numeric_value = float(value)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(numeric_value):
-                continue
-            points.append(
-                VisualizationMetricPoint(
-                    period=period,
-                    value=numeric_value,
-                    formatted_value=_first_text(raw_point, "formatted_value"),
-                    object_id=object_id,
-                )
-            )
-        if not points:
-            continue
-        series.append(
-            VisualizationMetricSeries(
-                series_key=series_key,
-                label=label,
-                ticker=_first_text(raw_series, "ticker"),
-                metric_name=_first_text(raw_series, "metric_name"),
-                canonical_metric=canonical_metric,
-                unit=_first_text(raw_series, "unit"),
-                period_type=_first_text(raw_series, "period_type"),
-                duration=_first_text(raw_series, "duration"),
-                scope=scope,
-                points=points,
-            )
-        )
-    if not series:
-        return None
-    return VisualizationMetricSeriesPack(series=series)
 
 
 def research_state_model_bytes(state: ResearchState) -> int:
@@ -1338,13 +1217,6 @@ def _collect_evidence_candidates(raw: Mapping[str, Any]) -> list[dict[str, Any]]
             candidates.append(candidate)
 
     research_pack = _mapping(raw.get("research_pack"))
-    metric_pack = _mapping(research_pack.get("metric_series_pack"))
-    for series in _mapping_list(metric_pack.get("series")):
-        candidate = _metric_evidence_candidate(series)
-        if candidate is not None and candidate["key"] not in seen_keys:
-            seen_keys.add(candidate["key"])
-            candidates.append(candidate)
-
     projection_pack = _mapping(research_pack.get("projection_pack"))
     for row in _mapping_list(projection_pack.get("candidates")):
         candidate = _projection_evidence_candidate(row)
@@ -1627,73 +1499,6 @@ def _topic_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
         "raw_clause_ids": _string_list(row.get("_plan_clause_ids")),
         "clause_matches": clause_matches,
     }
-
-
-def _metric_evidence_candidate(series: Mapping[str, Any]) -> dict[str, Any] | None:
-    series_key = _first_text(series, "series_key")
-    raw_metric = _first_text(series, "canonical_metric", "metric_name")
-    metric = canonical_metric_name(raw_metric) if raw_metric else None
-    if not series_key and not metric:
-        return None
-    points = [
-        MetricPoint(
-            period=_first_text(point, "period") or "unknown",
-            value=point.get("value"),
-            formatted_value=_first_text(point, "formatted_value"),
-            object_id=_first_text(point, "object_id"),
-            period_type=(
-                _first_text(point, "period_type", "duration")
-                or _first_text(series, "period_type", "duration")
-            ),
-            start_date=_first_text(point, "period_start", "start_date"),
-            end_date=_first_text(point, "period_end", "end_date", "instant"),
-            conflict_value_count=max(
-                1,
-                int(point.get("metric_conflict_value_count") or 1),
-            ),
-        )
-        for point in _mapping_list(series.get("points"))[:40]
-    ]
-    object_ids = _dedupe_strings([point.object_id for point in points if point.object_id])
-    key = (
-        series_key
-        or f"{metric}:{_first_text(series, 'ticker')}:{','.join(p.period for p in points)}"
-    )
-    ticker = _first_text(series, "ticker")
-    occurrence_key = _occurrence_identity(ticker, f"metric:{key}")
-    periods = [point.period for point in points]
-    title = _first_text(series, "label") or metric or key
-    summary_values = [point.formatted_value for point in points if point.formatted_value]
-    summary = "; ".join(summary_values) or f"{title} metric series"
-    lineage = _first_text(series, "metric_lineage_status")
-    lineage_complete = _metric_lineage_complete(lineage)
-    dimensions = _metric_dimensions(series.get("dimensions"))
-    is_company_total = _truthy(series.get("is_company_total"))
-    unit = EvidenceUnit(
-        evidence_id=_stable_id("ev", occurrence_key),
-        object_id=object_ids[0] if len(object_ids) == 1 else None,
-        object_type="MetricSeries",
-        ticker=ticker,
-        period=periods[-1] if periods else None,
-        document_type=_first_text(series, "document_type"),
-        title=_bounded_text(title, 240),
-        summary=_bounded_text(summary, 1_200),
-        directness="metric_lineage" if lineage_complete else "unverified",
-        evidence_grade="strong" if lineage_complete else "unverified",
-        metric=metric,
-        unit=_first_text(series, "unit"),
-        currency=_first_text(series, "currency", "currency_code"),
-        dimensions=dimensions,
-        metric_scope=(
-            "company_total" if is_company_total else "dimensioned" if dimensions else "unspecified"
-        ),
-        metric_points=points,
-        source=EvidenceSource(
-            object_ids=object_ids[:16],
-            source_label=_source_label(ticker, periods[-1] if periods else None, None),
-        ),
-    )
-    return {"key": occurrence_key, "unit": unit, "search_text": _search_text(series, unit)}
 
 
 def _projection_evidence_candidate(row: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -2810,48 +2615,6 @@ def _source_anchors(
         if len(anchors) >= 16:
             break
     return anchors
-
-
-def _computed_values(raw: Mapping[str, Any]) -> list[ComputedValue]:
-    research_pack = _mapping(raw.get("research_pack"))
-    metric_pack = _mapping(research_pack.get("metric_series_pack"))
-    calculations = _mapping(metric_pack.get("calculations"))
-    source_ids_by_series: dict[str, list[str]] = {}
-    for series in _mapping_list(metric_pack.get("series")):
-        key = _first_text(series, "series_key")
-        if key:
-            source_ids_by_series[key] = _dedupe_strings(
-                _first_text(point, "object_id")
-                for point in _mapping_list(series.get("points"))
-                if _first_text(point, "object_id")
-            )
-    values: list[ComputedValue] = []
-    for kind, rows in calculations.items():
-        if not isinstance(rows, list):
-            continue
-        for row in _mapping_list(rows):
-            series_key = _first_text(row, "series_key")
-            value = row.get("value")
-            if value is None:
-                value = row.get("share")
-            if value is None:
-                value = row.get("growth_rate")
-            if value is None:
-                value = row.get("growth_difference")
-            stable = f"{kind}:{series_key}:{_first_text(row, 'label')}:{_first_text(row, 'period')}"
-            values.append(
-                ComputedValue(
-                    calculation_id=_stable_id("calc", stable),
-                    kind=str(kind),
-                    label=_first_text(row, "label"),
-                    period=_first_text(row, "period"),
-                    value=value,
-                    numerator=row.get("numerator"),
-                    denominator=row.get("denominator"),
-                    source_object_ids=source_ids_by_series.get(series_key or "", [])[:16],
-                )
-            )
-    return values[:40]
 
 
 def _supported_raw_computed_values(

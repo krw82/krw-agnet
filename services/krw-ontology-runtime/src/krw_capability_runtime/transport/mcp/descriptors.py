@@ -36,6 +36,9 @@ from krw_capability_runtime.mcp_server.contracts import (
 JsonObject = dict[str, Any]
 Handler = Callable[..., Any]
 DecodedInput = BaseModel | SearchPlan
+# Private vendor channel for presentation data. Values under this key ride the
+# MCP CallToolResult `_meta` object and are never model-visible.
+PRESENTATION_META_KEY = "com.krwontology/presentationSeries"
 # Type aliases are evaluated at module import time even with postponed
 # annotations, so keep the forward result boundary explicit here.
 InputDecoder = Callable[[Mapping[str, Any]], Any]
@@ -78,12 +81,21 @@ class DispatchOutcome:
     text: str
     structured_content: JsonObject | None
     is_error: bool = False
+    # Private vendor metadata serialized as the CallToolResult `_meta`
+    # object. Keep it reserved for non-model channels such as the
+    # presentation-series pack; the model-visible payload stays in
+    # ``structured_content``.
+    meta: JsonObject | None = None
 
     def as_mcp_result(self) -> CallToolResult:
+        # The SDK type exposes `meta` only under its `_meta` wire alias
+        # (populate_by_name is off), so pass the alias explicitly.
+        meta_kwargs = {"_meta": self.meta} if self.meta is not None else {}
         return CallToolResult(
             content=[TextContent(type="text", text=self.text)],
             structuredContent=self.structured_content,
             isError=self.is_error,
+            **meta_kwargs,
         )
 
 
@@ -420,15 +432,24 @@ def _query_context_payload(state: ResearchState) -> JsonObject:
 def _query_context_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
     async def handler(decoded: DecodedInput) -> DispatchOutcome:
         assert isinstance(decoded, SearchPlan)
-        state = await runtime_lanes.invoke_value(
+        result = await runtime_lanes.invoke_value(
             CapabilityLane.BROAD,
             ontology_tools.query_context_from_search_plan,
             decoded,
         )
-        if not isinstance(state, ResearchState):
-            raise TypeError("query_context did not return ResearchState")
-        payload = _query_context_payload(state)
-        return DispatchOutcome(text=_canonical_json(payload), structured_content=payload)
+        if not isinstance(result, ontology_tools.QueryContextResult):
+            raise TypeError("query_context did not return QueryContextResult")
+        payload = _query_context_payload(result.state)
+        meta = (
+            {PRESENTATION_META_KEY: result.presentation_pack}
+            if result.presentation_pack is not None
+            else None
+        )
+        return DispatchOutcome(
+            text=_canonical_json(payload),
+            structured_content=payload,
+            meta=meta,
+        )
 
     return ToolDescriptor(
         logical_capability_id="ontology.query_context",

@@ -348,17 +348,30 @@ def query_chart_series_pack(
     *,
     question: str,
     tickers: Sequence[str],
+    metric_names: Sequence[str] | None = None,
     limit_series: int = 20,
     limit_points: int = 12,
 ) -> dict[str, Any] | None:
-    """Return a metric_series_pack-shaped payload from the chart sidecar."""
+    """Return a presentation-channel metric pack from the chart sidecar.
+
+    ``metric_names`` is the plan-driven metric scope: when the SearchPlan names
+    canonical metrics, those select the candidate rows directly. The question
+    string is only a fallback for candidate discovery when the plan carries no
+    metric identities. The emitted pack is private presentation data (MCP
+    ``_meta``), never model-visible ResearchState content.
+    """
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
         return None
     ticker_values = [str(ticker).upper() for ticker in tickers if str(ticker or "").strip()]
     if not ticker_values:
         return None
-    metric_candidates = _metric_candidates_for_question(question)
+    plan_metrics = [
+        str(metric).strip().lower()
+        for metric in (metric_names or [])
+        if str(metric or "").strip()
+    ]
+    metric_candidates = plan_metrics or _metric_candidates_for_question(question)
     scope_candidates = _scope_candidates_for_question(question)
     dimension_requested = _dimension_series_requested(question, scope_candidates)
     try:
@@ -376,6 +389,7 @@ def query_chart_series_pack(
                 SELECT *
                 FROM chart_series
                 WHERE {" AND ".join(where)}
+                ORDER BY ticker, canonical_metric, scope_kind, scope_key, series_key
                 LIMIT ?
                 """,
                 [*params, max(40, min(max(int(limit_series) * 8, int(limit_series)), 160))],
@@ -427,6 +441,7 @@ def query_chart_series_pack(
             if not series:
                 return None
             return {
+                "schema_version": 1,
                 "mode": "chart_series_sidecar",
                 "result_count": sum(series_item["point_count"] for series_item in series),
                 "series": series,
