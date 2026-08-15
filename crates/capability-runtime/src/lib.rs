@@ -19,7 +19,7 @@ use krw_agent_contracts::{
 };
 use krw_agent_execution_contracts::{
     CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
-    DependencyFailure, deterministic_action_key,
+    DependencyFailure, ResultTruncationReceipt, deterministic_action_key,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{
@@ -701,29 +701,42 @@ impl McpToolTransport for PooledMcpTransport {
         // Single dispatch attempt. The bounded transport retry lives inside
         // `McpHttpClient::request` (one layer only) to avoid nested retry
         // storms. Capability calls carry `DeliveryCertainty::MayHaveDispatched`
-        // because a stream-level failure can occur after the server has acted;
-        // blindly re-POSTing here would risk duplicate dispatch against the
-        // evidence ledger. The run-engine's capability recovery directive
-        // (see `model_recovery_directive`) routes retryable MayHaveDispatched
-        // failures to recovery instead of re-executing the capability.
+        // unless the failure provably happened before any request body was
+        // written (see `classify_call_failure`). The run-engine's capability
+        // recovery directive (see `model_recovery_directive`) routes retryable
+        // MayHaveDispatched failures to recovery instead of re-executing the
+        // capability.
         match client.call_tool(tool_name, arguments).await {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
-                let retryable = retryable_mcp_error(&error);
                 // Do not reuse a client after a stream/session failure. The
                 // failed call remains at-most-once, but future calls should
                 // establish a fresh session instead of inheriting a broken
                 // HTTP/MCP connection.
                 self.pool.invalidate_if_current(&pool_key, &client).await;
-                Err(mcp_failure(
-                    "mcp_call",
-                    &error,
-                    retryable,
-                    DeliveryCertainty::MayHaveDispatched,
-                ))
+                Err(classify_call_failure(&error))
             }
         }
     }
+}
+
+/// Classify a `tools/call` transport failure without re-dispatching it.
+///
+/// A connect-phase failure (DNS/TCP/TLS, or local admission before any write)
+/// proves the request never left this host, so the failure is both retryable
+/// and `NotDispatched` — a higher layer may safely re-dispatch the same
+/// arguments. Everything else — read timeouts, request-phase transport
+/// failures, stream cuts, malformed responses — may have reached the server
+/// after it observed the request id and stays `MayHaveDispatched`: the call
+/// remains at-most-once and retryable failures route to recovery instead of
+/// re-execution.
+fn classify_call_failure(error: &McpError) -> DependencyFailure {
+    let delivery = if error.is_pre_write() {
+        DeliveryCertainty::NotDispatched
+    } else {
+        DeliveryCertainty::MayHaveDispatched
+    };
+    mcp_failure("mcp_call", error, retryable_mcp_error(error), delivery)
 }
 
 fn retryable_mcp_error(error: &McpError) -> bool {
@@ -1017,6 +1030,7 @@ impl PooledMcpCapabilityRuntime {
         descriptor: &CapabilityDescriptor,
         resolved: &ResolvedCapability,
         payload: Value,
+        payload_selection: Option<PayloadSelection>,
     ) -> Result<(CapabilityResult, Option<ContentHash>), DependencyFailure> {
         let payload_bytes = Zeroizing::new(
             serde_jcs::to_vec(&payload)
@@ -1046,7 +1060,7 @@ impl PooledMcpCapabilityRuntime {
             },
             payload_ref,
         };
-        let result = match descriptor.mapping {
+        let mut result = match descriptor.mapping {
             EvidenceMapping::ResearchStateV2 => {
                 validate_value(RESEARCH_STATE_V2, &payload).map_err(|error| {
                     reject("research_state_contract_invalid", format!("{error:?}"))
@@ -1081,6 +1095,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::CompanyContextV1 => {
@@ -1105,6 +1120,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::MarketSnapshotV1 => {
@@ -1126,6 +1142,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::TargetedEvidenceV1 => {
@@ -1137,6 +1154,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::TraceLineageV1 => {
@@ -1148,6 +1166,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::Front(mapping) => {
@@ -1171,6 +1190,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::Guru(mapping) => {
@@ -1189,6 +1209,7 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 }
             }
             EvidenceMapping::SkillContent => {
@@ -1204,9 +1225,11 @@ impl PooledMcpCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 }
             }
         };
+        apply_result_size_budget(&mut result, payload_selection)?;
         validate_normalized_result(&result)?;
         let pending_hash = if matches!(descriptor.mapping, EvidenceMapping::Front(_)) {
             let bytes =
@@ -1259,6 +1282,7 @@ impl PooledMcpCapabilityRuntime {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         validate_normalized_result(&result)?;
         Ok(result)
@@ -1334,6 +1358,7 @@ impl PooledMcpCapabilityRuntime {
                                 descriptor,
                                 resolved,
                                 result.provider_content.clone(),
+                                committed_payload_selection(result),
                             )?
                             .0
                         };
@@ -1373,6 +1398,7 @@ impl PooledMcpCapabilityRuntime {
                         descriptor,
                         resolved,
                         result.provider_content.clone(),
+                        committed_payload_selection(result),
                     )?
                     .0
                 };
@@ -1447,6 +1473,7 @@ impl PooledMcpCapabilityRuntime {
             .execute(DeliveryCertainty::MayHaveDispatched, move || {
                 let extracted = extract_json_tool_payload(envelope, is_error)?;
                 let presentation = extracted.presentation;
+                let payload_selection = extracted.selection;
                 let payload = extracted.payload;
                 if is_error {
                     return Self::map_tool_error(&descriptor, &resolved, payload)
@@ -1483,6 +1510,7 @@ impl PooledMcpCapabilityRuntime {
                     &descriptor,
                     &resolved,
                     payload,
+                    payload_selection,
                 )
                 .map(|(result, pending_hash)| (result, pending_hash, presentation))
             })
@@ -1595,6 +1623,97 @@ const MAX_PRESENTATION_PACK_POINTS: usize = 12;
 struct ExtractedToolPayload {
     payload: Value,
     presentation: Option<Value>,
+    /// Carried only for successful payloads: the canonical size of the payload
+    /// as received plus any items already omitted by extract-level selection.
+    selection: Option<PayloadSelection>,
+}
+
+/// Bookkeeping for the deterministic bounded selection of one successful
+/// capability payload. Sizes are canonical (RFC 8785) bytes.
+#[derive(Debug, Clone, Copy)]
+struct PayloadSelection {
+    original_payload_bytes: u64,
+    omitted_provider_items: u64,
+}
+
+/// Deterministically bound a JSON value to `budget` canonical (RFC 8785)
+/// bytes by trimming its heaviest array-of-objects fields. Items are ranked
+/// by their canonical bytes — no clock, randomness, or schema knowledge is
+/// consulted — and the largest prefix of that rank order is retained, so the
+/// same input always yields the same bounded value. Returns the number of
+/// omitted items and whether the value is still over budget (an irreducible
+/// payload with no trimmable array field).
+fn select_bounded_value(value: &mut Value, budget: usize) -> (usize, bool) {
+    let mut omitted_total = 0_usize;
+    for _ in 0..8 {
+        let original_len = match serde_jcs::to_vec(value) {
+            Ok(bytes) => bytes.len(),
+            Err(_) => return (omitted_total, true),
+        };
+        if original_len <= budget {
+            return (omitted_total, false);
+        }
+        let Some(object) = value.as_object() else {
+            return (omitted_total, true);
+        };
+        // Deterministically choose the heaviest array field. Ties break on
+        // the lexicographically smallest key so the choice never depends on
+        // map iteration order.
+        let mut chosen: Option<(String, usize, Vec<(Vec<u8>, Value)>)> = None;
+        for (key, field) in object {
+            let Some(items) = field.as_array() else {
+                continue;
+            };
+            if items.is_empty() {
+                continue;
+            }
+            let mut ranked: Vec<(Vec<u8>, Value)> = Vec::with_capacity(items.len());
+            let mut total = 0_usize;
+            let encodable = items.iter().all(|item| {
+                serde_jcs::to_vec(item).is_ok_and(|bytes| {
+                    total += bytes.len();
+                    ranked.push((bytes, item.clone()));
+                    true
+                })
+            });
+            if !encodable {
+                continue;
+            }
+            let heavier = match chosen.as_ref() {
+                None => true,
+                Some((best_key, best_total, _)) => {
+                    total > *best_total || (total == *best_total && key < best_key)
+                }
+            };
+            if heavier {
+                chosen = Some((key.clone(), total, ranked));
+            }
+        }
+        let Some((key, items_total, mut ranked)) = chosen else {
+            return (omitted_total, true);
+        };
+        ranked.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let fixed = original_len.saturating_sub(items_total);
+        let mut kept_bytes = 0_usize;
+        let mut kept = Vec::new();
+        for (bytes, item) in &ranked {
+            if fixed
+                .saturating_add(kept_bytes)
+                .saturating_add(bytes.len())
+                > budget
+            {
+                break;
+            }
+            kept_bytes += bytes.len();
+            kept.push(item.clone());
+        }
+        omitted_total += ranked.len() - kept.len();
+        if let Some(object) = value.as_object_mut() {
+            object.insert(key, Value::Array(kept));
+        }
+    }
+    let over_budget = serde_jcs::to_vec(value).is_ok_and(|bytes| bytes.len() > budget);
+    (omitted_total, over_budget)
 }
 
 fn extract_json_tool_payload(
@@ -1671,12 +1790,17 @@ fn extract_json_tool_payload(
             scrub_json(&mut item);
             return Err(reject("mcp_content_text", "text content is missing"));
         };
-        if text.len() > MAX_MCP_PAYLOAD_BYTES {
+        if text.len() > MAX_MCP_PAYLOAD_BYTES && expected_is_error {
+            // Typed control/correction payloads are exact contracts and stay
+            // fail-closed. A successful result is instead parsed and then
+            // deterministically bounded at the payload check below; the
+            // production transport already caps the response body, so this
+            // only bounds what a transport has actually delivered.
             text.zeroize();
             scrub_json(&mut item);
             return Err(reject(
                 "mcp_payload_limit",
-                "text content exceeds the fixed payload bound",
+                "error text content exceeds the fixed payload bound",
             ));
         }
         let parsed: Result<Value, _> = serde_json::from_str(&text);
@@ -1755,16 +1879,39 @@ fn extract_json_tool_payload(
                 return Err(reject("mcp_payload_canonicalization", format!("{error:?}")));
             }
         };
+        let mut selection = PayloadSelection {
+            original_payload_bytes: canonical_len as u64,
+            omitted_provider_items: 0,
+        };
         if canonical_len > MAX_MCP_PAYLOAD_BYTES {
-            scrub_json(&mut payload);
-            return Err(reject(
-                "mcp_payload_limit",
-                "canonical payload exceeds the fixed payload bound",
-            ));
+            if expected_is_error {
+                // Typed control/correction payloads are never trimmed: they
+                // are exact contracts, and silently altering one would
+                // corrupt the correction channel. They stay fail-closed.
+                scrub_json(&mut payload);
+                return Err(reject(
+                    "mcp_payload_limit",
+                    "error payload exceeds the fixed payload bound",
+                ));
+            }
+            // A successfully received oversized payload is deterministically
+            // bounded instead of failed: rank its array items by canonical
+            // bytes and keep the largest prefix that fits the budget.
+            let (omitted, over_budget) =
+                select_bounded_value(&mut payload, MAX_MCP_PAYLOAD_BYTES);
+            if over_budget {
+                scrub_json(&mut payload);
+                return Err(reject(
+                    "mcp_payload_limit",
+                    "canonical payload exceeds the fixed payload bound",
+                ));
+            }
+            selection.omitted_provider_items = omitted as u64;
         }
         Ok(ExtractedToolPayload {
             payload,
             presentation,
+            selection: (!expected_is_error).then_some(selection),
         })
     })();
     scrub_json(&mut envelope);
@@ -1833,6 +1980,166 @@ fn retain_presentation_diagnostic(ledger: &mut Vec<Value>, pack: Value) {
     }
 }
 
+/// Headroom (bytes) kept below the hard budget while selecting so the
+/// self-referential growth of `selected_result_bytes` digits cannot push the
+/// finalized receipt past the budget it reports satisfying.
+const RESULT_BUDGET_HEADROOM_BYTES: usize = 64;
+
+fn canonical_result_len(result: &CapabilityResult) -> Result<usize, DependencyFailure> {
+    serde_jcs::to_vec(result)
+        .map(|bytes| bytes.len())
+        .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))
+}
+
+/// Reconstruct the payload-selection bookkeeping carried by a committed
+/// result so a replay of the same committed content reproduces the identical
+/// truncation receipt instead of inventing a fresh one.
+fn committed_payload_selection(result: &CapabilityResult) -> Option<PayloadSelection> {
+    result.truncation.map(|receipt| PayloadSelection {
+        original_payload_bytes: receipt.original_payload_bytes,
+        omitted_provider_items: receipt.omitted_provider_items,
+    })
+}
+
+/// Deterministically bound a successful normalized result to the fixed
+/// engine-side byte budget instead of failing the capability. The provider
+/// payload is trimmed first (largest array field, items ranked by canonical
+/// bytes); only if that cannot satisfy the budget are evidence records
+/// omitted from the tail of the stable `evidence_id` rank order, cascading
+/// to the calculations that reference them so lineage stays valid. The
+/// omitted counts and canonical before/after sizes ride on the result as a
+/// `ResultTruncationReceipt`; an irreducible result still fails closed.
+fn apply_result_size_budget(
+    result: &mut CapabilityResult,
+    payload_selection: Option<PayloadSelection>,
+) -> Result<(), DependencyFailure> {
+    let selection = match payload_selection {
+        Some(selection) => selection,
+        None => {
+            let provider_len = serde_jcs::to_vec(&result.provider_content)
+                .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?
+                .len();
+            PayloadSelection {
+                original_payload_bytes: provider_len as u64,
+                omitted_provider_items: 0,
+            }
+        }
+    };
+    // Measure with a provisional receipt attached so the byte count the
+    // receipt reports always includes the receipt itself.
+    result.truncation = Some(ResultTruncationReceipt {
+        omitted_provider_items: selection.omitted_provider_items,
+        omitted_evidence: 0,
+        original_payload_bytes: selection.original_payload_bytes,
+        selected_result_bytes: 0,
+    });
+    if canonical_result_len(result)? > MAX_MCP_PAYLOAD_BYTES {
+        let target_budget = MAX_MCP_PAYLOAD_BYTES - RESULT_BUDGET_HEADROOM_BYTES;
+        let result_len = canonical_result_len(result)?;
+        let provider_len = serde_jcs::to_vec(&result.provider_content)
+            .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?
+            .len();
+        let overhead = result_len.saturating_sub(provider_len);
+        let (omitted, _) =
+            select_bounded_value(&mut result.provider_content, target_budget.saturating_sub(overhead));
+        let omitted_evidence = if canonical_result_len(result)? > target_budget {
+            trim_evidence_to_budget(result, target_budget)?
+        } else {
+            0
+        };
+        if canonical_result_len(result)? > MAX_MCP_PAYLOAD_BYTES {
+            scrub_json(&mut result.provider_content);
+            return Err(reject(
+                "normalized_result_size_limit",
+                "bounded selection cannot satisfy the normalized result budget",
+            ));
+        }
+        result.truncation = Some(ResultTruncationReceipt {
+            omitted_provider_items: selection.omitted_provider_items + omitted as u64,
+            omitted_evidence,
+            original_payload_bytes: selection.original_payload_bytes,
+            selected_result_bytes: 0,
+        });
+    }
+    let Some(receipt) = result.truncation else {
+        return Ok(());
+    };
+    if receipt.omitted_provider_items == 0 && receipt.omitted_evidence == 0 {
+        // No selection was needed; keep previously serialized bytes unchanged.
+        result.truncation = None;
+        return Ok(());
+    }
+    // Stabilize the self-referential selected byte count.
+    for _ in 0..4 {
+        let observed = canonical_result_len(result)? as u64;
+        if receipt_selected_bytes(result) == Some(observed) {
+            break;
+        }
+        if let Some(current) = result.truncation.as_mut() {
+            current.selected_result_bytes = observed;
+        }
+    }
+    if canonical_result_len(result)? > MAX_MCP_PAYLOAD_BYTES {
+        scrub_json(&mut result.provider_content);
+        return Err(reject(
+            "normalized_result_size_limit",
+            "bounded selection cannot satisfy the normalized result budget",
+        ));
+    }
+    Ok(())
+}
+
+fn receipt_selected_bytes(result: &CapabilityResult) -> Option<u64> {
+    result
+        .truncation
+        .as_ref()
+        .map(|receipt| receipt.selected_result_bytes)
+}
+
+/// Deterministically omit evidence from the tail of the stable `evidence_id`
+/// rank order until the result fits `budget`. Calculations whose inputs no
+/// longer resolve are omitted with their evidence so lineage stays valid.
+fn trim_evidence_to_budget(
+    result: &mut CapabilityResult,
+    budget: usize,
+) -> Result<u64, DependencyFailure> {
+    let result_len = canonical_result_len(result)?;
+    let mut ranked: Vec<(String, usize)> = Vec::with_capacity(result.evidence.len());
+    let mut evidence_total = 0_usize;
+    for record in &result.evidence {
+        let bytes = serde_jcs::to_vec(record).map_err(|error| {
+            reject("normalized_result_serialization", format!("{error:?}"))
+        })?;
+        evidence_total += bytes.len();
+        ranked.push((record.evidence_id.clone(), bytes.len()));
+    }
+    ranked.sort_by(|left, right| left.0.cmp(&right.0));
+    let fixed = result_len.saturating_sub(evidence_total);
+    let mut kept_bytes = evidence_total;
+    let mut cut = 0_usize;
+    while cut < ranked.len() && fixed.saturating_add(kept_bytes) > budget {
+        kept_bytes = kept_bytes.saturating_sub(ranked[ranked.len() - 1 - cut].1);
+        cut += 1;
+    }
+    if cut == 0 {
+        return Ok(0);
+    }
+    let dropped: BTreeSet<String> = ranked[ranked.len() - cut..]
+        .iter()
+        .map(|(evidence_id, _)| evidence_id.clone())
+        .collect();
+    result
+        .evidence
+        .retain(|record| !dropped.contains(&record.evidence_id));
+    result.calculations.retain(|calculation| {
+        calculation
+            .input_evidence_ids
+            .iter()
+            .all(|evidence_id| !dropped.contains(evidence_id))
+    });
+    Ok(cut as u64)
+}
+
 fn validate_normalized_result(result: &CapabilityResult) -> Result<(), DependencyFailure> {
     if result.evidence.len() > 256 || result.calculations.len() > 64 {
         return Err(reject(
@@ -1842,6 +2149,10 @@ fn validate_normalized_result(result: &CapabilityResult) -> Result<(), Dependenc
     }
     let mut normalized = result.clone();
     normalized.presentation = None;
+    // The truncation receipt is runtime bookkeeping like `presentation`: it
+    // rides on the persisted result but stays outside the pinned
+    // normalized-capability-result/v1 schema shape.
+    normalized.truncation = None;
     let mut value = serde_json::to_value(&normalized)
         .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?;
     let validation = validate_value(NORMALIZED_CAPABILITY_RESULT_V1, &value)
@@ -3062,6 +3373,276 @@ mod tests {
             CapabilityCatalog::compile(&image, runtime),
             Err(CatalogError::IncompatibleCapability(_))
         ));
+    }
+
+    #[test]
+    fn connect_phase_failure_inside_call_tool_is_not_dispatched_and_retryable() {
+        let error = McpError::Http {
+            kind: krw_agent_tool_mcp::HttpFailureKind::Connect,
+            diagnostic_hash: ContentHash::sha256("fixture-connect-phase"),
+        };
+        let failure = classify_call_failure(&error);
+        assert_eq!(failure.code, "mcp_call");
+        // A DNS/TCP/TLS connect-phase failure inside tools/call proves the
+        // request never left this host, so the call is safe to re-dispatch.
+        assert_eq!(failure.delivery, DeliveryCertainty::NotDispatched);
+        assert!(failure.retryable);
+    }
+
+    #[test]
+    fn mid_read_timeout_inside_call_tool_stays_may_have_dispatched() {
+        let error = McpError::Http {
+            kind: krw_agent_tool_mcp::HttpFailureKind::Timeout,
+            diagnostic_hash: ContentHash::sha256("fixture-read-timeout"),
+        };
+        let failure = classify_call_failure(&error);
+        assert_eq!(failure.code, "mcp_call");
+        // A read timeout can fire after the server already observed (and
+        // acted on) the request id; tools/call stays at-most-once and the
+        // failure stays ambiguous even though it is retryable.
+        assert_eq!(failure.delivery, DeliveryCertainty::MayHaveDispatched);
+        assert!(failure.retryable);
+    }
+
+    fn oversized_targeted_payload(item_count: usize) -> Value {
+        // Each result carries 15 single-line source excerpts of ~8 KiB. With
+        // 60 items the payload itself stays under the 8 MiB transport bound,
+        // but the normalized result — provider content plus the evidence
+        // projection that repeats every excerpt as a fact — exceeds it.
+        serde_json::json!({
+            "results": (0..item_count)
+                .map(|index| {
+                    let quotes = (0..15)
+                        .map(|quote| {
+                            serde_json::json!({
+                                "text": format!("{index}:{quote}:") + &"q".repeat(8_000)
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    serde_json::json!({
+                        "id": format!("claim:VG:{index}"),
+                        "type": "ResearchClaim",
+                        "ticker": "VG",
+                        "document_type": "10-K",
+                        "period": "CY2025",
+                        "section": "MD&A",
+                        "text": "Cash generation improved.",
+                        "quality": {"evidence_grade": "strong"},
+                        "evidence": {"quotes": quotes, "spans": [], "metric_lineage": null}
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    }
+
+    #[tokio::test]
+    async fn oversized_successful_result_is_bounded_with_an_omitted_receipt() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let arguments = serde_json::json!({
+            "ticker": "VG",
+            "topic": "cash generation",
+            "limit": 60,
+            "response_format": "json",
+            "response_detail": "compact"
+        });
+        let payload = oversized_targeted_payload(60);
+        let transport = FakeTransport::new([
+            envelope(&payload, false),
+            envelope(&payload, false),
+        ]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+
+        let result = runtime
+            .invoke(&invocation(&catalog, "ontology.query", arguments))
+            .await
+            .expect("an oversized successful result is bounded, not failed");
+        let receipt = result.truncation.expect("deterministic-selection receipt");
+        assert!(
+            receipt.omitted_provider_items > 0,
+            "provider payload items were deterministically omitted"
+        );
+        assert_eq!(receipt.omitted_evidence, 0, "the evidence ledger stays complete");
+        assert!(receipt.original_payload_bytes > 0);
+        assert!(
+            receipt.selected_result_bytes > 0
+                && receipt.selected_result_bytes <= MAX_MCP_PAYLOAD_BYTES as u64,
+            "the bounded selection respects the engine result budget"
+        );
+        assert!(
+            result
+                .provider_content
+                .get("results")
+                .and_then(Value::as_array)
+                .is_some_and(|results| results.len() < 60),
+            "the provider-visible selection is smaller than the retrieved set"
+        );
+        let bounded =
+            serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
+        assert!(bounded.len() <= MAX_MCP_PAYLOAD_BYTES);
+        assert!(!result.evidence.is_empty());
+
+        // The selection is canonical: the same payload yields the same
+        // bounded result and receipt, with no clock or environment input.
+        let second = runtime
+            .invoke(&invocation(
+                &catalog,
+                "ontology.query",
+                serde_json::json!({
+                    "ticker": "VG",
+                    "topic": "cash generation",
+                    "limit": 60,
+                    "response_format": "json",
+                    "response_detail": "compact"
+                }),
+            ))
+            .await
+            .expect("second bounded result");
+        assert_eq!(second.truncation, result.truncation);
+        assert_eq!(second.provider_content, result.provider_content);
+        assert_eq!(second.evidence.len(), result.evidence.len());
+    }
+
+    #[tokio::test]
+    async fn payload_above_the_transport_bound_is_selected_not_failed() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let arguments = serde_json::json!({
+            "ticker": "VG",
+            "topic": "cash generation",
+            "limit": 72,
+            "response_format": "json",
+            "response_detail": "compact"
+        });
+        // 72 items of ~120 KiB push the canonical payload itself past the
+        // fixed 8 MiB capability-envelope bound.
+        let payload = oversized_targeted_payload(72);
+        let transport = FakeTransport::new([envelope(&payload, false)]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+
+        let result = runtime
+            .invoke(&invocation(&catalog, "ontology.query", arguments))
+            .await
+            .expect("a received oversized payload is bounded, not rejected");
+        let receipt = result.truncation.expect("deterministic-selection receipt");
+        assert!(receipt.omitted_provider_items > 0);
+        assert!(
+            result
+                .provider_content
+                .get("results")
+                .and_then(Value::as_array)
+                .is_some_and(|results| results.len() < 72)
+        );
+        let bounded =
+            serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
+        assert!(bounded.len() <= MAX_MCP_PAYLOAD_BYTES);
+    }
+
+    #[tokio::test]
+    async fn empty_success_and_dependency_unavailable_never_merge() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let arguments = serde_json::json!({
+            "ticker": "VG",
+            "topic": "cash generation",
+            "limit": 1,
+            "response_format": "json",
+            "response_detail": "compact"
+        });
+        // A successful query with zero rows is a success-class capability
+        // result: Ok, no evidence, and its bounded query status is Empty —
+        // never merged with dependency unavailability.
+        let transport = FakeTransport::new([
+            envelope(&serde_json::json!({"results": []}), false),
+            envelope(
+                &serde_json::json!({"error": {"code": "upstream_index_unavailable"}}),
+                false,
+            ),
+        ]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+
+        let empty = runtime
+            .invoke(&invocation(&catalog, "ontology.query", arguments.clone()))
+            .await
+            .expect("an empty successful query is still a success-class result");
+        assert!(empty.evidence.is_empty());
+        assert_eq!(empty.provider_content, serde_json::json!({"results": []}));
+        assert_eq!(empty.answerability, None);
+        let empty_status =
+            krw_ontology_adapter::supplemental_status_for_targeted_payload(&empty.provider_content)
+                .expect("bounded query status is preserved on the result");
+        assert_eq!(empty_status.kind, krw_ontology_adapter::SupplementalReadKind::Empty);
+
+        // A tool application error payload is a different outcome: the same
+        // success-class envelope carries an ApplicationError status that the
+        // engine excludes from result caching, distinct from Empty.
+        let unavailable = runtime
+            .invoke(&invocation(&catalog, "ontology.query", arguments))
+            .await
+            .expect("an application error payload is still a delivered result");
+        assert!(unavailable.evidence.is_empty());
+        let unavailable_status =
+            krw_ontology_adapter::supplemental_status_for_targeted_payload(
+                &unavailable.provider_content,
+            )
+            .expect("bounded query status is preserved on the result");
+        assert_eq!(
+            unavailable_status.kind,
+            krw_ontology_adapter::SupplementalReadKind::ApplicationError
+        );
+        assert_ne!(
+            empty_status.kind, unavailable_status.kind,
+            "Empty and Unavailable must never merge"
+        );
+    }
+
+    #[tokio::test]
+    async fn input_invalid_correction_is_control_data_not_evidence_absence() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let (plan, _) = fixture_plan_and_state();
+        let correction = fixture_correction();
+        // The correction contract must remain the exact typed control shape:
+        // an input-invalid outcome is distinguishable from an empty success
+        // and can never be recorded as evidence absence.
+        assert_eq!(
+            correction.get("status").and_then(Value::as_str),
+            Some("input_correction_required")
+        );
+        assert!(
+            correction
+                .get("violations")
+                .and_then(Value::as_array)
+                .is_some_and(|violations| !violations.is_empty())
+        );
+        let transport = FakeTransport::new([envelope(&correction, true)]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+
+        let result = runtime
+            .invoke(&invocation(&catalog, "ontology.query_context", plan))
+            .await
+            .expect("typed correction result");
+        assert_eq!(result.provider_content, correction);
+        assert!(result.evidence.is_empty());
+        assert!(result.calculations.is_empty());
+        assert_eq!(result.answerability, None);
+        // It is NOT an empty success: the correction status stays visible so
+        // downstream caching treats it as input-invalid, not no-evidence.
+        assert_eq!(
+            result
+                .provider_content
+                .get("status")
+                .and_then(Value::as_str),
+            Some("input_correction_required")
+        );
     }
 
     #[test]

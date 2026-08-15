@@ -1476,6 +1476,7 @@ impl FixtureCapabilityRuntime {
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 })
             }
             CapabilityResultIngest::CompanyContextV1 => {
@@ -1492,6 +1493,7 @@ impl FixtureCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 })
             }
             CapabilityResultIngest::MarketSnapshotV1 => {
@@ -1508,6 +1510,7 @@ impl FixtureCapabilityRuntime {
                     answerability: None,
                     calculations: Vec::new(),
                     presentation: None,
+                    truncation: None,
                 })
             }
             CapabilityResultIngest::TargetedEvidenceV1 => {
@@ -1519,6 +1522,7 @@ impl FixtureCapabilityRuntime {
                     answerability: None,
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 })
             }
             CapabilityResultIngest::TraceLineageV1 => {
@@ -1530,6 +1534,7 @@ impl FixtureCapabilityRuntime {
                     answerability: None,
                     calculations: delta.calculations,
                     presentation: None,
+                    truncation: None,
                 })
             }
             CapabilityResultIngest::FrontFeedListItemsV1

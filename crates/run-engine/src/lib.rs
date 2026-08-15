@@ -885,6 +885,7 @@ fn invoke_skill_load(
         answerability: None,
         calculations: Vec::new(),
         presentation: None,
+        truncation: None,
     })
 }
 
@@ -2071,6 +2072,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
 
         assert_eq!(
@@ -2091,6 +2093,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         assert_eq!(
             ActiveRun::supplemental_retrieval_warning(
@@ -2108,6 +2111,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         assert_eq!(
             ActiveRun::supplemental_retrieval_warning(
@@ -2126,6 +2130,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         assert!(capability_result_cacheable(
             Some(ImageResearchActionKind::Targeted),
@@ -3251,6 +3256,7 @@ mod tests {
                 presentation: (invocation.capability_id == "ontology.query_context")
                     .then(|| self.presentation_packs.first().cloned())
                     .flatten(),
+                truncation: None,
             })
         }
     }
@@ -8035,6 +8041,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
 
         state.ingest(&result).unwrap();
@@ -8558,6 +8565,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         guard
             .validate_result(capability, binding, &correction)
@@ -8571,6 +8579,7 @@ mod tests {
             answerability: None,
             calculations: Vec::new(),
             presentation: None,
+            truncation: None,
         };
         assert!(
             guard

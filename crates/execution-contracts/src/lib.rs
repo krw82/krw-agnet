@@ -152,6 +152,28 @@ impl Drop for CapabilityInvocation {
     }
 }
 
+/// Deterministic-selection receipt attached when a successful capability
+/// result exceeded the fixed normalized-result size budget and was bounded
+/// by canonical selection instead of failing. Every field is derived from
+/// canonical (RFC 8785) byte sizes and stable ordering — no wall clock,
+/// randomness, or environment input — so the same input always yields the
+/// same receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultTruncationReceipt {
+    /// Provider payload array items deterministically omitted from the
+    /// bounded selection.
+    pub omitted_provider_items: u64,
+    /// Normalized evidence records omitted from the bounded selection. Zero
+    /// whenever the provider payload trim alone satisfied the budget.
+    pub omitted_evidence: u64,
+    /// Canonical bytes of the successful tool payload as received, before any
+    /// deterministic selection.
+    pub original_payload_bytes: u64,
+    /// Canonical bytes of the bounded normalized result that was admitted.
+    pub selected_result_bytes: u64,
+}
+
 /// A capability adapter returns both provider-visible content and its typed,
 /// deterministic evidence projection.  The entire value is persisted before
 /// any part is ingested into run memory.
@@ -169,6 +191,12 @@ pub struct CapabilityResult {
     /// the provider-visible tool result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<Value>,
+    /// Omitted-count receipt present only when the successful result was
+    /// deterministically trimmed to satisfy the fixed size budget. Additive
+    /// and `None` on every result that needed no selection, so previously
+    /// serialized bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<ResultTruncationReceipt>,
 }
 
 impl fmt::Debug for CapabilityResult {
@@ -180,6 +208,7 @@ impl fmt::Debug for CapabilityResult {
             .field("answerability", &self.answerability)
             .field("calculation_count", &self.calculations.len())
             .field("has_presentation", &self.presentation.is_some())
+            .field("truncation", &self.truncation)
             .finish()
     }
 }

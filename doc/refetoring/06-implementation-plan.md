@@ -127,7 +127,14 @@ bounded-child persistence 필수 구현 전환은 이전 단계에서 완료.
 - post-call budget semantics
 - total compaction
 
-현재 상태: post-call budget semantics와 session-memory auxiliary isolation 완료.
+현재 상태: 완료. post-call budget semantics와 session-memory auxiliary
+isolation에 이어 total compaction(oversize는 bounded essential view +
+omission receipt, 실패 없음), sanitize_answer + ResearchCompletion
+(quality 결함은 AcceptedWithWarnings로 downgrade, integrity만 run.failed),
+fallback_answer_from_ledger(dependency/budget 고갈 시 deterministic
+ledger 렌더링 final 커밋, UnavailableButAnswerable), post-commit
+infallibility(commit 이후 workflow 부속 오류가 final을 뒤집지 않음)까지
+구현됐다. run-engine 112 테스트 green.
 
 이 wave는 사용자 답변 성공률을 직접 개선하며 새로운 model turn을 만들지 않는다.
 

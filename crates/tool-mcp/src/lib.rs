@@ -449,6 +449,27 @@ impl McpError {
             _ => false,
         }
     }
+
+    /// Whether this failure proves the JSON-RPC request never left this host,
+    /// i.e. it occurred strictly before any request body was written: the
+    /// DNS/TCP/TLS connect phase, local pool admission rejection, or a closed
+    /// client semaphore (acquired before any POST is written).
+    ///
+    /// Read timeouts, request-phase transport failures, stream loss, and
+    /// malformed responses can all surface after the server observed the
+    /// request id, so they never claim the pre-write phase. This is a wire
+    /// classification signal only; it does not change `is_retryable` or any
+    /// serialized/public error surface.
+    pub fn is_pre_write(&self) -> bool {
+        matches!(
+            self,
+            Self::Http {
+                kind: HttpFailureKind::Connect,
+                ..
+            } | Self::Closed
+                | Self::PoolAtCapacity { .. }
+        )
+    }
 }
 
 /// Delivery certainty policy for one JSON-RPC method at this transport layer.
@@ -1579,6 +1600,30 @@ mod tests {
             !RequestRetry::for_method("tools/list")
                 .should_retry_after(0, &McpError::InvalidToolResult)
         );
+    }
+
+    #[test]
+    fn pre_write_phase_is_distinguished_from_post_dispatch_failures() {
+        let http = |kind| McpError::Http {
+            kind,
+            diagnostic_hash: ContentHash::sha256("fixture-diagnostic"),
+        };
+        // Only failures that prove the JSON-RPC request never left this host
+        // may claim the pre-write phase: the DNS/TCP/TLS connect phase, local
+        // admission rejection, and a closed client semaphore (acquired before
+        // any POST is written).
+        assert!(http(HttpFailureKind::Connect).is_pre_write());
+        assert!(McpError::Closed.is_pre_write());
+        assert!(McpError::PoolAtCapacity { max_entries: 4 }.is_pre_write());
+        // A read timeout, a request-phase transport failure, stream loss, an
+        // oversized body, and a malformed response can all surface after the
+        // server observed the request id, so none of them prove pre-write.
+        assert!(!http(HttpFailureKind::Timeout).is_pre_write());
+        assert!(!http(HttpFailureKind::Request).is_pre_write());
+        assert!(!McpError::MissingStreamResponse.is_pre_write());
+        assert!(!McpError::IncompleteSse.is_pre_write());
+        assert!(!McpError::ResponseLimit(8).is_pre_write());
+        assert!(!McpError::InvalidToolResult.is_pre_write());
     }
 
     #[test]

@@ -1259,6 +1259,7 @@ mod tests {
                 answerability: None,
                 calculations: Vec::new(),
                 presentation: None,
+                truncation: None,
             })
         }
     }
