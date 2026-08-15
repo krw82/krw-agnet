@@ -140,6 +140,14 @@ infallibility(commit 이후 workflow 부속 오류가 final을 뒤집지 않음)
 
 ## Wave 5 — MCP result와 delivery certainty
 
+상태: 완료. structuredContent canonical dual-payload 검증, 추가
+content/metadata 무시, tools/call at-most-once과 control-read bounded
+retry는 선행 작업에 존재했다. 이번에 connect/pool/closed 등 write 전
+단계 실패를 NotDispatched+retryable로 세분하고(McpError::is_pre_write),
+oversize 성공 결과를 deterministic bounded selection + truncation
+receipt로 수렴시켰다(캐시·replay 동일 receipt). Empty/Unavailable/
+InputInvalid 구분을 regression test로 고정했다.
+
 - connect-before-send와 after-send 오류 분리
 - structuredContent canonical, JSON text fallback
 - 추가 content/metadata 무시
