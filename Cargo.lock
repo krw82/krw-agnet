@@ -988,6 +988,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "krw-agent-deploy"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "krw-agent-protocol",
+ "krw-agent-release-authorization",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "krw-agent-evidence"
 version = "0.1.0"
 dependencies = [

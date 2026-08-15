@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "contract_id": "krw.agent/frontend-deployment-contract/v1",
+  "agent_abi": "agent_v1_v7",
+  "executor_type": "rust_agent",
+  "session_backend": "rust_agent",
+  "run_submission_contract": "agent-v1-run-request/v1",
+  "final_projection_contract": "agent-final-projection/v1",
+  "required_projection_fields": ["run_id", "answer_bundle_hash", "final_output_hash", "markdown"],
+  "optional_projection_fields": [
+    "visualizations",
+    "usage",
+    "evidence_ledger_hash",
+    "memory_revision",
+    "memory_frontier_hash"
+  ],
+  "visualization_failure_policy": "omit_artifact_keep_answer",
+  "admission_policy": "open_after_exact_release_heartbeat"
+}

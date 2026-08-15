@@ -32,6 +32,7 @@ members = [
   "crates/perf-harness",
   "bins/krw-agent",
   "bins/krw-agentd",
+  "bins/krw-agent-deploy",
 ]
 
 [workspace.package]

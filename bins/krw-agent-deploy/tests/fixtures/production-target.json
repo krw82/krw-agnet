@@ -1,0 +1,16 @@
+{
+  "provider": "deepseek",
+  "gcp": {
+    "project": "krw-prod-dummy-placeholder",
+    "zone": "asia-northeast3-a",
+    "instance": "krw-agent-prod-dummy-placeholder",
+    "instance_id": "0000000000000000000"
+  },
+  "ssh_host": "deploy@127.0.0.1",
+  "local_ports": [],
+  "required_env_keys": ["KRW_AGENT_DB_URL"],
+  "db_url_env": "KRW_AGENT_DB_URL",
+  "db_abi": "agent_v1_v7",
+  "mcp_endpoints": ["127.0.0.1:18081"],
+  "supabase_migration_plan": ["0001_agent_v1.sql", "0002_daemon_heartbeats.sql"]
+}
