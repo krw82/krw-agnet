@@ -656,6 +656,10 @@ impl McpToolTransport for PooledMcpTransport {
                 DeliveryCertainty::NotDispatched,
             )
         })?;
+        // `get_or_connect_with` takes ownership of the pool key. Keep the
+        // identity needed to evict this exact client if the single tool call
+        // later loses its HTTP/MCP session.
+        let pool_key = key.clone();
         let client = self
             .pool
             .get_or_connect_with(key, || {
@@ -703,7 +707,9 @@ impl McpToolTransport for PooledMcpTransport {
                 // failed call remains at-most-once, but future calls should
                 // establish a fresh session instead of inheriting a broken
                 // HTTP/MCP connection.
-                self.pool.invalidate_if_current(&key, &client).await;
+                self.pool
+                    .invalidate_if_current(&pool_key, &client)
+                    .await;
                 Err(mcp_failure(
                     "mcp_call",
                     &error,
