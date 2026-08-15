@@ -1,78 +1,14 @@
-use std::fmt;
+//! Wire-failure classification retained for engine-side tests. The
+//! [`Provider`] port itself and the HTTP `ProviderClient` adapter live in
+//! `krw-agent-execution-contracts`; the engine re-exports them from its root.
 
-use async_trait::async_trait;
-#[cfg(feature = "http")]
-use krw_agent_protocol::GLM_MODEL_ID;
-#[cfg(feature = "http")]
-use krw_agent_provider_wire::ProviderClient;
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 use krw_agent_provider_wire::WireError;
-use krw_agent_provider_wire::{
-    EpisodeContext, MessagesRequest, PreparedMessagesRequest, ProviderEpisodeV1,
-};
 
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 use super::DeliveryCertainty;
-use super::DependencyFailure;
 
-#[async_trait]
-pub trait Provider: fmt::Debug + Send + Sync {
-    async fn complete(
-        &self,
-        request: &MessagesRequest,
-        context: &EpisodeContext,
-    ) -> Result<ProviderEpisodeV1, DependencyFailure>;
-
-    async fn complete_prepared(
-        &self,
-        prepared: &PreparedMessagesRequest<'_>,
-        context: &EpisodeContext,
-    ) -> Result<ProviderEpisodeV1, DependencyFailure> {
-        self.complete(prepared.request(), context).await
-    }
-}
-
-#[cfg(feature = "http")]
-#[async_trait]
-impl Provider for ProviderClient {
-    async fn complete(
-        &self,
-        request: &MessagesRequest,
-        context: &EpisodeContext,
-    ) -> Result<ProviderEpisodeV1, DependencyFailure> {
-        self.complete_stream(request, context)
-            .await
-            .map_err(|error| provider_failure(&request.model, &error))
-    }
-
-    async fn complete_prepared(
-        &self,
-        prepared: &PreparedMessagesRequest<'_>,
-        context: &EpisodeContext,
-    ) -> Result<ProviderEpisodeV1, DependencyFailure> {
-        self.complete_stream_prepared(prepared, context)
-            .await
-            .map_err(|error| provider_failure(&prepared.request().model, &error))
-    }
-}
-
-#[cfg(feature = "http")]
-fn provider_failure(model: &str, error: &WireError) -> DependencyFailure {
-    let is_glm = model == GLM_MODEL_ID;
-    let (retryable, delivery) = if is_glm {
-        classify_glm_failure(error)
-    } else {
-        classify_deepseek_failure(error)
-    };
-    let code = if is_glm {
-        glm_failure_code(error)
-    } else {
-        deepseek_failure_code(error)
-    };
-    DependencyFailure::redacted(code, format!("{error:?}"), retryable, delivery)
-}
-
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 pub(super) fn deepseek_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -121,12 +57,12 @@ pub(super) fn deepseek_failure_code(error: &WireError) -> String {
     }
 }
 
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 pub(super) fn classify_deepseek_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     classify_wire_failure(error)
 }
 
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 pub(super) fn glm_failure_code(error: &WireError) -> String {
     match error {
         WireError::ApiStatus {
@@ -175,12 +111,12 @@ pub(super) fn glm_failure_code(error: &WireError) -> String {
     }
 }
 
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 pub(super) fn classify_glm_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     classify_wire_failure(error)
 }
 
-#[cfg(any(feature = "http", test))]
+#[cfg(test)]
 fn classify_wire_failure(error: &WireError) -> (bool, DeliveryCertainty) {
     match error {
         WireError::InvalidEndpoint

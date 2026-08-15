@@ -5,6 +5,7 @@ members = [
   "crates/agent-image",
   "crates/evidence",
   "crates/provider-wire",
+  "crates/execution-contracts",
   "crates/agent-kernel",
   "crates/run-engine",
   "crates/runtime-config",

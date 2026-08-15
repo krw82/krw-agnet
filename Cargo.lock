@@ -998,6 +998,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "krw-agent-execution-contracts"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "krw-agent-bounded-child",
+ "krw-agent-evidence",
+ "krw-agent-image",
+ "krw-agent-persistence",
+ "krw-agent-protocol",
+ "krw-agent-provider-wire",
+ "krw-session-memory",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
 name = "krw-agent-image"
 version = "0.1.0"
 dependencies = [
@@ -1173,6 +1191,7 @@ dependencies = [
  "krw-agent-bounded-child",
  "krw-agent-contracts",
  "krw-agent-evidence",
+ "krw-agent-execution-contracts",
  "krw-agent-image",
  "krw-agent-kernel",
  "krw-agent-persistence",

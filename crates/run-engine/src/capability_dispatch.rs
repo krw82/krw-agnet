@@ -454,21 +454,10 @@ pub(crate) fn capability_invocation(run_id: &str, call: &PreparedCall) -> Capabi
     }
 }
 
-#[derive(Serialize)]
-struct ActionFingerprint<'a> {
-    version: u16,
-    run_id: &'a str,
-    agent_image_hash: &'a ContentHash,
-    capability_id: &'a str,
-    input_contract_id: &'a str,
-    input_schema_hash: &'a ContentHash,
-    output_schema_hash: &'a ContentHash,
-    server_build: &'a str,
-    server_schema_bundle_hash: &'a ContentHash,
-    data_release_hash: &'a ContentHash,
-    arguments: &'a Value,
-}
-
+/// Thin wrapper preserving the engine-facing signature: the canonical,
+/// JSON-order-independent action key now lives in
+/// `krw-agent-execution-contracts`; a fingerprint failure (practically
+/// unreachable) is surfaced as a non-retryable engine dependency error.
 pub fn deterministic_action_key(
     run_id: &str,
     agent_image_hash: &ContentHash,
@@ -477,20 +466,18 @@ pub fn deterministic_action_key(
     binding: &CapabilityBinding,
     arguments: &Value,
 ) -> Result<String, EngineError> {
-    let fingerprint = ActionFingerprint {
-        version: 2,
+    krw_agent_execution_contracts::deterministic_action_key(
         run_id,
         agent_image_hash,
-        capability_id: &capability.id,
-        input_contract_id: &capability.input_contract,
-        input_schema_hash: &contracts.input.content_hash,
-        output_schema_hash: &contracts.output_contract_set_hash,
-        server_build: &binding.server_build,
-        server_schema_bundle_hash: &binding.server_schema_bundle_hash,
-        data_release_hash: &binding.data_release_hash,
+        capability,
+        contracts,
+        binding,
         arguments,
-    };
-    Ok(ContentHash::sha256(serde_jcs::to_vec(&fingerprint)?).to_string())
+    )
+    .map_err(|failure| EngineError::Dependency {
+        component: "capability.action_key",
+        failure,
+    })
 }
 
 fn accepted_action_result<'a>(

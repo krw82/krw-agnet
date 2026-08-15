@@ -19,18 +19,19 @@ mod orchestrator;
 mod provider;
 mod provider_request;
 mod recovery;
-pub mod timings;
 mod transcript;
 mod validation;
 
 pub use active_run::active_run_checkpoint_schema_hash;
 pub use capability_dispatch::{ModelProposalRejection, deterministic_action_key};
-pub use provider::Provider;
-pub use recovery::{
-    DurableRecoverySnapshot, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint,
-    RecoverySnapshot, recovery_budget_usage,
+pub use krw_agent_execution_contracts::{
+    ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
+    DependencyFailure, DurableActionObservation, DurableEpisode, DurableFinal,
+    DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous, Persistence,
+    Provider, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, RecoverySnapshot,
+    RunControl, RunIdentity, RunLifecycleStage, RuntimeStageTimingSnapshot, RuntimeStageTimings,
 };
-pub use timings::{RuntimeStageTimingSnapshot, RuntimeStageTimings};
+pub use recovery::recovery_budget_usage;
 pub use validation::{CanonicalContractGuard, CanonicalGuardError, StructuralContractGuard};
 use active_run::{
     ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION, ActiveRun, ActiveRunCheckpoint, DerivedTickerScope,
@@ -95,10 +96,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use krw_agent_bounded_child::ChildExecutionReceipt;
+#[cfg(test)]
 use async_trait::async_trait;
+#[cfg(test)]
 use krw_agent_bounded_child::{
-    CancelChildMutation, ChildExecutionReceipt, CompleteChildMutation, InvokeChildMutation,
-    ReserveChildMutation,
+    CancelChildMutation, CompleteChildMutation, InvokeChildMutation, ReserveChildMutation,
 };
 use krw_agent_contracts::{
     ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1, DISPLAY_PLAN_V2,
@@ -121,7 +124,7 @@ use krw_agent_contracts::{
 };
 use krw_agent_evidence::{
     AnswerIr, AnswerPolicy, Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger,
-    EvidenceRecord, ValidationIssue, render_markdown, validate_answer,
+    ValidationIssue, render_markdown, validate_answer,
 };
 use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilityScopeBinding, CapabilitySpec,
@@ -182,68 +185,13 @@ use krw_policy_runtime::{
 };
 use krw_session_memory::{
     CompletedMarkdownTurnInputV3, CompletedTurnInputV3, MAX_SESSION_MEMORY_VIEW_BYTES,
-    SessionMemoryDeltaV3, SessionMemoryViewV3, completed_markdown_turn_delta, completed_turn_delta,
+    SessionMemoryViewV3, completed_markdown_turn_delta, completed_turn_delta,
     empty_frontier_hash,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
-
-/// Redacted dependency error safe to retain in ordinary operational traces.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DependencyFailure {
-    pub code: String,
-    pub diagnostic_hash: ContentHash,
-    pub retryable: bool,
-    pub delivery: DeliveryCertainty,
-}
-
-impl DependencyFailure {
-    pub fn redacted(
-        code: impl Into<String>,
-        diagnostic: impl AsRef<[u8]>,
-        retryable: bool,
-        delivery: DeliveryCertainty,
-    ) -> Self {
-        Self {
-            code: code.into(),
-            diagnostic_hash: ContentHash::sha256(diagnostic),
-            retryable,
-            delivery,
-        }
-    }
-}
-
-impl fmt::Debug for DependencyFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DependencyFailure")
-            .field("code", &self.code)
-            .field("diagnostic_hash", &self.diagnostic_hash)
-            .field("retryable", &self.retryable)
-            .field("delivery", &self.delivery)
-            .finish()
-    }
-}
-
-impl fmt::Display for DependencyFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "dependency failure {} ({})",
-            self.code, self.diagnostic_hash
-        )
-    }
-}
-
-impl std::error::Error for DependencyFailure {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryCertainty {
-    NotDispatched,
-    MayHaveDispatched,
-}
 
 /// Convert an [`Instant`] elapsed duration to whole milliseconds as a `u64`.
 ///
@@ -254,123 +202,6 @@ pub enum DeliveryCertainty {
 #[allow(clippy::cast_possible_truncation)]
 fn elapsed_millis(start: Instant) -> u64 {
     start.elapsed().as_millis() as u64
-}
-
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapabilityInvocation {
-    pub run_id: String,
-    pub action_key: String,
-    pub capability_id: String,
-    pub request_hash: ContentHash,
-    pub input_schema_hash: ContentHash,
-    pub output_schema_hash: ContentHash,
-    pub normalized_output_contract_hash: ContentHash,
-    pub arguments: Value,
-    pub binding: CapabilityBinding,
-}
-
-impl fmt::Debug for CapabilityInvocation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CapabilityInvocation")
-            .field("run_id_hash", &ContentHash::sha256(&self.run_id))
-            .field("action_key", &self.action_key)
-            .field("capability_id", &self.capability_id)
-            .field("request_hash", &self.request_hash)
-            .field("input_schema_hash", &self.input_schema_hash)
-            .field("output_schema_hash", &self.output_schema_hash)
-            .field(
-                "normalized_output_contract_hash",
-                &self.normalized_output_contract_hash,
-            )
-            .field("arguments", &"[REDACTED]")
-            .field("binding", &self.binding)
-            .finish()
-    }
-}
-
-impl Drop for CapabilityInvocation {
-    fn drop(&mut self) {
-        scrub_json(&mut self.arguments);
-    }
-}
-
-/// A capability adapter returns both provider-visible content and its typed,
-/// deterministic evidence projection.  The entire value is persisted before
-/// any part is ingested into run memory.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapabilityResult {
-    pub provider_content: Value,
-    #[serde(default)]
-    pub evidence: Vec<EvidenceRecord>,
-    pub answerability: Option<Answerability>,
-    #[serde(default)]
-    pub calculations: Vec<Calculation>,
-    /// Private presentation data captured from the MCP `_meta` channel. It is
-    /// durably carried with the action result but is never serialized into
-    /// the provider-visible tool result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub presentation: Option<Value>,
-}
-
-impl fmt::Debug for CapabilityResult {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CapabilityResult")
-            .field("provider_content", &"[REDACTED]")
-            .field("evidence_count", &self.evidence.len())
-            .field("answerability", &self.answerability)
-            .field("calculation_count", &self.calculations.len())
-            .field("has_presentation", &self.presentation.is_some())
-            .finish()
-    }
-}
-
-impl Drop for CapabilityResult {
-    fn drop(&mut self) {
-        scrub_json(&mut self.provider_content);
-        for record in &mut self.evidence {
-            for fact in &mut record.facts {
-                scrub_json(&mut fact.value);
-            }
-        }
-        for calculation in &mut self.calculations {
-            scrub_json(&mut calculation.output);
-        }
-        if let Some(presentation) = &mut self.presentation {
-            scrub_json(presentation);
-        }
-    }
-}
-
-#[async_trait]
-pub trait CapabilityRuntime: fmt::Debug + Send + Sync {
-    async fn invoke(
-        &self,
-        invocation: &CapabilityInvocation,
-    ) -> Result<CapabilityResult, DependencyFailure>;
-
-    /// Legacy observability accessor for private presentation channels. The
-    /// authoritative path is `CapabilityResult.presentation`, which is part
-    /// of the durable action result and is ingested into `ActiveRun`; this
-    /// accessor is retained only for isolated runtime diagnostics.
-    fn presentation_packs(&self) -> Vec<Value> {
-        Vec::new()
-    }
-
-    /// Restore run-local authorization state from a result that is already
-    /// durably committed. Implementations must be deterministic and
-    /// idempotent: recovery calls this in committed action order before the
-    /// result is exposed to the provider conversation.
-    async fn restore_committed_result(
-        &self,
-        _invocation: &CapabilityInvocation,
-        _result: &CapabilityResult,
-    ) -> Result<(), DependencyFailure> {
-        Ok(())
-    }
 }
 
 /// Hook for the generated canonical contract registry. The structural guard
@@ -392,278 +223,6 @@ pub trait ContractGuard: fmt::Debug + Send + Sync {
         binding: &CapabilityBinding,
         result: &CapabilityResult,
     ) -> Result<(), DependencyFailure>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunControl {
-    Active {
-        fencing_token: u64,
-        cancel_generation: u64,
-    },
-    Cancelled,
-    Finalized,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunIdentity {
-    pub run_id: String,
-    pub tenant_id: String,
-    pub fencing_token: u64,
-    pub expected_cancel_generation: u64,
-}
-
-#[derive(Clone)]
-pub struct DurableEpisode {
-    pub mutation: CheckpointEpisodeMutation,
-    /// Implementations must store these opaque bytes encrypted and scoped to
-    /// the run/principal; they can contain private reasoning.
-    pub episode_bytes: Vec<u8>,
-}
-
-#[derive(Clone)]
-pub struct DurableRunState {
-    pub run_id: String,
-    pub fencing_token: u64,
-    pub recovery_schema_hash: ContentHash,
-    pub state_hash: ContentHash,
-    pub state_bytes: Vec<u8>,
-    /// Optional product-facing lifecycle marker. It is not part of the
-    /// encrypted recovery artifact and carries no user/provider content.
-    pub lifecycle_stage: Option<RunLifecycleStage>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunLifecycleStage {
-    Composing,
-}
-
-impl fmt::Debug for DurableRunState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DurableRunState")
-            .field("run_id_hash", &ContentHash::sha256(&self.run_id))
-            .field("fencing_token", &self.fencing_token)
-            .field("recovery_schema_hash", &self.recovery_schema_hash)
-            .field("state_hash", &self.state_hash)
-            .field("state_bytes", &"[REDACTED]")
-            .field("state_byte_len", &self.state_bytes.len())
-            .field("lifecycle_stage", &self.lifecycle_stage)
-            .finish()
-    }
-}
-
-impl Drop for DurableRunState {
-    fn drop(&mut self) {
-        self.state_bytes.zeroize();
-    }
-}
-
-impl fmt::Debug for DurableEpisode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DurableEpisode")
-            .field("episode_hash", &self.mutation.episode_hash)
-            .field("episode_bytes", &"[REDACTED]")
-            .field("episode_byte_len", &self.episode_bytes.len())
-            .finish()
-    }
-}
-
-impl Drop for DurableEpisode {
-    fn drop(&mut self) {
-        self.episode_bytes.zeroize();
-    }
-}
-
-#[derive(Clone)]
-pub struct ActionIntent {
-    pub mutation: BeginActionMutation,
-    pub episode_hash: ContentHash,
-    pub tool_call_id: String,
-    pub capability_id: String,
-    pub input_contract: String,
-    pub output_contracts: Vec<String>,
-    pub input_schema_hash: ContentHash,
-    /// Ordered composite hash of every declared remote/normalized output
-    /// contract for this capability action.
-    pub output_schema_hash: ContentHash,
-    pub normalized_output_contract_hash: ContentHash,
-    pub server_schema_bundle_hash: ContentHash,
-    pub data_release_hash: ContentHash,
-    /// May contain user or retrieved text. Never write it to ordinary logs.
-    pub canonical_arguments: Vec<u8>,
-}
-
-impl fmt::Debug for ActionIntent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ActionIntent")
-            .field("action_key", &self.mutation.action_key)
-            .field("request_hash", &self.mutation.request_hash)
-            .field("episode_hash", &self.episode_hash)
-            .field("tool_call_id", &self.tool_call_id)
-            .field("capability_id", &self.capability_id)
-            .field("input_contract", &self.input_contract)
-            .field("output_contracts", &self.output_contracts)
-            .field("input_schema_hash", &self.input_schema_hash)
-            .field("output_schema_hash", &self.output_schema_hash)
-            .field(
-                "normalized_output_contract_hash",
-                &self.normalized_output_contract_hash,
-            )
-            .field("server_schema_bundle_hash", &self.server_schema_bundle_hash)
-            .field("data_release_hash", &self.data_release_hash)
-            .field("canonical_arguments", &"[REDACTED]")
-            .field("canonical_arguments_len", &self.canonical_arguments.len())
-            .finish()
-    }
-}
-
-impl Drop for ActionIntent {
-    fn drop(&mut self) {
-        self.canonical_arguments.zeroize();
-    }
-}
-
-#[derive(Clone)]
-pub struct DurableActionObservation {
-    pub mutation: ObserveActionMutation,
-    /// Opaque result artifact. Persistence owns encryption and retention.
-    pub result_bytes: Vec<u8>,
-}
-
-impl fmt::Debug for DurableActionObservation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DurableActionObservation")
-            .field("action_key", &self.mutation.action_key)
-            .field("result_hash", &self.mutation.result_hash)
-            .field("result_bytes", &"[REDACTED]")
-            .field("result_byte_len", &self.result_bytes.len())
-            .finish()
-    }
-}
-
-impl Drop for DurableActionObservation {
-    fn drop(&mut self) {
-        self.result_bytes.zeroize();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkActionAmbiguous {
-    pub run_id: String,
-    pub fencing_token: u64,
-    pub mutation_id: String,
-    pub action_key: String,
-    pub reason_code: String,
-}
-
-#[derive(Clone, Serialize)]
-pub struct DurableFinal {
-    pub mutation: FinalCommitMutation,
-    /// Hash of the exact canonical output value. For direct Markdown this is
-    /// the JCS-encoded string; typed legacy outputs use their canonical JSON.
-    pub final_output_hash: ContentHash,
-    pub rendered_message_hash: ContentHash,
-    pub answer_bundle: Value,
-    pub usage: BudgetUsage,
-    pub session_memory_delta: Option<SessionMemoryDeltaV3>,
-    pub next_memory_frontier_hash: Option<ContentHash>,
-}
-
-impl fmt::Debug for DurableFinal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DurableFinal")
-            .field("answer_bundle_hash", &self.mutation.answer_bundle_hash)
-            .field("final_output_hash", &self.final_output_hash)
-            .field("rendered_message_hash", &self.rendered_message_hash)
-            .field("answer_bundle", &"[REDACTED]")
-            .field("usage", &self.usage)
-            .field(
-                "session_memory_delta_hash",
-                &self.mutation.session_memory_delta_hash,
-            )
-            .field("session_memory_delta", &"[REDACTED]")
-            .field("next_memory_frontier_hash", &self.next_memory_frontier_hash)
-            .finish()
-    }
-}
-
-impl Drop for DurableFinal {
-    fn drop(&mut self) {
-        scrub_json(&mut self.answer_bundle);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinalStatus {
-    Committed,
-    AlreadyCommitted,
-    Cancelled,
-}
-
-#[async_trait]
-pub trait Persistence: fmt::Debug + Send + Sync {
-    async fn load_recovery(&self, run: &RunIdentity)
-    -> Result<RecoverySnapshot, DependencyFailure>;
-
-    async fn inspect_run(&self, run: &RunIdentity) -> Result<RunControl, DependencyFailure>;
-
-    async fn checkpoint_episode(&self, episode: &DurableEpisode) -> Result<(), DependencyFailure>;
-
-    async fn checkpoint_run_state(&self, state: &DurableRunState) -> Result<(), DependencyFailure>;
-
-    async fn reserve_child(
-        &self,
-        mutation: &ReserveChildMutation,
-    ) -> Result<ChildExecutionReceipt, DependencyFailure>;
-
-    async fn invoke_child(
-        &self,
-        mutation: &InvokeChildMutation,
-    ) -> Result<ChildExecutionReceipt, DependencyFailure>;
-
-    async fn complete_child(
-        &self,
-        mutation: &CompleteChildMutation,
-    ) -> Result<ChildExecutionReceipt, DependencyFailure>;
-
-    async fn cancel_child(
-        &self,
-        mutation: &CancelChildMutation,
-    ) -> Result<ChildExecutionReceipt, DependencyFailure>;
-
-    async fn begin_action(&self, intent: &ActionIntent)
-    -> Result<ActionReceipt, DependencyFailure>;
-
-    async fn observe_action(
-        &self,
-        observation: &DurableActionObservation,
-    ) -> Result<ActionReceipt, DependencyFailure>;
-
-    async fn finalize_action(
-        &self,
-        mutation: FinalizeActionMutation,
-    ) -> Result<ActionFinalizationReceipt, DependencyFailure>;
-
-    async fn mark_action_ambiguous(
-        &self,
-        mutation: MarkActionAmbiguous,
-    ) -> Result<(), DependencyFailure>;
-
-    async fn load_action_result(
-        &self,
-        run: &RunIdentity,
-        action_key: &str,
-        expected_hash: &ContentHash,
-    ) -> Result<Option<Vec<u8>>, DependencyFailure>;
-
-    async fn commit_final(
-        &self,
-        final_value: &DurableFinal,
-    ) -> Result<FinalStatus, DependencyFailure>;
 }
 
 #[derive(Debug, Clone)]

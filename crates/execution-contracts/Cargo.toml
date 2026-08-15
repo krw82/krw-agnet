@@ -1,0 +1,27 @@
+[package]
+name = "krw-agent-execution-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+http = ["krw-agent-provider-wire/http"]
+
+[dependencies]
+async-trait.workspace = true
+krw-agent-bounded-child = { path = "../bounded-child" }
+krw-agent-evidence = { path = "../evidence" }
+krw-agent-image = { path = "../agent-image" }
+krw-agent-persistence = { path = "../persistence" }
+krw-agent-protocol = { path = "../protocol" }
+krw-agent-provider-wire = { path = "../provider-wire", default-features = false }
+krw-session-memory = { path = "../session-memory" }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

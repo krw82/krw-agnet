@@ -3,129 +3,13 @@
 //! model recovery directive vocabulary.  Recovery never fabricates provider
 //! output; it replays exactly what was durably acknowledged before the
 //! failure.
+//!
+//! The recovered-state DTOs themselves (`RecoveredStateCheckpoint`,
+//! `RecoveredEpisode`, `RecoveredAction`, `DurableRecoverySnapshot`,
+//! `RecoverySnapshot`) live in `krw-agent-execution-contracts` and are
+//! re-exported from the engine root; they are in scope here via `super::*`.
 
 use super::*;
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct RecoveredStateCheckpoint {
-    pub recovery_schema_hash: ContentHash,
-    pub provider_checkpoint_seq: u64,
-    pub action_frontier_seq: u64,
-    pub action_frontier_hash: ContentHash,
-    pub state_hash: ContentHash,
-    pub state_bytes: Vec<u8>,
-}
-
-impl fmt::Debug for RecoveredStateCheckpoint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RecoveredStateCheckpoint")
-            .field("recovery_schema_hash", &self.recovery_schema_hash)
-            .field("provider_checkpoint_seq", &self.provider_checkpoint_seq)
-            .field("action_frontier_seq", &self.action_frontier_seq)
-            .field("action_frontier_hash", &self.action_frontier_hash)
-            .field("state_hash", &self.state_hash)
-            .field("state_bytes", &"[REDACTED]")
-            .field("state_byte_len", &self.state_bytes.len())
-            .finish()
-    }
-}
-
-impl Drop for RecoveredStateCheckpoint {
-    fn drop(&mut self) {
-        self.state_bytes.zeroize();
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct RecoveredEpisode {
-    pub checkpoint_seq: u64,
-    pub episode_hash: ContentHash,
-    pub episode_bytes: Vec<u8>,
-}
-
-impl fmt::Debug for RecoveredEpisode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RecoveredEpisode")
-            .field("checkpoint_seq", &self.checkpoint_seq)
-            .field("episode_hash", &self.episode_hash)
-            .field("episode_bytes", &"[REDACTED]")
-            .field("episode_byte_len", &self.episode_bytes.len())
-            .finish()
-    }
-}
-
-impl Drop for RecoveredEpisode {
-    fn drop(&mut self) {
-        self.episode_bytes.zeroize();
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct RecoveredAction {
-    pub action_key: String,
-    pub request_hash: ContentHash,
-    pub episode_hash: ContentHash,
-    pub tool_call_id: String,
-    pub capability_id: String,
-    pub input_schema_hash: ContentHash,
-    pub output_schema_hash: ContentHash,
-    pub data_release_hash: ContentHash,
-    pub retryable_read: bool,
-    pub stage: ActionStage,
-    pub result_hash: Option<ContentHash>,
-    pub result_bytes: Option<Vec<u8>>,
-}
-
-impl fmt::Debug for RecoveredAction {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RecoveredAction")
-            .field("action_key", &self.action_key)
-            .field("request_hash", &self.request_hash)
-            .field("episode_hash", &self.episode_hash)
-            .field("tool_call_id", &self.tool_call_id)
-            .field("capability_id", &self.capability_id)
-            .field("input_schema_hash", &self.input_schema_hash)
-            .field("output_schema_hash", &self.output_schema_hash)
-            .field("data_release_hash", &self.data_release_hash)
-            .field("retryable_read", &self.retryable_read)
-            .field("stage", &self.stage)
-            .field("result_hash", &self.result_hash)
-            .field(
-                "result_bytes",
-                &self.result_bytes.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("result_byte_len", &self.result_bytes.as_ref().map(Vec::len))
-            .finish()
-    }
-}
-
-impl Drop for RecoveredAction {
-    fn drop(&mut self) {
-        if let Some(bytes) = &mut self.result_bytes {
-            bytes.zeroize();
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableRecoverySnapshot {
-    pub state: Option<RecoveredStateCheckpoint>,
-    pub episodes: Vec<RecoveredEpisode>,
-    pub actions: Vec<RecoveredAction>,
-    pub child: Option<ChildExecutionReceipt>,
-    pub current_provider_checkpoint_seq: u64,
-    pub current_action_frontier_seq: u64,
-    pub current_action_frontier_hash: ContentHash,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecoverySnapshot {
-    Fresh,
-    Durable(Box<DurableRecoverySnapshot>),
-}
 
 /// Recover the bounded usage counters that were durable at the last
 /// checkpoint, including a provider episode that was persisted just before a

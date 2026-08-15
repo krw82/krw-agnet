@@ -7,11 +7,12 @@ license.workspace = true
 
 [features]
 default = []
-http = ["krw-agent-provider-wire/http"]
+http = ["krw-agent-execution-contracts/http"]
 
 [dependencies]
 async-trait.workspace = true
 krw-agent-bounded-child = { path = "../bounded-child" }
+krw-agent-execution-contracts = { path = "../execution-contracts", default-features = false }
 krw-agent-provider-wire = { path = "../provider-wire", default-features = false }
 krw-agent-contracts = { path = "../krw-contracts" }
 krw-agent-evidence = { path = "../evidence" }
