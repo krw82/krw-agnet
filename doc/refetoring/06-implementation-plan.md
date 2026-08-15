@@ -175,6 +175,12 @@ model 분기는 PinnedExecutionContract 매트릭스 확장이 필요해 별도
 
 ## Wave 7 — build graph
 
+상태: 완료. build.rs는 checked-in sealed snapshot만 입력으로 사용하며
+(`test_sealed_metric_build_inputs.py`로 봉인), ambient sibling fallback과
+empty mapping 경로는 없다. admin/release CLI(krw-agent)의 quality
+replay/quickstart 하위명령은 `dev-tools` feature(비기본) 뒤로 분리되어
+기본 release 그래프에서 kernel/test-support subgraph가 빠진다.
+
 - checked-in ontology runtime snapshot만 사용
 - ambient sibling fallback 삭제
 - empty generated mapping 삭제
