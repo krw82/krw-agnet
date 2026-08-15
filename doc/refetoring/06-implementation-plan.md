@@ -11,7 +11,9 @@
 
 ## Wave 0 — baseline과 장애 봉쇄
 
-상태: 진행 중.
+상태: 완료. baseline commit(`refactor/final-form-waves`), workspace green,
+heartbeat ABI mismatch 장애 chain 문서화(01-current-state-audit.md)를
+확정했다.
 
 - clean tree와 commit 기록
 - current release/launchd/heartbeat 확인
@@ -50,7 +52,12 @@
 
 ## Wave 2 — run-engine 모듈화
 
-상태: provider 및 transcript module 분리 완료, 후속 경계 진행 중.
+상태: 완료. `recovery.rs`, `capability_dispatch.rs`, `provider_request.rs`,
+`finalization.rs`, `active_run.rs`, `orchestrator.rs`, `validation.rs`가
+`provider.rs`/`transcript.rs`에 이어 분리됐다. 각 이동 후 focused tests
+(103/103)와 workspace check가 green이며 checkpoint hash, action key,
+provider request JCS에 변화가 없다. `agents/check-all.sh`와
+`scripts/test_dual_provider_release.py`도 통과했다.
 
 순서:
 
