@@ -1466,6 +1466,7 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
+                    presentation: None,
                 })
             }
             CapabilityResultIngest::CompanyContextV1 => {
@@ -1481,6 +1482,7 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 })
             }
             CapabilityResultIngest::MarketSnapshotV1 => {
@@ -1496,6 +1498,7 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 })
             }
             CapabilityResultIngest::TargetedEvidenceV1 => {
@@ -1506,6 +1509,7 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: delta.calculations,
+                    presentation: None,
                 })
             }
             CapabilityResultIngest::TraceLineageV1 => {
@@ -1516,6 +1520,7 @@ impl FixtureCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: delta.calculations,
+                    presentation: None,
                 })
             }
             CapabilityResultIngest::FrontFeedListItemsV1

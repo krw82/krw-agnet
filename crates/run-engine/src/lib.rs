@@ -721,6 +721,11 @@ pub struct CapabilityResult {
     pub answerability: Option<Answerability>,
     #[serde(default)]
     pub calculations: Vec<Calculation>,
+    /// Private presentation data captured from the MCP `_meta` channel. It is
+    /// durably carried with the action result but is never serialized into
+    /// the provider-visible tool result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<Value>,
 }
 
 impl fmt::Debug for CapabilityResult {
@@ -731,6 +736,7 @@ impl fmt::Debug for CapabilityResult {
             .field("evidence_count", &self.evidence.len())
             .field("answerability", &self.answerability)
             .field("calculation_count", &self.calculations.len())
+            .field("has_presentation", &self.presentation.is_some())
             .finish()
     }
 }
@@ -746,6 +752,9 @@ impl Drop for CapabilityResult {
         for calculation in &mut self.calculations {
             scrub_json(&mut calculation.output);
         }
+        if let Some(presentation) = &mut self.presentation {
+            scrub_json(presentation);
+        }
     }
 }
 
@@ -756,12 +765,10 @@ pub trait CapabilityRuntime: fmt::Debug + Send + Sync {
         invocation: &CapabilityInvocation,
     ) -> Result<CapabilityResult, DependencyFailure>;
 
-    /// Presentation data captured during the run from private capability
-    /// channels (for example the MCP `_meta` presentation-series pack). It is
-    /// never exposed to the provider; the engine reads it once at commit time
-    /// to compile deterministic visualizations. Recovery from a checkpoint
-    /// that spans capability calls may observe fewer packs than the original
-    /// execution, in which case the answer commits without visualizations.
+    /// Legacy observability accessor for private presentation channels. The
+    /// authoritative path is `CapabilityResult.presentation`, which is part
+    /// of the durable action result and is ingested into `ActiveRun`; this
+    /// accessor is retained only for isolated runtime diagnostics.
     fn presentation_packs(&self) -> Vec<Value> {
         Vec::new()
     }
@@ -935,7 +942,9 @@ impl ContractGuard for CanonicalContractGuard {
                 "normalized result is null or exceeds fixed item bounds",
             ));
         }
-        let normalized = serde_json::to_value(result).map_err(|error| {
+        let mut normalized_result = result.clone();
+        normalized_result.presentation = None;
+        let normalized = serde_json::to_value(&normalized_result).map_err(|error| {
             contract_failure("normalized_result_serialization", format!("{error:?}"))
         })?;
         validate_canonical_value(NORMALIZED_CAPABILITY_RESULT_V1, &normalized)
@@ -3041,6 +3050,7 @@ where
                     || declared.completed_capabilities != rebuilt.completed_capabilities
                     || declared.logical_action_keys != rebuilt.logical_action_keys
                     || declared.evidence_ledger_hash != rebuilt.evidence_ledger_hash
+                    || declared.presentation_packs_hash != rebuilt.presentation_packs_hash
                     || declared.calculations_hash != rebuilt.calculations_hash
                     || declared.action_cache_hash != rebuilt.action_cache_hash
                     || declared.accepted_actions_hash != rebuilt.accepted_actions_hash
@@ -4208,7 +4218,7 @@ where
             .iter()
             .map(|(evidence_id, _)| evidence_id.to_owned())
             .collect::<Vec<_>>();
-        let visualizations = self.compile_visualizations();
+        let visualizations = self.compile_visualizations(&state.presentation_packs, &state.ledger);
         let answer_bundle = AnswerBundle {
             schema_version: 4,
             output_contract: output_contract.clone(),
@@ -4376,10 +4386,15 @@ where
     /// channel. Presentation is best-effort by construction: a data-poor or
     /// malformed pack records `presentation_omitted` (visible under
     /// KRW_DEBUG_PRESENTATION) and never fails the committed answer.
-    fn compile_visualizations(&self) -> Vec<Value> {
-        const MAX_TOTAL_ARTIFACTS: usize = 4;
+    fn compile_visualizations(
+        &self,
+        presentation_packs: &[Value],
+        ledger: &EvidenceLedger,
+    ) -> Vec<Value> {
+        const MAX_TOTAL_ARTIFACTS: usize = 3;
         let mut artifacts = Vec::new();
-        for pack in self.capabilities.presentation_packs() {
+        let mut fingerprints = BTreeSet::new();
+        for pack in presentation_packs {
             match krw_presentation::compile(&pack) {
                 Ok(compiled) => {
                     if compiled.is_empty()
@@ -4387,7 +4402,18 @@ where
                     {
                         eprintln!("[KRW_DEBUG_PRESENTATION] presentation_omitted: pack cannot support a chart");
                     }
-                    artifacts.extend(compiled);
+                    for artifact in compiled {
+                        let fingerprint = artifact
+                            .get("semantic_fingerprint")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        if !fingerprint.is_empty() && fingerprints.insert(fingerprint.to_owned()) {
+                            artifacts.push(artifact);
+                        }
+                        if artifacts.len() >= MAX_TOTAL_ARTIFACTS {
+                            break;
+                        }
+                    }
                 }
                 Err(_) => {
                     if std::env::var("KRW_DEBUG_PRESENTATION").ok().as_deref() == Some("1") {
@@ -4400,7 +4426,8 @@ where
                 break;
             }
         }
-        artifacts
+        let allowed_refs = current_presentation_evidence_refs(ledger);
+        filter_grounded_visualizations(artifacts, &allowed_refs, MAX_TOTAL_ARTIFACTS)
     }
 
     async fn guard_control(
@@ -4431,6 +4458,105 @@ where
             RunControl::Cancelled => Err(EngineError::Cancelled),
             RunControl::Finalized => Err(EngineError::AlreadyFinalized),
         }
+    }
+}
+
+/// A private pack is only useful when it came from the same immutable ontology
+/// release as the model-visible ResearchState that accompanied the call.  A
+/// mismatch is an optional presentation defect, never a research failure.
+fn presentation_pack_matches_result(pack: &Value, provider_content: &Value) -> bool {
+    let pack_release = pack
+        .get("release_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let result_release = provider_content
+        .get("release_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (pack_release, result_release) {
+        (Some(pack_release), Some(result_release)) => pack_release == result_release,
+        (None, None) => true,
+        // A production ResearchState always carries a release identity.  Do
+        // not render a pack when only one side advertises provenance.
+        _ => false,
+    }
+}
+
+/// Return the only source references a committed visualization may use.  The
+/// chart sidecar identifies ontology objects, while the ledger identifies
+/// normalized evidence records, so both namespaces are intentionally allowed
+/// after the current-run relation has been observed.
+fn current_presentation_evidence_refs(ledger: &EvidenceLedger) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    for (evidence_id, _) in ledger.iter() {
+        let Some(active) = ledger.active(evidence_id) else {
+            continue;
+        };
+        if active.evidence_id != evidence_id {
+            continue;
+        }
+        refs.insert(evidence_id.to_owned());
+        refs.extend(active.source_object_ids.iter().cloned());
+    }
+    refs
+}
+
+/// Keep an artifact only when every source/derived evidence reference belongs
+/// to the current run.  A partial chart is more misleading than no chart, so
+/// the unit is dropped as a whole and the text answer remains untouched.
+fn filter_grounded_visualizations(
+    artifacts: Vec<Value>,
+    allowed_refs: &BTreeSet<String>,
+    limit: usize,
+) -> Vec<Value> {
+    artifacts
+        .into_iter()
+        .filter(|artifact| {
+            let mut refs = BTreeSet::new();
+            collect_visualization_evidence_refs(artifact, &mut refs);
+            !refs.is_empty() && refs.iter().all(|reference| allowed_refs.contains(reference))
+        })
+        .take(limit)
+        .collect()
+}
+
+fn collect_visualization_evidence_refs(value: &Value, refs: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                match key.as_str() {
+                    "evidence_ref" => {
+                        if let Some(reference) = child.as_str().map(str::trim)
+                            && !reference.is_empty()
+                        {
+                            refs.insert(reference.to_owned());
+                        }
+                    }
+                    "evidence_refs" | "derived_from_evidence_refs" => {
+                        if let Some(values) = child.as_array() {
+                            refs.extend(
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|reference| !reference.is_empty())
+                                    .map(str::to_owned),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                collect_visualization_evidence_refs(child, refs);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_visualization_evidence_refs(child, refs);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -4571,6 +4697,7 @@ fn invoke_skill_load(
         evidence: Vec::new(),
         answerability: None,
         calculations: Vec::new(),
+        presentation: None,
     })
 }
 
@@ -4842,6 +4969,7 @@ struct ActiveRun {
     accepted_actions: Vec<AcceptedActionRef>,
     ledger: EvidenceLedger,
     calculations: BTreeMap<String, Calculation>,
+    presentation_packs: Vec<Value>,
     program: Arc<ProgramRuntime>,
     interpreter: StateInterpreter,
     artifact_validator: ArtifactValidator,
@@ -4944,7 +5072,7 @@ struct RecoveryDetailV1 {
     hint: String,
 }
 
-const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 13;
+const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 14;
 const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4963,12 +5091,13 @@ const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "conversation_hash": {"type": "string"},
     "derived_ticker_scope_hash": {"type": ["string", "null"]},
     "evidence_ledger_hash": {"type": "string"},
+    "presentation_packs_hash": {"type": "string"},
     "interpreter": {"type": "object"},
     "last_provider_episode_hash": {"type": ["string", "null"]},
     "logical_action_keys": {"items": {"type": "string"}, "type": "array"},
     "prompt_receipt_hashes": {"items": {"type": "string"}, "type": "array"},
     "research_planner_hash": {"type": "string"},
-    "schema_version": {"const": 13},
+    "schema_version": {"const": 14},
     "session_memory_hash": {"type": ["string", "null"]},
     "state_trace": {"items": {"type": "string"}, "type": "array"},
     "direct_answer_retry_requested": {"type": "boolean"},
@@ -4986,6 +5115,7 @@ const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "logical_action_keys",
     "conversation_hash",
     "evidence_ledger_hash",
+    "presentation_packs_hash",
     "calculations_hash",
     "action_cache_hash",
     "accepted_actions_hash",
@@ -5019,6 +5149,7 @@ struct ActiveRunCheckpoint {
     logical_action_keys: BTreeSet<String>,
     conversation_hash: ContentHash,
     evidence_ledger_hash: ContentHash,
+    presentation_packs_hash: ContentHash,
     calculations_hash: ContentHash,
     action_cache_hash: ContentHash,
     accepted_actions_hash: ContentHash,
@@ -5045,6 +5176,7 @@ impl fmt::Debug for ActiveRun {
             .field("accepted_action_ref_count", &self.accepted_actions.len())
             .field("evidence_count", &self.ledger.len())
             .field("calculation_count", &self.calculations.len())
+            .field("presentation_pack_count", &self.presentation_packs.len())
             .field("typed_interpreter", &self.interpreter.checkpoint().ok())
             .field("session_memory", &self.session_memory)
             .field("compacted_context", &self.compacted_context)
@@ -5069,6 +5201,9 @@ impl Drop for ActiveRun {
     fn drop(&mut self) {
         for message in &mut self.messages {
             message.scrub_sensitive();
+        }
+        for pack in &mut self.presentation_packs {
+            scrub_json(pack);
         }
         for tool in &mut self.tool_definitions {
             tool.scrub_sensitive();
@@ -5101,6 +5236,7 @@ impl ActiveRun {
             accepted_actions: Vec::new(),
             ledger: EvidenceLedger::default(),
             calculations: BTreeMap::new(),
+            presentation_packs: Vec::new(),
             program,
             interpreter,
             artifact_validator: ArtifactValidator::default(),
@@ -5840,7 +5976,9 @@ impl ActiveRun {
             .ok_or_else(|| {
                 EngineError::MissingNormalizedOutputContract(call.capability.id.clone())
             })?;
-        let result_payload = serde_json::to_value(result)?;
+        let mut result_without_presentation = result.clone();
+        result_without_presentation.presentation = None;
+        let result_payload = serde_json::to_value(&result_without_presentation)?;
         self.apply_capability_artifact(
             &call.capability.id,
             &event,
@@ -7054,6 +7192,11 @@ impl ActiveRun {
     }
 
     fn ingest(&mut self, result: &CapabilityResult) -> Result<(), EngineError> {
+        if let Some(pack) = result.presentation.as_ref()
+            && presentation_pack_matches_result(pack, &result.provider_content)
+        {
+            self.retain_presentation_pack(pack);
+        }
         for record in &result.evidence {
             self.ledger.append(record.clone())?;
         }
@@ -7085,6 +7228,49 @@ impl ActiveRun {
             }
         }
         Ok(())
+    }
+
+    /// Retain only bounded, structurally recognizable presentation data. A
+    /// presentation defect is intentionally non-fatal: research evidence and
+    /// the final text answer must continue even when the optional chart is
+    /// discarded.
+    fn retain_presentation_pack(&mut self, pack: &Value) {
+        const MAX_PACKS_PER_RUN: usize = 16;
+        const MAX_PACK_BYTES: usize = 64 * 1024;
+        const MAX_SERIES: usize = 8;
+        const MAX_POINTS: usize = 12;
+        if self.presentation_packs.len() >= MAX_PACKS_PER_RUN
+            || pack.get("schema_version").and_then(Value::as_u64) != Some(2)
+        {
+            return;
+        }
+        let Some(series) = pack.get("series").and_then(Value::as_array) else {
+            return;
+        };
+        if series.len() > MAX_SERIES
+            || series.iter().any(|item| {
+                item.get("points")
+                    .and_then(Value::as_array)
+                    .map_or(true, |points| points.len() > MAX_POINTS)
+            })
+        {
+            return;
+        }
+        let Ok(bytes) = serde_jcs::to_vec(pack) else {
+            return;
+        };
+        if bytes.len() > MAX_PACK_BYTES {
+            return;
+        }
+        let hash = ContentHash::sha256(&bytes);
+        if self
+            .presentation_packs
+            .iter()
+            .filter_map(|existing| serde_jcs::to_vec(existing).ok())
+            .all(|existing| ContentHash::sha256(existing) != hash)
+        {
+            self.presentation_packs.push(pack.clone());
+        }
     }
 
     fn ingest_scope_projection(
@@ -7147,6 +7333,9 @@ impl ActiveRun {
             logical_action_keys: self.logical_action_keys.clone(),
             conversation_hash: ContentHash::sha256(serde_jcs::to_vec(&self.messages)?),
             evidence_ledger_hash: ContentHash::sha256(serde_jcs::to_vec(&self.ledger)?),
+            presentation_packs_hash: ContentHash::sha256(serde_jcs::to_vec(
+                &self.presentation_packs,
+            )?),
             calculations_hash: ContentHash::sha256(serde_jcs::to_vec(&self.calculations)?),
             action_cache_hash: ContentHash::sha256(serde_jcs::to_vec(&action_cache_hashes)?),
             accepted_actions_hash: ContentHash::sha256(serde_jcs::to_vec(
@@ -12795,6 +12984,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
 
         assert_eq!(
@@ -12814,6 +13004,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         assert_eq!(
             ActiveRun::supplemental_retrieval_warning(
@@ -12830,6 +13021,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         assert_eq!(
             ActiveRun::supplemental_retrieval_warning(
@@ -12847,6 +13039,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         assert!(capability_result_cacheable(
             Some(ImageResearchActionKind::Targeted),
@@ -13947,7 +14140,11 @@ mod tests {
                     supports: vec!["goal-1".into()],
                     refutes: Vec::new(),
                     qualifies: Vec::new(),
-                    source_object_ids: Vec::new(),
+                    source_object_ids: if invocation.capability_id == "ontology.query_context" {
+                        vec!["obj-1".into(), "obj-2".into(), "obj-3".into()]
+                    } else {
+                        Vec::new()
+                    },
                 })
                 .into_iter()
                 .collect();
@@ -13956,6 +14153,9 @@ mod tests {
                 evidence,
                 answerability: (!correction).then_some(Answerability::StrongAllowed),
                 calculations: Vec::new(),
+                presentation: (invocation.capability_id == "ontology.query_context")
+                    .then(|| self.presentation_packs.first().cloned())
+                    .flatten(),
             })
         }
     }
@@ -17857,6 +18057,7 @@ mod tests {
             }],
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
 
         state.ingest(&result).unwrap();
@@ -18056,8 +18257,18 @@ mod tests {
 
     fn trend_presentation_pack() -> Value {
         serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "release_id": "fixture-release-v1",
             "mode": "chart_series_sidecar",
+            "chart_clauses": [{
+                "clause_id": "revenue_trend",
+                "required": true,
+                "metrics": ["revenue"],
+                "tickers": ["AAPL"],
+                "metric_scope": "company_total",
+                "metric_dimensions": [],
+                "calculation_window": "year_over_year"
+            }],
             "series": [{
                 "series_key": "AAPL:revenue",
                 "label": "Revenue",
@@ -18068,11 +18279,12 @@ mod tests {
                 "basis": "consolidated",
                 "duration": "fy",
                 "period_type": "annual",
-                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple"},
+                "currency": "USD",
+                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple", "composition_eligible": false},
                 "points": [
-                    {"period": "FY2023", "value": 383.3, "object_id": "obj-1"},
-                    {"period": "FY2024", "value": 391.0, "object_id": "obj-2"},
-                    {"period": "FY2025", "value": 416.2, "object_id": "obj-3"}
+                    {"period": "FY2023", "period_basis": "FY", "period_sort_key": 20230, "fiscal_year": 2023, "value": 383.3, "currency": "USD", "object_id": "obj-1"},
+                    {"period": "FY2024", "period_basis": "FY", "period_sort_key": 20240, "fiscal_year": 2024, "value": 391.0, "currency": "USD", "object_id": "obj-2"},
+                    {"period": "FY2025", "period_basis": "FY", "period_sort_key": 20250, "fiscal_year": 2025, "value": 416.2, "currency": "USD", "object_id": "obj-3"}
                 ]
             }]
         })
@@ -18105,18 +18317,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mismatched_presentation_release_is_omitted_but_text_commits() {
+        let fixture = fixture();
+        let mut pack = trend_presentation_pack();
+        pack["release_id"] = serde_json::json!("fixture-release-old");
+        let usage_script = (0..4).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_results_usage_and_presentation(
+            provider_script(),
+            usage_script,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+            vec![pack],
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert!(outcome.answer_bundle.visualizations.is_empty());
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+    }
+
+    #[tokio::test]
+    async fn visualization_with_stale_object_reference_is_omitted_but_text_commits() {
+        let fixture = fixture();
+        let mut pack = trend_presentation_pack();
+        pack["series"][0]["points"][0]["object_id"] =
+            serde_json::json!("object-from-another-run");
+        let usage_script = (0..4).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_results_usage_and_presentation(
+            provider_script(),
+            usage_script,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+            vec![pack],
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert!(outcome.answer_bundle.visualizations.is_empty());
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+    }
+
+    #[tokio::test]
     async fn unchartable_presentation_pack_never_fails_the_answer() {
         let fixture = fixture();
         let single_point = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "release_id": "fixture-release-v1",
             "mode": "chart_series_sidecar",
+            "chart_clauses": [{
+                "clause_id": "revenue_trend",
+                "required": true,
+                "metrics": ["revenue"],
+                "tickers": ["AAPL"],
+                "metric_scope": "company_total",
+                "metric_dimensions": [],
+                "calculation_window": "year_over_year"
+            }],
             "series": [{
                 "series_key": "AAPL:revenue",
                 "label": "Revenue",
                 "ticker": "AAPL",
                 "canonical_metric": "revenue",
-                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple"},
-                "points": [{"period": "FY2025", "value": 416.2, "object_id": "obj-1"}]
+                "currency": "USD",
+                "scope": {"kind": "company_total", "key": "AAPL", "label": "Apple", "composition_eligible": false},
+                "points": [{"period": "FY2025", "period_basis": "FY", "period_sort_key": 20250, "fiscal_year": 2025, "value": 416.2, "currency": "USD", "object_id": "obj-1"}]
             }]
         });
         let usage_script = (0..4).map(|_| scripted_token_usage(5)).collect();
@@ -18164,7 +18428,7 @@ mod tests {
     #[test]
     fn active_run_checkpoint_has_one_typed_workflow_authority() {
         let schema: Value = serde_json::from_str(ACTIVE_RUN_CHECKPOINT_SCHEMA).unwrap();
-        assert_eq!(schema["properties"]["schema_version"]["const"], 13);
+        assert_eq!(schema["properties"]["schema_version"]["const"], 14);
         assert!(schema["properties"].get("interpreter").is_some());
         assert!(schema["properties"].get("decision_projection").is_none());
         assert!(
@@ -18311,6 +18575,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         guard
             .validate_result(capability, binding, &correction)
@@ -18323,6 +18588,7 @@ mod tests {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         assert!(
             guard

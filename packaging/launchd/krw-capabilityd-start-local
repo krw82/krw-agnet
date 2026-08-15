@@ -129,6 +129,10 @@ export KRW_CAPABILITYD_PORT="$(read_setting port)"
 export KRW_CAPABILITYD_EXPECTED_BUILD_ID="$(read_setting build_id)"
 export KRW_CAPABILITYD_EXPECTED_TOOL_SCHEMA_SHA256="$(read_setting tool_schema)"
 export KRW_CAPABILITYD_EXPECTED_RELEASE_MANIFEST_SHA256="$(read_setting release_manifest)"
+# Production presentation is intentionally off. This assignment overrides
+# inherited launchctl variables so a stale global environment cannot re-enable
+# chart sidecars for the sealed capability process.
+export KRW_CHART_SERIES_ENABLED=0
 export PYTHONDONTWRITEBYTECODE=1
 
 for pair in \

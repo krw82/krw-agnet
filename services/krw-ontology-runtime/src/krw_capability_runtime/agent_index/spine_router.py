@@ -39,7 +39,6 @@ from krw_capability_runtime.agent_index.spine_schema import (
 )
 
 _ROUTER_FANOUT_WORKERS_ENV = "KRW_ROUTER_FANOUT_WORKERS"
-_CHART_SERIES_ENABLED_ENV = "KRW_CHART_SERIES_ENABLED"
 _TICKERLESS_QUERY_CONTEXT_MAX_TICKERS_ENV = "KRW_ROUTER_TICKERLESS_QUERY_CONTEXT_MAX_TICKERS"
 _DEFAULT_ROUTER_FANOUT_WORKERS = 8
 _MAX_ROUTER_FANOUT_WORKERS = 16
@@ -2999,11 +2998,6 @@ def _attach_spine_cross_company_pack(
             "fallback_used": False,
         },
     }
-
-
-def _chart_series_runtime_enabled() -> bool:
-    raw = os.getenv(_CHART_SERIES_ENABLED_ENV)
-    return str(raw or "").strip().lower() in _TRUE_ENV_VALUES
 
 
 def _merge_discovery_payloads(

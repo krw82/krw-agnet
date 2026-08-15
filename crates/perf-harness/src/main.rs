@@ -1870,6 +1870,7 @@ fn orientation_capability_result(
         }],
         answerability: None,
         calculations: Vec::new(),
+        presentation: None,
     })
 }
 
@@ -1926,6 +1927,7 @@ fn research_context_capability_result(
         }],
         answerability: Some(Answerability::StrongAllowed),
         calculations: Vec::new(),
+        presentation: None,
     })
 }
 

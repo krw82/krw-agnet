@@ -7,7 +7,13 @@ set -euo pipefail
 
 krw_release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_output_root=
-krw_capability_release_root=${KRW_CAPABILITY_RELEASE_ROOT:-"$HOME/krw-ontology-data/releases/prod/current"}
+# The operator runtime envelope historically names the immutable ontology data
+# release as KRW_ONTOLOGY_RELEASE_ROOT.  Keep the capability-specific name as
+# an explicit override, but derive it from the same value when the envelope
+# does not carry a second alias.  Otherwise prod:deploy:full silently validates
+# one release and launches the capability runtime against another (usually the
+# old v1 prod/current sidecar).
+krw_capability_release_root=${KRW_CAPABILITY_RELEASE_ROOT:-${KRW_ONTOLOGY_RELEASE_ROOT:-"$HOME/krw-ontology-data/releases/prod/current"}}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,9 +56,28 @@ export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
   exit 1
 }
 command -v uv >/dev/null 2>&1 || {
-  printf 'dual provider release requires uv to package the canonical capability runtime\n' >&2
+  printf 'dual provider release requires uv to validate and package the canonical capability runtime\n' >&2
   exit 1
 }
+krw_chart_series_enabled=${KRW_CHART_SERIES_ENABLED:-0}
+case "$krw_chart_series_enabled" in
+  1|true|TRUE|on|ON|yes|YES)
+    # When explicitly enabled, validate the admitted sidecar before the
+    # expensive Rust/Python packaging work.
+    if ! (cd "$krw_release_root/services/krw-ontology-runtime" && \
+      uv run python "$krw_release_root/scripts/verify_chart_series_release.py" \
+        --release-root "$krw_capability_release_root" >/dev/null); then
+      printf '%s\n' \
+        "Build blocked: the admitted data release does not contain a verified chart-series v2 sidecar." \
+        "Materialize a candidate without editing ~/krw-ontology:" \
+        "  (cd $krw_release_root/services/krw-ontology-runtime && uv run python ../../scripts/materialize_chart_series_release.py --source-release-root $krw_capability_release_root --output-root <new-prod-release-id>)" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf '%s\n' "Chart-series presentation is disabled for this sealed release; the ontology data sidecar remains untouched." >&2
+    ;;
+esac
 command -v rsync >/dev/null 2>&1 || {
   printf 'dual provider release requires rsync to package the canonical capability runtime\n' >&2
   exit 1

@@ -440,8 +440,16 @@ def validate_status(
         if final_output is not None or usage is not None or retry_message is not None:
             raise GatewayProblem("status_non_final_payload")
         return session_id, run_id, state, None, None, None, None
-    if not isinstance(final_output, dict) or set(final_output) != {"markdown", "final_output_hash"}:
+    if not isinstance(final_output, dict):
         raise GatewayProblem("final_output_shape_invalid")
+    required_final_output_keys = {"markdown", "final_output_hash"}
+    if not required_final_output_keys.issubset(final_output) or not set(final_output).issubset(
+        required_final_output_keys | {"visualizations"}
+    ):
+        raise GatewayProblem("final_output_shape_invalid")
+    visualizations = final_output.get("visualizations")
+    if visualizations is not None and not isinstance(visualizations, list):
+        raise GatewayProblem("final_output_visualizations_invalid")
     markdown = final_output["markdown"]
     final_hash = final_output["final_output_hash"]
     if (

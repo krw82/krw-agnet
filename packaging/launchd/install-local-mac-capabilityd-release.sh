@@ -114,6 +114,8 @@ import json, sys
 config = json.load(open(sys.argv[1], encoding="utf-8"))
 if config.get("service") != "krw-capabilityd":
     raise SystemExit(1)
+if config.get("allowedOrigins") != ["https://krw-agent.local"]:
+    raise SystemExit(1)
 upstream = config.get("upstream")
 if not isinstance(upstream, dict) or upstream.get("host") != "127.0.0.1" or upstream.get("port") != int(sys.argv[2]):
     raise SystemExit(1)
@@ -250,6 +252,7 @@ write_plist() {
   <key>EnvironmentVariables</key><dict>
     <key>KRW_AGENT_CURRENT_DIR</key><string>$INSTALL_ROOT/current</string>
     <key>KRW_AGENT_CAPABILITY_RUNTIME_DIR</key><string>$MATERIALIZED_RUNTIME</string>
+    <key>KRW_CHART_SERIES_ENABLED</key><string>0</string>
   </dict>
   <key>WorkingDirectory</key><string>$INSTALL_ROOT</string>
   <key>StandardOutPath</key><string>$LOG_DIR/krw-capabilityd.out.log</string>
@@ -309,6 +312,10 @@ config.update({
     "toolSchemaSha256": identity["tool_schema_sha256"],
     "releaseManifestSha256": identity["release_manifest_sha256"],
     "toolCount": identity["tool_count"],
+    # The Rust MCP client sends this exact Origin value from the sealed local
+    # endpoint registry. Keep the gateway allowlist explicit and materialized
+    # into every activated release; an absent Origin must remain rejected.
+    "allowedOrigins": ["https://krw-agent.local"],
     "toolSessionReuse": "attested-stateless-v1",
 })
 fd, temporary = tempfile.mkstemp(prefix=".ontology-tls.", dir=config_path.parent)

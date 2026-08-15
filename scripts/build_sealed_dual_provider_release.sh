@@ -7,6 +7,7 @@ set -euo pipefail
 
 krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 krw_output_root=
+krw_front_root=
 krw_operator_root=${KRW_AGENT_OPERATOR_ROOT:-"$HOME/krw-agnet-prod"}
 krw_runtime_env=${KRW_AGENT_RUNTIME_ENV_FILE:-}
 krw_runtime_version=${KRW_AGENT_RUNTIME_VERSION:-0.1.0}
@@ -17,6 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build_sealed_dual_provider_release.sh \
   --output-root /absolute/new/release-directory \
+  [--front-root /absolute/krw-ontology-front-directory] \
   [--operator-root /absolute/operator-directory] \
   [--runtime-env /absolute/runtime.env]
 
@@ -36,6 +38,11 @@ while [[ $# -gt 0 ]]; do
     --output-root)
       [[ $# -ge 2 ]] || fail "--output-root requires an absolute directory"
       krw_output_root=$2
+      shift 2
+      ;;
+    --front-root)
+      [[ $# -ge 2 ]] || fail "--front-root requires an absolute directory"
+      krw_front_root=$2
       shift 2
       ;;
     --operator-root)
@@ -63,6 +70,10 @@ done
   || fail "--output-root must be an absolute directory"
 [[ ! -e "$krw_output_root" ]] \
   || fail "release output already exists: $krw_output_root"
+if [[ -n "$krw_front_root" ]]; then
+  [[ "$krw_front_root" = /* && -d "$krw_front_root" && ! -L "$krw_front_root" ]] \
+    || fail "front root must be an existing absolute real directory"
+fi
 [[ "$krw_operator_root" = /* && -d "$krw_operator_root" && ! -L "$krw_operator_root" ]] \
   || fail "operator root must be an existing absolute real directory"
 krw_runtime_env=${krw_runtime_env:-"$krw_operator_root/runtime/krw-agent-deploy.env"}
@@ -85,6 +96,11 @@ krw_private_key="$krw_operator_root/signing/release-private.pk8"
 cd "$krw_root"
 [[ -z "$(git status --porcelain=v1 --untracked-files=normal)" ]] \
   || fail "sealed dual-provider release requires a clean committed Git tree"
+
+if [[ -n "$krw_front_root" ]]; then
+  python3 "$krw_root/scripts/check_product_projection_compat.py" \
+    --front-root "$krw_front_root"
+fi
 
 # Descriptor preparation validates the resolved local MCP endpoints. Keep the
 # values in the operator-owned runtime envelope and export them only to this

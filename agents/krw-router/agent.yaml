@@ -30,7 +30,7 @@ contracts:
   - { id: routing-decision/v2, schema_ref: canonical:krw-agent/routing-decision-v2, content_hash: "sha256:02b86a4fb19673ffa772d49ca6a4067e43d686121e44e41dbc73990c67abfc39", semantic_authority: krw-agent-product, max_items: 1 }
 
 roles:
-  - { id: router, prompt_segments: [router_contract], deterministic: false }
+  - { id: router, prompt_segments: [router_contract], deterministic: false, execution: { reasoning: direct, max_output_tokens: 4096 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

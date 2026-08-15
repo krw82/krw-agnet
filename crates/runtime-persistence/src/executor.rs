@@ -1256,6 +1256,7 @@ mod tests {
                 evidence: Vec::new(),
                 answerability: None,
                 calculations: Vec::new(),
+                presentation: None,
             })
         }
     }

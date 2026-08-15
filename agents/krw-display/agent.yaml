@@ -30,7 +30,7 @@ contracts:
   - { id: display-plan/v2, schema_ref: canonical:krw-agent/display-plan-v2, content_hash: "sha256:6f3f62af5aa631894be1d5de2a4f37d88a7ebfaf3a838241d1dcfa7fdeba0ce3", semantic_authority: krw-agent-product, max_items: 64 }
 
 roles:
-  - { id: display_planner, prompt_segments: [display_contract], deterministic: false }
+  - { id: display_planner, prompt_segments: [display_contract], deterministic: false, execution: { reasoning: direct, max_output_tokens: 4096 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

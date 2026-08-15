@@ -591,6 +591,118 @@ def rebind_router_coherence_release(
     )
 
 
+def rebind_router_coherence_source(
+    path: Path | str,
+    *,
+    global_spine_path: Path | str,
+    release_id: str,
+    expected_previous_global_spine_sha256: str | None = None,
+    expected_previous_release_id: str | None = None,
+) -> dict[str, Any]:
+    """Rebind a trusted coherence copy to a byte-distinct global spine.
+
+    Release materialization re-seals the global spine after rebasing its
+    release-bound paths.  The semantic coherence rows remain identical, but
+    the global file hash necessarily changes.  The ordinary release-id rebind
+    deliberately rejects that situation, so this boundary verifies the old
+    binding first and then writes the new source hash atomically.
+    """
+    resolved = Path(path).expanduser().resolve()
+    source_path = Path(global_spine_path).expanduser().resolve()
+    normalized_release_id = str(release_id).strip()
+    if not normalized_release_id:
+        raise ValueError("router coherence release_id is required")
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Global spine not found: {source_path}")
+
+    source_seal, source_seal_status = read_immutable_sqlite_cache_seal(
+        resolved,
+        kind="router_coherence",
+    )
+    if source_seal_status != "valid":
+        raise ValueError(
+            "cannot rebind router coherence from an untrusted candidate: "
+            f"{source_seal_status}"
+        )
+    previous = verify_router_coherence(
+        resolved,
+        expected_global_spine_sha256=expected_previous_global_spine_sha256,
+        expected_release_id=expected_previous_release_id,
+        deep=True,
+        require_trusted_seal=True,
+    )
+    if not previous.get("ok"):
+        raise ValueError(
+            "cannot rebind invalid router coherence: "
+            + ", ".join(previous.get("errors") or [])
+        )
+
+    with _connect_immutable_readonly(source_path) as source:
+        source_metadata = _read_metadata(source)
+    source_sha256 = _file_sha256(source_path)
+    metadata = dict(previous.get("metadata") or {})
+    metadata.update(
+        {
+            "release_id": normalized_release_id,
+            "source_global_spine_sha256": source_sha256,
+            "source_global_spine_schema_version": source_metadata.get("schema_version"),
+            "source_manifest_hash": source_metadata.get("source_manifest_hash"),
+            "source_created_at": source_metadata.get("created_at"),
+        }
+    )
+    metadata["build_fingerprint_sha256"] = _json_sha256(
+        {
+            "builder_version": metadata.get("builder_version"),
+            "counts": metadata.get("counts"),
+            "profile_sha256": metadata.get("profile_sha256"),
+            "release_id": normalized_release_id,
+            "schema_sql_sha256": metadata.get("schema_sql_sha256"),
+            "schema_version": metadata.get("schema_version"),
+            "semantic_cache_key": metadata.get("semantic_cache_key"),
+            "source_global_spine_sha256": source_sha256,
+        }
+    )
+    with sqlite3.connect(resolved) as conn:
+        _write_metadata(conn, metadata)
+        conn.commit()
+    remove_immutable_sqlite_cache_seal(resolved)
+
+    rebound = verify_router_coherence(
+        resolved,
+        expected_global_spine_sha256=source_sha256,
+        expected_release_id=normalized_release_id,
+        deep=False,
+    )
+    if not rebound.get("ok"):
+        raise ValueError(
+            "rebound router coherence is invalid: "
+            + ", ".join(rebound.get("errors") or [])
+        )
+    inherited = {
+        **rebound,
+        "integrity_check": "ok",
+        "integrity_source": "inherited_immutable_cache_seal",
+        "verification_mode": "router-coherence-deep-sealed-source-rebind",
+    }
+    write_immutable_sqlite_cache_seal(
+        resolved,
+        kind="router_coherence",
+        cache_key=str(metadata.get("semantic_cache_key") or ""),
+        verification=inherited,
+        metadata=rebound.get("metadata") or {},
+        counts=rebound.get("counts") or {},
+        source_path=resolved,
+        details={"inheritance": "controlled-global-spine-source-rebind"},
+    )
+    return verify_router_coherence(
+        resolved,
+        expected_global_spine_sha256=source_sha256,
+        expected_release_id=normalized_release_id,
+        deep=True,
+        require_trusted_seal=True,
+    )
+
+
 class RouterCoherence:
     """Read-only source-coherent candidate scorer."""
 

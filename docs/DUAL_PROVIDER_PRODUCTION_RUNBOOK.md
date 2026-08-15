@@ -17,6 +17,31 @@ RELEASE_ROOT=/secure/krw-agent/releases/$RELEASE_ID
 scripts/build_dual_provider_release.sh --output-root "$RELEASE_ROOT"
 ```
 
+### 기존 데이터 릴리스가 chart-series v1인 경우
+
+새 presentation 계약은 `indexes/chart_series.sqlite`의 v2 sidecar를 필수로
+사용한다. 기존 `prod/current`를 직접 수정하지 말고, APFS/reflink clone으로
+새 후보를 만든 뒤 검증된 경우에만 promote한다. 이 명령은
+`~/krw-ontology`를 수정하지 않는다.
+
+```bash
+DATA_ROOT="$HOME/krw-ontology-data/releases/prod"
+SOURCE="$DATA_ROOT/current"
+NEXT_ID="$(date +%Y%m%d_%H%M%S)_presentation_v2"
+
+(cd ~/krw-agnet/services/krw-ontology-runtime && \
+  uv run python ../../scripts/materialize_chart_series_release.py \
+    --source-release-root "$SOURCE" \
+    --output-root "$DATA_ROOT/$NEXT_ID")
+
+# 검증 결과를 확인한 뒤, 필요하면 같은 명령에 --promote-current를 붙여
+# 다시 실행한다. 이 옵션은 원자적으로 prod/current만 바꾸며 기존
+# source release 파일은 수정하지 않는다.
+```
+
+실패한 후보는 `prod/current`에 영향을 주지 않으며, Rust sealed release는
+`chart_series_release_invalid`에서 패키징 전에 중단된다.
+
 이 명령은 Rust binary와 AgentImage를 한 번만 만들고, 같은 bytes를 공유하는
 `$RELEASE_ROOT/glm`과 `$RELEASE_ROOT/deepseek` unsigned candidate를 만든다.
 registry와 manifest만 provider별로 다르다.

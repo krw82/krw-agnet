@@ -14,6 +14,7 @@ from typing import Any
 from krw_capability_runtime.agent_index.chart_series import (
     CHART_SERIES_RELATIVE_PATH,
     CHART_SERIES_SCHEMA_VERSION,
+    chart_series_runtime_enabled,
     verify_chart_series_index,
 )
 from krw_capability_runtime.agent_index.cache_seal import (
@@ -474,16 +475,26 @@ def _build_release_index_outputs_v3(
             "required": True,
         },
     }
-    chart_series_path = root_path / CHART_SERIES_RELATIVE_PATH
-    if chart_series_path.is_file():
+    if chart_series_runtime_enabled():
+        chart_series_path = root_path / CHART_SERIES_RELATIVE_PATH
+        if not chart_series_path.is_file():
+            raise FileNotFoundError(
+                "Cannot build a ready v3 manifest without the chart-series sidecar: "
+                f"{chart_series_path}. Run build_spine_shard_release_outputs first."
+            )
         chart_verification = verify_chart_series_index(chart_series_path)
+        if not chart_verification.get("ok"):
+            raise ValueError(
+                "Cannot build a ready v3 manifest with an invalid chart-series sidecar: "
+                + ", ".join(str(error) for error in chart_verification.get("errors") or [])
+            )
         outputs["chart_series"] = {
             "path": _relative_or_absolute(chart_series_path, root_path),
             "sha256": _file_sha256(chart_series_path),
             "schema_version": CHART_SERIES_SCHEMA_VERSION,
-            "required": False,
+            "required": True,
             "counts": chart_verification.get("counts") or {},
-            "verification_ok": bool(chart_verification.get("ok")),
+            "verification_ok": True,
         }
     return outputs
 
@@ -919,9 +930,17 @@ def verify_release_startup_v3(
     chart_series_required = bool(
         isinstance(chart_series_output, Mapping) and chart_series_output.get("required") is True
     )
-    if chart_series_path is not None:
+    if chart_series_required:
         if chart_series_path.exists() and chart_series_path.is_file():
             if check_sqlite:
+                if manifest and isinstance(chart_series_output, Mapping):
+                    errors.extend(
+                        _manifest_file_digest_errors(
+                            manifest,
+                            "chart_series",
+                            chart_series_path,
+                        )
+                    )
                 chart_series_verification = verify_chart_series_index(chart_series_path)
                 if chart_series_required and not chart_series_verification.get("ok"):
                     errors.extend(
@@ -936,7 +955,7 @@ def verify_release_startup_v3(
                     "sqlite_checked": False,
                     "verification_mode": "startup",
                 }
-        elif chart_series_required:
+        else:
             errors.append("chart_series_missing")
 
     return {
@@ -995,7 +1014,12 @@ def _release_manifest_startup_errors_v3(root_path: Path, manifest: Mapping[str, 
     if not isinstance(outputs, Mapping):
         errors.append("manifest_indexes_missing")
         return errors
-    for role in ("global_spine", "router_sidecar", "company_shards", "shard_manifest"):
+    for role in (
+        "global_spine",
+        "router_sidecar",
+        "company_shards",
+        "shard_manifest",
+    ):
         output = outputs.get(role)
         if not isinstance(output, Mapping):
             errors.append(f"manifest_indexes_{role}_missing")
@@ -1084,22 +1108,23 @@ def _release_manifest_startup_errors_v3(root_path: Path, manifest: Mapping[str, 
                     root_path, "shard_manifest", raw_path
                 )
             )
-    chart_series = outputs.get("chart_series")
-    if isinstance(chart_series, Mapping):
-        raw_path = chart_series.get("path")
-        if chart_series.get("required") is True:
-            if not isinstance(raw_path, str) or not raw_path:
-                errors.append("manifest_indexes_chart_series_path_missing")
-            else:
-                errors.extend(
-                    _release_manifest_relative_file_startup_errors(
-                        root_path, "chart_series", raw_path
+    if chart_series_runtime_enabled():
+        chart_series = outputs.get("chart_series")
+        if isinstance(chart_series, Mapping):
+            raw_path = chart_series.get("path")
+            if chart_series.get("required") is True:
+                if not isinstance(raw_path, str) or not raw_path:
+                    errors.append("manifest_indexes_chart_series_path_missing")
+                else:
+                    errors.extend(
+                        _release_manifest_relative_file_startup_errors(
+                            root_path, "chart_series", raw_path
+                        )
                     )
+            elif isinstance(raw_path, str) and raw_path:
+                errors.extend(
+                    _release_manifest_relative_optional_file_errors(root_path, "chart_series", raw_path)
                 )
-        elif isinstance(raw_path, str) and raw_path:
-            errors.extend(
-                _release_manifest_relative_optional_file_errors(root_path, "chart_series", raw_path)
-            )
     debug_monolith = outputs.get("debug_monolith")
     if isinstance(debug_monolith, Mapping) and debug_monolith.get("required") is True:
         errors.append("manifest_debug_monolith_required")
@@ -1185,6 +1210,29 @@ def _release_manifest_relative_optional_file_errors(
         errors.append(f"manifest_indexes_{role}_path_outside_root")
     if resolved.exists() and not resolved.is_file():
         errors.append(f"manifest_indexes_{role}_not_file")
+    return errors
+
+
+def _manifest_file_digest_errors(
+    manifest: Mapping[str, Any], role: str, path: Path
+) -> list[str]:
+    """Check a manifest-bound file without changing the release state."""
+    errors: list[str] = []
+    indexes = manifest.get("indexes")
+    output = indexes.get(role) if isinstance(indexes, Mapping) else None
+    expected = output.get("sha256") if isinstance(output, Mapping) else None
+    if not isinstance(expected, str) or not expected:
+        return [f"{role}:manifest_sha256_missing"]
+    if not path.is_file():
+        return [f"{role}:manifest_file_missing"]
+    expected_digest = expected[7:] if expected.startswith("sha256:") else expected
+    if len(expected_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_digest
+    ):
+        errors.append(f"{role}:manifest_sha256_invalid")
+        return errors
+    if _file_sha256(path) != expected_digest:
+        errors.append(f"{role}:manifest_sha256_mismatch")
     return errors
 
 

@@ -1,4 +1,4 @@
-"""Chart-ready metric series sidecar for v3 release indexes."""
+"""Chart-ready metric series sidecar for v4 release indexes."""
 
 from __future__ import annotations
 
@@ -19,14 +19,30 @@ from krw_capability_runtime.agent_index.semantic_identity import (
     project_object_identity,
 )
 
-CHART_SERIES_SCHEMA_VERSION = "krw-ontology-chart-series/v1"
-CHART_SERIES_BUILDER_VERSION = "chart-series-builder/v2"
+CHART_SERIES_SCHEMA_VERSION = "krw-ontology-chart-series/v2"
+CHART_SERIES_BUILDER_VERSION = "chart-series-builder/v3"
 CHART_SERIES_RELATIVE_PATH = Path("indexes") / "chart_series.sqlite"
 CHART_SERIES_TABLES = (
     "chart_series_metadata",
     "chart_series",
     "chart_series_points",
 )
+
+
+def chart_series_runtime_enabled() -> bool:
+    """Return whether the optional presentation sidecar may be used.
+
+    Production is deliberately fail-closed: the sealed local launcher also
+    exports ``0``.  A local developer can opt in explicitly with ``1`` when
+    working on the presentation path, but an omitted or inherited environment
+    variable must never turn charts on by accident.
+    """
+    return os.environ.get("KRW_CHART_SERIES_ENABLED", "0").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
 
 _PERIODIC_METRICS = {
     "adjusted_free_cash_flow",
@@ -56,17 +72,10 @@ _POINT_IN_TIME_METRICS = {
     "total_liabilities",
 }
 CHART_SAFE_CANONICAL_METRICS = frozenset(_PERIODIC_METRICS | _POINT_IN_TIME_METRICS)
-
-_DEFAULT_METRICS = (
-    "revenue",
-    "operating_income",
-    "net_income",
-    "operating_cash_flow",
-    "free_cash_flow",
-    "capital_expenditures",
-    "cash_and_cash_equivalents",
-    "total_debt",
-)
+_CHART_METRIC_ALIASES = {
+    "capex": "capital_expenditures",
+    "cash_and_equivalents": "cash_and_cash_equivalents",
+}
 
 
 @dataclass(frozen=True)
@@ -185,6 +194,9 @@ def create_chart_series_schema(conn: sqlite3.Connection) -> None:
             scope_kind TEXT NOT NULL,
             scope_key TEXT NOT NULL,
             scope_label TEXT NOT NULL,
+            scope_dimension TEXT,
+            composition_eligible INTEGER NOT NULL DEFAULT 0,
+            currency TEXT,
             period_type TEXT NOT NULL,
             basis TEXT NOT NULL,
             duration TEXT NOT NULL,
@@ -202,6 +214,9 @@ def create_chart_series_schema(conn: sqlite3.Connection) -> None:
             series_key TEXT NOT NULL,
             ticker TEXT NOT NULL,
             period TEXT NOT NULL,
+            period_basis TEXT,
+            period_start TEXT,
+            period_end TEXT,
             fiscal_year INTEGER,
             fiscal_quarter INTEGER,
             period_sort_key INTEGER NOT NULL,
@@ -211,6 +226,7 @@ def create_chart_series_schema(conn: sqlite3.Connection) -> None:
             source_sort_key INTEGER,
             value REAL NOT NULL,
             formatted_value TEXT,
+            currency TEXT,
             object_id TEXT NOT NULL,
             trace_status TEXT,
             metric_lineage_status TEXT,
@@ -346,19 +362,20 @@ def read_chart_series_metadata(conn: sqlite3.Connection) -> dict[str, Any]:
 def query_chart_series_pack(
     path: Path | str,
     *,
-    question: str,
     tickers: Sequence[str],
-    metric_names: Sequence[str] | None = None,
+    chart_clauses: Sequence[Mapping[str, Any]] | None = None,
     limit_series: int = 20,
     limit_points: int = 12,
+    release_id: str | None = None,
+    source_manifest_hash: str | None = None,
 ) -> dict[str, Any] | None:
     """Return a presentation-channel metric pack from the chart sidecar.
 
-    ``metric_names`` is the plan-driven metric scope: when the SearchPlan names
-    canonical metrics, those select the candidate rows directly. The question
-    string is only a fallback for candidate discovery when the plan carries no
-    metric identities. The emitted pack is private presentation data (MCP
-    ``_meta``), never model-visible ResearchState content.
+    Chart eligibility is derived only from validated SearchPlan clauses.  A
+    natural-language question is deliberately not inspected here: a company
+    description or risk question must never cause a broad metric scan merely
+    because it contains a word such as "trend".  The emitted pack is private
+    presentation data (MCP ``_meta``), never model-visible ResearchState.
     """
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
@@ -366,40 +383,85 @@ def query_chart_series_pack(
     ticker_values = [str(ticker).upper() for ticker in tickers if str(ticker or "").strip()]
     if not ticker_values:
         return None
-    plan_metrics = [
-        str(metric).strip().lower()
-        for metric in (metric_names or [])
-        if str(metric or "").strip()
-    ]
-    metric_candidates = plan_metrics or _metric_candidates_for_question(question)
-    scope_candidates = _scope_candidates_for_question(question)
-    dimension_requested = _dimension_series_requested(question, scope_candidates)
+    eligible_clauses = _eligible_chart_clauses(chart_clauses, ticker_values)
+    if not eligible_clauses:
+        return None
+    metric_candidates = _unique(
+        metric
+        for clause in eligible_clauses
+        for metric in clause["metrics"]
+    )
+    scope_candidates = _unique(
+        _slug(dimension)
+        for clause in eligible_clauses
+        for dimension in clause["metric_dimensions"]
+        if _slug(dimension)
+    )
+    dimension_requested = any(
+        clause["metric_scope"] in {"dimensioned", "any"} or clause["metric_dimensions"]
+        for clause in eligible_clauses
+    )
     try:
         with sqlite3.connect(resolved) as conn:
             conn.row_factory = sqlite3.Row
-            where = ["ticker IN (" + ",".join("?" for _ in ticker_values) + ")"]
-            params: list[Any] = list(ticker_values)
-            if metric_candidates:
-                where.append(
-                    "canonical_metric IN (" + ",".join("?" for _ in metric_candidates) + ")"
-                )
-                params.extend(metric_candidates)
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM chart_series
-                WHERE {" AND ".join(where)}
-                ORDER BY ticker, canonical_metric, scope_kind, scope_key, series_key
-                LIMIT ?
-                """,
-                [*params, max(40, min(max(int(limit_series) * 8, int(limit_series)), 160))],
-            ).fetchall()
+            # Query one ticker/metric pair at a time.  A single global LIMIT
+            # can fill the result with one company's segments and silently
+            # remove another ticker or the total row required to reconcile a
+            # composition.  The pair bound keeps the sidecar lookup bounded
+            # without making the result dependent on unrelated rows.
+            pair_scopes: dict[tuple[str, str], set[str]] = {}
+            coverage_pairs: list[tuple[str, str]] = []
+            seen_coverage_pairs: set[tuple[str, str]] = set()
+            for clause in eligible_clauses:
+                dimensions = {
+                    _slug(dimension)
+                    for dimension in clause["metric_dimensions"]
+                    if _slug(dimension)
+                }
+                for ticker in clause["tickers"]:
+                    for metric in clause["metrics"]:
+                        pair = (ticker, metric)
+                        pair_scopes.setdefault(pair, set()).update(dimensions)
+                        if pair not in seen_coverage_pairs:
+                            coverage_pairs.append(pair)
+                            seen_coverage_pairs.add(pair)
+
+            pair_limit = max(24, min(96, max(1, int(limit_series)) * 8))
+            rows_by_key: dict[str, sqlite3.Row] = {}
+            for (ticker, metric), requested_scopes in sorted(pair_scopes.items()):
+                scope_order = "CASE WHEN scope_kind = 'company_total' THEN 0 ELSE 1 END"
+                scope_params: list[Any] = []
+                if requested_scopes:
+                    placeholders = ",".join("?" for _ in requested_scopes)
+                    scope_order = (
+                        f"CASE WHEN scope_key IN ({placeholders}) THEN 0 "
+                        "WHEN scope_kind = 'company_total' THEN 1 ELSE 2 END"
+                    )
+                    scope_params.extend(sorted(requested_scopes))
+                pair_rows = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM chart_series
+                    WHERE ticker = ? AND canonical_metric = ?
+                    ORDER BY {scope_order}, point_count DESC, last_sort_key DESC,
+                             scope_kind, scope_key, series_key
+                    LIMIT ?
+                    """,
+                    [ticker, metric, *scope_params, pair_limit],
+                ).fetchall()
+                for row in pair_rows:
+                    key = str(row["series_key"] or "")
+                    if key:
+                        rows_by_key.setdefault(key, row)
+
+            rows = list(rows_by_key.values())
             rows = _select_chart_series_rows(
                 rows,
                 limit=max(1, min(int(limit_series), 20)),
                 metric_candidates=metric_candidates,
                 scope_candidates=scope_candidates,
                 dimension_requested=dimension_requested,
+                coverage_pairs=coverage_pairs,
             )
             if not rows and not metric_candidates:
                 return None
@@ -427,7 +489,10 @@ def query_chart_series_pack(
                             "kind": row["scope_kind"],
                             "key": row["scope_key"],
                             "label": row["scope_label"],
+                            "dimension": row["scope_dimension"],
+                            "composition_eligible": bool(row["composition_eligible"]),
                         },
+                        "currency": row["currency"],
                         "basis": row["basis"],
                         "duration": row["duration"],
                         "source_class": row["source_class"],
@@ -440,9 +505,10 @@ def query_chart_series_pack(
                 )
             if not series:
                 return None
-            return {
-                "schema_version": 1,
+            pack = {
+                "schema_version": 2,
                 "mode": "chart_series_sidecar",
+                "chart_clauses": eligible_clauses,
                 "result_count": sum(series_item["point_count"] for series_item in series),
                 "series": series,
                 "roles": ["metric"],
@@ -460,8 +526,14 @@ def query_chart_series_pack(
                 "diagnostics": {
                     "metric_candidates": metric_candidates,
                     "sidecar_schema_version": CHART_SERIES_SCHEMA_VERSION,
+                    "eligibility_source": "validated_search_plan_clauses",
                 },
             }
+            if release_id:
+                pack["release_id"] = str(release_id)
+            if source_manifest_hash:
+                pack["source_manifest_hash"] = str(source_manifest_hash)
+            return pack
     except sqlite3.Error:
         return None
 
@@ -477,6 +549,70 @@ def chart_series_index_status(path: Path | str) -> dict[str, Any]:
         "reason": None if verification.get("ok") else "verification_failed",
         "verification": verification,
     }
+
+
+def _eligible_chart_clauses(
+    clauses: Sequence[Mapping[str, Any]] | None,
+    plan_tickers: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Return only deterministic, metric-backed chart intents from the plan.
+
+    This intentionally does not infer intent from ``question`` or from the
+    presence of arbitrary sidecar rows.  A trend needs an explicit temporal
+    window, a comparison needs at least two effective tickers, and a
+    composition needs an explicit dimensioned metric clause.  The returned
+    values are raw validated clause intent: Python only decides whether a
+    clause is worth querying, while the Rust compiler remains the single
+    authority for the final trend/comparison/composition decision.
+    """
+    if not clauses:
+        return []
+    plan_scope = _unique(str(ticker).strip().upper() for ticker in plan_tickers)
+    eligible: list[dict[str, Any]] = []
+    for raw in clauses:
+        if not isinstance(raw, Mapping):
+            continue
+        metrics = _unique(
+            _canonical_chart_metric(metric)
+            for metric in raw.get("metrics") or []
+            if _canonical_chart_metric(metric) is not None
+        )
+        if not metrics:
+            continue
+        clause_tickers = _unique(
+            str(ticker).strip().upper()
+            for ticker in raw.get("tickers") or []
+            if str(ticker or "").strip()
+        )
+        effective_tickers = [ticker for ticker in clause_tickers if ticker in plan_scope]
+        if not effective_tickers:
+            effective_tickers = list(plan_scope)
+        dimensions = _unique(
+            str(dimension).strip()
+            for dimension in raw.get("metric_dimensions") or []
+            if str(dimension or "").strip()
+        )
+        metric_scope = str(raw.get("metric_scope") or "company_total").strip()
+        raw_window = str(raw.get("calculation_window") or "").strip()
+        window = raw_window if raw_window in {"period_over_period", "year_over_year"} else None
+        if not (
+            window
+            or len(effective_tickers) >= 2
+            or (metric_scope in {"dimensioned", "any"} and dimensions)
+        ):
+            continue
+        eligible.append(
+            {
+                "clause_id": str(raw.get("clause_id") or "").strip(),
+                "required": bool(raw.get("required", True)),
+                "metrics": metrics,
+                "tickers": effective_tickers,
+                "metric_scope": metric_scope,
+                "metric_dimensions": dimensions,
+                "calculation_window": window,
+            }
+        )
+    return [clause for clause in eligible if clause["clause_id"]]
 
 
 def _collect_shard_chart_points(
@@ -558,6 +694,7 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
         return None
     scope_kind, scope_key, scope_label = _scope(row)
     unit = str(row["unit"] or obj.get("unit") or "").strip() or None
+    currency = _currency(row, obj, unit)
     basis = _basis(classification["canonical_metric"], row, obj)
     duration = _duration(classification["canonical_metric"], row, obj)
     period_type = "quarterly" if period_info["fiscal_quarter"] else "annual"
@@ -568,6 +705,7 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
             ticker,
             classification["canonical_metric"],
             f"{scope_kind}:{scope_key}",
+            currency or "currencyless",
             unit or "unitless",
             period_type,
             basis,
@@ -580,6 +718,9 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
     point = {
         "series_key": series_key,
         "period": period_info["period"],
+        "period_basis": period_info["basis"],
+        "period_start": period_info["start"],
+        "period_end": period_info["end"],
         "fiscal_year": period_info["fiscal_year"],
         "fiscal_quarter": period_info["fiscal_quarter"],
         "period_sort_key": period_info["sort_key"],
@@ -593,6 +734,7 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
         "source_sort_key": _period_sort_key(document_period),
         "value": value,
         "formatted_value": _format_value(value, unit),
+        "currency": currency,
         "object_id": project_object_identity(
             row["object_id"],
             row["object_type"],
@@ -611,6 +753,9 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
             "scope_kind": scope_kind,
             "scope_key": scope_key,
             "scope_label": scope_label,
+            "scope_dimension": scope_kind if scope_kind != "company_total" else None,
+            "composition_eligible": bool(scope_kind != "company_total" and value >= 0),
+            "currency": currency,
             "period_type": period_type,
             "basis": basis,
             "duration": duration,
@@ -620,6 +765,12 @@ def _chart_point_from_row(row: sqlite3.Row, *, ticker: str) -> dict[str, Any] | 
         },
     }
     return point
+
+
+def _canonical_chart_metric(value: Any) -> str | None:
+    metric = _slug(value)
+    metric = _CHART_METRIC_ALIASES.get(metric, metric)
+    return metric if metric in CHART_SAFE_CANONICAL_METRICS else None
 
 
 def _write_chart_series_rows(
@@ -643,11 +794,12 @@ def _write_chart_series_rows(
             """
             INSERT INTO chart_series (
                 series_key, ticker, canonical_metric, metric_name, label, unit,
-                scope_kind, scope_key, scope_label, period_type, basis, duration,
+                scope_kind, scope_key, scope_label, scope_dimension, composition_eligible,
+                currency, period_type, basis, duration,
                 source_class, statement_family, point_count, first_period, last_period,
                 first_sort_key, last_sort_key, quality_flags_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 series_key,
@@ -659,6 +811,9 @@ def _write_chart_series_rows(
                 meta.get("scope_kind"),
                 meta.get("scope_key"),
                 meta.get("scope_label"),
+                meta.get("scope_dimension"),
+                int(bool(meta.get("composition_eligible"))),
+                meta.get("currency"),
                 meta.get("period_type"),
                 meta.get("basis"),
                 meta.get("duration"),
@@ -676,17 +831,21 @@ def _write_chart_series_rows(
             conn.execute(
                 """
                 INSERT INTO chart_series_points (
-                    series_key, ticker, period, fiscal_year, fiscal_quarter,
+                    series_key, ticker, period, period_basis, period_start, period_end,
+                    fiscal_year, fiscal_quarter,
                     period_sort_key, document_type, document_period, source_document_id,
-                    source_sort_key, value, formatted_value, object_id, trace_status,
+                    source_sort_key, value, formatted_value, currency, object_id, trace_status,
                     metric_lineage_status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     series_key,
                     meta.get("ticker"),
                     point.get("period"),
+                    point.get("period_basis"),
+                    point.get("period_start"),
+                    point.get("period_end"),
                     point.get("fiscal_year"),
                     point.get("fiscal_quarter"),
                     point.get("period_sort_key"),
@@ -696,6 +855,7 @@ def _write_chart_series_rows(
                     point.get("source_sort_key"),
                     point.get("value"),
                     point.get("formatted_value"),
+                    point.get("currency"),
                     point.get("object_id"),
                     point.get("trace_status"),
                     point.get("metric_lineage_status"),
@@ -730,8 +890,18 @@ def _chart_series_points(
     points = [
         {
             "period": row["period"],
+            "period_basis": row["period_basis"],
+            "period_start": row["period_start"],
+            "period_end": row["period_end"],
+            "fiscal_year": row["fiscal_year"],
+            "fiscal_quarter": row["fiscal_quarter"],
+            "period_sort_key": row["period_sort_key"],
+            "document_type": row["document_type"],
+            "document_period": row["document_period"],
+            "source_document_id": row["source_document_id"],
             "value": row["value"],
             "formatted_value": row["formatted_value"],
+            "currency": row["currency"],
             "object_id": row["object_id"],
             "evidence_ref": row["object_id"],
         }
@@ -815,19 +985,54 @@ def _period_info(row: sqlite3.Row, obj: Mapping[str, Any]) -> dict[str, Any] | N
     if fiscal_quarter is None:
         fiscal_quarter = _quarter_from_period(str(row["period"] or ""))
 
-    if fiscal_quarter:
+    raw_period = str(row["period"] or obj.get("period") or "").strip().upper()
+    raw_match = re.fullmatch(r"(FY|CY)((?:19|20)\d{2})(?:Q([1-4]))?", raw_period)
+    if raw_match:
+        # A canonical FY/CY label is authoritative. Do not let a stale
+        # document date or row-level quarter metadata turn an annual label
+        # into a quarterly point.
+        fiscal_year = int(raw_match.group(2))
+        fiscal_quarter = int(raw_match.group(3)) if raw_match.group(3) else None
+        period = raw_period
+        basis = raw_match.group(1)
+    elif fiscal_quarter:
         period = f"CY{fiscal_year}Q{fiscal_quarter}"
+        basis = "CY"
     else:
         period = f"CY{fiscal_year}"
+        basis = "CY"
+    period_start = obj.get("period_start") or context.get("period_start") or context.get("start_date")
+    period_end_value = period_end or obj.get("period_end") or context.get("end_date")
     return {
         "period": period,
+        "basis": basis,
+        "start": str(period_start).strip() if period_start else None,
+        "end": str(period_end_value).strip() if period_end_value else None,
         "fiscal_year": fiscal_year,
         "fiscal_quarter": fiscal_quarter,
         "sort_key": _period_sort_key(period),
     }
 
 
+def _currency(row: sqlite3.Row, obj: Mapping[str, Any], unit: str | None) -> str | None:
+    context = obj.get("context") if isinstance(obj.get("context"), Mapping) else {}
+    for candidate in (
+        obj.get("currency"),
+        context.get("currency"),
+        context.get("currency_code"),
+    ):
+        value = str(candidate or "").strip().upper()
+        if re.fullmatch(r"[A-Z]{3}", value):
+            return value
+    unit_text = str(unit or "").upper()
+    match = re.search(r"\b(USD|EUR|GBP|JPY|CNY|KRW|CAD|AUD|CHF)\b", unit_text)
+    return match.group(1) if match else None
+
+
 def _scope(row: sqlite3.Row) -> tuple[str, str, str]:
+    if int(row["is_company_total"] or 0):
+        ticker = str(row["ticker"] or "").strip().upper()
+        return "company_total", ticker or "company_total", "Company total"
     for kind, column in (
         ("segment", "segment_name"),
         ("product", "product_name"),
@@ -846,9 +1051,8 @@ def _scope(row: sqlite3.Row) -> tuple[str, str, str]:
             return kind, _slug(first_value) or _short_hash(first_value), first_value
         encoded = json.dumps(dimensions, ensure_ascii=False, sort_keys=True)
         return "dimension", _short_hash(encoded), encoded
-    if int(row["is_company_total"] or 0):
-        return "company_total", "company_total", "Company total"
-    return "company_total", "company_total", "Company total"
+    ticker = str(row["ticker"] or "").strip().upper()
+    return "company_total", ticker or "company_total", "Company total"
 
 
 def _basis(metric: str, row: sqlite3.Row, obj: Mapping[str, Any]) -> str:
@@ -922,107 +1126,6 @@ def _statement_family(metric: str, source_class: str) -> str:
     return "income_statement"
 
 
-def _metric_candidates_for_question(question: str) -> list[str]:
-    text = str(question or "").lower()
-    candidates: list[str] = []
-    rules = (
-        (("매출", "revenue", "sales", "net sales"), ("revenue", "net_sales")),
-        (("영업이익", "operating income"), ("operating_income",)),
-        (("순이익", "net income"), ("net_income",)),
-        (("현금흐름", "cash flow", "ocf"), ("operating_cash_flow", "free_cash_flow")),
-        (("fcf", "잉여현금", "free cash flow"), ("free_cash_flow", "adjusted_free_cash_flow")),
-        (("capex", "자본지출", "설비투자"), ("capital_expenditures", "capex")),
-        (("현금", "cash"), ("cash_and_cash_equivalents", "cash_and_equivalents")),
-        (("부채", "debt"), ("total_debt",)),
-        (("eps", "주당", "earnings per share"), ("eps",)),
-        (("마진", "margin"), ("gross_margin", "operating_margin")),
-        (("자사주", "repurchase", "buyback"), ("share_repurchase",)),
-        (("r&d", "연구개발", "research and development"), ("research_and_development",)),
-        (
-            ("sg&a", "sga", "판관비", "selling general", "administrative"),
-            ("selling_general_and_admin",),
-        ),
-        (("sbc", "주식보상", "stock based", "share based"), ("stock_based_compensation",)),
-        (
-            ("m&a", "인수", "합병", "acquisition", "business combination"),
-            ("ma_cash_outflow", "ma_related_costs"),
-        ),
-        (("adjusted", "조정"), ("adjusted_free_cash_flow",)),
-    )
-    for needles, metrics in rules:
-        if any(needle in text for needle in needles):
-            candidates.extend(metrics)
-    if not candidates and _looks_like_chart_question(text):
-        candidates.extend(_DEFAULT_METRICS)
-    return _unique(candidates)
-
-
-def _scope_candidates_for_question(question: str) -> list[str]:
-    text = str(question or "").lower()
-    slug_text = _slug(text)
-    candidates: list[str] = []
-    rules = (
-        (("iphone", "i phone", "아이폰"), ("i_phone",)),
-        (("services", "service", "서비스"), ("service",)),
-        (("ipad", "i pad", "아이패드"), ("i_pad",)),
-        (("mac", "맥"), ("mac",)),
-        (("wearables", "wearable", "웨어러블"), ("wearables_homeand_accessories",)),
-        (
-            ("product", "products", "제품"),
-            ("product", "i_phone", "service", "mac", "i_pad", "wearables_homeand_accessories"),
-        ),
-        (("americas", "america", "미주"), ("americas_segment",)),
-        (("europe", "유럽"), ("europe_segment",)),
-        (("greater china", "china", "중국"), ("greater_china_segment", "cn")),
-        (("japan", "일본"), ("japan_segment",)),
-        (
-            ("rest of asia pacific", "asia pacific", "asia", "아시아", "아태"),
-            ("rest_of_asia_pacific_segment",),
-        ),
-        (("us", "united states", "미국"), ("us",)),
-        (
-            ("region", "regional", "geographic", "geography", "지역"),
-            (
-                "americas_segment",
-                "europe_segment",
-                "greater_china_segment",
-                "japan_segment",
-                "rest_of_asia_pacific_segment",
-            ),
-        ),
-    )
-    for needles, scopes in rules:
-        if any(needle in text or _slug(needle) in slug_text for needle in needles):
-            candidates.extend(scopes)
-    return _unique(candidates)
-
-
-def _dimension_series_requested(question: str, scope_candidates: Sequence[str]) -> bool:
-    if scope_candidates:
-        return True
-    text = str(question or "").lower()
-    return any(
-        term in text
-        for term in (
-            "product",
-            "products",
-            "segment",
-            "segments",
-            "region",
-            "regional",
-            "geographic",
-            "geography",
-            "mix",
-            "breakdown",
-            "제품",
-            "지역",
-            "부문",
-            "비중",
-            "구성",
-        )
-    )
-
-
 def _chart_series_relevance_key(
     row: sqlite3.Row,
     *,
@@ -1063,6 +1166,7 @@ def _select_chart_series_rows(
     metric_candidates: Sequence[str],
     scope_candidates: Sequence[str],
     dimension_requested: bool,
+    coverage_pairs: Sequence[tuple[str, str]] = (),
 ) -> list[sqlite3.Row]:
     ordered = sorted(
         rows,
@@ -1073,12 +1177,12 @@ def _select_chart_series_rows(
             dimension_requested=dimension_requested,
         ),
     )
-    if not dimension_requested:
-        return _dedupe_chart_series_rows(ordered)[:limit]
-
     selected: list[sqlite3.Row] = []
     seen_series: set[str] = set()
-    seen_scope_metric: set[tuple[str, str, str]] = set()
+    # Ticker is part of the identity.  Segment labels such as "Other" or
+    # "Services" legitimately recur across companies and must not collapse
+    # a multi-company comparison into the first ticker encountered.
+    seen_scope_metric: set[tuple[str, str, str, str]] = set()
 
     def add(row: sqlite3.Row) -> bool:
         if len(selected) >= limit:
@@ -1087,6 +1191,7 @@ def _select_chart_series_rows(
         if not series_key or series_key in seen_series:
             return False
         scope_metric_key = (
+            str(row["ticker"] or ""),
             str(row["canonical_metric"] or ""),
             str(row["scope_kind"] or ""),
             str(row["scope_key"] or ""),
@@ -1098,7 +1203,48 @@ def _select_chart_series_rows(
         seen_scope_metric.add(scope_metric_key)
         return True
 
+    # Preserve at least one best row for every requested ticker/metric pair
+    # while capacity allows.  Without this pass, a crowded company's segment
+    # rows can outrank a later metric and make the latter disappear before the
+    # Rust compiler ever sees it.
+    for ticker, metric in coverage_pairs:
+        candidates = [
+            row
+            for row in ordered
+            if str(row["ticker"] or "") == ticker
+            and str(row["canonical_metric"] or "") == metric
+        ]
+        candidates.sort(
+            key=lambda row: (
+                0 if str(row["scope_kind"] or "") == "company_total" else 1,
+                -int(row["point_count"] or 0),
+                -int(row["last_sort_key"] or 0),
+                str(row["scope_kind"] or ""),
+                str(row["scope_key"] or ""),
+            )
+        )
+        if candidates:
+            add(candidates[0])
+
+    if not dimension_requested:
+        for row in ordered:
+            add(row)
+        return selected
+
     scope_set = set(scope_candidates)
+
+    # A composition needs the same-period company total as a reconciliation
+    # anchor. Reserve it before optional breakdown rows so a broad sidecar
+    # cannot fill the bounded pack with segments and silently omit the total.
+    for metric in metric_candidates:
+        for row in ordered:
+            if (
+                str(row["canonical_metric"] or "") == metric
+                and str(row["scope_kind"] or "") == "company_total"
+            ):
+                add(row)
+                break
+
     for row in ordered:
         if str(row["scope_key"] or "") in scope_set:
             add(row)
@@ -1118,52 +1264,6 @@ def _select_chart_series_rows(
         add(row)
 
     return selected
-
-
-def _dedupe_chart_series_rows(rows: Sequence[sqlite3.Row]) -> list[sqlite3.Row]:
-    selected: list[sqlite3.Row] = []
-    seen_scope_metric: set[tuple[str, str, str]] = set()
-    for row in rows:
-        scope_metric_key = (
-            str(row["canonical_metric"] or ""),
-            str(row["scope_kind"] or ""),
-            str(row["scope_key"] or ""),
-        )
-        if scope_metric_key in seen_scope_metric:
-            continue
-        selected.append(row)
-        seen_scope_metric.add(scope_metric_key)
-    return selected
-
-
-def _looks_like_chart_question(text: str) -> bool:
-    return any(
-        term in text
-        for term in (
-            "chart",
-            "graph",
-            "trend",
-            "series",
-            "yoy",
-            "qoq",
-            "annual",
-            "quarterly",
-            "차트",
-            "그래프",
-            "추이",
-            "추세",
-            "시계열",
-            "비교",
-            "비중",
-            "구성",
-            "흐름",
-            "변화",
-            "연도별",
-            "분기별",
-            "제품별",
-            "지역별",
-        )
-    )
 
 
 def _series_label(metric: str, scope_kind: str, scope_label: str) -> str:

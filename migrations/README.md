@@ -106,6 +106,13 @@ order after `0006`.
 used by product surfaces. It returns only rendered Markdown, usage counters,
 and public ledger hashes.
 
+`0020_final_projection_visualizations.sql` adds the private-to-product
+visualization list to the Agent-owned projection. `0021_final_projection_contract.sql`
+is the authoritative repair after the visualization cutover: it preserves the
+full nine-field host ABI and converts malformed optional visualization data to
+an empty list. Frontend migrations must consume this function and must not
+redefine it.
+
 `0012_read_terminal_trace.sql` adds a separate full-owner terminal action
 trace for operator quality review. It returns at most the run's bounded
 capability IDs, their final action stages, and opaque result hashes. It never

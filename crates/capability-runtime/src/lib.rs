@@ -1063,6 +1063,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: delta.records,
                     answerability: Some(delta.answerability),
                     calculations: delta.calculations,
+                    presentation: None,
                 }
             }
             EvidenceMapping::CompanyContextV1 => {
@@ -1086,6 +1087,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 }
             }
             EvidenceMapping::MarketSnapshotV1 => {
@@ -1106,6 +1108,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 }
             }
             EvidenceMapping::TargetedEvidenceV1 => {
@@ -1116,6 +1119,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: delta.calculations,
+                    presentation: None,
                 }
             }
             EvidenceMapping::TraceLineageV1 => {
@@ -1126,6 +1130,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: delta.records,
                     answerability: None,
                     calculations: delta.calculations,
+                    presentation: None,
                 }
             }
             EvidenceMapping::Front(mapping) => {
@@ -1148,6 +1153,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence,
                     answerability,
                     calculations: Vec::new(),
+                    presentation: None,
                 }
             }
             EvidenceMapping::Guru(mapping) => {
@@ -1165,6 +1171,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: Vec::new(),
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 }
             }
             EvidenceMapping::SkillContent => {
@@ -1179,6 +1186,7 @@ impl PooledMcpCapabilityRuntime {
                     evidence: Vec::new(),
                     answerability: None,
                     calculations: Vec::new(),
+                    presentation: None,
                 }
             }
         };
@@ -1233,6 +1241,7 @@ impl PooledMcpCapabilityRuntime {
             evidence: Vec::new(),
             answerability: None,
             calculations: Vec::new(),
+            presentation: None,
         };
         validate_normalized_result(&result)?;
         Ok(result)
@@ -1416,7 +1425,7 @@ impl PooledMcpCapabilityRuntime {
         let front_state = Arc::clone(&self.front_state);
         let guru_state = Arc::clone(&self.guru_state);
         let captures_presentation = matches!(descriptor.mapping, EvidenceMapping::ResearchStateV2);
-        let (result, pending_hash, presentation) = self
+        let (mut result, pending_hash, presentation) = self
             .cpu_work
             .execute(DeliveryCertainty::MayHaveDispatched, move || {
                 let extracted = extract_json_tool_payload(envelope, is_error)?;
@@ -1461,19 +1470,19 @@ impl PooledMcpCapabilityRuntime {
                 .map(|(result, pending_hash)| (result, pending_hash, presentation))
             })
             .await?;
+        if captures_presentation {
+            result.presentation = presentation.clone();
+        }
         self.set_pending_front_result(&invocation, pending_hash)?;
         if let Some(pack) = presentation
             && captures_presentation
         {
-            self.presentation
-                .lock()
-                .map_err(|_| {
-                    reject(
-                        "presentation_ledger_poisoned",
-                        "presentation ledger is unavailable",
-                    )
-                })?
-                .push(pack);
+            // Presentation is optional. A poisoned best-effort ledger must not
+            // turn a successfully retrieved research result into a dependency
+            // failure or trigger a model recovery turn.
+            if let Ok(mut ledger) = self.presentation.lock() {
+                retain_presentation_diagnostic(&mut ledger, pack);
+            }
         }
         Ok(result)
     }
@@ -1561,6 +1570,7 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
 /// Values under this key are chart input for the deterministic presentation
 /// compiler and are never normalized into evidence or provider content.
 const PRESENTATION_META_KEY: &str = "com.krwontology/presentationSeries";
+const MAX_PRESENTATION_PACKS: usize = 16;
 const MAX_PRESENTATION_PACK_BYTES: usize = 64 * 1024;
 const MAX_PRESENTATION_PACK_SERIES: usize = 8;
 const MAX_PRESENTATION_PACK_POINTS: usize = 12;
@@ -1607,9 +1617,7 @@ fn extract_json_tool_payload(
         let presentation = object
             .remove("_meta")
             .and_then(|meta| meta.as_object().cloned())
-            .map(|meta| extract_presentation_pack(&meta))
-            .transpose()?
-            .flatten();
+            .and_then(|meta| extract_presentation_pack(&meta));
         let Some(Value::Array(mut content)) = object.remove("content") else {
             return Err(reject(
                 "mcp_envelope_content",
@@ -1747,46 +1755,65 @@ fn extract_json_tool_payload(
 }
 
 /// Validate and return the vendor presentation pack from a tools/call `_meta`
-/// object. Unknown vendor keys are ignored (forward compatibility); a present
-/// but malformed or oversized pack fails closed with `presentation_meta`
-/// because silently rendering wrong chart numbers is worse than omitting a
-/// chart.
-fn extract_presentation_pack(meta: &serde_json::Map<String, Value>) -> Result<Option<Value>, DependencyFailure> {
+/// object. Unknown vendor keys are ignored; malformed or oversized packs are
+/// omitted. The primary MCP result is still validated strictly: presentation
+/// is optional and must never prevent the research answer from completing.
+fn extract_presentation_pack(meta: &serde_json::Map<String, Value>) -> Option<Value> {
     let Some(pack) = meta.get(PRESENTATION_META_KEY) else {
-        return Ok(None);
+        return None;
     };
-    let invalid = || {
-        reject(
-            "presentation_meta",
-            "presentation-series pack is malformed or exceeds its bounds",
-        )
-    };
-    let pack_object = pack.as_object().ok_or_else(invalid)?;
-    if pack_object.get("schema_version").and_then(Value::as_i64) != Some(1) {
-        return Err(invalid());
+    let pack_object = pack.as_object()?;
+    if pack_object.get("schema_version").and_then(Value::as_i64) != Some(2) {
+        return None;
     }
-    let series = pack_object
-        .get("series")
-        .and_then(Value::as_array)
-        .ok_or_else(invalid)?;
+    if pack_object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "html" | "markup" | "svg" | "jsx" | "rendered_html" | "renderer_code"
+        )
+    }) {
+        // Presentation is a typed data channel.  Renderer instructions or
+        // markup must never cross the MCP boundary, even as an ignored field.
+        return None;
+    }
+    let series = pack_object.get("series").and_then(Value::as_array)?;
     if series.len() > MAX_PRESENTATION_PACK_SERIES {
-        return Err(invalid());
+        return None;
     }
     for item in series {
-        let points = item
-            .as_object()
-            .and_then(|object| object.get("points"))
-            .and_then(Value::as_array)
-            .ok_or_else(invalid)?;
+        let points = item.as_object()?.get("points").and_then(Value::as_array)?;
         if points.len() > MAX_PRESENTATION_PACK_POINTS {
-            return Err(invalid());
+            return None;
         }
     }
-    let canonical = serde_jcs::to_vec(pack).map_err(|_| invalid())?;
+    let canonical = serde_jcs::to_vec(pack).ok()?;
     if canonical.len() > MAX_PRESENTATION_PACK_BYTES {
-        return Err(invalid());
+        return None;
     }
-    Ok(Some(pack.clone()))
+    Some(pack.clone())
+}
+
+/// Keep the diagnostic accessor bounded as well. The authoritative path is
+/// `CapabilityResult.presentation`; this copy exists only for isolated
+/// runtime diagnostics and must not become an unbounded per-run heap.
+fn retain_presentation_diagnostic(ledger: &mut Vec<Value>, pack: Value) {
+    if ledger.len() >= MAX_PRESENTATION_PACKS {
+        return;
+    }
+    let Ok(bytes) = serde_jcs::to_vec(&pack) else {
+        return;
+    };
+    if bytes.len() > MAX_PRESENTATION_PACK_BYTES {
+        return;
+    }
+    let hash = ContentHash::sha256(&bytes);
+    if ledger
+        .iter()
+        .filter_map(|existing| serde_jcs::to_vec(existing).ok())
+        .all(|existing| ContentHash::sha256(existing) != hash)
+    {
+        ledger.push(pack);
+    }
 }
 
 fn validate_normalized_result(result: &CapabilityResult) -> Result<(), DependencyFailure> {
@@ -1796,7 +1823,9 @@ fn validate_normalized_result(result: &CapabilityResult) -> Result<(), Dependenc
             "normalized evidence/calculation count exceeded",
         ));
     }
-    let mut value = serde_json::to_value(result)
+    let mut normalized = result.clone();
+    normalized.presentation = None;
+    let mut value = serde_json::to_value(&normalized)
         .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?;
     let validation = validate_value(NORMALIZED_CAPABILITY_RESULT_V1, &value)
         .map_err(|error| reject("normalized_result_invalid", format!("{error:?}")));
@@ -2280,7 +2309,7 @@ mod tests {
 
     fn presentation_pack() -> Value {
         serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "mode": "chart_series_sidecar",
             "series": [{
                 "series_key": "AAPL:revenue",
@@ -2337,17 +2366,17 @@ mod tests {
 
         let packs = runtime.presentation_packs();
         assert_eq!(packs.len(), 1, "only the _meta pack is retained");
-        assert_eq!(packs[0]["schema_version"], 1);
+        assert_eq!(packs[0]["schema_version"], 2);
         assert_eq!(packs[0]["series"][0]["basis"], "consolidated");
     }
 
     #[tokio::test]
-    async fn malformed_presentation_meta_fails_closed() {
+    async fn malformed_presentation_meta_is_omitted_without_failing_capability() {
         let (image, resolved) = fixture_image_and_runtime();
         let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
         let (plan, state) = fixture_plan_and_state();
         let mut bad_version = presentation_pack();
-        bad_version["schema_version"] = serde_json::json!(2);
+        bad_version["schema_version"] = serde_json::json!(1);
         let transport = FakeTransport::new([envelope_with_meta(
             &state,
             serde_json::json!({"com.krwontology/presentationSeries": bad_version}),
@@ -2356,12 +2385,12 @@ mod tests {
             PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
                 .expect("run runtime");
 
-        let failure = runtime
+        let result = runtime
             .invoke(&invocation(&catalog, "ontology.query_context", plan))
             .await
-            .expect_err("malformed presentation pack must fail closed");
-        assert_eq!(failure.code, "presentation_meta");
-        assert_eq!(failure.delivery, DeliveryCertainty::NotDispatched);
+            .expect("primary research result remains valid");
+        assert!(!result.evidence.is_empty());
+        assert!(runtime.presentation_packs().is_empty());
     }
 
     #[test]
@@ -2377,22 +2406,39 @@ mod tests {
     }
 
     #[test]
-    fn presentation_pack_bounds_are_enforced_at_extraction() {
+    fn oversized_presentation_pack_is_omitted_at_extraction() {
         let payload = serde_json::json!({"ok": true});
         let mut oversized = presentation_pack();
         oversized["series"] = serde_json::json!(
             (0..9).map(|index| serde_json::json!({"series_key": index})).collect::<Vec<_>>()
         );
-        let error = extract_json_tool_payload(
+        let extracted = extract_json_tool_payload(
             envelope_with_meta(
                 &payload,
                 serde_json::json!({"com.krwontology/presentationSeries": oversized}),
             ),
             false,
         )
-        .map(|_| ())
-        .expect_err("nine series exceed the pack bound");
-        assert_eq!(error.code, "presentation_meta");
+        .expect("primary MCP payload remains valid");
+        assert_eq!(extracted.payload, payload);
+        assert!(extracted.presentation.is_none());
+    }
+
+    #[test]
+    fn markup_shaped_presentation_pack_is_omitted_without_affecting_payload() {
+        let payload = serde_json::json!({"ok": true});
+        let mut markup = presentation_pack();
+        markup["html"] = serde_json::json!("<html><script>bad()</script></html>");
+        let extracted = extract_json_tool_payload(
+            envelope_with_meta(
+                &payload,
+                serde_json::json!({"com.krwontology/presentationSeries": markup}),
+            ),
+            false,
+        )
+        .expect("primary MCP payload remains valid");
+        assert_eq!(extracted.payload, payload);
+        assert!(extracted.presentation.is_none());
     }
 
 

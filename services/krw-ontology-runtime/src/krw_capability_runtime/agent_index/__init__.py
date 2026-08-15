@@ -8,6 +8,7 @@ surface deliberately exports only the runtime functions used by MCP handlers.
 
 from krw_capability_runtime.agent_index.chart_series import (
     CHART_SERIES_RELATIVE_PATH,
+    chart_series_runtime_enabled,
     query_chart_series_pack,
 )
 from krw_capability_runtime.agent_index.retriever import AgentRetriever, QueryPlan
@@ -17,6 +18,7 @@ from krw_capability_runtime.agent_index.spine_schema import GLOBAL_SPINE_RELATIV
 __all__ = [
     "AgentRetriever",
     "CHART_SERIES_RELATIVE_PATH",
+    "chart_series_runtime_enabled",
     "GLOBAL_SPINE_RELATIVE_PATH",
     "QueryPlan",
     "open_ontology_store",

@@ -22,11 +22,9 @@ from krw_capability_runtime.agent_index import (
     CHART_SERIES_RELATIVE_PATH,
     GLOBAL_SPINE_RELATIVE_PATH,
     QueryPlan,
+    chart_series_runtime_enabled,
     open_ontology_store,
     query_chart_series_pack,
-)
-from krw_capability_runtime.agent_index.spine_router import (
-    _chart_series_runtime_enabled,
 )
 from krw_capability_runtime.agent_index.retrieval_text import format_metric_compact
 from krw_capability_runtime.agent_index.research_kernel import ResearchKernel, research_request_from_plan_fields
@@ -1916,9 +1914,10 @@ def query_context_tool(
         raw_payload = _execute_search_plan(store=store, search_plan=execution_plan)
     _attach_chart_series_sidecar_to_search_plan_payload(
         raw_payload=raw_payload,
-        question=plan.question,
         requested_tickers=plan.tickers,
-        metric_names=_plan_metric_names(plan),
+        chart_clauses=_plan_chart_clauses(plan),
+        release_id=signature.release_id,
+        source_manifest_hash=signature.shard_manifest_sha256,
     )
     presentation_pack = raw_payload.pop("presentation_series_pack", None)
     retrieval_elapsed_ms = _elapsed_ms(retrieval_started_at)
@@ -1993,15 +1992,20 @@ class QueryContextResult:
     presentation_pack: dict[str, Any] | None = None
 
 
-def _plan_metric_names(plan: SearchPlan) -> list[str]:
-    """Collect the plan's canonical metric identities for sidecar selection."""
-    names: list[str] = []
-    for clause in plan.clauses:
-        for metric in clause.metrics or []:
-            text = str(metric).strip().lower()
-            if text and text not in names:
-                names.append(text)
-    return names
+def _plan_chart_clauses(plan: SearchPlan) -> list[dict[str, Any]]:
+    """Project validated clause intent into the private chart channel."""
+    return [
+        {
+            "clause_id": clause.clause_id,
+            "required": clause.required,
+            "tickers": list(clause.tickers),
+            "metrics": list(clause.metrics),
+            "metric_scope": clause.metric_scope,
+            "metric_dimensions": list(clause.metric_dimensions),
+            "calculation_window": clause.calculation_window,
+        }
+        for clause in plan.clauses
+    ]
 
 
 def query_context_from_search_plan(search_plan: SearchPlan) -> QueryContextResult:
@@ -2021,9 +2025,10 @@ def query_context_from_search_plan(search_plan: SearchPlan) -> QueryContextResul
 def _attach_chart_series_sidecar_to_search_plan_payload(
     *,
     raw_payload: dict[str, Any],
-    question: str,
     requested_tickers: Sequence[str],
-    metric_names: Sequence[str] | None = None,
+    chart_clauses: Sequence[Mapping[str, Any]] | None = None,
+    release_id: str | None = None,
+    source_manifest_hash: str | None = None,
 ) -> None:
     """Attach a bounded presentation pack for the private MCP ``_meta`` channel.
 
@@ -2035,9 +2040,8 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
     chart-worthiness is decided later by the deterministic presentation
     compiler in the Rust harness.
     """
-    if not _chart_series_runtime_enabled():
+    if not chart_series_runtime_enabled():
         return
-
     routing = _safe_payload_dict(raw_payload.get("routing"))
     resolved_tickers = _dedupe_preserving_order(
         [
@@ -2068,11 +2072,12 @@ def _attach_chart_series_sidecar_to_search_plan_payload(
 
     pack = query_chart_series_pack(
         chart_series_path,
-        question=question,
         tickers=resolved_tickers,
-        metric_names=metric_names,
+        chart_clauses=chart_clauses,
         limit_series=8,
         limit_points=12,
+        release_id=release_id,
+        source_manifest_hash=source_manifest_hash,
     )
     if not pack:
         chart_diagnostics["matched"] = False

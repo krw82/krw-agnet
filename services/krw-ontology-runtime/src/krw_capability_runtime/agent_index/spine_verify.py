@@ -136,7 +136,7 @@ def verify_spine_shard_release(
         chart_series_issues: list[str] = []
         if manifest and deep and isinstance(chart_series_output, Mapping):
             chart_series_issues.extend(
-                _optional_manifest_file_digest_errors(manifest, "chart_series", chart_series_path)
+                _manifest_file_digest_errors(manifest, "chart_series", chart_series_path)
             )
         if chart_series_path.is_file():
             chart_series_verification = verify_chart_series_index(chart_series_path)

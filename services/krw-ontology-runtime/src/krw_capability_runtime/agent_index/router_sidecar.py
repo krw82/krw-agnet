@@ -1622,11 +1622,38 @@ def rebind_router_sidecar_source(
         _write_metadata(conn, rebound_metadata)
         conn.commit()
     remove_immutable_sqlite_cache_seal(resolved)
-    return verify_router_sidecar(
+    rebound = verify_router_sidecar(
         resolved,
         expected_global_spine_sha256=source_sha256,
         expected_release_id=normalized_release_id,
         deep=False,
+    )
+    if not rebound.get("ok"):
+        raise ValueError(
+            "rebound router sidecar is invalid: "
+            + ", ".join(rebound.get("errors") or [])
+        )
+    inherited = {
+        **rebound,
+        "integrity_check": "ok",
+        "integrity_source": "inherited_immutable_cache_seal",
+        "verification_mode": "router-sidecar-deep-sealed-source-rebind",
+    }
+    write_immutable_sqlite_cache_seal(
+        resolved,
+        kind="router_sidecar",
+        cache_key=str(rebound_metadata.get("build_fingerprint_sha256") or ""),
+        verification=inherited,
+        metadata=rebound.get("metadata") or {},
+        counts=rebound.get("counts") or {},
+        source_path=resolved,
+        details={"inheritance": "controlled-global-spine-source-rebind"},
+    )
+    return verify_router_sidecar(
+        resolved,
+        expected_global_spine_sha256=source_sha256,
+        expected_release_id=normalized_release_id,
+        deep=True,
     )
 
 
