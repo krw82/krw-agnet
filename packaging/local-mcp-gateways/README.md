@@ -19,7 +19,7 @@ never forwarded across the TLS→loopback transition and never logged.
 {
   "service": "krw-ontology",
   "toolSessionReuse": "run-scoped",
-  "allowedOrigins": ["https://krw-agent.local"],
+  "allowedOrigins": ["https://127.0.0.1"],
   "upstream": { "host": "127.0.0.1", "port": 8080 },
   "listen": { "host": "127.0.0.1", "port": 9443 },
   "tls": { "keyFile": "/path/key.pem", "certFile": "/path/cert.pem" }
@@ -36,3 +36,6 @@ initialization and are never granted cross-run session reuse.
 Run the gateway tests with
 `node --test packaging/local-mcp-gateways/mcp_tls_proxy.test.mjs`.
 
+The example Origin is illustrative only. Production activation overwrites the
+allowlist from the sealed `deployments/endpoint-registry.yaml`; operators must
+not invent a second Origin in the runtime JSON.

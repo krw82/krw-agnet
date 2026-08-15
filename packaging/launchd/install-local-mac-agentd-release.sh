@@ -15,7 +15,10 @@ Usage:
 
   install-local-mac-agentd-release.sh --mode activate \
     --release-id ID --provider glm|deepseek \
-    --env-file /absolute/mac-worker.env [--metrics-port 15520]
+    --env-file /absolute/mac-worker.env [--metrics-port 15520] [--defer-start]
+
+  install-local-mac-agentd-release.sh --mode start \
+    --release-id ID --provider glm|deepseek [--metrics-port 15520]
 
   install-local-mac-agentd-release.sh --mode rollback --release-id ID
 
@@ -306,6 +309,7 @@ RELEASE_ID=''
 PROVIDER=''
 ENV_FILE=''
 METRICS_PORT=${KRW_AGENT_METRICS_PORT:-15520}
+DEFER_START=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -322,6 +326,10 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --defer-start)
+      DEFER_START=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -330,11 +338,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$MODE" in stage|activate|rollback) ;; *) usage >&2; exit 2 ;; esac
+case "$MODE" in stage|activate|start|rollback) ;; *) usage >&2; exit 2 ;; esac
+if [ "$DEFER_START" = "1" ] && [ "$MODE" != "activate" ]; then
+  fail '--defer-start is valid only with --mode activate'
+fi
 valid_release_id "$RELEASE_ID" || fail "Invalid release id"
 valid_metrics_port "$METRICS_PORT" || fail "Metrics port must be in 1024..65535"
 case "$MODE" in
-  stage|activate) valid_provider "$PROVIDER" || fail "Provider must be glm or deepseek" ;;
+  stage|activate|start) valid_provider "$PROVIDER" || fail "Provider must be glm or deepseek" ;;
 esac
 
 INSTALL_ROOT=${KRW_AGENT_LOCAL_INSTALL_ROOT:-"$HOME/.local/share/krw-agent"}
@@ -452,6 +463,12 @@ PY
   write_plist "$PLIST" "$ENV_FILE" "$OVERLAY_FILE" "$LOG_DIR"
   ln -s "$bundle" "$INSTALL_ROOT/current.next"
   mv -h -f "$INSTALL_ROOT/current.next" "$INSTALL_ROOT/current"
+  if [ "$DEFER_START" = "1" ]; then
+    activation_armed=0
+    trap - EXIT INT TERM
+    printf '%s\n' "Prepared local krw-agentd release without starting daemon: $RELEASE_ID ($PROVIDER)"
+    return 0
+  fi
   launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST"
   launchctl enable "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
   launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL"
@@ -460,6 +477,26 @@ PY
   activation_armed=0
   trap - EXIT INT TERM
   printf '%s\n' "Activated local krw-agentd release: $RELEASE_ID ($PROVIDER)"
+}
+
+start_release() {
+  require_command launchctl
+  require_command curl
+  real_directory "$TARGET_RELEASE_ROOT" || fail "Staged local release is unavailable"
+  [ -L "$INSTALL_ROOT/current" ] || fail "Prepared local release is not the current symlink"
+  current_target=$(python3 - "$INSTALL_ROOT/current" <<'PY'
+import pathlib, sys
+print(pathlib.Path(sys.argv[1]).resolve())
+PY
+)
+  [ "$current_target" = "$TARGET_RELEASE_ROOT/$PROVIDER" ] || fail "Current local release does not match the requested provider bundle"
+  [ -f "$PLIST" ] || fail "Prepared local krw-agentd launchd plist is missing"
+  bootout_label
+  launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST"
+  launchctl enable "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL"
+  wait_for_metrics || fail "Prepared local krw-agentd release did not become ready"
+  printf '%s\n' "Started prepared local krw-agentd release: $RELEASE_ID ($PROVIDER)"
 }
 
 rollback_release() {
@@ -473,5 +510,6 @@ rollback_release() {
 case "$MODE" in
   stage) stage_release ;;
   activate) activate_release ;;
+  start) start_release ;;
   rollback) rollback_release ;;
 esac

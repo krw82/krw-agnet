@@ -13,7 +13,8 @@ import { pathToFileURL } from "node:url";
 
 const STATELESS_CONTRACT_ID = "krw-agent/mcp-tool-session-stateless/v1";
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
-const ORIGIN_PATTERN = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
+const MAX_READINESS_RESPONSE_BYTES = 256 * 1024;
+const ORIGIN_PATTERN = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
 
 const configPath = process.env.KRW_MCP_TLS_PROXY_CONFIG;
 
@@ -43,6 +44,30 @@ export function validateGatewayConfig(config) {
       "allowedOrigins must be a non-empty array of bare origin strings (scheme://host[:port])",
     );
   }
+  if (config.checkUpstreamReady !== true || config.normalizeReadiness !== true) {
+    throw new Error("gateway readiness must probe and normalize the live upstream");
+  }
+}
+
+/**
+ * A readiness response must prove that the live upstream is healthy. The
+ * gateway still owns the public response shape, but an unrelated loopback
+ * process returning HTTP 200 must not be enough to announce an MCP endpoint
+ * as ready. Older workers may omit identity fields; when present, they must
+ * agree with the release-pinned gateway identity.
+ */
+export function upstreamReadinessMatches(config, payload) {
+  if (!payload || payload.ok !== true) return false;
+  for (const [actual, expected] of [
+    ["protocol_version", config.protocolVersion],
+    ["build_id", config.buildId],
+    ["tool_schema_sha256", config.toolSchemaSha256],
+    ["release_manifest_sha256", config.releaseManifestSha256],
+    ["tool_count", config.toolCount],
+  ]) {
+    if (Object.hasOwn(payload, actual) && payload[actual] !== expected) return false;
+  }
+  return true;
 }
 
 let config = null;
@@ -152,6 +177,10 @@ function upstreamRequest(req, res, body = null) {
       timeout: config.upstream.timeoutMs ?? 65000,
     },
     (upstream) => {
+      upstream.once("error", () => {
+        if (!res.headersSent) sendJson(res, 502, { ok: false, error: "upstream_unavailable" });
+        else if (!res.writableEnded) res.end();
+      });
       const headers = {};
       for (const [key, value] of Object.entries(upstream.headers)) {
         if (!hopByHop.has(key.toLowerCase())) headers[key] = value;
@@ -174,6 +203,12 @@ function syntheticReady(req, res) {
     sendJson(res, 200, readinessDocument());
     return;
   }
+  let settled = false;
+  const finish = (status, value) => {
+    if (settled || res.headersSent || res.writableEnded) return;
+    settled = true;
+    sendJson(res, status, value);
+  };
   const probe = http.request(
     {
       host: config.upstream.host,
@@ -184,16 +219,43 @@ function syntheticReady(req, res) {
       timeout: config.upstream.timeoutMs ?? 65000,
     },
     (upstream) => {
-      upstream.resume();
-      if ((upstream.statusCode ?? 500) < 200 || (upstream.statusCode ?? 500) >= 300) {
-        sendJson(res, 503, { ok: false, error: "upstream_not_ready" });
-        return;
-      }
-      sendJson(res, 200, readinessDocument());
+      const chunks = [];
+      let size = 0;
+      upstream.on("data", (chunk) => {
+        size += chunk.length;
+        if (size <= MAX_READINESS_RESPONSE_BYTES) chunks.push(chunk);
+      });
+      upstream.once("end", () => {
+        if (size > MAX_READINESS_RESPONSE_BYTES) {
+          finish(503, { ok: false, error: "upstream_readiness_too_large" });
+          return;
+        }
+        if ((upstream.statusCode ?? 500) < 200 || (upstream.statusCode ?? 500) >= 300) {
+          finish(503, { ok: false, error: "upstream_not_ready" });
+          return;
+        }
+        let payload;
+        try {
+          payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          finish(503, { ok: false, error: "upstream_readiness_invalid" });
+          return;
+        }
+        if (!upstreamReadinessMatches(config, payload)) {
+          finish(503, { ok: false, error: "upstream_readiness_mismatch" });
+          return;
+        }
+        finish(200, readinessDocument());
+      });
+      upstream.once("error", () => {
+        finish(503, { ok: false, error: "upstream_readiness_stream_error" });
+      });
     },
   );
-  probe.on("timeout", () => probe.destroy());
-  probe.on("error", () => sendJson(res, 503, { ok: false, error: "upstream_unavailable" }));
+  probe.once("timeout", () => probe.destroy(new Error("upstream_readiness_timeout")));
+  probe.once("error", () => {
+    finish(503, { ok: false, error: "upstream_unavailable" });
+  });
   probe.end();
 }
 

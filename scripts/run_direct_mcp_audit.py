@@ -31,12 +31,7 @@ from typing import Any
 
 CONTRACT_ID = "krw-agent/mcp-tool-session-stateless/v1"
 EXPECTED_ENDPOINTS = ("ontology", "feed", "filings", "guru")
-EXPECTED_REUSE = {
-    "ontology": "attested-stateless-v1",
-    "feed": "run-scoped",
-    "filings": "run-scoped",
-    "guru": "attested-stateless-v1",
-}
+ALLOWED_REUSE = {"attested-stateless-v1", "run-scoped"}
 TOKEN_ENV = {"feed": "KRW_FEED_MCP_TOKEN", "filings": "FILINGS_MCP_AUTH_TOKEN"}
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DYNAMIC_ENV_SOURCE_BASENAMES = {".env", ".env.mac-worker.production"}
@@ -56,6 +51,7 @@ class Endpoint:
     build_id: str
     schema_hash: str
     release_hash: str
+    origin: str
 
 
 @dataclass(frozen=True)
@@ -208,6 +204,26 @@ def load_endpoints(operator_root: Path) -> tuple[dict[str, Endpoint], bytes]:
     raw_endpoints = contract.get("endpoints")
     if not isinstance(raw_endpoints, list):
         raise AuditError("local MCP gateway contract has no endpoint list")
+    origin = contract.get("origin")
+    if not isinstance(origin, str) or not origin.startswith("https://") or origin.endswith("/"):
+        raise AuditError("local MCP gateway contract has no exact HTTPS Origin")
+    try:
+        from urllib.parse import urlparse
+
+        parsed_origin = urlparse(origin)
+    except ValueError as exc:
+        raise AuditError("local MCP gateway Origin is invalid") from exc
+    if (
+        parsed_origin.scheme != "https"
+        or not parsed_origin.netloc
+        or parsed_origin.path
+        or parsed_origin.params
+        or parsed_origin.query
+        or parsed_origin.fragment
+        or parsed_origin.username
+        or parsed_origin.password
+    ):
+        raise AuditError("local MCP gateway Origin is not a bare HTTPS origin")
     loaded: dict[str, Endpoint] = {}
     for raw in raw_endpoints:
         if not isinstance(raw, dict):
@@ -216,8 +232,8 @@ def load_endpoints(operator_root: Path) -> tuple[dict[str, Endpoint], bytes]:
         if name not in EXPECTED_ENDPOINTS or name in loaded:
             raise AuditError("local MCP gateway endpoint set is not closed")
         reuse = raw.get("tool_session_reuse")
-        if reuse != EXPECTED_REUSE[name]:
-            raise AuditError(f"{name} session reuse policy drifted")
+        if reuse not in ALLOWED_REUSE:
+            raise AuditError(f"{name} session reuse policy is unsupported")
         port = raw.get("listen_port")
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise AuditError(f"{name} has no valid listen port")
@@ -233,6 +249,7 @@ def load_endpoints(operator_root: Path) -> tuple[dict[str, Endpoint], bytes]:
             build_id="",
             schema_hash="",
             release_hash="",
+            origin=origin,
         )
     if set(loaded) != set(EXPECTED_ENDPOINTS):
         raise AuditError("local MCP gateway contract is missing an endpoint")
@@ -254,6 +271,7 @@ def request(
     headers = {
         "Accept": "application/json, text/event-stream",
         "Mcp-Protocol-Version": "2025-06-18",
+        "Origin": endpoint.origin,
     }
     data: bytes | None = None
     method = "GET" if body is None else "POST"

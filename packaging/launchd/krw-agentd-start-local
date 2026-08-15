@@ -7,12 +7,13 @@ set -euo pipefail
 # then delegates to the immutable release wrapper.
 
 usage() {
-  printf '%s\n' 'usage: krw-agentd-start-local --env-file /absolute/local-worker.env --overlay-file /absolute/agentd-overlay.env [--check|--database-check]'
+  printf '%s\n' 'usage: krw-agentd-start-local --env-file /absolute/local-worker.env --overlay-file /absolute/agentd-overlay.env [--check] [--database-check] [--mcp-check]'
 }
 
 env_file=''
 overlay_file=''
 mode=''
+mode_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-file)
@@ -25,9 +26,8 @@ while [[ $# -gt 0 ]]; do
       overlay_file=$2
       shift 2
       ;;
-    --check|--database-check)
-      [[ -z "$mode" ]] || { usage >&2; exit 2; }
-      mode=$1
+    --check|--database-check|--mcp-check)
+      mode_args+=("$1")
       shift
       ;;
     --help|-h)
@@ -89,12 +89,12 @@ fi
 
 case "${KRW_AGENT_PROVIDER:-}" in
   glm)
-    if [[ -z "$mode" ]]; then
+    if ((${#mode_args[@]} == 0)); then
       [[ -n "${GLM_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: GLM credential is missing' >&2; exit 1; }
     fi
     ;;
   deepseek)
-    if [[ -z "$mode" ]]; then
+    if ((${#mode_args[@]} == 0)); then
       [[ -n "${DEEPSEEK_API_KEY:-}" ]] || { echo 'krw-agentd local launcher: DeepSeek credential is missing' >&2; exit 1; }
     fi
     ;;
@@ -114,7 +114,7 @@ wrapper="$KRW_AGENT_CURRENT_DIR/packaging/systemd/krw-agentd-start"
   exit 1
 }
 
-if [[ -n "$mode" ]]; then
-  exec "$wrapper" "$mode"
+if ((${#mode_args[@]})); then
+  exec "$wrapper" "${mode_args[@]}"
 fi
 exec "$wrapper"

@@ -1,4 +1,5 @@
 use std::fs::{self, File, OpenOptions};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -30,14 +31,16 @@ use krw_agent_release_authorization::{
     parse_canonical_trust_registry, public_descriptor_hash, verify_for_descriptor,
 };
 use krw_agent_runtime_config::{
-    BudgetRegistry, EndpointRegistry, MAX_RELEASE_IMAGES, ProcessEnvironment, ValidationMode,
-    load_yaml, resolve_release_set,
+    BudgetRegistry, EndpointRegistry, MAX_RELEASE_IMAGES, ProcessEnvironment, ResolvedCapability,
+    ResolvedReleaseSet, ValidationMode, load_yaml, resolve_release_set,
 };
 use krw_agent_runtime_persistence::{
     ArtifactRepository, ArtifactTtlPolicy, DeepSeekProviderCatalog, DurableRunStore,
     FinalizationPolicy, ProductionClaimedRunExecutor, ProductionReleaseCatalog,
 };
-use krw_agent_tool_mcp::McpClientPool;
+use krw_agent_tool_mcp::{
+    McpClientPool, McpHttpConfig, PoolKey, PoolScope,
+};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -52,6 +55,7 @@ const MASTER_KEY_BYTES: usize = 32;
 const MAX_DESCRIPTOR_WRITE_ATTEMPTS: u64 = 16;
 const DAEMON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const DAEMON_HEARTBEAT_TTL_MS: u64 = 90_000;
+const MCP_PREFLIGHT_DEADLINE: Duration = Duration::from_secs(45);
 const MAX_RELEASE_AUTHORIZATION_ARTIFACT_BYTES: u64 = 64 * 1024;
 static DESCRIPTOR_STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -110,6 +114,10 @@ struct Args {
     /// `agent_v1` ABI, then exit without claiming work.
     #[arg(long)]
     database_check: bool,
+    /// Establish every resolved MCP connection, verify readiness, initialize,
+    /// and confirm the bound tool is advertised, then exit without claiming work.
+    #[arg(long)]
+    mcp_check: bool,
     /// Environment variable name containing the `PostgreSQL` URL. The URL itself
     /// is intentionally not accepted as a command-line argument.
     #[arg(long, default_value = "KRW_AGENT_DATABASE_URL")]
@@ -272,12 +280,12 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let budgets: BudgetRegistry = load_yaml(&args.budget_registry)?;
     let endpoints: EndpointRegistry = load_yaml(&args.endpoint_registry)?;
-    let validation_mode = if args.check || args.database_check {
+    let validation_mode = if args.check || args.database_check || args.mcp_check {
         ValidationMode::ProductionDescriptor
     } else {
         ValidationMode::Production
     };
-    let releases = resolve_release_set(
+    let releases = Arc::new(resolve_release_set(
         images,
         &binding,
         &models,
@@ -285,7 +293,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         &endpoints,
         &ProcessEnvironment,
         validation_mode,
-    )?;
+    )?);
     let descriptor = releases.public_descriptor(&args.runtime_version)?;
     verify_release_authorization_for_model(
         &args,
@@ -314,9 +322,22 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "agent release compiled"
         );
     }
-    if args.check && !args.database_check {
+    if args.check && !args.database_check && !args.mcp_check {
         return Ok(());
     }
+
+    let mcp_pool = Arc::new(McpClientPool::new(
+        args.mcp_pool_entries,
+        Duration::from_secs(90),
+    )?);
+    if args.mcp_check || (!args.check && !args.database_check) {
+        run_mcp_preflight(&releases, Arc::clone(&mcp_pool)).await?;
+        info!("MCP endpoint preflight passed for the sealed release set");
+    }
+    if args.mcp_check && !args.database_check {
+        return Ok(());
+    }
+
     let database =
         PostgresJsonExecutor::connect(postgres_options(&args), &ProcessEnvironmentDatabaseSecrets)
             .await?;
@@ -358,6 +379,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         release_set_hash: descriptor.release_set_hash.clone(),
         runtime_version: args.runtime_version.clone(),
         heartbeat_ttl_ms: DAEMON_HEARTBEAT_TTL_MS,
+        mcp_ready: true,
     };
     let retention_worker_id = worker_id.clone();
     let artifact_root = args
@@ -366,10 +388,6 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or(StartupError::MissingLiveSetting("artifact_root"))?;
     let artifact_repository = build_artifact_repository(artifact_root, &args)?;
 
-    let mcp_pool = Arc::new(McpClientPool::new(
-        args.mcp_pool_entries,
-        Duration::from_secs(90),
-    )?);
     let pooled_transport = PooledMcpTransport::new(Arc::clone(&mcp_pool));
     let capability_transport: Arc<dyn McpToolTransport> = pooled_transport;
     let client = Arc::new(AgentV1Client::new(database));
@@ -442,9 +460,18 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     });
     let daemon_heartbeat_task = {
         let heartbeat_client = Arc::clone(&client);
+        let heartbeat_pool = Arc::clone(&mcp_pool);
+        let heartbeat_releases = Arc::clone(&releases);
         let heartbeat_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            run_daemon_heartbeat(heartbeat_client, daemon_heartbeat, heartbeat_shutdown).await;
+            run_daemon_heartbeat(
+                heartbeat_client,
+                daemon_heartbeat,
+                heartbeat_pool,
+                heartbeat_releases,
+                heartbeat_shutdown,
+            )
+            .await;
         })
     };
     let cleanup_task = if args.retention_days > 0 {
@@ -508,7 +535,7 @@ fn validate_image_dir_count(image_dirs: &[PathBuf]) -> Result<(), StartupError> 
 }
 
 /// Check a release authorization before opening database connections or
-/// admitting claims. Check/database-check modes can omit both artifacts for
+/// admitting claims. Check/database-check/mcp-check modes can omit both artifacts for
 /// authoring diagnostics, but if either is supplied they must prove the exact
 /// descriptor the daemon just resolved. Live mode cannot omit them.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -528,7 +555,7 @@ fn verify_release_authorization_for_model(
         args.release_authorization.as_deref(),
         args.release_trust_registry.as_deref(),
     ) {
-        (None, None) if args.check || args.database_check => return Ok(()),
+        (None, None) if args.check || args.database_check || args.mcp_check => return Ok(()),
         (None, None) => return Err(StartupError::MissingReleaseAuthorization),
         (Some(authorization), Some(trust_registry)) => (authorization, trust_registry),
         _ => return Err(StartupError::ReleaseAuthorizationPair),
@@ -893,6 +920,8 @@ async fn run_retention_reaper(
 async fn run_daemon_heartbeat(
     client: Arc<AgentV1Client<PostgresJsonExecutor>>,
     request: HeartbeatDaemonRequest,
+    mcp_pool: Arc<McpClientPool>,
+    releases: Arc<ResolvedReleaseSet>,
     shutdown: CancellationToken,
 ) {
     use tokio::time::{MissedTickBehavior, interval};
@@ -910,14 +939,228 @@ async fn run_daemon_heartbeat(
         if shutdown.is_cancelled() {
             break;
         }
-        if let Err(error) = client.execute(&request).await {
+        // The pool is shared by live runs and the startup/heartbeat probe.  A
+        // bounded idle sweep prevents old run-scoped sessions from consuming
+        // all entries after a burst of short-lived runs or a deployment check.
+        let _ = mcp_pool.evict_idle().await;
+        let mcp_ready = run_mcp_preflight(&releases, Arc::clone(&mcp_pool))
+            .await
+            .is_ok();
+        let mut heartbeat = request.clone();
+        heartbeat.mcp_ready = mcp_ready;
+        if !mcp_ready {
             warn!(
                 daemon_id = %request.daemon_id,
+                "MCP heartbeat probe failed; publishing an unready daemon receipt"
+            );
+        }
+        if let Err(error) = client.execute(&heartbeat).await {
+            warn!(
+                daemon_id = %heartbeat.daemon_id,
                 diagnostic = %error,
                 "direct daemon heartbeat failed; web admission will close when the previous receipt expires"
             );
         }
     }
+}
+
+/// Exercise the exact MCP routes and TLS/session contract that live runs will
+/// use. This is intentionally a startup-only, no-LLM check: one failed
+/// endpoint prevents the daemon from publishing a ready heartbeat instead of
+/// allowing the first customer run to discover the problem later.
+fn mcp_preflight_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.into(),
+    ))
+}
+
+struct McpPreflightTarget {
+    endpoint_ref: String,
+    resolved: Arc<ResolvedCapability>,
+    tool_names: BTreeSet<String>,
+    capability_ids: Vec<String>,
+}
+
+fn same_physical_mcp_binding(left: &ResolvedCapability, right: &ResolvedCapability) -> bool {
+    left.binding.endpoint_ref == right.binding.endpoint_ref
+        && left.binding.credential_ref == right.binding.credential_ref
+        && left.binding.auth_scope == right.binding.auth_scope
+        && left.binding.tool_session_reuse == right.binding.tool_session_reuse
+        && left.binding.server_schema_bundle_hash == right.binding.server_schema_bundle_hash
+        && left.binding.server_build == right.binding.server_build
+        && left.binding.data_release_hash == right.binding.data_release_hash
+        && left.endpoint == right.endpoint
+        && left.readiness_endpoint == right.readiness_endpoint
+        && left.origin == right.origin
+        && left.protocol_version == right.protocol_version
+        && left.credential_version == right.credential_version
+        && left.tls_profile == right.tls_profile
+        && left.tls_ca_pem_hash == right.tls_ca_pem_hash
+}
+
+async fn run_mcp_preflight(
+    releases: &ResolvedReleaseSet,
+    pool: Arc<McpClientPool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match tokio::time::timeout(
+        MCP_PREFLIGHT_DEADLINE,
+        run_mcp_preflight_inner(releases, pool),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(mcp_preflight_error(format!(
+            "MCP preflight exceeded its {} second deadline",
+            MCP_PREFLIGHT_DEADLINE.as_secs()
+        ))),
+    }
+}
+
+async fn run_mcp_preflight_inner(
+    releases: &ResolvedReleaseSet,
+    pool: Arc<McpClientPool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = PoolScope {
+        tenant_id: "krw-agentd-preflight".into(),
+        principal_id: "startup".into(),
+        run_id: "mcp-contract".into(),
+    };
+    // Several logical capabilities share one physical MCP endpoint.  Probe
+    // that endpoint once and verify every bound tool from the one catalog;
+    // probing once per capability creates needless handshakes and makes a
+    // healthy service look unstable under the 30-second heartbeat cadence.
+    let mut targets: BTreeMap<String, McpPreflightTarget> = BTreeMap::new();
+
+    for release in releases.releases() {
+        for (capability_id, resolved) in &release.runtime.capabilities {
+            // The sealed runtime currently exposes MCP HTTP capabilities. If
+            // another transport is added later, it must get its own explicit
+            // preflight rather than being silently treated as healthy here.
+            if resolved.binding.transport != krw_agent_protocol::TransportKind::McpHttp {
+                return Err(mcp_preflight_error(format!(
+                    "MCP preflight encountered unsupported transport for {capability_id}"
+                )));
+            }
+            let endpoint_ref = resolved.binding.endpoint_ref.clone();
+            if let Some(target) = targets.get_mut(&endpoint_ref) {
+                if !same_physical_mcp_binding(target.resolved.as_ref(), resolved.as_ref()) {
+                    return Err(mcp_preflight_error(format!(
+                        "MCP endpoint {endpoint_ref} has inconsistent sealed physical bindings"
+                    )));
+                }
+                target
+                    .tool_names
+                    .insert(resolved.binding.mcp_tool_name.clone());
+                target.capability_ids.push(capability_id.clone());
+                continue;
+            }
+            let mut tool_names = BTreeSet::new();
+            tool_names.insert(resolved.binding.mcp_tool_name.clone());
+            targets.insert(
+                endpoint_ref.clone(),
+                McpPreflightTarget {
+                    endpoint_ref,
+                    resolved: Arc::clone(resolved),
+                    tool_names,
+                    capability_ids: vec![capability_id.clone()],
+                },
+            );
+        }
+    }
+
+    if targets.is_empty() {
+        return Err(mcp_preflight_error("MCP preflight found no HTTP capabilities"));
+    }
+
+    let mut checked_count = 0usize;
+    for target in targets.into_values() {
+        let resolved = target.resolved.as_ref();
+        let key = PoolKey::from_binding(
+            format!("mcp-preflight:{}", target.endpoint_ref),
+            &resolved.binding,
+            &resolved.endpoint,
+            &resolved.readiness_endpoint,
+            &resolved.origin,
+            resolved.protocol_version.clone(),
+            &scope,
+            resolved.credential_version.clone(),
+            resolved.tls_profile.clone(),
+            resolved.tls_ca_pem_hash.clone(),
+        )?;
+        let config = McpHttpConfig {
+            endpoint: resolved.endpoint.clone(),
+            readiness_endpoint: resolved.readiness_endpoint.clone(),
+            origin: resolved.origin.clone(),
+            bearer_token: resolved
+                .bearer_token
+                .as_ref()
+                .map(|token| Zeroizing::new(token.as_str().to_owned())),
+            protocol_version: resolved.protocol_version.clone(),
+            client_name: "krw-agentd-preflight".into(),
+            client_version: env!("CARGO_PKG_VERSION").into(),
+            tls_profile: resolved.tls_profile.clone(),
+            tls_ca_pem: resolved
+                .tls_ca_pem
+                .as_ref()
+                .map(|pem| Zeroizing::new(pem.as_str().to_owned())),
+            max_concurrency: usize::from(resolved.binding.max_connections),
+            request_timeout: Duration::from_millis(resolved.binding.request_timeout_ms),
+            max_response_bytes: 8 * 1024 * 1024,
+        };
+        let pool_key = key.clone();
+        let client = pool
+            .get_or_connect(key, config)
+            .await
+            .map_err(|error| {
+                mcp_preflight_error(format!(
+                    "MCP preflight connection failed for {}: {error}",
+                    target.capability_ids.join(",")
+                ))
+            })?;
+        let result = match client.list_tools().await {
+            Ok(result) => result,
+            Err(error) => {
+                // A daemon heartbeat runs repeatedly. Do not keep a
+                // server-side-expired MCP session in the pool and turn a
+                // transient disconnect into a permanent unready state.
+                pool.invalidate_if_current(&pool_key, &client).await;
+                return Err(mcp_preflight_error(format!(
+                    "MCP preflight tools/list failed for {}: {error}",
+                    target.capability_ids.join(",")
+                )));
+            }
+        };
+        let tools = result
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                mcp_preflight_error(format!(
+                    "MCP preflight tools/list returned no tools for {}",
+                    target.capability_ids.join(",")
+                ))
+            })?;
+        let advertised = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+        let missing = target
+            .tool_names
+            .difference(&advertised)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(mcp_preflight_error(format!(
+                "MCP preflight tools/list is missing bound tools for {}: {}",
+                target.capability_ids.join(","),
+                missing.join(",")
+            )));
+        }
+        checked_count += 1;
+    }
+    info!(checked_endpoints = checked_count, "MCP startup preflight completed");
+    Ok(())
 }
 
 /// Parse a `host:port` metrics bind string into a [`SocketAddr`].
@@ -1115,6 +1358,21 @@ mod tests {
             parsed.public_release_descriptor_output,
             Some(PathBuf::from("/var/lib/krw-agent/public-release.json"))
         );
+    }
+
+    #[test]
+    fn mcp_check_is_a_startup_only_mode_and_can_be_combined_with_database_check() {
+        let mut command_line = required_args();
+        command_line.extend([
+            "--image-dir".into(),
+            "image-a".into(),
+            "--mcp-check".into(),
+            "--database-check".into(),
+        ]);
+        let args = Args::try_parse_from(command_line).unwrap();
+        assert!(args.mcp_check);
+        assert!(args.database_check);
+        assert!(!args.check);
     }
 
     #[test]

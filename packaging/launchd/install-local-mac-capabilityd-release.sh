@@ -49,6 +49,7 @@ STATE_DIR="$INSTALL_ROOT/deploy-state/capabilityd-$RELEASE_ID"
 CURRENT="$INSTALL_ROOT/current"
 CAPABILITY_ENV="$OPERATOR_ROOT/runtime/capabilityd.env"
 GATEWAY_CONFIG="$OPERATOR_ROOT/config/runtime/ontology-tls.json"
+GATEWAY_CONFIG_NAMES=(ontology feed filings guru)
 MATERIALIZED_RUNTIME="$STATE_DIR/runtime"
 
 [[ -f "$CAPABILITY_ENV" && ! -L "$CAPABILITY_ENV" ]] || fail 'Capability runtime environment is missing or unsafe'
@@ -92,7 +93,11 @@ PY
   IDENTITY="$RUNTIME/identity.json"
   RUNTIME_ARCHIVE="$RUNTIME/capability-runtime.venv.tar.gz"
   STARTER="$BUNDLE/packaging/launchd/krw-capabilityd-start-local"
-  [[ -f "$IDENTITY" && ! -L "$IDENTITY" && -f "$RUNTIME_ARCHIVE" && ! -L "$RUNTIME_ARCHIVE" && -x "$STARTER" && ! -L "$STARTER" ]] \
+  ENDPOINT_REGISTRY="$BUNDLE/deployments/endpoint-registry.yaml"
+  DEPLOYMENT_BINDING="$BUNDLE/deployments/deployment-binding.yaml"
+  [[ -f "$IDENTITY" && ! -L "$IDENTITY" && -f "$RUNTIME_ARCHIVE" && ! -L "$RUNTIME_ARCHIVE" && -x "$STARTER" && ! -L "$STARTER" \
+    && -f "$ENDPOINT_REGISTRY" && ! -L "$ENDPOINT_REGISTRY" \
+    && -f "$DEPLOYMENT_BINDING" && ! -L "$DEPLOYMENT_BINDING" ]] \
     || fail 'Sealed canonical capability runtime is incomplete'
 }
 
@@ -109,15 +114,59 @@ for field in ("ok", "build_id", "tool_schema_sha256", "release_manifest_sha256",
 if actual.get("ok") is not True:
     raise SystemExit(1)
 ' "$IDENTITY" >/dev/null 2>&1 || return 1
-  python3 - "$GATEWAY_CONFIG" "$CAPABILITY_PORT" <<'PY'
+  python3 - "$GATEWAY_CONFIG" "$ENDPOINT_REGISTRY" "$DEPLOYMENT_BINDING" "$CAPABILITY_PORT" <<'PY'
 import json, sys
 config = json.load(open(sys.argv[1], encoding="utf-8"))
+registry = open(sys.argv[2], encoding="utf-8").read()
+binding = open(sys.argv[3], encoding="utf-8").read()
+
+import re
+from urllib.parse import urlparse
+
+def exact_origin(value):
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
+        raise SystemExit(1)
+    return value.rstrip("/")
+
+registry_blocks = re.split(r"(?=^  - endpoint_ref: )", registry, flags=re.M)
+ontology_registry = [block for block in registry_blocks if re.search(r"(?m)^  - endpoint_ref: krw-ontology-local$", block)]
+if len(ontology_registry) != 1:
+    raise SystemExit(1)
+origin_match = re.search(r"(?m)^    origin: (.+)$", ontology_registry[0])
+if not origin_match:
+    raise SystemExit(1)
+origin = exact_origin(origin_match.group(1).strip())
+
+binding_blocks = re.split(r"(?=^  - binding_key: )", binding, flags=re.M)
+ontology_bindings = [block for block in binding_blocks if re.search(r"(?m)^    endpoint_ref: krw-ontology-local$", block)]
+reuse = {
+    match.group(1)
+    for block in ontology_bindings
+    for match in [re.search(r"(?m)^    tool_session_reuse: ([A-Za-z0-9._-]+)$", block)]
+    if match
+}
+if not ontology_bindings or len(reuse) != 1 or next(iter(reuse)) not in {"run-scoped", "attested-stateless-v1"}:
+    raise SystemExit(1)
+session_reuse = next(iter(reuse))
+
 if config.get("service") != "krw-capabilityd":
     raise SystemExit(1)
-if config.get("allowedOrigins") != ["https://krw-agent.local"]:
+if config.get("allowedOrigins") != [origin] or config.get("toolSessionReuse") != session_reuse:
+    raise SystemExit(1)
+if config.get("checkUpstreamReady") is not True or config.get("normalizeReadiness") is not True:
     raise SystemExit(1)
 upstream = config.get("upstream")
-if not isinstance(upstream, dict) or upstream.get("host") != "127.0.0.1" or upstream.get("port") != int(sys.argv[2]):
+if not isinstance(upstream, dict) or upstream.get("host") != "127.0.0.1" or upstream.get("port") != int(sys.argv[4]):
     raise SystemExit(1)
 PY
 }
@@ -264,26 +313,53 @@ EOF
 }
 
 verify_identity_and_materialize_gateway() {
-  python3 - "$IDENTITY" "$BUNDLE/deployments/deployment-binding.yaml" "$GATEWAY_CONFIG" "$CAPABILITY_PORT" <<'PY'
+  python3 - "$IDENTITY" "$BUNDLE/deployments/endpoint-registry.yaml" "$BUNDLE/deployments/deployment-binding.yaml" "$GATEWAY_CONFIG" "$CAPABILITY_PORT" <<'PY'
 import json
 import os
 import pathlib
 import re
 import sys
 import tempfile
+from urllib.parse import urlparse
 
-identity_path, binding_path, config_path = map(pathlib.Path, sys.argv[1:4])
-port = sys.argv[4]
+identity_path, registry_path, binding_path, config_path = map(pathlib.Path, sys.argv[1:5])
+port = sys.argv[5]
 identity = json.loads(identity_path.read_text(encoding="utf-8"))
 required = ("build_id", "tool_schema_sha256", "release_manifest_sha256", "protocol_version", "tool_count")
 if any(not identity.get(field) for field in required):
     raise SystemExit("sealed capability identity is incomplete")
+registry = registry_path.read_text(encoding="utf-8")
+registry_blocks = re.split(r"(?=^  - endpoint_ref: )", registry, flags=re.M)
+ontology_registry = [block for block in registry_blocks if re.search(r"(?m)^  - endpoint_ref: krw-ontology-local$", block)]
+if len(ontology_registry) != 1:
+    raise SystemExit("sealed endpoint registry has no unique ontology endpoint")
+origin_match = re.search(r"(?m)^    origin: (.+)$", ontology_registry[0])
+if not origin_match:
+    raise SystemExit("sealed endpoint registry has no ontology Origin")
+origin = origin_match.group(1).strip().rstrip("/")
+parsed_origin = urlparse(origin)
+if (
+    parsed_origin.scheme != "https"
+    or not parsed_origin.netloc
+    or parsed_origin.path not in ("", "/")
+    or parsed_origin.params
+    or parsed_origin.query
+    or parsed_origin.fragment
+    or parsed_origin.username
+    or parsed_origin.password
+):
+    raise SystemExit("sealed endpoint registry Origin is not a bare HTTPS origin")
 binding = binding_path.read_text(encoding="utf-8")
 blocks = re.split(r"(?=^  - binding_key: )", binding, flags=re.M)
 ontology = [block for block in blocks if re.search(r"(?m)^    endpoint_ref: krw-ontology-local$", block)]
 if not ontology:
     raise SystemExit("sealed deployment binding has no ontology endpoint")
+reuse = set()
 for block in ontology:
+    reuse_match = re.search(r"(?m)^    tool_session_reuse: ([A-Za-z0-9._-]+)$", block)
+    if not reuse_match:
+        raise SystemExit("sealed deployment binding has an ontology capability without session policy")
+    reuse.add(reuse_match.group(1))
     for field, expected in (
         ("server_build", identity["build_id"]),
         ("server_schema_bundle_hash", identity["tool_schema_sha256"]),
@@ -291,6 +367,8 @@ for block in ontology:
     ):
         if not re.search(rf"(?m)^    {field}: {re.escape(str(expected))}$", block):
             raise SystemExit("sealed deployment binding does not pin the canonical capability identity")
+if len(reuse) != 1 or next(iter(reuse)) not in {"run-scoped", "attested-stateless-v1"}:
+    raise SystemExit("sealed deployment binding has inconsistent ontology session policy")
 config = json.loads(config_path.read_text(encoding="utf-8"))
 if not isinstance(config, dict) or not isinstance(config.get("listen"), dict) or not isinstance(config.get("tls"), dict):
     raise SystemExit("operator ontology gateway config is invalid")
@@ -315,8 +393,8 @@ config.update({
     # The Rust MCP client sends this exact Origin value from the sealed local
     # endpoint registry. Keep the gateway allowlist explicit and materialized
     # into every activated release; an absent Origin must remain rejected.
-    "allowedOrigins": ["https://krw-agent.local"],
-    "toolSessionReuse": "attested-stateless-v1",
+    "allowedOrigins": [origin],
+    "toolSessionReuse": next(iter(reuse)),
 })
 fd, temporary = tempfile.mkstemp(prefix=".ontology-tls.", dir=config_path.parent)
 try:
@@ -363,9 +441,13 @@ if actual.get("ok") is not True:
 
 restore() {
   launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
-  if [ -f "$STATE_DIR/gateway.previous.json" ]; then
-    install -m 0600 "$STATE_DIR/gateway.previous.json" "$GATEWAY_CONFIG"
-  fi
+  for gateway_name in "${GATEWAY_CONFIG_NAMES[@]}"; do
+    previous_gateway="$STATE_DIR/gateway.previous.$gateway_name.json"
+    gateway_config="$OPERATOR_ROOT/config/runtime/$gateway_name-tls.json"
+    if [ -f "$previous_gateway" ]; then
+      install -m 0600 "$previous_gateway" "$gateway_config"
+    fi
+  done
   if [ "$(cat "$STATE_DIR/plist.existed" 2>/dev/null || true)" = 1 ] && [ -f "$STATE_DIR/plist.previous" ]; then
     install -m 0644 "$STATE_DIR/plist.previous" "$PLIST"
     launchctl bootstrap "$DOMAIN" "$PLIST"
@@ -383,14 +465,17 @@ case "$MODE" in
     # listener with the exact sealed identity keeps ordinary agent releases
     # from needlessly restarting the ontology/Guru runtime.  A mismatch still
     # fails closed and follows the full activation path below.
-    if capability_runtime_is_active; then
-      printf '%s\n' "Reusing healthy canonical capability runtime: $RELEASE_ID ($PROVIDER)"
-      exit 0
-    fi
+    capability_reuse=0
+    if capability_runtime_is_active; then capability_reuse=1; fi
     mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR" "$STATE_DIR"
     chmod 0700 "$LOG_DIR" "$STATE_DIR"
-    [ ! -e "$STATE_DIR/gateway.previous.json" ] || fail 'Capability activation state already exists'
-    install -m 0600 "$GATEWAY_CONFIG" "$STATE_DIR/gateway.previous.json"
+    [ ! -e "$STATE_DIR/gateway.previous.ontology.json" ] || fail 'Capability activation state already exists'
+    for gateway_name in "${GATEWAY_CONFIG_NAMES[@]}"; do
+      gateway_config="$OPERATOR_ROOT/config/runtime/$gateway_name-tls.json"
+      [ -f "$gateway_config" ] && [ ! -L "$gateway_config" ] \
+        || fail "Gateway config is missing or unsafe: $gateway_config"
+      install -m 0600 "$gateway_config" "$STATE_DIR/gateway.previous.$gateway_name.json"
+    done
     if [ -f "$PLIST" ]; then
       install -m 0644 "$PLIST" "$STATE_DIR/plist.previous"
       printf '%s\n' 1 > "$STATE_DIR/plist.existed"
@@ -404,6 +489,17 @@ case "$MODE" in
       exit "$status"
     }
     trap rollback_on_error EXIT INT TERM
+    if [ "$capability_reuse" = 1 ]; then
+      # The process and its plist are already healthy, but the deployment has
+      # still replaced the gateway JSON. Save that previous JSON in the same
+      # activation state so a later daemon/front failure can restore a fully
+      # coherent old capability boundary instead of leaving mixed identities.
+      verify_identity_and_materialize_gateway
+      armed=0
+      trap - EXIT INT TERM
+      printf '%s\n' "Reusing healthy canonical capability runtime: $RELEASE_ID ($PROVIDER)"
+      exit 0
+    fi
     materialize_runtime
     verify_identity_and_materialize_gateway
     launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true

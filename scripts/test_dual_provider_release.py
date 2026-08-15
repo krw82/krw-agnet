@@ -230,6 +230,16 @@ class DualProviderReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "MCP reuse matrix mismatch"):
             validate_tool_session_matrix(binding)
 
+    def test_capability_installer_uses_sealed_origin_and_session_policy(self) -> None:
+        installer = pathlib.Path(
+            "packaging/launchd/install-local-mac-capabilityd-release.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("endpoint-registry.yaml", installer)
+        self.assertIn("tool_session_reuse", installer)
+        self.assertIn('"allowedOrigins": [origin]', installer)
+        self.assertNotIn('"https://krw-agent.local"', installer)
+        self.assertNotIn('"toolSessionReuse": "attested-stateless-v1"', installer)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()

@@ -699,6 +699,11 @@ impl McpToolTransport for PooledMcpTransport {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
                 let retryable = retryable_mcp_error(&error);
+                // Do not reuse a client after a stream/session failure. The
+                // failed call remains at-most-once, but future calls should
+                // establish a fresh session instead of inheriting a broken
+                // HTTP/MCP connection.
+                self.pool.invalidate_if_current(&key, &client).await;
                 Err(mcp_failure(
                     "mcp_call",
                     &error,

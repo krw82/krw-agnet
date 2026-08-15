@@ -8,13 +8,13 @@ set -euo pipefail
 krw_current=${KRW_AGENT_CURRENT_DIR:-/opt/krw-agent/current}
 krw_provider=${KRW_AGENT_PROVIDER:-}
 krw_mode_args=()
-case "${1:-}" in
-  '') ;;
-  --check) krw_mode_args=(--check); shift ;;
-  --database-check) krw_mode_args=(--database-check); shift ;;
-  *) echo 'krw-agentd: unsupported wrapper argument' >&2; exit 2 ;;
-esac
-[[ "$#" -eq 0 ]] || { echo 'krw-agentd: wrapper accepts at most one check argument' >&2; exit 2; }
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --check|--database-check|--mcp-check) krw_mode_args+=("$1") ;;
+    *) echo 'krw-agentd: unsupported wrapper argument' >&2; exit 2 ;;
+  esac
+  shift
+done
 case "$krw_provider" in
   glm) krw_model='glm-5.3'; krw_key=${GLM_API_KEY:-} ;;
   deepseek) krw_model='deepseek-v4-flash'; krw_key=${DEEPSEEK_API_KEY:-} ;;

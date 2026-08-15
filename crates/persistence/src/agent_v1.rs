@@ -38,6 +38,8 @@ pub const SESSION_MEMORY_RETENTION_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0016_session_memory_source_retention.sql");
 pub const DAEMON_HEARTBEAT_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0018_daemon_heartbeat.sql");
+pub const DAEMON_MCP_READINESS_MIGRATION_SQL: &str =
+    include_str!("../../../migrations/0022_daemon_mcp_readiness.sql");
 pub const LIFECYCLE_OUTBOX_MIGRATION_SQL: &str =
     include_str!("../../../migrations/0019_lifecycle_outbox.sql");
 
@@ -371,7 +373,8 @@ fn validate_request_object(
             object.get("heartbeat_ttl_ms").and_then(Value::as_u64),
             Some(30_000..=120_000)
         );
-        if !valid_provider || !valid_ttl {
+        let valid_mcp_ready = object.get("mcp_ready").and_then(Value::as_bool).is_some();
+        if !valid_provider || !valid_ttl || !valid_mcp_ready {
             return Err(AgentV1Error::InvalidRequest {
                 procedure,
                 reason: "daemon heartbeat contract is invalid",
@@ -1541,6 +1544,7 @@ pub struct HeartbeatDaemonRequest {
     pub release_set_hash: ContentHash,
     pub runtime_version: String,
     pub heartbeat_ttl_ms: u64,
+    pub mcp_ready: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2400,5 +2404,22 @@ mod tests {
         }
         assert!(!LIFECYCLE_OUTBOX_MIGRATION_SQL.contains("provider_content"));
         assert!(!LIFECYCLE_OUTBOX_MIGRATION_SQL.contains("prompt"));
+    }
+
+    #[test]
+    fn daemon_mcp_readiness_migration_is_explicit_and_fail_closed() {
+        for required in [
+            "ADD COLUMN IF NOT EXISTS mcp_ready boolean NOT NULL DEFAULT false",
+            "'heartbeat_ttl_ms','mcp_ready'",
+            "agent_store.request_boolean(p_request, 'mcp_ready')",
+            "mcp_ready = EXCLUDED.mcp_ready",
+            "'mcp_ready', agent_store.request_boolean(p_request, 'mcp_ready')",
+        ] {
+            assert!(
+                DAEMON_MCP_READINESS_MIGRATION_SQL.contains(required),
+                "missing daemon MCP readiness contract: {required}"
+            );
+        }
+        assert!(!DAEMON_MCP_READINESS_MIGRATION_SQL.contains("DEFAULT true"));
     }
 }

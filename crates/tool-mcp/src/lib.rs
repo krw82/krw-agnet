@@ -1064,6 +1064,16 @@ impl McpClientPool {
     pub async fn is_empty(&self) -> bool {
         self.inner.is_empty().await
     }
+
+    /// Drop a broken initialized client without disturbing a newer connection
+    /// that may have been admitted for the same deployment key.
+    pub async fn invalidate_if_current(
+        &self,
+        key: &PoolKey,
+        client: &Arc<McpHttpClient>,
+    ) -> bool {
+        self.inner.remove_if_current(key, client).await
+    }
 }
 
 async fn probe_readiness(
@@ -1378,6 +1388,20 @@ impl<T> BoundedClientPool<T> {
 
     async fn is_empty(&self) -> bool {
         self.state.lock().await.entries.is_empty()
+    }
+
+    async fn remove_if_current(&self, key: &PoolKey, client: &Arc<T>) -> bool {
+        let mut state = self.state.lock().await;
+        let matches = state.entries.get(key).is_some_and(|slot| {
+            slot.cell
+                .get()
+                .and_then(|result| result.as_ref().ok())
+                .is_some_and(|current| Arc::ptr_eq(current, client))
+        });
+        if matches {
+            state.entries.remove(key);
+        }
+        matches
     }
 }
 
@@ -2195,6 +2219,19 @@ data: {"jsonrpc":"2.0","id":"wanted","result":{"tools":[]}}
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(*second, 7);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn invalidation_removes_only_the_current_initialized_client() {
+        let pool = BoundedClientPool::new(2, Duration::from_mins(1)).expect("pool");
+        let key = pool_key("broken");
+        let client = pool
+            .get_or_create(key.clone(), || async { Ok(7_u64) })
+            .await
+            .expect("client");
+        assert!(pool.remove_if_current(&key, &client).await);
+        assert!(pool.is_empty().await);
+        assert!(!pool.remove_if_current(&key, &client).await);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
