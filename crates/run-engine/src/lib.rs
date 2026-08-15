@@ -756,6 +756,16 @@ pub trait CapabilityRuntime: fmt::Debug + Send + Sync {
         invocation: &CapabilityInvocation,
     ) -> Result<CapabilityResult, DependencyFailure>;
 
+    /// Presentation data captured during the run from private capability
+    /// channels (for example the MCP `_meta` presentation-series pack). It is
+    /// never exposed to the provider; the engine reads it once at commit time
+    /// to compile deterministic visualizations. Recovery from a checkpoint
+    /// that spans capability calls may observe fewer packs than the original
+    /// execution, in which case the answer commits without visualizations.
+    fn presentation_packs(&self) -> Vec<Value> {
+        Vec::new()
+    }
+
     /// Restore run-local authorization state from a result that is already
     /// durably committed. Implementations must be deterministic and
     /// idempotent: recovery calls this in committed action order before the
@@ -2967,6 +2977,11 @@ where
             Some(checkpoint) => {
                 let declared: ActiveRunCheckpoint =
                     serde_json::from_slice(&checkpoint.state_bytes)?;
+                if declared.direct_answer_retry_requested
+                    != state.direct_answer_retry_requested
+                {
+                    return Err(EngineError::RecoveryStateMismatch);
+                }
                 // The direct-answer retry is a durable run-local control bit,
                 // not a workflow transition. Restore it before the
                 // equivalence check without contaminating `state_trace`.
@@ -3193,7 +3208,40 @@ where
         }
 
         match output {
-            ProviderOutputDisposition::TypedJson | ProviderOutputDisposition::Markdown => {
+            ProviderOutputDisposition::Markdown => {
+                // A bounded direct-answer retry is resumable state, not a
+                // terminal answer. Reconstruct the same kernel transition
+                // that the live path applies in `finish` so a daemon restart
+                // can continue without redispatching the truncated episode.
+                if state.current_operation_emits_answer(input.image)? {
+                    if episode.finish_reason == "length"
+                        && !state.direct_answer_retry_requested()
+                    {
+                        state.request_direct_answer_retry();
+                        state.append_direct_answer_retry_feedback("answer_output_truncated");
+                        return state
+                            .check_conversation_limit(self.config.max_conversation_bytes);
+                    }
+                    if episode.finish_reason == "stop"
+                        && episode
+                            .assistant
+                            .content
+                            .as_deref()
+                            .is_none_or(|content| content.trim().is_empty())
+                        && !state.direct_answer_retry_requested()
+                    {
+                        state.request_direct_answer_retry();
+                        state.append_assistant(&episode);
+                        state.append_direct_answer_retry_feedback("final_output_missing");
+                        return state
+                            .check_conversation_limit(self.config.max_conversation_bytes);
+                    }
+                }
+                return Err(EngineError::InvalidRecoverySnapshot(
+                    "terminal final output was checkpointed as resumable state",
+                ));
+            }
+            ProviderOutputDisposition::TypedJson => {
                 return Err(EngineError::InvalidRecoverySnapshot(
                     "terminal final output was checkpointed as resumable state",
                 ));
