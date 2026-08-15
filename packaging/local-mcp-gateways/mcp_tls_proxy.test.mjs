@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  mcpInitializeResponseMatches,
   originAllowed,
   upstreamReadinessMatches,
   validateGatewayConfig,
@@ -14,6 +15,7 @@ function validConfig(overrides = {}) {
     allowedOrigins: ["https://krw-agent.local"],
     checkUpstreamReady: true,
     normalizeReadiness: true,
+    upstreamReadinessMode: "http_json",
     upstream: { host: "127.0.0.1", port: 8080 },
     tls: { keyFile: "/tmp/key.pem", certFile: "/tmp/cert.pem" },
     listen: { host: "127.0.0.1", port: 9443 },
@@ -73,6 +75,23 @@ test("gateway config still validates the session-reuse contract", () => {
 test("gateway config cannot silently synthesize readiness without probing upstream", () => {
   assert.throws(() => validateGatewayConfig(validConfig({ checkUpstreamReady: false })));
   assert.throws(() => validateGatewayConfig(validConfig({ normalizeReadiness: false })));
+  assert.throws(() => validateGatewayConfig(validConfig({ upstreamReadinessMode: "unknown" })));
+  assert.throws(() => validateGatewayConfig(validConfig({ upstreamMcpPath: "mcp" })));
+});
+
+test("MCP readiness accepts only a successful initialize response for the pinned protocol", () => {
+  const config = validConfig({
+    upstreamReadinessMode: "mcp_initialize",
+    protocolVersion: "2025-06-18",
+  });
+  const successfulSse = [
+    "event: message",
+    'data: {"jsonrpc":"2.0","id":"gateway-readiness","result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"guru","version":"1"}}}',
+    "",
+  ].join("\n");
+  assert.equal(mcpInitializeResponseMatches(config, successfulSse), true);
+  assert.equal(mcpInitializeResponseMatches(config, successfulSse.replace("2025-06-18", "2024-11-05")), false);
+  assert.equal(mcpInitializeResponseMatches(config, "not an MCP response"), false);
 });
 
 test("upstream readiness must be healthy and cannot contradict the pinned identity", () => {

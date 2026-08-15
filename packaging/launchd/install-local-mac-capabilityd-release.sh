@@ -448,6 +448,57 @@ restore() {
       install -m 0600 "$previous_gateway" "$gateway_config"
     fi
   done
+  # Rollback may restore operator JSON written before the current gateway
+  # readiness contract.  Normalize before the gateway supervisor is allowed
+  # to restart: otherwise an old Guru config can make every local MCP route
+  # flap even though the old capability release itself is healthy.
+  python3 - "$OPERATOR_ROOT/config/runtime" <<'PY'
+import json
+import os
+import pathlib
+import tempfile
+import sys
+
+root = pathlib.Path(sys.argv[1])
+defaults = {
+    "ontology": ("http_json", "/healthz"),
+    "feed": ("http_json", "/readyz"),
+    "filings": ("http_json", "/readyz"),
+    "guru": ("mcp_initialize", "/mcp"),
+}
+for name, (mode, endpoint_path) in defaults.items():
+    path = root / f"{name}-tls.json"
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"gateway config is missing or unsafe during rollback: {path}")
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise SystemExit(f"gateway config is invalid during rollback: {path}")
+    config["checkUpstreamReady"] = True
+    config["normalizeReadiness"] = True
+    config["upstreamReadinessMode"] = mode
+    if mode == "mcp_initialize":
+        config["upstreamMcpPath"] = endpoint_path
+        config.pop("upstreamReadinessPath", None)
+    else:
+        config["upstreamReadinessPath"] = endpoint_path
+    fd, temporary = tempfile.mkstemp(prefix=f".{name}-tls.", dir=root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        directory_fd = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PY
   if [ "$(cat "$STATE_DIR/plist.existed" 2>/dev/null || true)" = 1 ] && [ -f "$STATE_DIR/plist.previous" ]; then
     install -m 0644 "$STATE_DIR/plist.previous" "$PLIST"
     launchctl bootstrap "$DOMAIN" "$PLIST"

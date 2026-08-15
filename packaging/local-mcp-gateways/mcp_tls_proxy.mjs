@@ -15,8 +15,15 @@ const STATELESS_CONTRACT_ID = "krw-agent/mcp-tool-session-stateless/v1";
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_READINESS_RESPONSE_BYTES = 256 * 1024;
 const ORIGIN_PATTERN = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
+const READINESS_MODES = new Set(["http_json", "mcp_initialize"]);
 
 const configPath = process.env.KRW_MCP_TLS_PROXY_CONFIG;
+
+function safeLocalPath(value) {
+  return typeof value === "string"
+    && value.startsWith("/")
+    && !/[\0\r\n]/.test(value);
+}
 
 /**
  * Fail-closed Origin check. MCP 2026 requires every HTTP connection to carry
@@ -47,6 +54,21 @@ export function validateGatewayConfig(config) {
   if (config.checkUpstreamReady !== true || config.normalizeReadiness !== true) {
     throw new Error("gateway readiness must probe and normalize the live upstream");
   }
+  if (!READINESS_MODES.has(config.upstreamReadinessMode ?? "http_json")) {
+    throw new Error("upstreamReadinessMode must be http_json or mcp_initialize");
+  }
+  if (
+    config.upstreamReadinessPath !== undefined
+    && !safeLocalPath(config.upstreamReadinessPath)
+  ) {
+    throw new Error("upstreamReadinessPath must be a safe absolute path");
+  }
+  if (
+    config.upstreamMcpPath !== undefined
+    && !safeLocalPath(config.upstreamMcpPath)
+  ) {
+    throw new Error("upstreamMcpPath must be a safe absolute path");
+  }
 }
 
 /**
@@ -68,6 +90,33 @@ export function upstreamReadinessMatches(config, payload) {
     if (Object.hasOwn(payload, actual) && payload[actual] !== expected) return false;
   }
   return true;
+}
+
+/**
+ * The Guru sidecar is an MCP-only FastMCP process and deliberately exposes no
+ * ad-hoc health URL. Its read-only stateless `initialize` response is the
+ * narrowest truthful readiness proof: a listener alone is not sufficient.
+ */
+export function mcpInitializeResponseMatches(config, body) {
+  const messages = [];
+  const trimmed = String(body ?? "").trim();
+  if (trimmed.startsWith("{")) messages.push(trimmed);
+  for (const line of String(body ?? "").split(/\r?\n/)) {
+    if (line.startsWith("data: ")) messages.push(line.slice("data: ".length));
+  }
+  for (const message of messages) {
+    try {
+      const payload = JSON.parse(message);
+      if (
+        payload?.jsonrpc === "2.0"
+        && payload?.result
+        && payload.result.protocolVersion === config.protocolVersion
+      ) return true;
+    } catch {
+      // Keep looking: an SSE stream can contain non-JSON keepalive lines.
+    }
+  }
+  return false;
 }
 
 let config = null;
@@ -199,23 +248,42 @@ function upstreamRequest(req, res, body = null) {
 }
 
 function syntheticReady(req, res) {
-  if (config.checkUpstreamReady === false) {
-    sendJson(res, 200, readinessDocument());
-    return;
-  }
   let settled = false;
   const finish = (status, value) => {
     if (settled || res.headersSent || res.writableEnded) return;
     settled = true;
     sendJson(res, status, value);
   };
+  const mode = config.upstreamReadinessMode ?? "http_json";
+  const mcpInitialize = mode === "mcp_initialize"
+    ? JSON.stringify({
+      jsonrpc: "2.0",
+      id: "krw-gateway-readiness",
+      method: "initialize",
+      params: {
+        protocolVersion: config.protocolVersion,
+        capabilities: {},
+        clientInfo: { name: "krw-gateway-readiness", version: "1" },
+      },
+    })
+    : null;
   const probe = http.request(
     {
       host: config.upstream.host,
       port: config.upstream.port,
-      method: "GET",
-      path: config.upstreamReadinessPath ?? "/readyz",
-      headers: forwardedHeaders(req.headers),
+      method: mcpInitialize === null ? "GET" : "POST",
+      path: mcpInitialize === null
+        ? (config.upstreamReadinessPath ?? "/readyz")
+        : (config.upstreamMcpPath ?? "/mcp"),
+      headers: mcpInitialize === null
+        ? forwardedHeaders(req.headers)
+        : {
+          ...forwardedHeaders(req.headers),
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": config.protocolVersion,
+          "content-length": Buffer.byteLength(mcpInitialize),
+        },
       timeout: config.upstream.timeoutMs ?? 65000,
     },
     (upstream) => {
@@ -234,16 +302,24 @@ function syntheticReady(req, res) {
           finish(503, { ok: false, error: "upstream_not_ready" });
           return;
         }
-        let payload;
-        try {
-          payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        } catch {
-          finish(503, { ok: false, error: "upstream_readiness_invalid" });
-          return;
-        }
-        if (!upstreamReadinessMatches(config, payload)) {
-          finish(503, { ok: false, error: "upstream_readiness_mismatch" });
-          return;
+        const body = Buffer.concat(chunks).toString("utf8");
+        if (mcpInitialize !== null) {
+          if (!mcpInitializeResponseMatches(config, body)) {
+            finish(503, { ok: false, error: "upstream_mcp_initialize_invalid" });
+            return;
+          }
+        } else {
+          let payload;
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            finish(503, { ok: false, error: "upstream_readiness_invalid" });
+            return;
+          }
+          if (!upstreamReadinessMatches(config, payload)) {
+            finish(503, { ok: false, error: "upstream_readiness_mismatch" });
+            return;
+          }
         }
         finish(200, readinessDocument());
       });
@@ -256,7 +332,7 @@ function syntheticReady(req, res) {
   probe.once("error", () => {
     finish(503, { ok: false, error: "upstream_unavailable" });
   });
-  probe.end();
+  probe.end(mcpInitialize ?? undefined);
 }
 
 function readControlRequest(req) {

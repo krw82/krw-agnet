@@ -239,6 +239,9 @@ class DualProviderReleaseTest(unittest.TestCase):
         self.assertIn('"allowedOrigins": [origin]', installer)
         self.assertNotIn('"https://krw-agent.local"', installer)
         self.assertNotIn('"toolSessionReuse": "attested-stateless-v1"', installer)
+        self.assertIn('"guru": ("mcp_initialize", "/mcp"),', installer)
+        self.assertIn('config["upstreamReadinessMode"] = mode', installer)
+        self.assertIn('"upstreamMcpPath"] = endpoint_path', installer)
 
 
 def main() -> int:
