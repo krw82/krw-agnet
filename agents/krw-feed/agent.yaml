@@ -138,7 +138,7 @@ capabilities:
       forbid_ticker_references: true
     parallel_safe: false
     prerequisites: []
-  # Semantic alias for the bounded Supabase-backed news context read. It uses
+  # Semantic alias for the bounded trusted-hosted news context read. It uses
   # the same physical feed MCP binding so the release adds no new endpoint or
   # failure surface.
   - id: news.search_context

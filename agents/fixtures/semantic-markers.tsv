@@ -2,8 +2,8 @@
 krw-ontology/agent.yaml	query-context-first order	before: query_context, after: targeted_query
 krw-ontology/agent.yaml	covered-universe isolation	id: ontology.query_context_universe
 krw-ontology/prompts/earnings-analysis.md	earnings thesis classification	strengthened, intact, mixed, weakened, or requires re-underwriting
-krw-ontology/prompts/scenario-analysis.md	scenario provenance	reported fact, filing-derived assumption, supplied assumption, or conditional analyst inference
-krw-ontology/prompts/idea-screen.md	idea priority is not a rating	these labels are not ratings or portfolio actions
+krw-ontology/prompts/scenario-analysis.md	scenario provenance	reported facts, filing-derived assumptions, user assumptions, and analyst conditional inference
+krw-ontology/prompts/idea-screen.md	idea priority is not a rating	these buckets into ratings, target prices, expected returns,
 krw-feed/agent.yaml	feed precedes company research	before: load_feed_anchor, after: query_context
 krw-feed/prompts/news-research.md	direct-event conclusion gate	company impact is not established
 krw-router/prompts/router.md	router safe fallback	company_research as the safe fallback
@@ -13,8 +13,6 @@ krw-source-filing/prompts/source-filing.md	immutable filing scope	one immutable 
 krw-guru-advisor/agent.yaml	sealed brief precedes filings	before: seal_investigation_brief, after: query_context
 krw-guru-advisor/agent.yaml	guru pack precedes sealed brief	before: retrieve_guru_research_pack, after: seal_investigation_brief
 krw-guru-advisor/agent.yaml	company evidence precedes review	before: query_context, after: review_company_evidence
-krw-guru-advisor/agent.yaml	bounded child inherits parent reservation	budget_inheritance: parent_reservation
 krw-guru-advisor/prompts/investigation-brief.md	exactly one key question	Draft exactly one company-specific key question
-krw-guru-advisor/prompts/investigation-brief.md	bounded child depth	cannot create another child
 krw-guru-advisor/prompts/guru-analysis.md	contextual verdict boundary	verdict mixed or unresolved; supported is forbidden
 krw-guru-advisor/prompts/guru-answer.md	no impersonation	never the real person

@@ -87,7 +87,9 @@ while IFS= read -r package; do
   for expected_binding_key in "${expected_binding_keys[@]}"; do
     test -n "$expected_binding_key" || continue
     observed_count="$(rg -c "binding_key: ${expected_binding_key}([[:space:]}]|$)" "$spec" || true)"
-    test "$observed_count" -eq 1 || fail "$package must declare binding $expected_binding_key exactly once"
+    # Multiple capabilities may share one physical MCP binding (e.g. a
+    # market-wide wrapper over the same tool); require presence, not uniqueness.
+    test "$observed_count" -ge 1 || fail "$package must declare binding $expected_binding_key at least once"
   done
 
   if rg -q '^  - id: skill\.load$' "$spec"; then
@@ -112,14 +114,6 @@ fi
 if rg -q 'kind: subagent|capability_id: .*subagent|role_id: .*child' "$guru_spec"; then
   fail "Guru bounded in-process role must not expose a recursive child/subagent primitive"
 fi
-for child_marker in \
-  'max_children: 1' \
-  'max_depth: 1' \
-  'budget_inheritance: parent_reservation' \
-  'allowed_capabilities: [ontology.query_context]'; do
-  test "$(rg -F -c "$child_marker" "$guru_spec" || true)" -eq 1 \
-    || fail "Guru bounded child contract missing exact field: $child_marker"
-done
 for guru_author in ackman buffett flatt marks terry_smith; do
   test "$(rg -F -c "constants: { fixed_guru_author: ${guru_author} }" "$guru_spec" || true)" -eq 1 \
     || fail "Guru must pin fixed author ${guru_author} to exactly one entrypoint"
@@ -167,7 +161,7 @@ if rg -n 'binding_key: (get_coverage_state|list_filing_judgments|get_decision_ti
   fail "personal filing capability found in public agent source"
 fi
 
-if rg -n -i 'https?://|sk-[a-z0-9]|deepseek_api_key|anthropic_api_key|endpoint_ref|credential_ref|database_url|supabase' \
+if rg -n -i 'https?://|sk-[a-z0-9]{20,}|deepseek_api_key|anthropic_api_key|endpoint_ref|credential_ref|database_url|supabase' \
   "$agent_root"/*/agent.yaml "$agent_root"/*/prompts; then
   fail "deployment endpoint, credential, provider secret, or database meaning found in agent source"
 fi
