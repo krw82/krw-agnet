@@ -458,6 +458,40 @@ impl McpError {
     }
 }
 
+/// Delivery certainty policy for one JSON-RPC method at this transport layer.
+///
+/// Capability dispatch (`tools/call`) is strictly at-most-once: the same
+/// arguments can hit live feeds or market data, and a stream-level failure can
+/// surface after the server already acted, so re-POSTing risks duplicate
+/// dispatch against the evidence ledger. Server-lifecycle control reads such
+/// as `tools/list` are idempotent and keep the bounded transport retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestRetry {
+    AtMostOnce,
+    BoundedControl,
+}
+
+impl RequestRetry {
+    fn for_method(method: &str) -> Self {
+        if method == "tools/call" {
+            Self::AtMostOnce
+        } else {
+            Self::BoundedControl
+        }
+    }
+
+    const fn max_attempts(self) -> u32 {
+        match self {
+            Self::AtMostOnce => 1,
+            Self::BoundedControl => 3,
+        }
+    }
+
+    fn should_retry_after(self, attempt: u32, error: &McpError) -> bool {
+        attempt + 1 < self.max_attempts() && error.is_retryable()
+    }
+}
+
 pub struct McpHttpConfig {
     pub endpoint: String,
     pub readiness_endpoint: String,
@@ -750,13 +784,17 @@ impl McpHttpClient {
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let _permit = self.acquire().await?;
         // Bounded retry over the JSON-RPC POST for retryable transport failures
-        // only. A fresh JSON-RPC `id` (and request envelope) is minted on every
-        // attempt: retryable errors such as `MissingStreamResponse` and
-        // `IncompleteSse` occur *after* the server has observed the prior id, so
-        // reusing it would risk duplicate dispatch against non-idempotent tools
-        // or a spurious `ResponseIdMismatch`. On exhaustion the final error is
-        // propagated to the caller via `?`.
-        let max_attempts = 3u32;
+        // only, and only for idempotent server-lifecycle control reads.
+        // `tools/call` is strictly at-most-once at this layer: a retryable
+        // stream-level failure (`MissingStreamResponse`, `IncompleteSse`) can
+        // occur *after* the server has observed (and acted on) the request id,
+        // so a re-POST would risk duplicate dispatch against non-idempotent
+        // tools. Callers classify such failures as `MayHaveDispatched` and
+        // route them to run recovery instead. A fresh JSON-RPC `id` (and
+        // request envelope) is minted on every attempt: reusing the id would
+        // risk a spurious `ResponseIdMismatch`. On exhaustion the final error
+        // is propagated to the caller via `?`.
+        let retry = RequestRetry::for_method(method);
         let mut attempt = 0u32;
         let outcome = loop {
             let id = format!("request-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -780,7 +818,7 @@ impl McpHttpClient {
             {
                 Ok(outcome) => break outcome,
                 Err(error) => {
-                    if attempt + 1 >= max_attempts || !error.is_retryable() {
+                    if !retry.should_retry_after(attempt, &error) {
                         return Err(error);
                     }
                 }
@@ -1484,6 +1522,40 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn tools_call_is_at_most_once_even_on_retryable_stream_loss() {
+        assert_eq!(
+            RequestRetry::for_method("tools/call"),
+            RequestRetry::AtMostOnce
+        );
+        assert_eq!(RequestRetry::for_method("tools/call").max_attempts(), 1);
+        // The server may have observed (and acted on) the request id before a
+        // stream-level failure surfaces, so a second POST would risk duplicate
+        // dispatch against non-idempotent tools.
+        assert!(!RequestRetry::for_method("tools/call")
+            .should_retry_after(0, &McpError::MissingStreamResponse));
+        assert!(!RequestRetry::for_method("tools/call")
+            .should_retry_after(0, &McpError::IncompleteSse));
+    }
+
+    #[test]
+    fn control_reads_keep_the_bounded_transport_retry() {
+        assert_eq!(
+            RequestRetry::for_method("tools/list"),
+            RequestRetry::BoundedControl
+        );
+        assert_eq!(RequestRetry::for_method("tools/list").max_attempts(), 3);
+        assert!(RequestRetry::for_method("tools/list")
+            .should_retry_after(0, &McpError::MissingStreamResponse));
+        assert!(RequestRetry::for_method("tools/list")
+            .should_retry_after(1, &McpError::MissingStreamResponse));
+        assert!(!RequestRetry::for_method("tools/list")
+            .should_retry_after(2, &McpError::MissingStreamResponse));
+        // Non-retryable classification still fails fast for control reads.
+        assert!(!RequestRetry::for_method("tools/list")
+            .should_retry_after(0, &McpError::InvalidToolResult));
+    }
 
     #[test]
     fn mcp_debug_requires_an_explicit_truthy_value() {
