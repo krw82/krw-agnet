@@ -37,8 +37,8 @@ contracts:
   - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
 
 roles:
-  - { id: filing_reader, prompt_segments: [source_filing_contract], deterministic: false }
-  - { id: composer, prompt_segments: [source_filing_contract], deterministic: false }
+  - { id: filing_reader, prompt_segments: [source_filing_contract], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
+  - { id: composer, prompt_segments: [source_filing_contract], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

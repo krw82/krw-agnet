@@ -69,11 +69,11 @@ contracts:
   - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
 
 roles:
-  - { id: feed_reader, prompt_segments: [security_boundary, kernel_runtime, feed_source], deterministic: false }
-  - { id: news_planner, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false }
-  - { id: news_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false }
-  - { id: market_move_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, market_move], deterministic: false }
-  - { id: composer, prompt_segments: [security_boundary, kernel_runtime, feed_source, feed_answer], deterministic: false }
+  - { id: feed_reader, prompt_segments: [security_boundary, kernel_runtime, feed_source], deterministic: false, execution: { reasoning: direct, max_output_tokens: 4096 } }
+  - { id: news_planner, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
+  - { id: news_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
+  - { id: market_move_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, market_move], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
+  - { id: composer, prompt_segments: [security_boundary, kernel_runtime, feed_source, feed_answer], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

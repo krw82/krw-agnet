@@ -29,9 +29,9 @@ contracts:
   - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
 
 roles:
-  - { id: planner, prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner], deterministic: false }
-  - { id: analyst, prompt_segments: [security_boundary, kernel_runtime, company_scope, evidence_analyst], deterministic: false }
-  - { id: composer, prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, answer_composer], deterministic: false }
+  - { id: planner, prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
+  - { id: analyst, prompt_segments: [security_boundary, kernel_runtime, company_scope, evidence_analyst], deterministic: false, execution: { reasoning: standard, max_output_tokens: 16384 } }
+  - { id: composer, prompt_segments: [security_boundary, kernel_runtime, evidence_analyst, answer_composer], deterministic: false, execution: { reasoning: direct, max_output_tokens: 16384 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

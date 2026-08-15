@@ -150,7 +150,7 @@ roles:
     # 8,192 cut a real multi-objective analysis off before its tool decision.
     # This changes no workflow step or tool allowance; it gives the existing
     # analysis turn enough room to finish.
-    execution: { max_output_tokens: 16384 }
+    execution: { reasoning: standard, max_output_tokens: 16384 }
   - id: composer
     # The composer cannot call capabilities or load more skills. Giving it the
     # ontology/skill catalogs only consumes context and exposes backend
@@ -158,16 +158,12 @@ roles:
     # compacted evidence projection and these answer-writing references.
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract]
     deterministic: false
-    # Composition still has to reconcile periods, metric scope, evidence
-    # limits, and investor meaning. Let the existing final turn use the
-    # provider's hidden reasoning so it emits a finished answer rather than a
-    # visible draft/checklist. This does not add a model turn.
-    # GLM keeps deep reasoning and visible Markdown under the same output
-    # ceiling. A real complex company answer exhausted 8,192 tokens repeatedly
-    # before emitting a complete response. Use the full 16,384-token company
-    # answer envelope; the workflow-specific reserve and budget profile retain
-    # two complete composition attempts without changing any tool or model turn.
-    execution: { max_output_tokens: 16384 }
+    # Evidence selection and gap analysis are complete before this state. The
+    # composer is a bounded visible-output transformation, so it must not
+    # spend the answer turn on provider-private reasoning. This also prevents
+    # DeepSeek from consuming the entire max_tokens ceiling before emitting
+    # Markdown because its Anthropic endpoint ignores thinking.budget_tokens.
+    execution: { reasoning: direct, max_output_tokens: 16384 }
   - id: earnings_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
@@ -175,7 +171,7 @@ roles:
   - id: earnings_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, earnings_skill_catalog, evidence_analyst, earnings_analysis]
     deterministic: false
-    execution: { max_output_tokens: 8192 }
+    execution: { reasoning: standard, max_output_tokens: 8192 }
   - id: scenario_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false
@@ -183,7 +179,7 @@ roles:
   - id: scenario_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, scenario_skill_catalog, evidence_analyst, scenario_analysis]
     deterministic: false
-    execution: { max_output_tokens: 8192 }
+    execution: { reasoning: standard, max_output_tokens: 8192 }
   - id: idea_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
@@ -191,7 +187,7 @@ roles:
   - id: idea_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, idea_skill_catalog, evidence_analyst, idea_screen]
     deterministic: false
-    execution: { max_output_tokens: 8192 }
+    execution: { reasoning: standard, max_output_tokens: 8192 }
   - id: wide_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, research_planner_skill, research_scope]
     deterministic: false
@@ -199,23 +195,23 @@ roles:
   - id: wide_analyst
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, evidence_analyst, wide_research_analysis]
     deterministic: false
-    execution: { max_output_tokens: 8192 }
+    execution: { reasoning: standard, max_output_tokens: 8192 }
   - id: earnings_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, earnings_output_contract]
     deterministic: false
-    execution: { max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: scenario_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, scenario_output_contract]
     deterministic: false
-    execution: { max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: idea_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, idea_output_contract]
     deterministic: false
-    execution: { max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: wide_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, wide_research_output_contract]
     deterministic: false
-    execution: { max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 4096 }
   - id: verifier
     prompt_segments: []
     deterministic: true

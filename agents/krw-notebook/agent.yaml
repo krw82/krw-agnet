@@ -30,7 +30,7 @@ contracts:
   - { id: notebook-transform/v2, schema_ref: canonical:krw-agent/notebook-transform-v2, content_hash: "sha256:2ebc0aac5e25631da1f0a93754c477904caf2f598d888e545d807159d1a2fb56", semantic_authority: krw-agent-product, max_items: 5 }
 
 roles:
-  - { id: notebook_editor, prompt_segments: [notebook_contract], deterministic: false }
+  - { id: notebook_editor, prompt_segments: [notebook_contract], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
 prompt_segments:

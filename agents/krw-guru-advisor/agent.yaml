@@ -83,8 +83,8 @@ contracts:
   - { id: krw-guru-evidence-review-result/v1, schema_ref: canonical:krw-guru/krw-guru-evidence-review-result-v1, content_hash: "sha256:8194a1f1fe16c735a946cb936a12d25f5e7842041f211b5d4e25ba4563a26175", semantic_authority: krw-guru-default-workflow, max_items: 1 }
 
 roles:
-  - { id: guru_retrieval, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval], deterministic: false }
-  - { id: investigation_author, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval, investigation_brief], deterministic: false }
+  - { id: guru_retrieval, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval], deterministic: false, execution: { reasoning: direct, max_output_tokens: 4096 } }
+  - { id: investigation_author, prompt_segments: [security_boundary, kernel_runtime, guru_retrieval, investigation_brief], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
   - id: company_evidence_researcher
     prompt_segments: [security_boundary, kernel_runtime, skill_catalog, company_evidence_research, investigation_brief, guru_analysis]
     deterministic: false
@@ -93,7 +93,7 @@ roles:
     # Evidence selection, countercase comparison, and chain interpretation are
     # analyst work, so keep GLM thinking enabled with the same bounded ceiling
     # as the ordinary company analyst.
-    execution: { max_output_tokens: 8192 }
+    execution: { reasoning: deep, max_output_tokens: 8192 }
   - id: guru_composer
     prompt_segments: [security_boundary, kernel_runtime, guru_analysis, guru_answer, author_style]
     deterministic: false

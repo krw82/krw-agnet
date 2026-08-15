@@ -2967,6 +2967,10 @@ where
             Some(checkpoint) => {
                 let declared: ActiveRunCheckpoint =
                     serde_json::from_slice(&checkpoint.state_bytes)?;
+                // The direct-answer retry is a durable run-local control bit,
+                // not a workflow transition. Restore it before the
+                // equivalence check without contaminating `state_trace`.
+                state.direct_answer_retry_requested = declared.direct_answer_retry_requested;
                 // The duration accumulators (`provider_total_ms`,
                 // `capability_total_ms`, `compact_total_ms`) are
                 // observability-only fields: replay rebuilds kernel state
@@ -3909,14 +3913,17 @@ where
                     "finish reason",
                 ));
             }
-            if episode.finish_reason == "length" && state.reserve_repair()? {
+            if episode.finish_reason == "length"
+                && state.current_operation_emits_answer(input.image)?
+                && !state.direct_answer_retry_requested()
+            {
                 // A truncated final answer is neither evidence nor a useful
-                // replay turn. Keep it out of the next context, retain only
-                // the closed repair instruction, and let the same model
-                // complete the answer from admitted evidence.
-                let output_contract =
-                    ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
-                state.append_repair_feedback(&output_contract.id, "answer_output_truncated");
+                // replay turn. Keep it out of the next context and switch the
+                // next bounded attempt to direct visible-output mode. This is
+                // deliberately not a generic repair reservation: a planner
+                // repair must not consume the only safe final-answer fallback.
+                state.request_direct_answer_retry();
+                state.append_direct_answer_retry_feedback("answer_output_truncated");
                 state.check_conversation_limit(self.config.max_conversation_bytes)?;
                 return Ok(None);
             }
@@ -3936,11 +3943,10 @@ where
                     "final content",
                 ));
             }
-            _ if state.reserve_repair()? => {
-                let output_contract =
-                    ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
+            _ if !state.direct_answer_retry_requested() => {
+                state.request_direct_answer_retry();
                 state.append_assistant(episode);
-                state.append_repair_feedback(&output_contract.id, "final_output_missing");
+                state.append_direct_answer_retry_feedback("final_output_missing");
                 state.check_conversation_limit(self.config.max_conversation_bytes)?;
                 return Ok(None);
             }
@@ -4762,6 +4768,7 @@ struct ActiveRun {
     compaction_receipts: Vec<CompactionReceipt>,
     last_provider_episode_hash: Option<ContentHash>,
     state_trace: Vec<String>,
+    direct_answer_retry_requested: bool,
     research_planner: ResearchPlanner,
     derived_ticker_scope: Option<DerivedTickerScope>,
     runtime_timings: Option<Arc<RuntimeStageTimings>>,
@@ -4851,7 +4858,7 @@ struct RecoveryDetailV1 {
     hint: String,
 }
 
-const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 12;
+const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 13;
 const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4875,9 +4882,10 @@ const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "logical_action_keys": {"items": {"type": "string"}, "type": "array"},
     "prompt_receipt_hashes": {"items": {"type": "string"}, "type": "array"},
     "research_planner_hash": {"type": "string"},
-    "schema_version": {"const": 12},
+    "schema_version": {"const": 13},
     "session_memory_hash": {"type": ["string", "null"]},
     "state_trace": {"items": {"type": "string"}, "type": "array"},
+    "direct_answer_retry_requested": {"type": "boolean"},
     "tool_schema_hash": {"type": "string"},
     "usage": {"type": "object"}
   },
@@ -4885,6 +4893,7 @@ const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "schema_version",
     "interpreter",
     "state_trace",
+    "direct_answer_retry_requested",
     "usage",
     "capability_calls",
     "completed_capabilities",
@@ -4917,6 +4926,7 @@ struct ActiveRunCheckpoint {
     schema_version: u16,
     interpreter: InterpreterCheckpointV1,
     state_trace: Vec<String>,
+    direct_answer_retry_requested: bool,
     usage: BudgetUsage,
     capability_calls: BTreeMap<String, u16>,
     completed_capabilities: BTreeSet<String>,
@@ -5019,6 +5029,7 @@ impl ActiveRun {
             compaction_receipts: Vec::new(),
             last_provider_episode_hash: None,
             state_trace: vec![initial_state],
+            direct_answer_retry_requested: false,
             research_planner: ResearchPlanner::new(ScoringWeights::default())?,
             derived_ticker_scope: None,
             runtime_timings,
@@ -6166,6 +6177,24 @@ impl ActiveRun {
         )));
     }
 
+    /// Markdown composition is intentionally not JSON. Keep its bounded
+    /// retry instruction separate from structured repair feedback so a
+    /// length/empty-content recovery cannot ask the composer to emit a
+    /// literal contract object.
+    fn append_direct_answer_retry_feedback(&mut self, code: &'static str) {
+        self.messages.push(RunEngineMessage::user(format!(
+            "KRW kernel could not accept the previous final answer ({code}). Write the complete investor-facing answer again in plain Markdown. Do not output JSON, internal workflow details, or a checklist; use only the evidence already admitted in this run."
+        )));
+    }
+
+    fn direct_answer_retry_requested(&self) -> bool {
+        self.direct_answer_retry_requested
+    }
+
+    fn request_direct_answer_retry(&mut self) {
+        self.direct_answer_retry_requested = true;
+    }
+
     fn reserve_provider_turn(&mut self) -> Result<(), EngineError> {
         self.usage.provider_turns = self
             .usage
@@ -7025,6 +7054,7 @@ impl ActiveRun {
             schema_version: ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION,
             interpreter: self.interpreter.checkpoint()?,
             state_trace: self.state_trace.clone(),
+            direct_answer_retry_requested: self.direct_answer_retry_requested,
             usage: self.usage.clone(),
             capability_calls: self.capability_calls.clone(),
             completed_capabilities: self.completed_capabilities.clone(),
@@ -10290,6 +10320,8 @@ fn build_provider_request(
         return Err(EngineError::NoRemainingOutputBudget);
     }
     let turn_policy = provider_turn_policy(input, state, remaining_output)?;
+    let role_id = state.current_role_id()?;
+    let direct_answer_retry = state.direct_answer_retry_requested();
     let context = state
         .context_planner
         .for_request(input.request, state.interpreter.current_state())?;
@@ -10466,6 +10498,11 @@ fn build_provider_request(
         "provider_request",
     )?;
     tracing::debug!(
+        role_id = %role_id,
+        answer_output = state.current_operation_emits_answer(input.image)?,
+        direct_answer_retry,
+        thinking = ?turn_policy.thinking,
+        reasoning_effort = ?turn_policy.reasoning_effort,
         request_bytes = footprint.canonical_bytes,
         input_tokens_upper_bound = footprint.input_tokens_upper_bound,
         provider_context_tokens = input.snapshot.provider_max_context_tokens,
@@ -10586,6 +10623,12 @@ fn provider_turn_policy(
     let (mut thinking, mut reasoning_effort) = match role.execution.reasoning {
         RoleReasoningMode::Inherit => (input.snapshot.thinking, input.snapshot.reasoning_effort),
         RoleReasoningMode::Direct => (ThinkingMode::Disabled, None),
+        // The image declares semantic tiers; the provider wire contract only
+        // exposes the supported high/max effort values. Both GLM and
+        // DeepSeek resolve these values through the same immutable request
+        // snapshot and do not require a new model profile.
+        RoleReasoningMode::Standard => (ThinkingMode::Enabled, Some(ReasoningEffort::High)),
+        RoleReasoningMode::Deep => (ThinkingMode::Enabled, Some(ReasoningEffort::Max)),
     };
     let answer_output = state.current_operation_emits_answer(input.image)?;
     let available_output_tokens = if answer_output {
@@ -10609,6 +10652,18 @@ fn provider_turn_policy(
     }
     if max_output_tokens == 0 {
         return Err(EngineError::NoRemainingOutputBudget);
+    }
+
+    // A previous answer-producing episode was cut off before it emitted
+    // visible content. The recovery request must be a direct visible-output
+    // turn, especially for DeepSeek where the Anthropic endpoint ignores
+    // thinking.budget_tokens and can spend the whole max_tokens ceiling on
+    // private reasoning again. The retry bit is part of the durable
+    // checkpoint, so a daemon restart cannot accidentally restore the
+    // high-thinking loop.
+    if answer_output && state.direct_answer_retry_requested() {
+        thinking = ThinkingMode::Disabled;
+        reasoning_effort = None;
     }
 
     // Once the workflow is already at its answer-producing state, a tiny
@@ -15081,12 +15136,15 @@ mod tests {
         assert_eq!(requests[0].max_tokens, 512);
         assert_eq!(requests[1].model, GLM_MODEL_ID);
         assert_eq!(requests[1].thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(requests[1].max_tokens, 3_072);
+        assert_eq!(requests[1].max_tokens, 8_192);
         assert_eq!(requests[2].model, GLM_MODEL_ID);
         assert_eq!(requests[2].thinking.kind, ThinkingMode::Enabled);
         assert_eq!(requests[2].max_tokens, 16_384);
         assert_eq!(requests[3].model, GLM_MODEL_ID);
-        assert_eq!(requests[3].thinking.kind, ThinkingMode::Enabled);
+        // The composer is a bounded visible-output transformation
+        // (`reasoning: direct` in the agent image); it never spends the answer
+        // turn on provider-private reasoning.
+        assert_eq!(requests[3].thinking.kind, ThinkingMode::Disabled);
         assert_eq!(requests[3].max_tokens, 16_384);
         assert!(requests[3].tools.is_empty());
 
@@ -17237,7 +17295,7 @@ mod tests {
         );
 
         assert_eq!(requests[1].thinking.kind, ThinkingMode::Disabled);
-        assert_eq!(requests[1].max_tokens, 3_072);
+        assert_eq!(requests[1].max_tokens, 8_192);
         assert_eq!(
             requests[1].tool_choice,
             Some(ToolChoice::Tool {
@@ -17329,7 +17387,7 @@ mod tests {
         assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 2);
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests[0].max_tokens, 512);
-        assert_eq!(requests[1].max_tokens, 3_072);
+        assert_eq!(requests[1].max_tokens, 8_192);
         // Even after 100 + 2,000 tokens before the analyst, the 56k company
         // envelope leaves the full declared analysis and composition caps.
         assert_eq!(requests[2].max_tokens, 16_384);
@@ -17849,7 +17907,11 @@ mod tests {
         });
         let rig = engine_with_script(script, None, false);
         let outcome = rig.engine.run(fixture.input()).await.unwrap();
-        assert_eq!(outcome.answer_bundle.usage.repairs, 1);
+        // A malformed final answer no longer consumes a generic repair
+        // reservation: the bounded retry switches the next attempt to direct
+        // visible-output mode so a planner repair can never starve the only
+        // safe final-answer fallback.
+        assert_eq!(outcome.answer_bundle.usage.repairs, 0);
         assert_eq!(outcome.answer_bundle.usage.provider_turns, 5);
         let requests = rig.provider.requests.lock().unwrap();
         assert!(
@@ -17899,7 +17961,7 @@ mod tests {
     #[test]
     fn active_run_checkpoint_has_one_typed_workflow_authority() {
         let schema: Value = serde_json::from_str(ACTIVE_RUN_CHECKPOINT_SCHEMA).unwrap();
-        assert_eq!(schema["properties"]["schema_version"]["const"], 12);
+        assert_eq!(schema["properties"]["schema_version"]["const"], 13);
         assert!(schema["properties"].get("interpreter").is_some());
         assert!(schema["properties"].get("decision_projection").is_none());
         assert!(

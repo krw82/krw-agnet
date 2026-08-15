@@ -259,14 +259,21 @@ impl RoleExecutionPolicy {
     }
 }
 
-/// Whether a role inherits the entrypoint's deliberation mode or performs a
-/// bounded direct transformation of already admitted evidence.
+/// Image-owned reasoning intent for a model role.
+///
+/// `Standard` and `Deep` are provider-neutral meanings. The deployment
+/// resolver maps them to the provider's supported effort values (currently
+/// `high` and `max`). Keeping this semantic layer in the image lets the same
+/// workflow express its intent for both GLM and DeepSeek without embedding a
+/// provider name in the agent specification.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleReasoningMode {
     #[default]
     Inherit,
     Direct,
+    Standard,
+    Deep,
 }
 
 /// Closed child execution declaration. It is intentionally not a recursive
@@ -4463,7 +4470,7 @@ mod tests {
             .iter()
             .find(|role| role.id == "composer")
             .unwrap();
-        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Direct);
         assert_eq!(composer.execution.max_output_tokens, Some(16384));
         assert!(
             !composer
@@ -4486,7 +4493,7 @@ mod tests {
             .iter()
             .find(|role| role.id == "analyst")
             .unwrap();
-        assert_eq!(analyst.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(analyst.execution.reasoning, RoleReasoningMode::Standard);
         assert_eq!(analyst.execution.max_output_tokens, Some(16384));
         let orienter = image
             .body
@@ -4709,7 +4716,7 @@ mod tests {
             .find(|role| role.id == "company_evidence_researcher")
             .expect("company-evidence research role");
         assert!(role.bounded_child.is_none());
-        assert_eq!(role.execution.reasoning, RoleReasoningMode::Inherit);
+        assert_eq!(role.execution.reasoning, RoleReasoningMode::Deep);
         assert_eq!(role.execution.max_output_tokens, Some(8192));
     }
 
