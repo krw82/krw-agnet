@@ -1195,6 +1195,7 @@ dependencies = [
  "krw-agent-image",
  "krw-agent-kernel",
  "krw-agent-persistence",
+ "krw-agent-planning",
  "krw-agent-protocol",
  "krw-agent-provider-wire",
  "krw-agent-research-planner",

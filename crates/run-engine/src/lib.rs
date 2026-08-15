@@ -45,8 +45,8 @@ use capability_dispatch::{
     violation_to_detail,
 };
 use finalization::{
-    derive_result_scope_projection, finalize_after_exhausted_ingest_successor,
-    presentation_pack_matches_result,
+    derive_result_scope_projection, error_allows_ledger_fallback,
+    finalize_after_exhausted_ingest_successor, presentation_pack_matches_result,
 };
 use recovery::{
     ModelRecoveryDirective, RecoveryDetailV1, RecoveryEnvelopeV1, model_recovery_directive,
@@ -67,7 +67,10 @@ use validation::validate_product_context;
 #[cfg(test)]
 use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 #[cfg(test)]
-use finalization::{parse_typed_json_content, sanitize_answer, validate_product_output_linkage};
+use finalization::{
+    fallback_answer_from_ledger, parse_typed_json_content, run_outcome_after_commit,
+    sanitize_answer, validate_product_output_linkage,
+};
 #[cfg(test)]
 use capability_dispatch::{
     assemble_company_context_request, exact_required_gap_arguments, model_research_gap_hint,
@@ -105,14 +108,15 @@ use krw_agent_bounded_child::{
     CancelChildMutation, CompleteChildMutation, InvokeChildMutation, ReserveChildMutation,
 };
 use krw_agent_contracts::{
-    ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1, DISPLAY_PLAN_V2,
-    DisplayPlanV2, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult, KRW_FEED_CONTEXT_V2,
-    KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_RESULT_V1,
-    KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1, KRW_FILING_READ_DOCUMENT_RESULT_V1,
-    KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1,
-    KRW_FORM4_TRANSACTIONS_RESULT_V1, KRW_GURU_COMPANY_BRIEF_RESULT_V1,
-    KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1, NORMALIZED_CAPABILITY_RESULT_V1,
-    NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2, NotebookTransformInputV1,
+    ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, FINAL_MARKDOWN_V1, CanonicalDisplaySourceV1,
+    DISPLAY_PLAN_V2, DisplayPlanV2, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult,
+    KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1,
+    KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1,
+    KRW_FILING_READ_DOCUMENT_RESULT_V1, KRW_FILING_READ_SECTION_RESULT_V1,
+    KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1, KRW_FORM4_TRANSACTIONS_RESULT_V1,
+    KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1,
+    NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2,
+    NotebookTransformInputV1,
     NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4,
     RESEARCH_STATE_V2, ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
     ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1,
@@ -3361,6 +3365,12 @@ mod tests {
         fence: u64,
         cancel_generation: u64,
         recovery: Mutex<RecoverySnapshot>,
+        /// Number of leading `commit_final` calls that fail with a
+        /// deterministic NotDispatched outage. Crash-replay fixtures use this
+        /// to keep their interrupted first phase on the original dependency
+        /// error: the storage outage outlives the ledger-fallback window, so
+        /// no fallback final can be committed either.
+        final_commit_faults: AtomicUsize,
     }
 
     impl ScriptedPersistence {
@@ -3377,6 +3387,7 @@ mod tests {
                 fence: 7,
                 cancel_generation: 0,
                 recovery: Mutex::new(RecoverySnapshot::Fresh),
+                final_commit_faults: AtomicUsize::new(0),
             }
         }
 
@@ -3684,6 +3695,25 @@ mod tests {
             &self,
             final_value: &DurableFinal,
         ) -> Result<FinalStatus, DependencyFailure> {
+            let mut remaining = self.final_commit_faults.load(Ordering::SeqCst);
+            while remaining > 0 {
+                match self.final_commit_faults.compare_exchange(
+                    remaining,
+                    remaining - 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => {
+                        return Err(DependencyFailure::redacted(
+                            "scripted_final_outage",
+                            "storage outage outlived the fallback window",
+                            false,
+                            DeliveryCertainty::NotDispatched,
+                        ));
+                    }
+                    Err(actual) => remaining = actual,
+                }
+            }
             self.fail(FailurePoint::Final)?;
             let mut state = self.state.lock().unwrap();
             let status =
@@ -4945,6 +4975,361 @@ mod tests {
         assert!(bundle_json.get("completion").is_none());
     }
 
+    /// Wave 4c: dependency exhaustion mid-research must commit a deterministic
+    /// ledger fallback final (`UnavailableButAnswerable`), not `run.failed`.
+    /// Two capability calls admit evidence plus a committed metric
+    /// calculation; every later provider turn fails with a NotDispatched
+    /// dependency failure (script exhausted).
+    #[tokio::test]
+    async fn dependency_exhaustion_commits_deterministic_ledger_fallback_final() {
+        let mut fixture = fixture();
+        fixture.request.budget.max_output_tokens = 56_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let calculation = Calculation {
+            calculation_id: "calc.fixture.services.revenue".into(),
+            expression: "reported_value".into(),
+            input_evidence_ids: vec!["evidence-2".into()],
+            output: serde_json::json!(416.2),
+            unit: Some("USD millions".into()),
+            rounding: None,
+            subject: Some("AAPL".into()),
+            metric: Some("services_revenue".into()),
+            period: Some("FY2025".into()),
+            currency: Some("USD".into()),
+        };
+        let build_rig = || {
+            let script = VecDeque::from([
+                company_context_tool_call("company-context"),
+                query_context_tool_call("call-1", &fixture_research_state()["plan"]),
+            ]);
+            let usage_script = (0..script.len()).map(|_| scripted_token_usage(5)).collect();
+            engine_with_script_usage_results_calculations_and_presentation(
+                script,
+                usage_script,
+                VecDeque::from([fixture_company_context(), fixture_research_state()]),
+                true,
+                None,
+                false,
+                Vec::new(),
+                vec![Vec::new(), vec![calculation.clone()]],
+            )
+        };
+        let rig = build_rig();
+        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
+            panic!(
+                "dependency exhaustion must commit the ledger fallback, got {error:?}; log={:?}",
+                *rig.log.lock().unwrap()
+            )
+        });
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::UnavailableButAnswerable
+        );
+        assert!(rig.log.lock().unwrap().contains(&"final_committed".to_owned()));
+        {
+            let state = rig.persistence.state.lock().unwrap();
+            assert_eq!(state.final_hash.as_ref(), Some(&outcome.answer_bundle_hash));
+        }
+
+        let markdown = outcome.answer_bundle.rendered_markdown.clone();
+        // Deterministic rendering: identical inputs commit byte-identical
+        // Markdown even though wall-clock timings differ between runs.
+        let second = build_rig();
+        let second_outcome = second.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(
+            second_outcome.answer_bundle.rendered_markdown, markdown,
+            "ledger fallback Markdown must be a pure function of the ledger"
+        );
+        // The fallback cites only evidence that is actually in the ledger.
+        let allowed: BTreeSet<String> =
+            ["evidence-1".to_owned(), "evidence-2".to_owned()].into();
+        assert!(!outcome.answer_bundle.evidence_ids.is_empty());
+        assert!(
+            outcome
+                .answer_bundle
+                .evidence_ids
+                .iter()
+                .all(|id| allowed.contains(id))
+        );
+        // Key ledger facts (facts and committed metric lineage numbers).
+        // Inline Markdown escaping mirrors the evidence renderer, so
+        // underscore-bearing predicates appear escaped.
+        assert!(markdown.contains("services\\_growth\\_driver"));
+        assert!(markdown.contains("416.2"));
+        assert!(markdown.contains("services\\_revenue"));
+        assert!(markdown.contains("FY2025"));
+        // The limitation notice names the dependency reason and explicitly
+        // does not present the outage as company non-disclosure.
+        assert!(markdown.contains("dependency_unavailable"));
+        assert!(!markdown.contains("미공시"));
+        assert!(!markdown.contains("공시하지 않"));
+        // No internal identifiers, paths, or URLs leak into public Markdown.
+        assert!(!markdown.contains("run-fixture"));
+        assert!(!markdown.contains("tenant-fixture"));
+        assert!(!markdown.contains("http"));
+        assert!(!markdown.contains("/Users/"));
+    }
+
+    /// Wave 4c: a dependency failure before any evidence was admitted commits
+    /// the empty-ledger notice with the `dependency_unavailable` reason code,
+    /// still as a committed final rather than `run.failed`.
+    #[tokio::test]
+    async fn no_evidence_dependency_failure_commits_dependency_unavailable_notice() {
+        let fixture = fixture();
+        // The provider dies on the very first turn: no capability call ever
+        // ran, so the ledger is empty and the reason must be the dependency
+        // outage, never company non-disclosure or an empty retrieval.
+        let rig = engine_with_script_and_results(VecDeque::new(), VecDeque::new(), true, None, false);
+        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
+            panic!("empty-ledger dependency death must commit a notice, got {error:?}")
+        });
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::UnavailableButAnswerable
+        );
+        assert_eq!(outcome.evidence_count, 0);
+        assert!(outcome.answer_bundle.evidence_ids.is_empty());
+        let markdown = &outcome.answer_bundle.rendered_markdown;
+        assert!(markdown.contains("dependency_unavailable"));
+        assert!(!markdown.contains("retrieval_empty"));
+        assert!(!markdown.contains("services_growth_driver"));
+        assert!(!markdown.contains("미공시"));
+        assert!(!markdown.contains("공시하지 않"));
+        assert!(!markdown.contains("run-fixture"));
+    }
+
+    /// Wave 4c: the empty-ledger fallback distinguishes a dependency outage
+    /// (no capability result ever committed) from a retrieval that ran and
+    /// returned nothing. `not_disclosed`, `not_indexed`, and `out_of_scope`
+    /// require server-side coverage verdicts the engine cannot derive here
+    /// and are deliberately not invented.
+    #[test]
+    fn ledger_fallback_reason_separates_dependency_unavailable_from_retrieval_empty() {
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let outage = fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 0);
+        assert_eq!(outage.reason_code, "dependency_unavailable");
+        assert!(outage.markdown.contains("dependency_unavailable"));
+        assert!(!outage.markdown.contains("retrieval_empty"));
+
+        let retrieval_ran_dry =
+            fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 3);
+        assert_eq!(retrieval_ran_dry.reason_code, "retrieval_empty");
+        assert!(retrieval_ran_dry.markdown.contains("retrieval_empty"));
+
+        // Deterministic bytes for identical inputs.
+        let again = fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 0);
+        assert_eq!(outage.markdown, again.markdown);
+    }
+
+    /// Wave 4c: with admitted evidence the renderer keeps the question scope,
+    /// direct facts, committed calculations, limited related implications,
+    /// citation footnotes, and period warnings — all only from the ledger.
+    #[test]
+    fn ledger_fallback_renders_only_admitted_material_deterministically() {
+        let mut ledger = EvidenceLedger::default();
+        let mut direct = sanitizer_evidence("evidence-direct");
+        // Distinct payload hashes keep the two records from deduplicating.
+        direct.content_hash = ContentHash::sha256("direct-payload");
+        direct.payload_ref = ContentHash::sha256("direct-payload");
+        direct.facts = vec![NormalizedFact {
+            subject: "AAPL".into(),
+            predicate: "services_growth_driver".into(),
+            value: serde_json::json!(true),
+            unit: None,
+            period: Some("FY2025".into()),
+        }];
+        ledger.append(direct).expect("direct evidence");
+        let mut related = sanitizer_evidence("evidence-related");
+        related.directness = Directness::Related;
+        related.strong_claim_allowed = false;
+        related.content_hash = ContentHash::sha256("related-payload");
+        related.payload_ref = ContentHash::sha256("related-payload");
+        related.facts = vec![NormalizedFact {
+            subject: "AAPL".into(),
+            predicate: "services_attachment".into(),
+            value: serde_json::json!(false),
+            unit: None,
+            period: Some("FY2025".into()),
+        }];
+        ledger.append(related).expect("related evidence");
+        ledger
+            .extend_calculations([Calculation {
+                calculation_id: "calc.fixture.services.revenue".into(),
+                expression: "reported_value".into(),
+                input_evidence_ids: vec!["evidence-direct".into()],
+                output: serde_json::json!(416.2),
+                unit: Some("USD millions".into()),
+                rounding: None,
+                subject: Some("AAPL".into()),
+                metric: Some("services_revenue".into()),
+                period: Some("FY2025".into()),
+                currency: Some("USD".into()),
+            }])
+            .expect("calculation");
+        let calculations = BTreeMap::from([(
+            "calc.fixture.services.revenue".to_owned(),
+            ledger
+                .calculation("calc.fixture.services.revenue")
+                .unwrap()
+                .clone(),
+        )]);
+
+        let answer = fallback_answer_from_ledger(
+            "애플 서비스 분석?",
+            &["AAPL".to_owned()],
+            &ledger,
+            &calculations,
+            None,
+            2,
+        );
+        assert_eq!(answer.reason_code, "dependency_unavailable");
+        assert_eq!(
+            answer.cited_evidence_ids,
+            vec!["evidence-direct".to_owned(), "evidence-related".to_owned()]
+        );
+        assert!(answer.markdown.contains("애플 서비스 분석?"));
+        assert!(answer.markdown.contains("AAPL"));
+        assert!(answer.markdown.contains("services\\_growth\\_driver"));
+        assert!(answer.markdown.contains("416.2"));
+        assert!(answer.markdown.contains("services\\_revenue"));
+        assert!(answer.markdown.contains("FY2025"));
+        assert!(answer.markdown.contains("dependency_unavailable"));
+        assert!(!answer.markdown.contains("미공시"));
+        // Deterministic: same ledger, same bytes.
+        let again = fallback_answer_from_ledger(
+            "애플 서비스 분석?",
+            &["AAPL".to_owned()],
+            &ledger,
+            &calculations,
+            None,
+            2,
+        );
+        assert_eq!(answer.markdown, again.markdown);
+        assert_eq!(answer.cited_evidence_ids, again.cited_evidence_ids);
+    }
+
+    /// Wave 4c: after the durable final commit succeeds, a workflow-edge
+    /// failure must not flip the run outcome. The engine builds a real
+    /// `ActiveRun` left at its initial state, where no Terminal transition
+    /// can resolve — exactly the post-commit failure class that used to
+    /// escape `finish` and mark an already-committed run as failed.
+    #[test]
+    fn workflow_edge_failure_after_durable_commit_does_not_flip_the_final_outcome() {
+        let fixture = fixture();
+        let program = Arc::new(
+            ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap(),
+        );
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.enter_initial_model_state().unwrap();
+        let bundle = AnswerBundle {
+            schema_version: 4,
+            output_contract: ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap(),
+            output: Value::String("fallback notice".into()),
+            evidence_ledger_hash: ContentHash::sha256("ledger"),
+            evidence_ids: Vec::new(),
+            answer_ir: None,
+            rendered_content: "fallback notice".into(),
+            rendered_markdown: "fallback notice".into(),
+            visualizations: Vec::new(),
+            completion: ResearchCompletion::UnavailableButAnswerable,
+            usage: state.usage.clone(),
+            agent_image_hash: fixture.image.content_hash.clone(),
+        };
+        let bundle_hash = ContentHash::sha256("answer-bundle");
+        let expected_bundle_hash = bundle_hash.clone();
+        // The terminal edge cannot resolve from the initial state; the
+        // outcome must still be returned as a committed success.
+        let outcome = run_outcome_after_commit(
+            &mut state,
+            ExecutionState::Committing,
+            &Value::String("fallback notice".into()),
+            ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap(),
+            bundle,
+            bundle_hash,
+            FinalStatus::Committed,
+        );
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert_eq!(outcome.answer_bundle_hash, expected_bundle_hash);
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::UnavailableButAnswerable
+        );
+    }
+
+    /// Wave 4c: only dependency/budget-class terminal escapes may take the
+    /// ledger fallback. Integrity, cancellation, fencing, and ambiguous
+    /// commits keep failing the run.
+    #[test]
+    fn only_dependency_and_budget_escapes_allow_the_ledger_fallback() {
+        use krw_agent_execution_contracts::DeliveryCertainty;
+        let dependency = |component: &'static str| EngineError::Dependency {
+            component,
+            failure: DependencyFailure::redacted(
+                "code",
+                "detail",
+                false,
+                DeliveryCertainty::NotDispatched,
+            ),
+        };
+        assert!(error_allows_ledger_fallback(&dependency("provider")));
+        assert!(error_allows_ledger_fallback(&dependency(
+            "capability.invoke"
+        )));
+        assert!(error_allows_ledger_fallback(&dependency(
+            "persistence.checkpoint_run_state"
+        )));
+        assert!(error_allows_ledger_fallback(&EngineError::DeadlineExceeded(
+            "provider"
+        )));
+        assert!(error_allows_ledger_fallback(
+            &EngineError::NoRemainingOutputBudget
+        ));
+        assert!(error_allows_ledger_fallback(
+            &EngineError::FinalOutputReserveReached
+        ));
+        assert!(error_allows_ledger_fallback(
+            &EngineError::CapabilityBudgetExceeded {
+                capability_id: "ontology.query".into(),
+                used: 1,
+                limit: 1,
+            }
+        ));
+        // The real answer composition already succeeded; a storage failure on
+        // the final commit itself must not be replaced by a notice commit.
+        assert!(!error_allows_ledger_fallback(&dependency(
+            "persistence.commit_final"
+        )));
+        assert!(!error_allows_ledger_fallback(&EngineError::Cancelled));
+        assert!(!error_allows_ledger_fallback(&EngineError::AlreadyFinalized));
+        assert!(!error_allows_ledger_fallback(&EngineError::StaleFence {
+            expected: 7,
+            observed: 8
+        }));
+        assert!(!error_allows_ledger_fallback(&EngineError::RecoveryArtifactMismatch(
+            "episode hash"
+        )));
+        assert!(!error_allows_ledger_fallback(&EngineError::FinalCommitAmbiguous(
+            ContentHash::sha256("bundle")
+        )));
+        assert!(!error_allows_ledger_fallback(&EngineError::AnswerValidation(
+            vec!["untrusted_calculation".into()]
+        )));
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::InvalidProviderEpisode("final episode has no content")
+        ));
+    }
+
     #[test]
     fn sanitizer_softens_and_downgrades_without_inventing() {
         let mut ledger = EvidenceLedger::default();
@@ -5393,6 +5778,12 @@ mod tests {
             None,
             false,
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
 
         assert!(matches!(
             first.engine.run(fixture.input()).await,
@@ -5559,6 +5950,12 @@ mod tests {
             None,
             false,
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,
@@ -5886,6 +6283,12 @@ mod tests {
             Arc::clone(&first.persistence),
             EngineConfig::production(&fixture.image).unwrap(),
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first_production.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,
@@ -6281,6 +6684,12 @@ mod tests {
             None,
             false,
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,
@@ -6349,6 +6758,12 @@ mod tests {
             None,
             false,
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,
@@ -6498,7 +6913,12 @@ mod tests {
         // The fourth provider request is intentionally absent. Reaching that
         // dependency boundary proves the second correction moved into the
         // declared assessment state instead of attempting a second entry to
-        // `repair_server_violations` and failing in StateInterpreter.
+        // `repair_server_violations` and failing in StateInterpreter. The
+        // outage outlives the ledger-fallback window so the dependency error
+        // itself (not a fallback commit) is observed.
+        rig.persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let error = rig.engine.run(fixture.input()).await.unwrap_err();
         let checkpoint = {
             let persisted = rig.persistence.state.lock().unwrap();
@@ -6541,6 +6961,12 @@ mod tests {
         let mut script = provider_script();
         let first_turn = script.pop_front().unwrap();
         let first = engine_with_script(VecDeque::from([first_turn]), None, false);
+        // The storage outage outlives the ledger-fallback window, keeping the
+        // interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,
@@ -6594,6 +7020,10 @@ mod tests {
             None,
             false,
         );
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let _ = first.engine.run(fixture.input()).await.unwrap_err();
         let mut recovery = captured_recovery(&first.persistence);
         let RecoverySnapshot::Durable(snapshot) = &mut recovery else {
@@ -6711,6 +7141,15 @@ mod tests {
         for (point, expected_dispatches, expected_ambiguous) in cases {
             let fixture = fixture();
             let rig = engine(Some(point), false);
+            // Mid-run persistence faults now take the deterministic
+            // ledger-fallback final. Keep these fixtures on their original
+            // dependency error by making the storage outage outlive the
+            // fallback window; the real final-commit fault stays as-is.
+            if point != FailurePoint::Final {
+                rig.persistence
+                    .final_commit_faults
+                    .store(1, Ordering::SeqCst);
+            }
             let error = rig.engine.run(fixture.input()).await.unwrap_err();
             assert_eq!(
                 rig.capability.calls.load(Ordering::SeqCst),
@@ -6795,6 +7234,12 @@ mod tests {
     async fn crash_after_observe_revalidates_without_redispatch() {
         let fixture = fixture();
         let rig = engine(Some(FailurePoint::FinalizeAction), false);
+        // Keep the interrupted phase on its original dependency error: the
+        // storage outage outlives the ledger-fallback window, so no fallback
+        // final can be committed either.
+        rig.persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let first = rig.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(first, EngineError::Dependency { .. }));
         assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 1);
@@ -7642,6 +8087,12 @@ mod tests {
             None,
             false,
         );
+        // The provider outage outlives the ledger-fallback window, keeping
+        // the interrupted phase on its original dependency error.
+        first
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
         let interrupted = first.engine.run(fixture.input()).await.unwrap_err();
         assert!(matches!(
             interrupted,

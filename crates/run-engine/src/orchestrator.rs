@@ -77,9 +77,52 @@ where
         let recovered_execution = self
             .restore_recovery(&input, &mut state, recovery, &identity)
             .await?;
-        let mut recovered_pending = recovered_execution.pending;
-        let mut child_receipt = recovered_execution.child;
+        let recovered_pending = recovered_execution.pending;
+        let child_receipt = recovered_execution.child;
 
+        // Answer-always interception: when the run loop terminates with a
+        // dependency/budget-class escape (provider/MCP outage that survived
+        // the bounded deadline, exhausted capability/output budget), the
+        // already-admitted ledger still owes the user a deterministic
+        // `UnavailableButAnswerable` final instead of `run.failed`. Integrity,
+        // cancellation, fencing, and ambiguous commits keep failing. The
+        // interception sits where the frontier/ledger state is final and no
+        // new provider turn is needed.
+        let outcome = match self
+            .drive_run(
+                &input,
+                &identity,
+                &mut state,
+                execution,
+                recovered_pending,
+                child_receipt,
+                deadline,
+            )
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) if error_allows_ledger_fallback(&error) => {
+                self.commit_ledger_fallback(&input, &identity, &mut state, error, deadline)
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(outcome)
+    }
+
+    /// The single main run loop. It exits only with a committed outcome or a
+    /// terminal error; the caller owns the answer-always fallback decision.
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_run(
+        &self,
+        input: &RunInput<'_>,
+        identity: &RunIdentity,
+        state: &mut ActiveRun,
+        mut execution: ExecutionState,
+        mut recovered_pending: Option<RecoveredPendingEpisode>,
+        mut child_receipt: Option<ChildExecutionReceipt>,
+        deadline: Instant,
+    ) -> Result<RunOutcome, EngineError> {
         loop {
             self.guard_control(&identity, deadline).await?;
             if state.finalize_for_output_reserve_before_next_turn(input.image)? {
@@ -95,7 +138,7 @@ where
             // even if the preceding lookup only produced orientation or
             // partial evidence. The composer receives the bounded limitation
             // context and can still return an honest user-facing answer.
-            if state.finalize_for_thinking_floor_before_next_turn(&input)? {
+            if state.finalize_for_thinking_floor_before_next_turn(input)? {
                 self.checkpoint_active_state(&identity, &state, deadline)
                     .await?;
                 continue;
@@ -139,7 +182,7 @@ where
                 } else {
                     std::mem::take(&mut state.messages)
                 };
-                let mut built = build_provider_request(&input, &state, &self.config, messages)?;
+                let mut built = build_provider_request(input, &state, &self.config, messages)?;
                 if let (Some(policy), Some(inputs), Some(receipt)) =
                     (&child_policy, &child_inputs, child_receipt.as_ref())
                 {
@@ -320,17 +363,27 @@ where
             match output {
                 ProviderOutputDisposition::TypedJson | ProviderOutputDisposition::Markdown => {
                     execution = execution.transition(ExecutionEvent::BeginVerification)?;
-                    let outcome = self
+                    let outcome = match self
                         .finish(
-                            &input,
+                            input,
                             &identity,
                             &episode,
-                            &mut state,
+                            &mut *state,
                             execution,
                             constraint_mode,
                             deadline,
                         )
-                        .await?;
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        // Finalization-stage failures (answer validation,
+                        // storage commit, workflow edges around the final)
+                        // keep their own semantics: the composed answer is
+                        // either committed, ambiguous, or retried by the
+                        // outer executor. A deterministic ledger notice must
+                        // never replace an already-composed final.
+                        Err(error) => return Err(error),
+                    };
                     if let Some(outcome) = outcome {
                         return Ok(outcome);
                     }
@@ -413,7 +466,7 @@ where
             match resolve_local_skill_load(&episode, &state.tool_definitions, input.image) {
                 Ok(Some(resolution)) => {
                     apply_local_skill_load_resolution(
-                        &mut state,
+                        &mut *state,
                         &episode,
                         &resolution,
                         child_policy.is_some(),
@@ -440,7 +493,7 @@ where
 
             let prepared = match prepare_calls(
                 &episode,
-                &input,
+                input,
                 &state,
                 self.config.max_tool_calls_per_episode,
                 self.config.contract_guard.as_ref(),

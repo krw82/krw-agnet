@@ -19,6 +19,7 @@ krw-agent-evidence = { path = "../evidence" }
 krw-agent-image = { path = "../agent-image" }
 krw-agent-kernel = { path = "../agent-kernel" }
 krw-agent-persistence = { path = "../persistence", default-features = false }
+krw-agent-planning = { path = "../planning" }
 krw-agent-protocol = { path = "../protocol" }
 krw-agent-research-planner = { path = "../research-planner" }
 krw-agent-state-artifact = { path = "../state-artifact" }

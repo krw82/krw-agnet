@@ -7,6 +7,8 @@ use krw_agent_evidence::{
     ClaimKind, ClaimStrength, MAX_ANSWER_CALCULATIONS, MAX_ANSWER_CLAIMS, MAX_ANSWER_SECTIONS,
     MAX_CLAIMS_PER_SECTION,
 };
+use krw_agent_planning::GoalStatus;
+use krw_agent_research_planner::IntentPlanningProjection;
 
 /// A private pack is only useful when it came from the same immutable ontology
 /// release as the model-visible ResearchState that accompanied the call.  A
@@ -671,6 +673,384 @@ fn section_identifier_is_valid(section_id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
+// ---------------------------------------------------------------------------
+// Ledger fallback (answer-always finalization, policy steps 9 and the
+// `UnavailableButAnswerable` completion class).
+// ---------------------------------------------------------------------------
+
+/// Deterministic reason codes for the no-evidence ledger fallback. The policy
+/// also names `not_disclosed`, `not_indexed`, and `out_of_scope`; those need a
+/// server-side coverage verdict the engine cannot derive without a working
+/// dependency, so the renderer never invents them.
+pub(crate) const LEDGER_FALLBACK_DEPENDENCY_UNAVAILABLE: &str = "dependency_unavailable";
+pub(crate) const LEDGER_FALLBACK_RETRIEVAL_EMPTY: &str = "retrieval_empty";
+
+const LEDGER_FALLBACK_MAX_RECORDS: usize = 16;
+const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 8;
+const LEDGER_FALLBACK_MAX_CALCULATIONS: usize = 8;
+const LEDGER_FALLBACK_MAX_GOALS: usize = 8;
+
+/// Deterministic ledger-fallback answer: the Markdown bytes are a pure
+/// function of the admitted ledger, committed calculations, user-linked
+/// intent projection, and the reason classification. No LLM turn, no clock,
+/// no run identity — nothing that could vary between two identical runs.
+pub(crate) struct LedgerFallbackAnswer {
+    pub(crate) markdown: String,
+    /// Ledger evidence ids actually cited by the rendering; they become the
+    /// bundle's audit index, so the renderer owns the exact set.
+    pub(crate) cited_evidence_ids: Vec<String>,
+    pub(crate) reason_code: &'static str,
+}
+
+/// Classify why no evidence exists: a dependency that never delivered
+/// (`dependency_unavailable`) versus retrievals that ran and committed
+/// results without admitting any evidence (`retrieval_empty`).
+fn ledger_fallback_reason_code(
+    ledger: &EvidenceLedger,
+    accepted_capability_results: usize,
+) -> &'static str {
+    if ledger.is_empty() && accepted_capability_results > 0 {
+        LEDGER_FALLBACK_RETRIEVAL_EMPTY
+    } else {
+        LEDGER_FALLBACK_DEPENDENCY_UNAVAILABLE
+    }
+}
+
+/// Sanitize a string for the public fallback Markdown. Unlike the evidence
+/// crate's strict inline writer this is total: control characters are dropped
+/// instead of failing the deterministic render.
+fn fallback_public_inline(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for character in value.trim().chars() {
+        if character.is_control() {
+            continue;
+        }
+        if matches!(
+            character,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|'
+        ) {
+            output.push('\\');
+        }
+        output.push(character);
+    }
+    output
+}
+
+fn fallback_json_value(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+struct FallbackCitations {
+    order: Vec<String>,
+    numbers: BTreeMap<String, usize>,
+}
+
+impl FallbackCitations {
+    fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            numbers: BTreeMap::new(),
+        }
+    }
+
+    fn mark(&mut self, evidence_id: &str) -> Option<String> {
+        if evidence_id.trim().is_empty() {
+            return None;
+        }
+        if let Some(number) = self.numbers.get(evidence_id) {
+            return Some(format!("[^{number}]"));
+        }
+        let number = self.order.len() + 1;
+        self.order.push(evidence_id.to_owned());
+        self.numbers.insert(evidence_id.to_owned(), number);
+        Some(format!("[^{number}]"))
+    }
+}
+
+fn fallback_fact_line(
+    record: &krw_agent_evidence::EvidenceRecord,
+    fact: &krw_agent_evidence::NormalizedFact,
+    citations: &mut FallbackCitations,
+) -> Option<String> {
+    let subject = fallback_public_inline(&fact.subject);
+    let predicate = fallback_public_inline(&fact.predicate);
+    if subject.is_empty() || predicate.is_empty() {
+        return None;
+    }
+    let period = fact
+        .period
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or(record.period.as_deref());
+    let unit = fact
+        .unit
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(fallback_public_inline);
+    let mut line = format!("- {subject}: {predicate} = {}", fallback_json_value(&fact.value));
+    if let Some(unit) = unit {
+        line.push(' ');
+        line.push_str(&unit);
+    }
+    if let Some(period) = period {
+        let period = fallback_public_inline(period);
+        if !period.is_empty() {
+            line.push_str(&format!(" · {period}"));
+        }
+    }
+    if let Some(mark) = citations.mark(&record.evidence_id) {
+        line.push(' ');
+        line.push_str(&mark);
+    }
+    Some(line)
+}
+
+/// Render the deterministic ledger fallback answer (Korean, matching the
+/// product answer locale). Sections with no material are omitted so an empty
+/// ledger produces only the unavailability notice plus the question scope.
+pub(crate) fn fallback_answer_from_ledger(
+    question: &str,
+    tickers: &[String],
+    ledger: &EvidenceLedger,
+    calculations: &BTreeMap<String, Calculation>,
+    intent: Option<&IntentPlanningProjection>,
+    accepted_capability_results: usize,
+) -> LedgerFallbackAnswer {
+    let reason_code = ledger_fallback_reason_code(ledger, accepted_capability_results);
+    let mut citations = FallbackCitations::new();
+    let mut markdown = String::new();
+
+    markdown.push_str("## 안내\n\n");
+    markdown.push_str(
+        "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
+정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+    );
+    markdown.push_str(&format!("- 사유 코드: {reason_code}\n"));
+    markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
+
+    markdown.push_str("\n## 질문 범위\n\n");
+    markdown.push_str(&format!("- 질문: {}\n", fallback_public_inline(question)));
+    let tickers_inline = tickers
+        .iter()
+        .map(|ticker| fallback_public_inline(ticker))
+        .filter(|ticker| !ticker.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !tickers_inline.is_empty() {
+        markdown.push_str(&format!("- 대상 종목: {tickers_inline}\n"));
+    }
+
+    let direct_records = ledger
+        .iter()
+        .filter(|(_, record)| {
+            matches!(
+                record.directness,
+                krw_agent_evidence::Directness::Direct
+                    | krw_agent_evidence::Directness::MetricLineage
+            )
+        })
+        .take(LEDGER_FALLBACK_MAX_RECORDS)
+        .collect::<Vec<_>>();
+    let related_records = ledger
+        .iter()
+        .filter(|(_, record)| {
+            record.directness == krw_agent_evidence::Directness::Related
+        })
+        .take(LEDGER_FALLBACK_MAX_RECORDS)
+        .collect::<Vec<_>>();
+
+    let mut direct_lines = Vec::new();
+    for (_, record) in &direct_records {
+        for fact in record.facts.iter().take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD) {
+            if let Some(line) = fallback_fact_line(record, fact, &mut citations) {
+                direct_lines.push(line);
+            }
+        }
+    }
+    if !direct_lines.is_empty() {
+        markdown.push_str("\n## 확보된 핵심 사실 (직접 근거)\n\n");
+        for line in direct_lines {
+            markdown.push_str(&line);
+            markdown.push('\n');
+        }
+    }
+
+    let mut related_lines = Vec::new();
+    for (_, record) in &related_records {
+        for fact in record.facts.iter().take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD) {
+            if let Some(mut line) = fallback_fact_line(record, fact, &mut citations) {
+                line.push_str(" · 간접 근거이므로 참고 수준으로만 반영");
+                related_lines.push(line);
+            }
+        }
+    }
+    if !related_lines.is_empty() {
+        markdown.push_str("\n## 제한적 시사점 (간접 근거)\n\n");
+        for line in related_lines {
+            markdown.push_str(&line);
+            markdown.push('\n');
+        }
+    }
+
+    let mut calculation_lines = Vec::new();
+    for (_, calculation) in calculations.iter().take(LEDGER_FALLBACK_MAX_CALCULATIONS) {
+        let metric = calculation
+            .metric
+            .as_deref()
+            .map(fallback_public_inline)
+            .filter(|metric| !metric.is_empty())
+            .unwrap_or_else(|| fallback_public_inline(&calculation.calculation_id));
+        let mut line = format!("- {metric}");
+        if let Some(subject) = calculation
+            .subject
+            .as_deref()
+            .map(fallback_public_inline)
+            .filter(|subject| !subject.is_empty())
+        {
+            line.push_str(&format!(" ({subject}"));
+            if let Some(period) = calculation
+                .period
+                .as_deref()
+                .map(fallback_public_inline)
+                .filter(|period| !period.is_empty())
+            {
+                line.push_str(&format!(", {period}"));
+            }
+            line.push(')');
+        }
+        line.push_str(&format!(": {}", fallback_json_value(&calculation.output)));
+        if let Some(unit) = calculation
+            .unit
+            .as_deref()
+            .map(fallback_public_inline)
+            .filter(|unit| !unit.is_empty())
+        {
+            line.push(' ');
+            line.push_str(&unit);
+        }
+        if let Some(input) = calculation
+            .input_evidence_ids
+            .first()
+            .and_then(|id| ledger.active(id))
+            .and_then(|record| citations.mark(&record.evidence_id))
+        {
+            line.push(' ');
+            line.push_str(&input);
+        }
+        calculation_lines.push(line);
+    }
+    if !calculation_lines.is_empty() {
+        markdown.push_str("\n## 계산 지표 (검증된 계산)\n\n");
+        for line in calculation_lines {
+            markdown.push_str(&line);
+            markdown.push('\n');
+        }
+    }
+
+    if let Some(intent) = intent {
+        let uncovered = intent
+            .graph
+            .goals()
+            .filter(|goal| goal.status != GoalStatus::Satisfied)
+            .take(LEDGER_FALLBACK_MAX_GOALS)
+            .map(|goal| fallback_public_inline(&goal.goal_id))
+            .filter(|goal_id| !goal_id.is_empty())
+            .collect::<Vec<_>>();
+        if !uncovered.is_empty() {
+            markdown.push_str("\n## 다루지 못한 목표\n\n");
+            for goal_id in uncovered {
+                markdown.push_str(&format!("- 목표 {goal_id} 는 이번 실행에서 충족되지 못했습니다.\n"));
+            }
+        }
+    }
+
+    markdown.push_str("\n## 제약 및 조회 상태\n\n");
+    markdown.push_str(&format!(
+        "- 이번 실행에서 확보한 근거: {}건, 완료된 외부 조회: {}건\n",
+        ledger.len(),
+        accepted_capability_results
+    ));
+    markdown.push_str("- 연구가 완료되지 않았으므로 위 내용은 부분 자료이며, 완전한 답변이 아닙니다.\n");
+
+    let periods = ledger
+        .iter()
+        .filter_map(|(_, record)| record.period.as_deref())
+        .filter(|period| !period.trim().is_empty())
+        .map(fallback_public_inline)
+        .collect::<BTreeSet<_>>();
+    let as_of = ledger
+        .iter()
+        .filter_map(|(_, record)| record.as_of.as_deref())
+        .filter(|as_of| !as_of.trim().is_empty())
+        .map(fallback_public_inline)
+        .collect::<BTreeSet<_>>();
+    if !periods.is_empty() || !as_of.is_empty() {
+        markdown.push_str("\n## 자료 시점\n\n");
+        if !periods.is_empty() {
+            markdown.push_str(&format!("- 근거 기간: {}\n", periods.into_iter().collect::<Vec<_>>().join(", ")));
+        }
+        if !as_of.is_empty() {
+            markdown.push_str(&format!("- 자료 기준일: {}\n", as_of.into_iter().collect::<Vec<_>>().join(", ")));
+        }
+        markdown.push_str("- 나열된 기간 이후 상황은 반영되지 않았습니다.\n");
+    }
+
+    if !citations.order.is_empty() {
+        markdown.push_str("\n### 출처\n\n");
+        for (index, evidence_id) in citations.order.iter().enumerate() {
+            let Some(record) = ledger.active(evidence_id) else {
+                continue;
+            };
+            let mut line = format!("[^{}]: {}", index + 1, fallback_public_inline(&record.citation.title));
+            if let Some(document_type) = record
+                .citation
+                .document_type
+                .as_deref()
+                .map(fallback_public_inline)
+                .filter(|document_type| !document_type.is_empty())
+            {
+                line.push_str(&format!(" · {document_type}"));
+            }
+            if let Some(period) = record
+                .citation
+                .period
+                .as_deref()
+                .map(fallback_public_inline)
+                .filter(|period| !period.is_empty())
+            {
+                line.push_str(&format!(" · {period}"));
+            }
+            markdown.push_str(&line);
+            markdown.push('\n');
+        }
+    }
+
+    LedgerFallbackAnswer {
+        markdown,
+        cited_evidence_ids: citations.order,
+        reason_code,
+    }
+}
+
+/// Terminal error classes that may take the deterministic ledger fallback
+/// instead of failing the run: provider/MCP/dependency outages and budget
+/// exhaustion. Everything else — integrity violations, cancellation, stale
+/// fences, ambiguous commits, and provider-output contract violations — keeps
+/// today's terminal failure. A dependency failure on `persistence.commit_final`
+/// itself is deliberately excluded: the real answer composition already
+/// succeeded there, and replacing it with a notice commit would destroy a
+/// better answer over a transient storage fault.
+pub(crate) fn error_allows_ledger_fallback(error: &EngineError) -> bool {
+    match error {
+        EngineError::Dependency { component, .. } => *component != "persistence.commit_final",
+        EngineError::DeadlineExceeded(_) => true,
+        EngineError::NoRemainingOutputBudget
+        | EngineError::FinalOutputReserveReached
+        | EngineError::CapabilityBudgetExceeded { .. } => true,
+        _ => false,
+    }
+}
+
 fn validate_typed_output(
     input: &RunInput<'_>,
     state: &ActiveRun,
@@ -1292,38 +1672,129 @@ where
         if final_status == FinalStatus::Cancelled {
             return Err(EngineError::Cancelled);
         }
-        let terminal_event = state.program.unique_transition_event(
-            state.interpreter.current_state(),
+        Ok(Some(run_outcome_after_commit(
+            state,
+            execution,
             &output,
-            |candidate| matches!(candidate.operation, StateOperation::Terminal { .. }),
-            "atomic final committed",
-        )?;
-        state.apply_builtin_artifact(
-            BuiltinHandler::CommitOutput,
-            &terminal_event,
             output_contract,
-            &output,
-        )?;
-        if !matches!(
-            state.interpreter.current_operation()?,
-            StateOperation::Terminal {
-                disposition: krw_agent_state_artifact::TerminalDisposition::Succeeded,
-                ..
-            }
-        ) {
-            return Err(EngineError::WorkflowTerminated("non-success"));
+            answer_bundle,
+            answer_bundle_hash,
+            final_status,
+        )))
+    }
+
+    /// Deterministic ledger fallback (policy `UnavailableButAnswerable`).
+    ///
+    /// Called only when the run loop terminated with a dependency/budget-class
+    /// escape after admission (see [`error_allows_ledger_fallback`]). It never
+    /// issues another provider turn: the answer is rendered from the
+    /// already-admitted ledger and committed through the same durable-final
+    /// machinery as an ordinary answer. Cancellation, fencing, and ownership
+    /// checks still gate the commit, and a failed or ambiguous fallback commit
+    /// keeps the run failed rather than papering over a storage fault.
+    pub(crate) async fn commit_ledger_fallback(
+        &self,
+        input: &RunInput<'_>,
+        identity: &RunIdentity,
+        state: &mut ActiveRun,
+        error: EngineError,
+        deadline: Instant,
+    ) -> Result<RunOutcome, EngineError> {
+        // The budget deadline is often the very reason the loop terminated, so
+        // the terminal commit gets a small grace window — but never beyond the
+        // lease deadline that still bounds this execution.
+        let grace_cap = Instant::now()
+            .checked_add(LEDGER_FALLBACK_COMMIT_GRACE)
+            .ok_or(EngineError::DeadlineExceeded("ledger_fallback"))?;
+        let commit_deadline = input.hard_deadline.min(deadline.max(grace_cap));
+        self.guard_control(identity, commit_deadline).await?;
+
+        state.merge_runtime_timings();
+        let tickers = memory_tickers(
+            &input.request.context,
+            state.derived_ticker_scope.as_ref(),
+            &state.ledger,
+        );
+        let fallback = fallback_answer_from_ledger(
+            &input.request.question,
+            &tickers,
+            &state.ledger,
+            &state.calculations,
+            state.research_planner.intent_projection(),
+            state.accepted_actions.len(),
+        );
+        tracing::warn!(
+            code = fallback.reason_code,
+            "terminal dependency/budget escape; committing deterministic ledger fallback final"
+        );
+        let output = Value::String(fallback.markdown.clone());
+        let output_contract = ContractPin::canonical(FINAL_MARKDOWN_V1)?;
+        validate_canonical_value(FINAL_MARKDOWN_V1, &output)
+            .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
+        let evidence_ledger_hash = ContentHash::sha256(serde_jcs::to_vec(&state.ledger)?);
+        let answer_bundle = AnswerBundle {
+            schema_version: 4,
+            output_contract: output_contract.clone(),
+            output: output.clone(),
+            evidence_ledger_hash,
+            evidence_ids: fallback.cited_evidence_ids,
+            answer_ir: None,
+            rendered_content: fallback.markdown.clone(),
+            rendered_markdown: fallback.markdown,
+            visualizations: Vec::new(),
+            completion: ResearchCompletion::UnavailableButAnswerable,
+            usage: state.usage.clone(),
+            agent_image_hash: input.image.content_hash.clone(),
+        };
+        let bundle_value = serde_json::to_value(&answer_bundle)?;
+        let bundle_bytes = serde_jcs::to_vec(&bundle_value)?;
+        let answer_bundle_hash = ContentHash::sha256(&bundle_bytes);
+        let final_output_hash = ContentHash::sha256(serde_jcs::to_vec(&answer_bundle.output)?);
+        let rendered_message_hash = ContentHash::sha256(&answer_bundle.rendered_markdown);
+        let commit_envelope_hash = ContentHash::sha256(serde_jcs::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "answer_bundle_hash": answer_bundle_hash,
+            "session_memory_delta_hash": Option::<ContentHash>::None,
+            "next_memory_frontier_hash": Option::<ContentHash>::None,
+        }))?);
+        let durable_final = DurableFinal {
+            mutation: FinalCommitMutation {
+                run_id: identity.run_id.clone(),
+                fencing_token: identity.fencing_token,
+                expected_cancel_generation: identity.expected_cancel_generation,
+                mutation_id: mutation_id("commit_final", &identity.run_id, &commit_envelope_hash),
+                answer_bundle_hash: answer_bundle_hash.clone(),
+                session_memory_delta_hash: None,
+            },
+            final_output_hash,
+            rendered_message_hash,
+            answer_bundle: bundle_value,
+            usage: state.usage.clone(),
+            session_memory_delta: None,
+            next_memory_frontier_hash: None,
+        };
+        let final_status =
+            match await_until(commit_deadline, self.persistence.commit_final(&durable_final)).await
+            {
+                Ok(Ok(status)) => status,
+                Ok(Err(failure)) if failure.delivery == DeliveryCertainty::MayHaveDispatched => {
+                    return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash));
+                }
+                // The fallback commit deterministically did not dispatch:
+                // surface the original dependency cause, not the notice.
+                Ok(Err(_)) => return Err(error),
+                Err(()) => return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash)),
+            };
+        if final_status == FinalStatus::Cancelled {
+            return Err(EngineError::Cancelled);
         }
-        let execution = execution.transition(ExecutionEvent::CommitSucceeded)?;
-        if !execution.is_terminal() {
-            return Err(EngineError::Invariant("execution did not become terminal"));
-        }
-        Ok(Some(RunOutcome {
+        Ok(RunOutcome {
             answer_bundle,
             answer_bundle_hash,
             final_status,
             logical_action_keys: state.logical_action_keys.iter().cloned().collect(),
             evidence_count: state.ledger.len(),
-        }))
+        })
     }
 
     /// Compile deterministic visualizations from the private presentation
@@ -1376,5 +1847,79 @@ where
         }
         let allowed_refs = current_presentation_evidence_refs(ledger);
         filter_grounded_visualizations(artifacts, &allowed_refs, MAX_TOTAL_ARTIFACTS)
+    }
+}
+
+/// Wall-clock grace window for committing a ledger-fallback final after the
+/// run budget deadline has already fired. Bounded by the lease deadline.
+const LEDGER_FALLBACK_COMMIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Walk the statechart to its terminal edge after the durable final commit.
+///
+/// Every failure here happens strictly after the core final is durably
+/// committed, so it is an auxiliary workflow-edge defect: the policy row
+/// "DB commit 뒤 workflow edge 오류가 API final을 뒤집지 않음" requires the
+/// caller to log-and-continue rather than fail the run.
+fn finalize_post_commit_workflow(
+    state: &mut ActiveRun,
+    execution: ExecutionState,
+    output: &Value,
+    output_contract: ContractPin,
+) -> Result<(), EngineError> {
+    let terminal_event = state.program.unique_transition_event(
+        state.interpreter.current_state(),
+        output,
+        |candidate| matches!(candidate.operation, StateOperation::Terminal { .. }),
+        "atomic final committed",
+    )?;
+    state.apply_builtin_artifact(
+        BuiltinHandler::CommitOutput,
+        &terminal_event,
+        output_contract,
+        output,
+    )?;
+    if !matches!(
+        state.interpreter.current_operation()?,
+        StateOperation::Terminal {
+            disposition: krw_agent_state_artifact::TerminalDisposition::Succeeded,
+            ..
+        }
+    ) {
+        return Err(EngineError::WorkflowTerminated("non-success"));
+    }
+    let execution = execution.transition(ExecutionEvent::CommitSucceeded)?;
+    if !execution.is_terminal() {
+        return Err(EngineError::Invariant("execution did not become terminal"));
+    }
+    Ok(())
+}
+
+/// Build the run outcome for an already-durably-committed final. The core
+/// final (identity, Markdown, hashes, evidence refs, completion class) is
+/// committed; the post-commit workflow edge is auxiliary and infallible at
+/// this boundary: its failures are logged and never flip the API final.
+pub(crate) fn run_outcome_after_commit(
+    state: &mut ActiveRun,
+    execution: ExecutionState,
+    output: &Value,
+    output_contract: ContractPin,
+    answer_bundle: AnswerBundle,
+    answer_bundle_hash: ContentHash,
+    final_status: FinalStatus,
+) -> RunOutcome {
+    if let Err(error) =
+        finalize_post_commit_workflow(state, execution, output, output_contract)
+    {
+        tracing::warn!(
+            error = ?error,
+            "workflow edge failed after the durable final commit; committed answer stays final"
+        );
+    }
+    RunOutcome {
+        answer_bundle,
+        answer_bundle_hash,
+        final_status,
+        logical_action_keys: state.logical_action_keys.iter().cloned().collect(),
+        evidence_count: state.ledger.len(),
     }
 }
