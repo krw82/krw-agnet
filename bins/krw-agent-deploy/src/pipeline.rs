@@ -1455,6 +1455,14 @@ else
   FRONT_DIR="$REMOTE_FRONT_DIR" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_FRONT_DIR" --env-file "$REMOTE_FRONT_DIR/.env" -f "$REMOTE_FRONT_DIR/docker-compose.yml" build web
   OLD_IMAGE=$(docker image inspect --format '{{.Id}}' krw-ontology-front-web:local)
 fi
+# Pin the old image under a stable tag BEFORE the stage build: the build
+# retags :local to the candidate, leaving the old image unreferenced, and
+# BuildKit garbage-collects unreferenced images mid-build (observed in
+# production run 20260816T095011Z: the closing `docker tag $OLD_IMAGE
+# :local` then failed with "No such image"). The rollback-<release> tag
+# keeps it referenced and is covered by the post-activation prune pattern.
+OLD_TAG="krw-ontology-front-web:rollback-$RELEASE_ID"
+docker tag "$OLD_IMAGE" "$OLD_TAG"
 compose_stage() {
   FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
 }
@@ -1469,7 +1477,7 @@ docker tag "$CANDIDATE_IMAGE" "$CANDIDATE_TAG"
 compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'
 @PREFLIGHT_JS@
 NODE
-docker tag "$OLD_IMAGE" krw-ontology-front-web:local
+docker tag "$OLD_TAG" krw-ontology-front-web:local
 printf 'CANDIDATE_IMAGE=%s\n' "$CANDIDATE_IMAGE" > "$REMOTE_STAGE/forward-activation.env"
 chmod 600 "$REMOTE_STAGE/forward-activation.env"
 rm -f "$REMOTE_FRONT_ARCHIVE"
@@ -4345,8 +4353,11 @@ mod tests {
         assert!(payload.contains("select 1 as supabase_tls"), "payload: {payload}");
         assert!(payload.contains("descriptor.entries.every"), "payload: {payload}");
         assert!(payload.contains("NODE\n"), "payload: {payload}");
-        // The old image keeps the stable local tag until activation.
-        assert!(payload.contains("docker tag \"$OLD_IMAGE\" krw-ontology-front-web:local"), "payload: {payload}");
+        // The old image is pinned under rollback-<release> before the stage
+        // build (BuildKit GC) and restored to the stable local tag after.
+        assert!(payload.contains("OLD_TAG=\"krw-ontology-front-web:rollback-$RELEASE_ID\""), "payload: {payload}");
+        assert!(payload.contains("docker tag \"$OLD_IMAGE\" \"$OLD_TAG\""), "payload: {payload}");
+        assert!(payload.contains("docker tag \"$OLD_TAG\" krw-ontology-front-web:local"), "payload: {payload}");
         assert!(payload.contains("forward-activation.env"), "payload: {payload}");
         assert!(payload.contains("printf 'CANDIDATE_IMAGE=%s\\n' \"$CANDIDATE_IMAGE\""), "payload: {payload}");
         // No unresolved render tokens.
