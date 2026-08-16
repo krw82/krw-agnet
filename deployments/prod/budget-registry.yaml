@@ -25,8 +25,8 @@ profiles:
         ontology.chain: 1
   - profile_id: company_research_glm
     limits:
-      max_provider_turns: 12
-      max_capability_calls: 5
+      max_provider_turns: 20
+      max_capability_calls: 16
       max_replans: 3
       max_repairs: 3
       # This is a cumulative run budget, not a single provider request. A
@@ -40,20 +40,23 @@ profiles:
       max_output_tokens: 60000
       max_evidence_bytes: 8388608
       # This shared profile is also selected by the production DeepSeek model
-      # registry. Keep its end-to-end wall-clock envelope aligned with local:
-      # a completed evidence phase must have time to produce the final answer.
-      deadline_ms: 1200000
+      # registry. Rich-answer revision 2026-08-16/17: 16 calls / 20 turns
+      # restore the legacy evidence depth, and high-reasoning turns run
+      # 96-144s each, so the wall-clock ceiling moves to 40 minutes - the
+      # old 5-call/20-minute envelope visibly thinned answers and starved
+      # deep runs at the clock.
+      deadline_ms: 2400000
       capability_call_limits:
-        ontology.query_context: 2
-        ontology.company_context: 1
-        market.snapshot: 1
-        ontology.query: 2
-        ontology.trace: 1
-        ontology.chain: 1
+        ontology.query_context: 4
+        ontology.company_context: 2
+        market.snapshot: 2
+        ontology.query: 4
+        ontology.trace: 2
+        ontology.chain: 2
   - profile_id: earnings_deep_dive
     limits:
-      max_provider_turns: 10
-      max_capability_calls: 5
+      max_provider_turns: 16
+      max_capability_calls: 12
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
@@ -62,55 +65,55 @@ profiles:
       # evidence review and the final Korean answer.
       max_output_tokens: 24000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 1200000
       capability_call_limits:
-        ontology.query_context: 2
-        ontology.query: 2
-        ontology.trace: 1
-        ontology.chain: 1
+        ontology.query_context: 4
+        ontology.query: 4
+        ontology.trace: 2
+        ontology.chain: 2
   - profile_id: scenario_sensitivity
     limits:
-      max_provider_turns: 16
-      max_capability_calls: 5
+      max_provider_turns: 20
+      max_capability_calls: 12
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
       max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      deadline_ms: 1200000
       capability_call_limits:
-        ontology.query_context: 2
-        ontology.query: 2
-        ontology.trace: 1
-        ontology.chain: 1
+        ontology.query_context: 4
+        ontology.query: 4
+        ontology.trace: 2
+        ontology.chain: 2
   - profile_id: idea_generation
     limits:
-      max_provider_turns: 12
-      max_capability_calls: 5
+      max_provider_turns: 16
+      max_capability_calls: 10
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
       max_output_tokens: 14000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 900000
       capability_call_limits:
-        ontology.query_context_universe: 2
-        ontology.query_universe: 2
-        ontology.trace_universe: 1
+        ontology.query_context_universe: 4
+        ontology.query_universe: 4
+        ontology.trace_universe: 2
   - profile_id: wide_research
     limits:
-      max_provider_turns: 16
-      max_capability_calls: 5
+      max_provider_turns: 20
+      max_capability_calls: 12
       max_replans: 1
       max_repairs: 1
       max_input_tokens: 120000
       max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      deadline_ms: 1200000
       capability_call_limits:
-        ontology.query_context_universe: 2
-        ontology.query_universe: 3
-        ontology.trace_universe: 2
+        ontology.query_context_universe: 4
+        ontology.query_universe: 5
+        ontology.trace_universe: 3
   - profile_id: display_plan_minimal
     limits:
       max_provider_turns: 4
