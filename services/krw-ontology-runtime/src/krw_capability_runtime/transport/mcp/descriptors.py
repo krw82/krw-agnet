@@ -13,6 +13,8 @@ import hashlib
 import inspect
 import json
 import os
+import sys
+import traceback
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -291,6 +293,14 @@ def _execution_error_outcome(error: Exception) -> DispatchOutcome:
     error_fingerprint = hashlib.sha256(
         f"{type(error).__name__}:{error}".encode("utf-8", "replace")
     ).hexdigest()[:16]
+    # The payload stays redacted for the model, but operators need the real
+    # traceback on stderr to diagnose the underlying capability defect.
+    print(
+        f"capability_execution_failed fingerprint={error_fingerprint}",
+        file=sys.stderr,
+        flush=True,
+    )
+    traceback.print_exc(file=sys.stderr)
     return _error_outcome(
         code="capability_execution_failed",
         message="The read capability did not complete; retry only if the run policy permits it.",

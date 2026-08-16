@@ -489,10 +489,10 @@ def query_chart_series_pack(
                             "kind": row["scope_kind"],
                             "key": row["scope_key"],
                             "label": row["scope_label"],
-                            "dimension": row["scope_dimension"],
-                            "composition_eligible": bool(row["composition_eligible"]),
+                            "dimension": _col(row, "scope_dimension"),
+                            "composition_eligible": bool(_col(row, "composition_eligible")),
                         },
-                        "currency": row["currency"],
+                        "currency": _col(row, "currency"),
                         "basis": row["basis"],
                         "duration": row["duration"],
                         "source_class": row["source_class"],
@@ -874,6 +874,22 @@ def _write_metadata(conn: sqlite3.Connection, metadata: Mapping[str, Any]) -> No
         )
 
 
+def _col(row: sqlite3.Row, name: str, default: Any = None) -> Any:
+    """Read a column that older sidecar schemas may not carry.
+
+    The chart sidecar is optional presentation data and its sqlite file can
+    persist across schema revisions (`CREATE TABLE IF NOT EXISTS` never adds
+    columns). Reading a v2-only column from a v1 sidecar must degrade to the
+    default instead of raising - a stale presentation cache must never kill
+    the research query it decorates (production incident 2026-08-16:
+    period_basis IndexError aborted every query_context call).
+    """
+    try:
+        return row[name]
+    except IndexError:
+        return default
+
+
 def _chart_series_points(
     conn: sqlite3.Connection, series_key: str, *, limit: int
 ) -> list[dict[str, Any]]:
@@ -890,9 +906,9 @@ def _chart_series_points(
     points = [
         {
             "period": row["period"],
-            "period_basis": row["period_basis"],
-            "period_start": row["period_start"],
-            "period_end": row["period_end"],
+            "period_basis": _col(row, "period_basis"),
+            "period_start": _col(row, "period_start"),
+            "period_end": _col(row, "period_end"),
             "fiscal_year": row["fiscal_year"],
             "fiscal_quarter": row["fiscal_quarter"],
             "period_sort_key": row["period_sort_key"],
@@ -901,7 +917,7 @@ def _chart_series_points(
             "source_document_id": row["source_document_id"],
             "value": row["value"],
             "formatted_value": row["formatted_value"],
-            "currency": row["currency"],
+            "currency": _col(row, "currency"),
             "object_id": row["object_id"],
             "evidence_ref": row["object_id"],
         }
