@@ -4581,11 +4581,14 @@ mod tests {
                 .unwrap(),
             Some(32_768)
         );
+        // The rich-answer revision (2026-08-16) raised the specialized
+        // composers from 4096 to 16384 output tokens; the final reserve
+        // keeps tracking twice the composer ceiling.
         assert_eq!(
             image
                 .effective_final_output_reserve_tokens("idea_generation_v1")
                 .unwrap(),
-            Some(8_192)
+            Some(32_768)
         );
     }
 

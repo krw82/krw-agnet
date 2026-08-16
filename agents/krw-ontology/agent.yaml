@@ -199,19 +199,19 @@ roles:
   - id: earnings_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, earnings_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 16384 }
   - id: scenario_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, scenario_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 16384 }
   - id: idea_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, idea_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 16384 }
   - id: wide_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, wide_research_output_contract]
     deterministic: false
-    execution: { reasoning: direct, max_output_tokens: 4096 }
+    execution: { reasoning: direct, max_output_tokens: 16384 }
   - id: verifier
     prompt_segments: []
     deterministic: true

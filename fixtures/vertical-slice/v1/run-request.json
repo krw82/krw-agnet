@@ -9,8 +9,8 @@
   "requested_model": "glm-5.3",
   "model_profile": "glm_high",
   "budget": {
-    "max_provider_turns": 12,
-    "max_capability_calls": 5,
+    "max_provider_turns": 20,
+    "max_capability_calls": 16,
     "max_replans": 3,
     "max_repairs": 3,
     "max_input_tokens": 144000,
@@ -18,12 +18,12 @@
     "max_evidence_bytes": 8388608,
     "deadline_ms": 1200000,
     "capability_call_limits": {
-      "ontology.query_context": 2,
-      "ontology.company_context": 1,
-      "market.snapshot": 1,
-      "ontology.query": 2,
-      "ontology.trace": 1,
-      "ontology.chain": 1
+      "ontology.query_context": 4,
+      "ontology.company_context": 2,
+      "market.snapshot": 2,
+      "ontology.query": 4,
+      "ontology.trace": 2,
+      "ontology.chain": 2
     }
   },
   "context": {

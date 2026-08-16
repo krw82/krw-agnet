@@ -1250,8 +1250,12 @@ impl PooledMcpCapabilityRuntime {
     ) -> Result<CapabilityResult, DependencyFailure> {
         match descriptor.mapping {
             EvidenceMapping::ResearchStateV2 => {
-                validate_value(QUERY_CONTEXT_INPUT_CORRECTION_V1, &payload)
-                    .map_err(|error| reject("correction_contract_invalid", format!("{error:?}")))?;
+                validate_value(QUERY_CONTEXT_INPUT_CORRECTION_V1, &payload).map_err(|error| {
+                    retryable_tool_error(
+                        "correction_contract_invalid",
+                        format!("tool error payload is not an input correction: {error:?}"),
+                    )
+                })?;
             }
             EvidenceMapping::Guru(GuruMapping::CompanyBrief | GuruMapping::EvidenceReview) => {
                 let EvidenceMapping::Guru(mapping) = descriptor.mapping else {
@@ -1270,7 +1274,7 @@ impl PooledMcpCapabilityRuntime {
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
             | EvidenceMapping::SkillContent => {
-                return Err(reject(
+                return Err(retryable_tool_error(
                     "untyped_tool_error",
                     "the capability has no declared typed error result",
                 ));
@@ -2199,6 +2203,17 @@ fn validate_evidence_lineage(result: &CapabilityResult) -> Result<(), Dependency
 
 fn reject(code: &str, diagnostic: impl AsRef<[u8]>) -> DependencyFailure {
     DependencyFailure::redacted(code, diagnostic, false, DeliveryCertainty::NotDispatched)
+}
+
+/// A tool answered with an error result whose payload is not the declared
+/// typed error contract. These capabilities are read-only, so a retry is
+/// safe, and the capability service's execution-failure payload explicitly
+/// asks the caller to retry when run policy permits. Treating a payload
+/// mismatch as fatal killed whole runs in production (2026-08-16: the
+/// Python capabilityd reports internal `capability_execution_failed`
+/// exceptions in the same isError envelope as input corrections).
+fn retryable_tool_error(code: &str, diagnostic: impl AsRef<[u8]>) -> DependencyFailure {
+    DependencyFailure::redacted(code, diagnostic, true, DeliveryCertainty::MayHaveDispatched)
 }
 
 fn scrub_json(value: &mut Value) {
