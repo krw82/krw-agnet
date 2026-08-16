@@ -1026,22 +1026,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Legacy `compose_stage` prefix for an arbitrary front dir. `version` is
-/// exported as `NEXT_PUBLIC_APP_VERSION` (empty string skips the export).
-fn compose_prefix_in(front_dir: &str, project: &str, env_expr: &str, version: &str) -> String {
-    let version_export = if version.is_empty() {
-        String::new()
-    } else {
-        format!(" NEXT_PUBLIC_APP_VERSION='{version}'")
-    };
-    format!(
-        "FRONT_DIR='{front}'{version_export} docker compose --project-name '{project}' --project-directory '{front}' --env-file {env} -f '{front}/docker-compose.yml'",
-        front = front_dir,
-        project = project,
-        env = env_expr,
-    )
-}
-
 /// Legacy `value_of` awk reader against the shell variable `$e`.
 fn shell_value_of(key: &str) -> String {
     format!(
@@ -1234,33 +1218,72 @@ echo "Activated fast VM candidate: $RELEASE_ID""#,
 }
 
 /// In-container healthz expecting `deployment_id == release id`; prints the
-/// compact observation JSON for the controller to double-check.
+/// compact observation JSON for the controller to double-check. Retries on
+/// a bounded budget: freshly recreated containers can fail the first probe.
 pub fn payload_remote_web_healthz(topology: &RemoteTopology, release_id: &str) -> String {
-    format!(
-        "{prefix} exec -T -e EXPECTED_RELEASE_ID='{id}' web node -e 'fetch(\"http://127.0.0.1:3000/api/healthz\").then(async r => {{ const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.EXPECTED_RELEASE_ID) process.exit(1); }}).catch(() => process.exit(1));'",
-        prefix = compose_prefix_in(
-            &remote_stage_dir(topology, release_id),
-            &topology.compose_project,
-            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
-            release_id,
-        ),
-        id = release_id,
+    render(
+        r#"set -eu
+RELEASE_ID='@RELEASE_ID@'
+REMOTE_STAGE='@STAGE@'
+COMPOSE_PROJECT='@PROJECT@'
+compose_stage() {
+  FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
+}
+probe() {
+  compose_stage exec -T -e EXPECTED_RELEASE_ID="$RELEASE_ID" web node -e 'fetch("http://127.0.0.1:3000/api/healthz").then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.EXPECTED_RELEASE_ID) process.exit(1); }).catch(() => process.exit(1));'
+}
+observed=
+attempt=1
+while [ "$attempt" -le 20 ]; do
+  if observed=$(probe 2>/dev/null); then
+    printf '%s\n' "$observed"
+    exit 0
+  fi
+  sleep 2
+  attempt=$((attempt + 1))
+done
+echo "In-container web healthz did not report the release id after retries." >&2
+exit 1"#,
+        &[
+            ("RELEASE_ID", release_id),
+            ("STAGE", &remote_stage_dir(topology, release_id)),
+            ("PROJECT", &topology.compose_project),
+        ],
     )
 }
 
 /// Deep health with the internal-key headers the production proxy supplies;
 /// enforces `deployment_id == release id` and prints the observation JSON.
+/// Retries on a bounded budget like the healthz probe.
 pub fn payload_remote_web_deep(topology: &RemoteTopology, release_id: &str) -> String {
-    format!(
-        "{prefix} exec -T web node -e 'const headers = {{ \"x-internal-key\": process.env.{internal} || \"\", \"x-krw-client-ip\": \"127.0.0.1\" }}; fetch(\"http://127.0.0.1:3000/api/healthz/deep\", {{ headers }}).then(async r => {{ let v = null; try {{ v = await r.json(); }} catch {{}} process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.{version}) process.exit(1); }}).catch(() => process.exit(1));'",
-        prefix = compose_prefix_in(
-            &remote_stage_dir(topology, release_id),
-            &topology.compose_project,
-            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
-            release_id,
-        ),
-        internal = INTERNAL_API_KEY_ENV_KEY,
-        version = "NEXT_PUBLIC_APP_VERSION",
+    render(
+        r#"set -eu
+RELEASE_ID='@RELEASE_ID@'
+REMOTE_STAGE='@STAGE@'
+COMPOSE_PROJECT='@PROJECT@'
+compose_stage() {
+  FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
+}
+probe() {
+  compose_stage exec -T web node -e 'const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { let v = null; try { v = await r.json(); } catch {} process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION) process.exit(1); }).catch(() => process.exit(1));'
+}
+observed=
+attempt=1
+while [ "$attempt" -le 20 ]; do
+  if observed=$(probe 2>/dev/null); then
+    printf '%s\n' "$observed"
+    exit 0
+  fi
+  sleep 2
+  attempt=$((attempt + 1))
+done
+echo "Deep health did not report the release id after retries." >&2
+exit 1"#,
+        &[
+            ("RELEASE_ID", release_id),
+            ("STAGE", &remote_stage_dir(topology, release_id)),
+            ("PROJECT", &topology.compose_project),
+        ],
     )
 }
 
@@ -1313,19 +1336,41 @@ echo "Research admission opened after deep readiness: $RELEASE_ID""#,
 }
 
 /// Deep health expecting `checks.agent_v1.admission == expected`; prints
-/// the observation JSON for the controller to double-check.
+/// the observation JSON for the controller to double-check. Retries on a
+/// bounded budget: the admission flip force-recreates the web container and
+/// the first deep probe after recreation can fail transiently (observed in
+/// production run 20260816T113245Z).
 pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, expected: &str) -> String {
-    format!(
-        "{prefix} exec -T web node -e 'const expected = process.argv[1]; const headers = {{ \"x-internal-key\": process.env.{internal} || \"\", \"x-krw-client-ip\": \"127.0.0.1\" }}; fetch(\"http://127.0.0.1:3000/api/healthz/deep\", {{ headers }}).then(async r => {{ const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.{version} || v.checks.agent_v1.admission !== expected) process.exit(1); }}).catch(() => process.exit(1));' '{expected}'",
-        prefix = compose_prefix_in(
-            &remote_stage_dir(topology, release_id),
-            &topology.compose_project,
-            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
-            release_id,
-        ),
-        internal = INTERNAL_API_KEY_ENV_KEY,
-        version = "NEXT_PUBLIC_APP_VERSION",
-        expected = expected,
+    render(
+        r#"set -eu
+RELEASE_ID='@RELEASE_ID@'
+REMOTE_STAGE='@STAGE@'
+COMPOSE_PROJECT='@PROJECT@'
+EXPECTED_ADMISSION='@EXPECTED@'
+compose_stage() {
+  FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
+}
+probe() {
+  compose_stage exec -T web node -e 'const expected = process.argv[1]; const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION || v.checks.agent_v1.admission !== expected) process.exit(1); }).catch(() => process.exit(1));' "$EXPECTED_ADMISSION"
+}
+observed=
+attempt=1
+while [ "$attempt" -le 20 ]; do
+  if observed=$(probe 2>/dev/null); then
+    printf '%s\n' "$observed"
+    exit 0
+  fi
+  sleep 2
+  attempt=$((attempt + 1))
+done
+echo "Deep health did not report agent_v1 admission '$EXPECTED_ADMISSION' after retries." >&2
+exit 1"#,
+        &[
+            ("RELEASE_ID", release_id),
+            ("STAGE", &remote_stage_dir(topology, release_id)),
+            ("PROJECT", &topology.compose_project),
+            ("EXPECTED", expected),
+        ],
     )
 }
 
@@ -4368,20 +4413,23 @@ mod tests {
         // DIRECTORY as the compose --env-file (docker compose then fails
         // with "X is a directory"), and before that a literal 'unused-env'.
         // Every probe must resolve the same stage runtime.env the web-up
-        // compose_stage uses.
+        // compose_stage uses, under a bounded retry budget.
         let (_guard, deps) = deps_for(false);
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let release_id = deps.release_id();
-        let expected = format!(
-            "--env-file '{}'",
-            remote_stage_dir(&topology, &release_id) + "/runtime.env"
-        );
         for (name, payload) in [
             ("healthz", payload_remote_web_healthz(&topology, &release_id)),
             ("deep", payload_remote_web_deep(&topology, &release_id)),
             ("verify_admission", payload_verify_admission(&topology, &release_id, "open")),
         ] {
-            assert!(payload.contains(&expected), "{name} probe must read the stage runtime.env: {payload}");
+            assert!(
+                payload.contains("--env-file \"$REMOTE_STAGE/runtime.env\""),
+                "{name} probe must read the stage runtime.env: {payload}"
+            );
+            assert!(
+                payload.contains("while [ \"$attempt\" -le 20 ]"),
+                "{name} probe must retry on a bounded budget: {payload}"
+            );
         }
     }
 
@@ -4433,7 +4481,8 @@ mod tests {
 
         let healthz = &specs[2];
         assert_eq!(healthz.id, "readiness.remote-web-healthz");
-        assert!(healthz.argv[6].contains("EXPECTED_RELEASE_ID='20260816T012000Z-abcd1234'"));
+        assert!(healthz.argv[6].contains("RELEASE_ID='20260816T012000Z-abcd1234'"));
+        assert!(healthz.argv[6].contains("-e EXPECTED_RELEASE_ID=\"$RELEASE_ID\""));
         assert!(healthz.argv[6].contains("deployment_id"));
         assert!(healthz.argv[6].contains(&remote_stage_dir(&topology, "20260816T012000Z-abcd1234")), "payload: {}", healthz.argv[6]);
     }
