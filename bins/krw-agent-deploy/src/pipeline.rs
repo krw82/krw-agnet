@@ -520,13 +520,14 @@ impl FixtureStageExecutor {
                 let bundle = dir.join(provider);
                 let _ = std::fs::create_dir_all(&bundle);
                 let model = if provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
+                // The raw build emits per-bundle manifests and the dual
+                // index; the sealed public descriptor appears only after the
+                // seal stage's prepare step (mirrors the real scripts).
                 let _ = std::fs::write(
-                    bundle.join("public-release.json"),
-                    format!(
-                        "{{\"entries\":[{{\"execution\":{{\"resolved_model\":\"{model}\"}}}}],\"release_set_hash\":\"sha256:{}\",\"provider\":\"{provider}\"}}\n",
-                        "c".repeat(64),
-                    ),
+                    bundle.join("release-manifest.json"),
+                    format!("{{\"provider\":\"{provider}\",\"model\":\"{model}\"}}\n"),
                 );
+                let _ = std::fs::write(dir.join("dual-release-index.json"), "{\"providers\":[\"glm\",\"deepseek\"]}\n");
                 let _ = std::fs::create_dir_all(bundle.join("packaging/launchd"));
                 let _ = std::fs::write(bundle.join("apply_migrations.sh"), "#!/bin/sh\nexit 0\n");
                 for launcher in [
@@ -544,6 +545,18 @@ impl FixtureStageExecutor {
         };
         let ship_dir = dir.join(SHIP_DIR_NAME);
         match command.id.as_str() {
+            // prepare_production_candidate.sh applies the operator endpoint
+            // bindings to the selected bundle and emits the public descriptor.
+            "seal.prepare-production-candidate" => {
+                let model = if provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
+                let _ = std::fs::write(
+                    dir.join(&provider).join("public-release.json"),
+                    format!(
+                        "{{\"entries\":[{{\"execution\":{{\"resolved_model\":\"{model}\"}}}}],\"release_set_hash\":\"sha256:{}\",\"provider\":\"{provider}\"}}\n",
+                        "c".repeat(64),
+                    ),
+                );
+            }
             // The archive command produces the deterministic source tarball.
             "frontend-image.archive-source" => {
                 let _ = std::fs::create_dir_all(&ship_dir);
@@ -2949,14 +2962,25 @@ fn partial_artifacts(deps: &PipelineDeps<'_>, state: &PipelineState) -> Option<D
 
 fn stage_build(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
     ctx.command(executor, build_stage3_command(ctx.deps))?;
+    // The raw dual-provider build produces per-bundle release manifests and
+    // the dual index. The sealed `public-release.json` descriptor only comes
+    // into existence when stage 4's `prepare_production_candidate.sh` applies
+    // the operator endpoint bindings to the SELECTED provider bundle.
     for provider in ["glm", "deepseek"] {
-        let descriptor = ctx.deps.context.output_dir.join(provider).join("public-release.json");
-        if !descriptor.is_file() {
+        let manifest = ctx.deps.context.output_dir.join(provider).join("release-manifest.json");
+        if !manifest.is_file() {
             return Err(format!(
-                "build did not produce the {provider} bundle descriptor at {}",
-                descriptor.display()
+                "build did not produce the {provider} bundle manifest at {}",
+                manifest.display()
             ));
         }
+    }
+    let index = ctx.deps.context.output_dir.join("dual-release-index.json");
+    if !index.is_file() {
+        return Err(format!(
+            "build did not produce the dual release index at {}",
+            index.display()
+        ));
     }
     ctx.note(format!(
         "dual-provider bundles built under {}",
@@ -4530,12 +4554,16 @@ mod tests {
         let outcome = fixture.execute(&deps.config.runtime_env, &build).unwrap();
         assert!(outcome.stdout.is_empty());
         assert!(
-            deps.context.output_dir.join("glm/public-release.json").is_file(),
+            deps.context.output_dir.join("glm/release-manifest.json").is_file(),
             "fixture must simulate the built bundles"
         );
         assert!(
-            deps.context.output_dir.join("deepseek/public-release.json").is_file(),
+            deps.context.output_dir.join("deepseek/release-manifest.json").is_file(),
             "fixture must simulate the built bundles"
+        );
+        assert!(
+            deps.context.output_dir.join("dual-release-index.json").is_file(),
+            "fixture must simulate the dual release index"
         );
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let prepare = build_stage4_commands(&deps, "k").remove(0);
