@@ -1230,7 +1230,7 @@ compose_stage() {
   FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
 }
 probe() {
-  compose_stage exec -T -e EXPECTED_RELEASE_ID="$RELEASE_ID" web node -e 'fetch("http://127.0.0.1:3000/api/healthz").then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.EXPECTED_RELEASE_ID) process.exit(1); }).catch(() => process.exit(1));'
+  compose_stage exec -T -e EXPECTED_RELEASE_ID="$RELEASE_ID" web node -e 'fetch("http://127.0.0.1:3000/api/healthz").then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify(v)); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.EXPECTED_RELEASE_ID) process.exit(1); }).catch(() => process.exit(1));'
 }
 observed=
 attempt=1
@@ -1265,7 +1265,7 @@ compose_stage() {
   FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
 }
 probe() {
-  compose_stage exec -T web node -e 'const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { let v = null; try { v = await r.json(); } catch {} process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION) process.exit(1); }).catch(() => process.exit(1));'
+  compose_stage exec -T web node -e 'const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { let v = null; try { v = await r.json(); } catch {} process.stdout.write(JSON.stringify(v)); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION) process.exit(1); }).catch(() => process.exit(1));'
 }
 observed=
 attempt=1
@@ -1351,7 +1351,7 @@ compose_stage() {
   FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
 }
 probe() {
-  compose_stage exec -T web node -e 'const expected = process.argv[1]; const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission })); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION || v.checks.agent_v1.admission !== expected) process.exit(1); }).catch(() => process.exit(1));' "$EXPECTED_ADMISSION"
+  compose_stage exec -T web node -e 'const expected = process.argv[1]; const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify(v)); if (!r.ok || !v || v.status !== "ok" || v.deployment_id !== process.env.NEXT_PUBLIC_APP_VERSION || v.checks.agent_v1.admission !== expected) process.exit(1); }).catch(() => process.exit(1));' "$EXPECTED_ADMISSION"
 }
 observed=
 attempt=1
@@ -4437,6 +4437,27 @@ mod tests {
                 "{name} probe must retry on a bounded budget: {payload}"
             );
         }
+        // Wire contract: the controller parses probe stdout as the FULL
+        // healthz body (admission under checks.agent_v1) — a compact
+        // top-level summary parses to None and fails stage 11 outright
+        // (production runs 20260816T113245Z..120301Z failed exactly there
+        // while the probes themselves passed).
+        let full_body = r#"{"status":"ok","deployment_id":"r","checks":{"agent_v1":{"admission":"open"}}}"#;
+        assert_eq!(
+            parse_deep_health(full_body).and_then(|observation| observation.admission),
+            Some("open".to_owned())
+        );
+        assert!(
+            parse_deep_health(r#"{"status":"ok","admission":"open"}"#)
+                .and_then(|observation| observation.admission)
+                .is_none(),
+            "compact top-level admission must not parse as the full body"
+        );
+        assert!(
+            payload_verify_admission(&topology, &release_id, "open")
+                .contains("process.stdout.write(JSON.stringify(v));"),
+            "verify probe must print the raw deep body"
+        );
     }
 
     #[test]
