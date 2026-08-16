@@ -365,12 +365,18 @@ fn run_deploy(
         .get("agent_head")
         .cloned()
         .unwrap_or_else(|| crate::hashing::UNAVAILABLE_HASH.to_owned());
+    let frontend_head = outcome
+        .input_hashes
+        .get("frontend_head")
+        .cloned()
+        .unwrap_or_else(|| crate::hashing::UNAVAILABLE_HASH.to_owned());
     let deps = PipelineDeps {
         config,
         config_path,
         target: &target,
         context,
         preflight_agent_head: &agent_head,
+        preflight_frontend_head: &frontend_head,
         now_unix_seconds: now_unix_seconds_for(context),
     };
     let pipeline_outcome = crate::pipeline::run_deploy_pipeline(&deps, stage_executor);
@@ -526,7 +532,7 @@ mod tests {
         std::fs::write(operator_root.join("signing/release-private.pk8"), b"dummy-pkcs8").unwrap();
         std::fs::write(
             operator_root.join("runtime/krw-agent-deploy.env"),
-            "# fixture env: dummy values only\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\n",
+            "# fixture env: dummy values only\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\n",
         )
         .unwrap();
         // Operator provider configuration consumed by the seal stage.

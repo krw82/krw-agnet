@@ -174,6 +174,7 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
                 db_abi: None,
                 mcp_endpoints: Vec::new(),
                 supabase_migration_plan: Vec::new(),
+                site_origins: Vec::new(),
                 frontend_contract_sha256: None,
             }
         }

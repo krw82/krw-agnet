@@ -37,6 +37,10 @@ pub struct TargetFile {
     pub compose_project: Option<String>,
     /// Supabase forward migration plan entries (read-only ordering proof).
     pub supabase_migration_plan: Vec<String>,
+    /// Public site origins the activated candidate must serve (legacy
+    /// `ops/production-target.json` `siteOrigins`; remote targets require at
+    /// least two, exactly like the legacy deploy script).
+    pub site_origins: Vec<String>,
     /// Operator-pinned `sha256:<hex>` of the canonical frontend contract JSON.
     pub frontend_contract_sha256: Option<String>,
 }
@@ -149,6 +153,7 @@ impl TargetFile {
             db_abi: string_field("db_abi"),
             mcp_endpoints: string_list("mcp_endpoints"),
             supabase_migration_plan: string_list("supabase_migration_plan"),
+            site_origins: string_list("site_origins"),
             frontend_contract_sha256: string_field("frontend_contract_sha256").as_deref().map(normalize_hash_pin),
         })
     }
@@ -204,6 +209,7 @@ mod tests {
           "db_abi": "agent_v1_v7",
           "mcp_endpoints": ["127.0.0.1:18081"],
           "supabase_migration_plan": ["0001_agent_v1.sql", "0002_heartbeats.sql"],
+          "site_origins": ["https://one.example.com", "https://two.example.com"],
           "frontend_contract_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }"#
         .to_owned()
@@ -220,6 +226,7 @@ mod tests {
         assert_eq!(target.required_env_keys.len(), 2);
         assert_eq!(target.mcp_endpoints, ["127.0.0.1:18081"]);
         assert_eq!(target.supabase_migration_plan.len(), 2);
+        assert_eq!(target.site_origins, ["https://one.example.com", "https://two.example.com"]);
         assert_eq!(
             target.frontend_contract_sha256.as_deref(),
             Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")

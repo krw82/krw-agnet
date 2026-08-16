@@ -14,5 +14,6 @@
   "db_url_env": "KRW_AGENT_DB_URL",
   "db_abi": "agent_v1_v7",
   "mcp_endpoints": ["127.0.0.1:18081"],
-  "supabase_migration_plan": ["0001_agent_v1.sql", "0002_daemon_heartbeats.sql"]
+  "supabase_migration_plan": ["0001_agent_v1.sql", "0002_heartbeats.sql"],
+  "site_origins": ["https://one.example.com", "https://two.example.com"]
 }

@@ -26,6 +26,28 @@ const FIXED_NOW: u64 = 1_786_843_200;
 /// id or argv (fix-forward only; the controller has no rollback paths).
 const ROLLBACK_TOKENS: [&str; 5] = ["rollback", "restore", "revert", "migrate down", "db:reset"];
 
+/// The one sanctioned appearance of a rollback-shaped token: the legacy
+/// stale-image-tag PRUNE pattern (`candidate-*|release-*|rollback-*`) in the
+/// stage-12 best-effort cleanup payload. Removing superseded tag labels is
+/// artifact cleanup, not a rollback path.
+const PRUNE_TAG_PATTERN_EXCEPTION: &str = "cleanup.remote-prune-stale";
+
+fn assert_no_rollback_commands(executor: &FixtureStageExecutor) {
+    for command in executor.commands.borrow().iter() {
+        let haystack = format!("{} {}", command.id, command.argv.join(" "));
+        for token in ROLLBACK_TOKENS {
+            if command.id == PRUNE_TAG_PATTERN_EXCEPTION && token == "rollback" {
+                continue;
+            }
+            assert!(
+                !haystack.to_ascii_lowercase().contains(token),
+                "rollback-shaped token `{token}` found in command `{}`: {haystack}",
+                command.id
+            );
+        }
+    }
+}
+
 /// gcloud transport argv prefix for the checked-in fixture target (gcp
 /// block declared): instance, project, and zone exactly as recorded.
 const GCLOUD_ARGV_PREFIX: [&str; 9] = [
@@ -118,7 +140,7 @@ fn build_tree(tag: &str) -> Tree {
     std::fs::write(operator_root.join("ops/production-target.json"), TARGET_FIXTURE).unwrap();
     std::fs::write(
         operator_root.join("runtime/krw-agent-deploy.env"),
-        "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\n",
+        "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\n",
     )
     .unwrap();
     let config_path = operator_root.join("ops/deploy-config.json");
@@ -145,21 +167,8 @@ fn cleanup(tree: &Tree) {
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 
-fn assert_no_rollback_commands(executor: &FixtureStageExecutor) {
-    for command in executor.commands.borrow().iter() {
-        let haystack = format!("{} {}", command.id, command.argv.join(" "));
-        for token in ROLLBACK_TOKENS {
-            assert!(
-                !haystack.to_ascii_lowercase().contains(token),
-                "rollback-shaped token `{token}` found in command `{}`: {haystack}",
-                command.id
-            );
-        }
-    }
-}
-
 /// Ordered command ids the remote-target happy path must issue.
-const REMOTE_HAPPY_PATH_COMMANDS: [&str; 25] = [
+const REMOTE_HAPPY_PATH_COMMANDS: [&str; 42] = [
     // stage 3 build
     "build.dual-provider-bundles",
     // stage 4 seal
@@ -167,33 +176,52 @@ const REMOTE_HAPPY_PATH_COMMANDS: [&str; 25] = [
     "seal.sign-release-authorization",
     "seal.seal-production-candidate",
     "seal.finalize-dual-release",
-    // stage 5 frontend image
-    "frontend-image.build-web",
-    "frontend-image.inspect-digest",
-    // stage 6 migrations (read-only dry-run gate)
+    // stage 5 frontend source preparation (LOCAL: archive + descriptor copy
+    // only — the image is built ON THE VM from the shipped source)
+    "frontend-image.resolve-commit",
+    "frontend-image.archive-source",
+    "frontend-image.descriptor-copy",
+    // stage 6 migrations (rpc contract gate + read-only dry-run)
+    "migrations.rpc-contract-verify",
     "migrations.db-push-dry-run",
-    // stage 7 admission close + forward-only push + ABI verify
+    // stage 7 admission close + legacy migration/ABI order
     "admission.read-previous",
     "admission.close",
     "admission.verify-closed",
+    "migrations.agent-release-apply",
     "migrations.db-push",
+    "migrations.schema-smoke",
+    "migrations.sealed-database-abi",
     "migrations.abi-verify-procedure-0",
     "migrations.abi-verify-column-0",
-    // stage 8 local activation
+    // stage 8 local activation (legacy order incl. gateways + daemon start)
     "activation.agentd-stage",
-    "activation.capabilityd-activate",
     "activation.agentd-activate",
-    // stage 9 remote activation
+    "activation.capabilityd-activate",
+    "activation.mcp-gateways-prepare",
+    "activation.mcp-gateways-activate",
+    "activation.sealed-mcp-abi",
+    "activation.agentd-start",
+    // stage 9 shipping (source archive + descriptor only) + remote activation
+    "ship.scp-front-archive",
+    "ship.scp-agent-descriptor",
+    "ship.remote-prepare",
+    "remote.candidate-abi",
     "remote.web-up",
     "readiness.remote-web-healthz",
     // stage 10 deep readiness
     "readiness.daemon-metrics",
     "readiness.mcp-ready-0",
     "readiness.web-deep",
+    "readiness.public-healthz-0",
+    "readiness.public-healthz-1",
     "readiness.db-heartbeat",
     // stage 11 admission open
     "admission.open",
     "readiness.admission-open-verify",
+    // stage 12 best-effort cleanup
+    "cleanup.remote-prune-stale",
+    "cleanup.remote-prune-post-activation",
 ];
 
 #[test]
@@ -316,11 +344,15 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         "admission.read-previous",
         "admission.close",
         "admission.verify-closed",
+        "ship.remote-prepare",
+        "remote.candidate-abi",
         "remote.web-up",
         "readiness.remote-web-healthz",
         "readiness.web-deep",
         "admission.open",
         "readiness.admission-open-verify",
+        "cleanup.remote-prune-stale",
+        "cleanup.remote-prune-post-activation",
     ] {
         let command = stages
             .commands
@@ -333,6 +365,112 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         assert_eq!(command.argv.len(), 10, "one payload element: {:?}", command.argv);
         assert!(command.env_keys_used.is_empty(), "no env keys on transport argv: {id}");
     }
+
+    // Uploads ride the legacy gcloud scp transport with keep-alive flags —
+    // and the ship manifest is EXACTLY the two legacy uploads: the immutable
+    // source archive and the public descriptor. No image is ever shipped.
+    let expected_scp_prefix: Vec<String> = [
+        "gcloud",
+        "compute",
+        "scp",
+        "--project",
+        "krw-prod-dummy-placeholder",
+        "--zone",
+        "asia-northeast3-a",
+        "--scp-flag=-oServerAliveInterval=15",
+        "--scp-flag=-oServerAliveCountMax=8",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let scp_ids = stages
+        .commands
+        .borrow()
+        .iter()
+        .filter(|command| command.id.starts_with("ship.scp-"))
+        .map(|command| command.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scp_ids,
+        ["ship.scp-front-archive".to_owned(), "ship.scp-agent-descriptor".to_owned()],
+        "exactly the two legacy uploads: {scp_ids:?}"
+    );
+    for (id, expected_remote, expected_local_suffix) in [
+        ("ship.scp-front-archive", "/tmp/krw-front-20260816T012000Z-", "ship/front.tar.gz"),
+        ("ship.scp-agent-descriptor", "/tmp/krw-agent-public-release-20260816T012000Z-", "ship/public-release.json"),
+    ] {
+        let command = stages
+            .commands
+            .borrow()
+            .iter()
+            .find(|command| command.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("scp command `{id}` missing"));
+        assert_eq!(&command.argv[..9], &expected_scp_prefix[..], "command {id}: {:?}", command.argv);
+        assert_eq!(command.argv.len(), 11, "local + remote path pair: {:?}", command.argv);
+        assert!(command.argv[9].ends_with(expected_local_suffix), "command {id}: {:?}", command.argv);
+        assert!(command.argv[10].starts_with("krw-agent-prod-dummy-placeholder:"), "command {id}: {:?}", command.argv);
+        assert!(command.argv[10].contains(expected_remote), "command {id}: {:?}", command.argv);
+    }
+
+    // No-local-docker invariant: the controller NEVER builds, tags, saves, or
+    // inspects an image locally — every docker interaction lives inside the
+    // remote prepare/activate payloads, exactly like the legacy script.
+    let local_docker = stages
+        .commands
+        .borrow()
+        .iter()
+        .filter(|command| command.argv.first().is_some_and(|program| program == "docker"))
+        .map(|command| command.id.clone())
+        .collect::<Vec<_>>();
+    assert!(local_docker.is_empty(), "no local docker commands may exist: {local_docker:?}");
+
+    // The remote prepare payload builds, tags, and candidate-validates the
+    // image ON THE VM from the shipped source (legacy verbatim).
+    let prepare = stages
+        .commands
+        .borrow()
+        .iter()
+        .find(|command| command.id == "ship.remote-prepare")
+        .cloned()
+        .expect("remote prepare command");
+    let payload = &prepare.argv[9];
+    assert!(payload.contains("compose_stage build web"), "payload must build on the VM");
+    assert!(payload.contains("docker tag \"$CANDIDATE_IMAGE\" \"$CANDIDATE_TAG\""), "payload must tag the candidate on the VM");
+    assert!(payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'"), "payload runs the in-container candidate preflight");
+    assert!(payload.contains("gcp_agent_v1_candidate_preflight"), "payload embeds the legacy preflight check id");
+    assert!(!payload.contains("docker load"), "payload must never load a shipped image: {payload}");
+    // The remote build reports the candidate image id as the run's digest.
+    let terminal_for_digest = tree.terminal_json();
+    assert!(
+        terminal_for_digest["artifacts"]["frontend_image_digest"].as_str().unwrap().starts_with("sha256:"),
+        "remote-built digest recorded: {terminal_for_digest}"
+    );
+
+    // The billing-v2 cutover helpers stay gated OFF in the normal
+    // --with-agent-release path (legacy: BILLING_V2_CUTOVER=0): no billing
+    // command ever runs.
+    assert!(
+        !stages.command_ids().iter().any(|id| id.contains("billing")),
+        "billing cutover commands must not run on the normal path: {:?}",
+        stages.command_ids()
+    );
+
+    // Stage 12 receipt records the best-effort cleanup commands as passed.
+    let stage12: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("stage-12-terminal_success_receipt.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stage12["status"], "pass");
+    assert_eq!(
+        stage12["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["cleanup.remote-prune-stale", "cleanup.remote-prune-post-activation"]
+    );
 
     // Terminal success receipt with the full artifact chain.
     let terminal = tree.terminal_json();
@@ -377,7 +515,7 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
         // (injected failing command id, expected failed_stage, expected admission)
         ("build.dual-provider-bundles", "build", "not-touched"),
         ("seal.prepare-production-candidate", "seal", "not-touched"),
-        ("frontend-image.build-web", "frontend_image_prepare", "not-touched"),
+        ("frontend-image.archive-source", "frontend_image_prepare", "not-touched"),
         ("migrations.db-push-dry-run", "migrations", "not-touched"),
         ("admission.close", "admission_close", "closed"),
         ("activation.agentd-stage", "local_activation", "closed"),
@@ -541,7 +679,9 @@ fn drift_between_preflight_and_mutating_stage_fails_closed() {
     let tree = build_tree("drift");
     let mut stages = FixtureStageExecutor::passing();
     // The preflight fixture executor still reports the original HEAD; the
-    // stage executor now observes a different one => drift before stage 6.
+    // stage executor now observes a different one. Stage 5 pins the frontend
+    // commit against the preflight receipt, so the drift fires there —
+    // before anything mutates.
     stages.head = "ffffffffffffffffffffffffffffffffffffffff".to_owned();
     let outcome = run_command(
         CommandMode::Deploy,
@@ -553,19 +693,24 @@ fn drift_between_preflight_and_mutating_stage_fails_closed() {
     .expect("run");
     assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
     let terminal = tree.terminal_json();
-    assert_eq!(terminal["failed_stage"], "migrations", "drift guard fires at the first mutating stage");
+    assert_eq!(
+        terminal["failed_stage"], "frontend_image_prepare",
+        "the frontend commit pin catches drift at the image stage: {terminal}"
+    );
     assert!(terminal["reason"].as_str().unwrap().contains("drifted"), "reason: {terminal}");
     assert_eq!(terminal["admission"], "not-touched");
     let ids = stages.command_ids();
     assert!(!ids.iter().any(|id| id.contains("migrations.")), "no migration command after drift: {ids:?}");
     assert!(!ids.iter().any(|id| id.starts_with("admission.")), "no admission command after drift: {ids:?}");
     let run_dir = tree.single_run_dir();
-    assert!(run_dir.join("stage-6-migrations.json").is_file());
-    assert_eq!(run_dir.join("stage-6-migrations.json").file_name().unwrap().to_str().unwrap(), "stage-6-migrations.json");
-    let stage6: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("stage-6-migrations.json")).unwrap()).unwrap();
-    assert_eq!(stage6["status"], "fail");
-    assert!(stage6["commands"].as_array().unwrap().is_empty(), "no commands executed in the drifted stage");
+    let stage5: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("stage-5-frontend_image_prepare.json")).unwrap())
+        .unwrap();
+    assert_eq!(stage5["status"], "fail");
+    assert!(
+        stage5["commands"].as_array().unwrap().iter().any(|record| record["id"] == "frontend-image.resolve-commit"),
+        "the drift was observed through the recorded resolve command: {stage5}"
+    );
     cleanup(&tree);
 }
 
@@ -632,7 +777,7 @@ fn admission_capture_records_the_previous_gate_value_verbatim() {
     let tree = build_tree("admission-capture");
     std::fs::write(
         tree.operator_root().join("runtime/krw-agent-deploy.env"),
-        "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_ADMISSION_MODE=drain\n",
+        "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\nKRW_AGENT_ADMISSION_MODE=drain\n",
     )
     .unwrap();
     tree.rewrite_target(|text| {
@@ -861,6 +1006,183 @@ fn repeated_run_at_same_timestamp_refuses_to_overwrite_receipts() {
     assert!(second.is_err(), "receipt overwrite must be refused: {second:?}");
     let receipt_entries = std::fs::read_dir(tree.receipt_root()).unwrap().count();
     assert_eq!(receipt_entries, 1, "still exactly one run directory");
+    cleanup(&tree);
+}
+
+#[test]
+fn source_archive_failure_aborts_before_any_mutation() {
+    // The candidate image is built LATE (inside the remote prepare in stage
+    // 9); a failure while preparing the immutable source archive stops the
+    // walk before anything ships or the gate moves. The remote preflight's
+    // failure surface is covered by the remote-prepare failure test.
+    let tree = build_tree("archive-source-fail");
+    let mut stages = FixtureStageExecutor::passing();
+    stages
+        .failures
+        .insert("frontend-image.archive-source".to_owned(), "injected archive failure".to_owned());
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
+    let terminal = tree.terminal_json();
+    assert_eq!(terminal["failed_stage"], "frontend_image_prepare");
+    assert_eq!(terminal["admission"], "not-touched");
+    let ids = stages.command_ids();
+    assert!(ids.contains(&"frontend-image.archive-source".to_owned()), "ids: {ids:?}");
+    assert!(!ids.iter().any(|id| id.starts_with("ship.")), "nothing ships after a failed archive: {ids:?}");
+    assert!(!ids.iter().any(|id| id.starts_with("admission.")), "admission untouched: {ids:?}");
+    assert!(!ids.contains(&"migrations.db-push".to_owned()), "no push: {ids:?}");
+    // No docker interaction anywhere (local build is not part of the flow).
+    assert!(
+        !stages
+            .commands
+            .borrow()
+            .iter()
+            .any(|command| command.argv.first().is_some_and(|program| program == "docker")),
+        "no local docker commands: {:?}",
+        stages.command_ids()
+    );
+    assert_no_rollback_commands(&stages);
+    cleanup(&tree);
+}
+
+#[test]
+fn remote_prepare_failure_keeps_admission_closed_after_uploads() {
+    // A failure at the new shipping sub-stage: archives were uploaded, the
+    // remote prepare failed — the deploy stops fail-closed with admission
+    // already closed (schema may have moved under it).
+    let tree = build_tree("remote-prepare-fail");
+    let mut stages = FixtureStageExecutor::passing();
+    stages.failures.insert("ship.remote-prepare".to_owned(), "injected prepare failure".to_owned());
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 1);
+    let terminal = tree.terminal_json();
+    assert_eq!(terminal["failed_stage"], "remote_activation");
+    assert_eq!(terminal["admission"], "closed");
+    let ids = stages.command_ids();
+    assert!(ids.contains(&"ship.scp-agent-descriptor".to_owned()), "uploads happened before prepare: {ids:?}");
+    assert!(!ids.contains(&"remote.candidate-abi".to_owned()), "no candidate ABI after failed prepare: {ids:?}");
+    assert!(!ids.contains(&"remote.web-up".to_owned()), "no activation after failed prepare: {ids:?}");
+    assert_no_rollback_commands(&stages);
+    cleanup(&tree);
+}
+
+#[test]
+fn cleanup_failures_never_fail_the_deploy() {
+    // 05 artifact cleanup is best-effort post-success: a failing prune is
+    // recorded in the stage-12 receipt, and the run still ends open.
+    let tree = build_tree("cleanup-fail");
+    let mut stages = FixtureStageExecutor::passing();
+    stages
+        .failures
+        .insert("cleanup.remote-prune-stale".to_owned(), "injected cleanup failure".to_owned());
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
+    assert_eq!(outcome.outcome, "success");
+    let terminal = tree.terminal_json();
+    assert_eq!(terminal["admission"], "open");
+    let run_dir = tree.single_run_dir();
+    let stage12: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("stage-12-terminal_success_receipt.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stage12["status"], "pass", "cleanup failure must not fail stage 12: {stage12}");
+    let prune = stage12["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == "cleanup.remote-prune-stale")
+        .unwrap();
+    assert_eq!(prune["outcome"], "fail");
+    assert!(
+        stage12["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("best-effort cleanup `cleanup.remote-prune-stale` failed")),
+        "failure noted: {stage12}"
+    );
+    cleanup(&tree);
+}
+
+#[test]
+fn dry_run_migration_include_all_retry_is_detected_from_dry_run_output() {
+    // Supabase reports out-of-order migrations as a successful dry run that
+    // mentions --include-all: the controller must re-plan with the flag and
+    // apply with it (legacy MIGRATION_INCLUDE_ALL).
+    let tree = build_tree("include-all");
+    let mut stages = FixtureStageExecutor::passing();
+    stages.outputs.insert(
+        "migrations.db-push-dry-run".to_owned(),
+        "Need to rerun with --include-all\n".to_owned(),
+    );
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
+    let ids = stages.command_ids();
+    let dry_run_position = ids
+        .iter()
+        .position(|id| id == "migrations.db-push-dry-run")
+        .expect("dry-run ran");
+    let include_position = ids
+        .iter()
+        .position(|id| id == "migrations.db-push-dry-run-include-all")
+        .expect("include-all dry-run re-ran");
+    let push_position = ids.iter().position(|id| id == "migrations.db-push-include-all").expect("include-all push");
+    assert!(dry_run_position < include_position, "ids: {ids:?}");
+    assert!(include_position < push_position, "ids: {ids:?}");
+    cleanup(&tree);
+}
+
+#[test]
+fn remote_target_without_two_site_origins_fails_closed_at_activation() {
+    // The legacy activation payload hard-requires two public origins; the
+    // controller refuses to ship to a target that does not declare them.
+    let tree = build_tree("origins-missing");
+    tree.rewrite_target(|text| {
+        text.replace(",\n  \"site_origins\": [\"https://one.example.com\", \"https://two.example.com\"]", "")
+    });
+    let stages = FixtureStageExecutor::passing();
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
+    let terminal = tree.terminal_json();
+    assert_eq!(terminal["failed_stage"], "remote_activation");
+    assert_eq!(terminal["admission"], "closed");
+    assert!(terminal["reason"].as_str().unwrap().contains("site_origins"), "reason: {terminal}");
+    let ids = stages.command_ids();
+    assert!(!ids.iter().any(|id| id.starts_with("ship.")), "nothing ships without origins: {ids:?}");
     cleanup(&tree);
 }
 
