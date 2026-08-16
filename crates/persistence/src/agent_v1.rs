@@ -1551,6 +1551,9 @@ pub struct HeartbeatDaemonRequest {
 #[serde(deny_unknown_fields)]
 pub struct HeartbeatDaemonResponse {
     pub ready: bool,
+    /// Echo of the daemon's MCP readiness (migration 0022 requires the
+    /// heartbeat to carry it; the response confirms what was persisted).
+    pub mcp_ready: bool,
     pub heartbeat_expires_at: String,
 }
 
