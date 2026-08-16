@@ -559,7 +559,6 @@ impl FixtureStageExecutor {
         let Some(provider) = learned.provider.clone() else {
             return;
         };
-        let ship_dir = dir.join(SHIP_DIR_NAME);
         match command.id.as_str() {
             // prepare_production_candidate.sh applies the operator endpoint
             // bindings to the bundle named by its own --provider argument and
@@ -584,18 +583,29 @@ impl FixtureStageExecutor {
                     ),
                 );
             }
-            // The archive command produces the deterministic source tarball.
+            // The archive command produces the deterministic source tarball
+            // into the run's RECEIPT ship workspace (the launchd installer
+            // requires the release root to hold only the sealed bundles).
             "frontend-image.archive-source" => {
-                let _ = std::fs::create_dir_all(&ship_dir);
-                let _ = std::fs::write(ship_dir.join("front.tar.gz"), "fixture-front-archive\n");
+                if let Some(path) = extract_ship_file_path(&command.argv[2], "front.tar.gz") {
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&path, "fixture-front-archive\n");
+                }
             }
             // The descriptor copy must be byte-identical to the sealed
             // descriptor so the controller-side sha256 gate passes.
             "frontend-image.descriptor-copy" => {
                 let sealed = dir.join(&provider).join("public-release.json");
-                if let Ok(bytes) = std::fs::read(&sealed) {
-                    let _ = std::fs::create_dir_all(&ship_dir);
-                    let _ = std::fs::write(ship_dir.join("public-release.json"), bytes);
+                if let (Ok(bytes), Some(path)) = (
+                    std::fs::read(&sealed),
+                    extract_ship_file_path(&command.argv[2], "public-release.json"),
+                ) {
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&path, bytes);
                 }
             }
             _ => {}
@@ -1702,8 +1712,11 @@ impl PipelineDeps<'_> {
     }
 
     /// Local ship directory holding the archives uploaded to the instance.
+    /// Lives under the run's RECEIPT workspace, NOT the release root: the
+    /// launchd installer requires the sealed release root to contain exactly
+    /// {glm, deepseek, dual-release-index.json}.
     fn ship_dir(&self) -> PathBuf {
-        self.context.output_dir.join(SHIP_DIR_NAME)
+        self.context.receipt_dir.join(SHIP_DIR_NAME)
     }
 
     /// First runtime-env KEY NAME carrying a Postgres URL, in the legacy
@@ -1935,6 +1948,15 @@ pub fn build_stage5_descriptor_copy_command(deps: &PipelineDeps<'_>) -> StageCom
 
 fn supabase_cli_path(deps: &PipelineDeps<'_>) -> String {
     deps.config.frontend_source_root.join("scripts/supabase-cli.sh").display().to_string()
+}
+
+/// Extract the shell-quoted absolute path ending in `/<file>` from a
+/// controller-generated `-c` script (redirect target or copy destination).
+fn extract_ship_file_path(script: &str, file: &str) -> Option<String> {
+    let needle = format!("/{file}'");
+    let start = script.rfind(&needle)?;
+    let begin = script[..start].rfind('\'')? + 1;
+    Some(format!("{}{}", &script[begin..start], needle.trim_matches('\'')))
 }
 
 /// Legacy `run_front_migration` wrapper as one shell command: capture the
