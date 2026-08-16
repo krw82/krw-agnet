@@ -1070,7 +1070,7 @@ upsert_env_value() {
   env_key=$2
   env_value=$3
   tmp_file=$(mktemp "${env_file}.XXXXXX")
-  awk -v key="$env_key" -v value="$env_value" '$0 !~ /^[[:space:]]*#/ && $0 ~ ("^" env_key "=") { if (!seen++) print env_key "=" value; next } { print } END { if (!seen) print env_key "=" value }' "$env_file" > "$tmp_file"
+  awk -v key="$env_key" -v value="$env_value" '$0 !~ /^[[:space:]]*#/ && $0 ~ ("^" key "=") { if (!seen++) print key "=" value; next } { print } END { if (!seen) print key "=" value }' "$env_file" > "$tmp_file"
   chmod 600 "$tmp_file"
   mv "$tmp_file" "$env_file"
 }"#;
