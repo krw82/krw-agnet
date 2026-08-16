@@ -1065,10 +1065,23 @@ upsert_env_value() {
   mv "$tmp_file" "$env_file"
 }"#;
 
+/// Resolve the ACTIVE release root (`r`) and its runtime env (`e`) exactly
+/// like the legacy close/open helpers: the base front dir unless
+/// `.simple-deploy/current` is a symlink to a release carrying runtime.env.
 fn active_env_snippet(front_dir: &str) -> String {
     format!(
-        "e='{front}/.env'\nif [ -f '{front}/.simple-deploy/current/runtime.env' ]; then e='{front}/.simple-deploy/current/runtime.env'; fi",
+        "r='{front}'\ne='{front}/.env'\nif [ -L '{front}/.simple-deploy/current' ] && [ -f '{front}/.simple-deploy/current/runtime.env' ]; then r=$(cd '{front}/.simple-deploy/current' && pwd -P); e=\"$r/runtime.env\"; fi",
         front = front_dir
+    )
+}
+
+/// Legacy `compose_active` prefix: compose against the ACTIVE release root
+/// resolved by [`active_env_snippet`] (`$r`/`$e`), not the base front dir —
+/// the base docker-compose.yml has no `agent-v1-outbox` service.
+fn compose_active_prefix(topology: &RemoteTopology) -> String {
+    format!(
+        "FRONT_DIR=\"$r\" docker compose --project-name '{project}' --project-directory \"$r\" --env-file \"$e\" -f \"$r/docker-compose.yml\"",
+        project = topology.compose_project,
     )
 }
 
@@ -1094,9 +1107,9 @@ pub fn payload_close_admission(topology: &RemoteTopology) -> String {
             value_of = shell_value_of("KRW_AGENT_BACKEND_MODE"),
         ),
         upsert = shell_upsert_snippet(ADMISSION_ENV_KEY, "closed"),
-        // Legacy `compose_active` exports FRONT_DIR only for the running
-        // release — never a candidate version string.
-        compose = compose_prefix(topology, "\"$e\"", ""),
+        // Legacy `compose_active` runs against the ACTIVE release root
+        // (`.simple-deploy/current`), where the agent-v1-outbox service lives.
+        compose = compose_active_prefix(topology),
     )
 }
 
@@ -1104,8 +1117,9 @@ pub fn payload_close_admission(topology: &RemoteTopology) -> String {
 /// verification against the ACTIVE release).
 pub fn payload_verify_healthz(topology: &RemoteTopology) -> String {
     format!(
-        "{prefix} exec -T web node -e 'fetch(\"http://127.0.0.1:3000/api/healthz\").then(async r => {{ const v = await r.json().catch(() => null); if (!r.ok || v?.status !== \"ok\") process.exit(1); }}).catch(() => process.exit(1));'",
-        prefix = compose_prefix(topology, "'unused-env'", ""),
+        "{probe}\n{prefix} exec -T web node -e 'fetch(\"http://127.0.0.1:3000/api/healthz\").then(async r => {{ const v = await r.json().catch(() => null); if (!r.ok || v?.status !== \"ok\") process.exit(1); }}).catch(() => process.exit(1));'",
+        probe = active_env_snippet(&topology.remote_front_dir),
+        prefix = compose_active_prefix(topology),
     )
 }
 
