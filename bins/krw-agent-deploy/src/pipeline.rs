@@ -1355,15 +1355,17 @@ probe() {
 }
 observed=
 attempt=1
-while [ "$attempt" -le 20 ]; do
+while [ "$attempt" -le 30 ]; do
   if observed=$(probe 2>/dev/null); then
     printf '%s\n' "$observed"
     exit 0
   fi
-  sleep 2
+  sleep 10
   attempt=$((attempt + 1))
 done
 echo "Deep health did not report agent_v1 admission '$EXPECTED_ADMISSION' after retries." >&2
+# Diagnostic: show which deep-healthz checks were not ok.
+compose_stage exec -T web node -e 'const headers = { "x-internal-key": process.env.INTERNAL_API_KEY || "", "x-krw-client-ip": "127.0.0.1" }; fetch("http://127.0.0.1:3000/api/healthz/deep", { headers }).then(async r => { const v = await r.json().catch(() => null); const checks = v && v.checks ? Object.fromEntries(Object.entries(v.checks).map(([name, check]) => [name, check && check.ok, check && check.error])) : null; console.error("deep_http_status=" + r.status + " checks=" + JSON.stringify(checks)); }).catch(err => console.error("deep diagnostic fetch failed: " + err));' 2>&1 || true
 exit 1"#,
         &[
             ("RELEASE_ID", release_id),
@@ -2758,7 +2760,11 @@ pub fn build_admission_open_commands_remote(deps: &PipelineDeps<'_>, topology: &
             topology,
             ssh_ms,
             payload_verify_admission(topology, &deps.release_id(), "open"),
-            SSH_QUICK_TIMEOUT_MS,
+            // Post-flip readiness gate: deep healthz stays not-ok for up to
+            // a few minutes after the full-stack recreate (filing scheduler
+            // lease takeover window), so this probe needs the compose-sized
+            // budget, not the quick one.
+            SSH_COMPOSE_TIMEOUT_MS,
         ),
     ]
 }
@@ -4417,17 +4423,17 @@ mod tests {
         let (_guard, deps) = deps_for(false);
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let release_id = deps.release_id();
-        for (name, payload) in [
-            ("healthz", payload_remote_web_healthz(&topology, &release_id)),
-            ("deep", payload_remote_web_deep(&topology, &release_id)),
-            ("verify_admission", payload_verify_admission(&topology, &release_id, "open")),
+        for (name, payload, attempts) in [
+            ("healthz", payload_remote_web_healthz(&topology, &release_id), 20),
+            ("deep", payload_remote_web_deep(&topology, &release_id), 20),
+            ("verify_admission", payload_verify_admission(&topology, &release_id, "open"), 30),
         ] {
             assert!(
                 payload.contains("--env-file \"$REMOTE_STAGE/runtime.env\""),
                 "{name} probe must read the stage runtime.env: {payload}"
             );
             assert!(
-                payload.contains("while [ \"$attempt\" -le 20 ]"),
+                payload.contains(&format!("while [ \"$attempt\" -le {attempts} ]")),
                 "{name} probe must retry on a bounded budget: {payload}"
             );
         }
