@@ -2284,6 +2284,13 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
     let agentd = launchd.join("install-local-mac-agentd-release.sh");
     let capabilityd = launchd.join("install-local-mac-capabilityd-release.sh");
     let release_id = deps.release_id();
+    // The installers default to ~/.local/share/krw-agent when the override
+    // key is absent; only forward it when the operator env declares one.
+    let install_root_env: Vec<String> = if runtime_env_has_key(&deps.config.runtime_env, LOCAL_INSTALL_ROOT_ENV_KEY) {
+        vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()]
+    } else {
+        Vec::new()
+    };
     let mut agentd_activate_argv = vec![
         agentd.display().to_string(),
         "--mode".to_owned(),
@@ -2316,7 +2323,7 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
                 provider.clone(),
             ],
             &deps.config.agent_source_root,
-            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            install_root_env.clone(),
             INSTALL_TIMEOUT_MS,
         ),
     ];
@@ -2352,7 +2359,7 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
             "activation.agentd-activate",
             agentd_activate_argv,
             &deps.config.agent_source_root,
-            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            install_root_env.clone(),
             INSTALL_TIMEOUT_MS,
         ),
         StageCommand::new(
@@ -2370,7 +2377,7 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
                 deps.config.operator_root.display().to_string(),
             ],
             &deps.config.agent_source_root,
-            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            install_root_env.clone(),
             INSTALL_TIMEOUT_MS,
         ),
     ]);
@@ -2425,7 +2432,7 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
         "activation.agentd-start",
         agentd_start_argv,
         &deps.config.agent_source_root,
-        vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+        install_root_env,
         INSTALL_TIMEOUT_MS,
     ));
     commands
@@ -4153,8 +4160,8 @@ mod tests {
             "activation.agentd-start",
         ] {
             assert!(
-                specs.iter().any(|spec| spec.id == id && spec.env_keys_used == [LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()]),
-                "{id} must carry KRW_AGENT_LOCAL_INSTALL_ROOT"
+                specs.iter().any(|spec| spec.id == id && spec.env_keys_used.is_empty()),
+                "{id} must not require KRW_AGENT_LOCAL_INSTALL_ROOT when the operator env omits it (installer default)"
             );
         }
         let agentd_stage = &specs[0];
