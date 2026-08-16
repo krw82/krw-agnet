@@ -379,19 +379,31 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
         }),
     }
 
-    // 11. SSH and remote disk (BatchMode probe; write-free).
-    match &target.ssh_host {
-        Some(host) => match executor.ssh_batch_true(host, config.timeouts.ssh_ms) {
+    // 11. Remote shell reachability. The production transport is
+    // `gcloud compute ssh` whenever the target declares a gcp block; plain
+    // ssh survives only for ssh_host-only targets. Write-free echo probe.
+    match (&target.gcp, &target.ssh_host) {
+        (Some(gcp), _) => match executor.gcloud_ssh_echo_ok(gcp) {
+            Ok(()) => checks.push(pass(
+                CHECK_SSH_REMOTE_REACHABLE,
+                format!(
+                    "gcloud compute ssh `{}` reachable in zone `{}` of project `{}` (echo probe, no writes)",
+                    gcp.instance, gcp.zone, gcp.project
+                ),
+            )),
+            Err(error) => checks.push(fail(CHECK_SSH_REMOTE_REACHABLE, error)),
+        },
+        (None, Some(host)) => match executor.ssh_batch_true(host, config.timeouts.ssh_ms) {
             Ok(()) => checks.push(pass(
                 CHECK_SSH_REMOTE_REACHABLE,
                 format!("ssh `{host}` reachable (BatchMode, no writes)"),
             )),
             Err(error) => checks.push(fail(CHECK_SSH_REMOTE_REACHABLE, error)),
         },
-        None => checks.push(CheckResult {
+        (None, None) => checks.push(CheckResult {
             id: CHECK_SSH_REMOTE_REACHABLE,
             status: CheckStatus::Skipped,
-            detail: "target file records no ssh_host".to_owned(),
+            detail: "target file records no gcp block and no ssh_host".to_owned(),
         }),
     }
 
@@ -909,15 +921,60 @@ mod tests {
         });
         let mut executor = FixtureExecutor::passing();
         executor.gcp_describe = Err("gcloud credentials expired".to_owned());
-        executor.ssh = Err("ssh: connection refused".to_owned());
+        // gcp block present => the reachability check uses the gcloud
+        // transport; the plain-ssh probe must not be consulted at all.
+        executor.gcloud_ssh = Err("gcloud compute ssh: connection refused".to_owned());
+        executor.ssh = Ok(());
         executor.db = Err("env handle `KRW_AGENT_DB_URL` is not set".to_owned());
         executor.tcp = Err("connect refused".to_owned());
         let outcome = run(&fixture, &executor);
         assert_eq!(result_of(&outcome, CHECK_GCP_TARGET_DESCRIBABLE).status, CheckStatus::Fail);
-        assert_eq!(result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE).status, CheckStatus::Fail);
+        let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
+        assert_eq!(reachability.status, CheckStatus::Fail);
+        assert!(
+            reachability.detail.contains("gcloud compute ssh"),
+            "detail: {}",
+            reachability.detail
+        );
         assert_eq!(result_of(&outcome, CHECK_DB_AGENT_V1_ABI).status, CheckStatus::Fail);
         assert_eq!(result_of(&outcome, CHECK_MCP_ENDPOINT_REACHABLE).status, CheckStatus::Fail);
         assert_eq!(result_of(&outcome, CHECK_SUPABASE_MIGRATION_PLAN).status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn ssh_only_target_uses_the_plain_ssh_reachability_probe() {
+        let fixture = write_fixture_with("ssh-only", |fixture| {
+            std::fs::write(
+                fixture.config.target_file.clone(),
+                r#"{
+                  "provider": "deepseek",
+                  "ssh_host": "deploy@127.0.0.1",
+                  "remote_front_dir": "/home/deploy/krw-ontology-front",
+                  "local_ports": [],
+                  "required_env_keys": [],
+                  "supabase_migration_plan": [],
+                  "mcp_endpoints": []
+                }"#,
+            )
+            .unwrap();
+        });
+        let mut executor = FixtureExecutor::passing();
+        executor.ssh = Err("ssh: connection refused".to_owned());
+        executor.gcloud_ssh = Ok(());
+        let outcome = run(&fixture, &executor);
+        let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
+        assert_eq!(reachability.status, CheckStatus::Fail);
+        assert!(reachability.detail.contains("connection refused"), "detail: {}", reachability.detail);
+
+        // The passing form names the plain-ssh transport.
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
+        assert_eq!(reachability.status, CheckStatus::Pass);
+        assert!(
+            reachability.detail.contains("ssh `deploy@127.0.0.1` reachable"),
+            "detail: {}",
+            reachability.detail
+        );
     }
 
     #[test]

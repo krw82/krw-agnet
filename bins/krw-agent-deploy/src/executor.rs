@@ -35,6 +35,10 @@ pub trait PreflightExecutor: std::fmt::Debug {
     /// `gcloud compute instances describe ... --format=json` (read-only).
     fn gcp_describe_instance(&self, target: &GcpTarget) -> Result<String, String>;
 
+    /// `gcloud compute ssh ... --command 'echo ok'` reachability probe for
+    /// targets whose production remote transport is gcloud (no writes).
+    fn gcloud_ssh_echo_ok(&self, target: &GcpTarget) -> Result<(), String>;
+
     /// `ssh -o BatchMode=yes <host> true` connectivity probe (no writes).
     fn ssh_batch_true(&self, host: &str, ssh_ms: u64) -> Result<(), String>;
 
@@ -150,6 +154,27 @@ impl PreflightExecutor for RealCommandExecutor {
         )
     }
 
+    fn gcloud_ssh_echo_ok(&self, target: &GcpTarget) -> Result<(), String> {
+        if target.project.is_empty() || target.zone.is_empty() || target.instance.is_empty() {
+            return Err("gcp target must record non-empty project, zone, and instance".to_owned());
+        }
+        self.shell(
+            "gcloud",
+            &[
+                "compute",
+                "ssh",
+                &target.instance,
+                "--project",
+                &target.project,
+                "--zone",
+                &target.zone,
+                "--command",
+                "echo ok",
+            ],
+        )
+        .map(|_| ())
+    }
+
     fn ssh_batch_true(&self, host: &str, ssh_ms: u64) -> Result<(), String> {
         let connect_option = format!("ConnectTimeout={}", (ssh_ms / 1000).max(1));
         self.shell(
@@ -214,6 +239,7 @@ pub struct FixtureExecutor {
     pub missing_commands: BTreeSet<String>,
     pub cargo_metadata: Result<String, String>,
     pub gcp_describe: Result<String, String>,
+    pub gcloud_ssh: Result<(), String>,
     pub ssh: Result<(), String>,
     pub db: Result<(), String>,
     pub tcp: Result<(), String>,
@@ -227,6 +253,7 @@ impl FixtureExecutor {
             missing_commands: BTreeSet::new(),
             cargo_metadata: Ok("{\"packages\":[]}".to_owned()),
             gcp_describe: Ok("{\"status\":\"RUNNING\"}".to_owned()),
+            gcloud_ssh: Ok(()),
             ssh: Ok(()),
             db: Ok(()),
             tcp: Ok(()),
@@ -257,6 +284,10 @@ impl PreflightExecutor for FixtureExecutor {
 
     fn gcp_describe_instance(&self, _target: &GcpTarget) -> Result<String, String> {
         self.gcp_describe.clone()
+    }
+
+    fn gcloud_ssh_echo_ok(&self, _target: &GcpTarget) -> Result<(), String> {
+        self.gcloud_ssh.clone()
     }
 
     fn ssh_batch_true(&self, _host: &str, _ssh_ms: u64) -> Result<(), String> {

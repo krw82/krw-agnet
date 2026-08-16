@@ -82,7 +82,8 @@ pub const SSH_COMPOSE_TIMEOUT_MS: u64 = 900_000;
 const READINESS_ID_PREFIX: &str = "readiness.";
 const READINESS_POLL_INTERVAL_MS: u64 = 2_000;
 
-pub const LOCAL_ONLY_SKIP_REASON: &str = "local-only target: no ssh_host recorded; remote activation skipped";
+pub const LOCAL_ONLY_SKIP_REASON: &str =
+    "local-only target: no gcp block and no ssh_host recorded; remote activation skipped";
 
 /// Local gateway stack endpoints (frontend compose runs on the same host).
 const LOCAL_WEB_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -734,21 +735,91 @@ pub fn parse_deep_health(stdout: &str) -> Option<DeepHealthObservation> {
 // Remote topology and ssh payloads
 // ---------------------------------------------------------------------------
 
+/// How remote shell commands reach the deploy target. The production
+/// transport is `gcloud compute ssh` (legacy `run_remote_buffered_script`);
+/// plain ssh survives only for targets that declare `ssh_host` WITHOUT a
+/// gcp block. Payloads are identical across transports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteTransport {
+    Gcloud {
+        instance: String,
+        project: String,
+        zone: String,
+    },
+    Ssh {
+        host: String,
+    },
+}
+
+impl RemoteTransport {
+    /// argv prefix in front of the shell payload (no payload element).
+    fn argv_prefix(&self, ssh_ms: u64) -> Vec<String> {
+        match self {
+            Self::Gcloud { instance, project, zone } => vec![
+                "gcloud".to_owned(),
+                "compute".to_owned(),
+                "ssh".to_owned(),
+                instance.clone(),
+                "--project".to_owned(),
+                project.clone(),
+                "--zone".to_owned(),
+                zone.clone(),
+                "--command".to_owned(),
+            ],
+            Self::Ssh { host } => {
+                let connect_seconds = (ssh_ms / 1000).max(1);
+                vec![
+                    "ssh".to_owned(),
+                    "-o".to_owned(),
+                    "BatchMode=yes".to_owned(),
+                    "-o".to_owned(),
+                    format!("ConnectTimeout={connect_seconds}"),
+                    host.clone(),
+                ]
+            }
+        }
+    }
+
+    /// Human label for receipts and error messages (no secrets either way).
+    pub fn label(&self) -> String {
+        match self {
+            Self::Gcloud { instance, project, zone } => {
+                format!("gcloud compute ssh `{instance}` (project `{project}`, zone `{zone}`)")
+            }
+            Self::Ssh { host } => format!("ssh `{host}`"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteTopology {
-    pub ssh_host: String,
+    pub transport: RemoteTransport,
     pub remote_front_dir: String,
     pub compose_project: String,
 }
 
-/// Resolve the remote deployment topology. `Ok(None)` = local-only target.
-/// An ssh host without `remote_front_dir` fails closed.
+/// Resolve the remote deployment topology and transport. Selection rule:
+/// a `gcp` block selects the gcloud transport (production); otherwise an
+/// `ssh_host` selects plain ssh; neither means a local-only target (`None`).
+/// Any remote transport without `remote_front_dir` fails closed, and a gcp
+/// block must carry non-empty project/zone/instance.
 pub fn resolve_remote_topology(target: &TargetFile) -> Result<Option<RemoteTopology>, String> {
-    let Some(ssh_host) = target.ssh_host.as_deref() else {
+    let transport = if let Some(gcp) = &target.gcp {
+        if gcp.project.is_empty() || gcp.zone.is_empty() || gcp.instance.is_empty() {
+            return Err("target gcp block must record non-empty project, zone, and instance".to_owned());
+        }
+        RemoteTransport::Gcloud {
+            instance: gcp.instance.clone(),
+            project: gcp.project.clone(),
+            zone: gcp.zone.clone(),
+        }
+    } else if let Some(host) = target.ssh_host.as_deref() {
+        RemoteTransport::Ssh { host: host.to_owned() }
+    } else {
         return Ok(None);
     };
     let remote_front_dir = target.remote_front_dir.as_deref().ok_or_else(|| {
-        "target records an ssh_host but no remote_front_dir; remote admission/activation cannot run".to_owned()
+        "target declares a remote transport but no remote_front_dir; remote admission/activation cannot run".to_owned()
     })?;
     let compose_project = target.compose_project.clone().unwrap_or_else(|| {
         PathBuf::from(remote_front_dir)
@@ -757,7 +828,7 @@ pub fn resolve_remote_topology(target: &TargetFile) -> Result<Option<RemoteTopol
             .unwrap_or_else(|| remote_front_dir.to_owned())
     });
     Ok(Some(RemoteTopology {
-        ssh_host: ssh_host.to_owned(),
+        transport,
         remote_front_dir: remote_front_dir.to_owned(),
         compose_project,
     }))
@@ -867,24 +938,21 @@ pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, exp
     )
 }
 
-fn ssh_command(stage: &'static str, id: &str, ssh_ms: u64, host: &str, payload: String, timeout_ms: u64) -> StageCommand {
-    let connect_seconds = (ssh_ms / 1000).max(1);
-    StageCommand::new(
-        stage,
-        id,
-        vec![
-            "ssh".to_owned(),
-            "-o".to_owned(),
-            "BatchMode=yes".to_owned(),
-            "-o".to_owned(),
-            format!("ConnectTimeout={connect_seconds}"),
-            host.to_owned(),
-            payload,
-        ],
-        Path::new("/"),
-        Vec::new(),
-        timeout_ms,
-    )
+/// One remote shell command: transport argv prefix (gcloud compute ssh or
+/// plain ssh) + the shell payload as the final element. Same payload and
+/// buffering/timeout semantics across transports; records never contain
+/// secrets (payloads only reference operator-owned paths and env NAMES).
+fn remote_shell_command(
+    stage: &'static str,
+    id: &str,
+    topology: &RemoteTopology,
+    ssh_ms: u64,
+    payload: String,
+    timeout_ms: u64,
+) -> StageCommand {
+    let mut argv = topology.transport.argv_prefix(ssh_ms);
+    argv.push(payload);
+    StageCommand::new(stage, id, argv, Path::new("/"), Vec::new(), timeout_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,27 +1186,27 @@ pub fn build_abi_command(deps: &PipelineDeps<'_>, id: &str, sql: &str) -> StageC
 pub fn build_admission_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_ADMISSION_CLOSE,
             "admission.read-previous",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_read_previous_admission(topology),
             SSH_QUICK_TIMEOUT_MS,
         ),
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_ADMISSION_CLOSE,
             "admission.close",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_close_admission(topology),
             SSH_COMPOSE_TIMEOUT_MS,
         ),
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_ADMISSION_CLOSE,
             "admission.verify-closed",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_verify_healthz(topology),
             SSH_QUICK_TIMEOUT_MS,
         ),
@@ -1266,19 +1334,19 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
 pub fn build_stage9_commands(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_REMOTE_ACTIVATION,
             "remote.web-up",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_remote_web_up(topology),
             SSH_COMPOSE_TIMEOUT_MS,
         ),
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_REMOTE_ACTIVATION,
             "readiness.remote-web-healthz",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_remote_web_healthz(topology, &deps.release_id()),
             SSH_QUICK_TIMEOUT_MS,
         ),
@@ -1337,11 +1405,11 @@ pub fn build_mcp_ready_command(deps: &PipelineDeps<'_>, index: usize, endpoint: 
 }
 
 pub fn build_web_deep_command_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> StageCommand {
-    ssh_command(
+    remote_shell_command(
         crate::stages::STAGE_DEEP_READINESS,
         "readiness.web-deep",
+        topology,
         deps.config.timeouts.ssh_ms,
-        &topology.ssh_host,
         payload_remote_web_deep(topology, &deps.release_id()),
         deps.config.timeouts.public_ready_ms.max(SSH_QUICK_TIMEOUT_MS),
     )
@@ -1391,19 +1459,19 @@ pub fn build_db_heartbeat_command(deps: &PipelineDeps<'_>) -> Option<StageComman
 pub fn build_admission_open_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_ADMISSION_OPEN,
             "admission.open",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_open_admission(topology),
             SSH_COMPOSE_TIMEOUT_MS,
         ),
-        ssh_command(
+        remote_shell_command(
             crate::stages::STAGE_ADMISSION_OPEN,
             "readiness.admission-open-verify",
+            topology,
             ssh_ms,
-            &topology.ssh_host,
             payload_verify_admission(topology, &deps.release_id(), "open"),
             SSH_QUICK_TIMEOUT_MS,
         ),
@@ -1567,7 +1635,10 @@ pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor
                 return failure_outcome(deps, &state, entry.id, index, reason);
             }
         }
-        if entry.id == crate::stages::STAGE_REMOTE_ACTIVATION && deps.target.ssh_host.is_none() {
+        if entry.id == crate::stages::STAGE_REMOTE_ACTIVATION
+            && deps.target.gcp.is_none()
+            && deps.target.ssh_host.is_none()
+        {
             state.skipped.push(SkippedRecord {
                 stage: entry.id.to_owned(),
                 operation: None,
@@ -1818,6 +1889,7 @@ fn stage_admission_close(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -
     let topology = resolve_remote_topology(ctx.deps.target)?;
     let previous = match &topology {
         Some(remote) => {
+            ctx.note(format!("remote admission transport: {}", remote.transport.label()));
             let mut commands = build_admission_commands_remote(ctx.deps, remote).into_iter();
             let read_previous = commands.next().expect("admission.read-previous command");
             let raw = ctx.command(executor, read_previous)?;
@@ -2188,6 +2260,12 @@ mod tests {
     }
 
     fn deps_for(provider_cfg: bool) -> (TempDirGuard, Box<PipelineDeps<'static>>) {
+        deps_for_transport(provider_cfg, false)
+    }
+
+    /// `gcp_transport = true` selects the production gcloud transport (gcp
+    /// block); otherwise the target declares plain ssh without a gcp block.
+    fn deps_for_transport(provider_cfg: bool, gcp_transport: bool) -> (TempDirGuard, Box<PipelineDeps<'static>>) {
         let root = std::env::temp_dir().join(format!(
             "krw-pipeline-deps-{}-{}",
             std::process::id(),
@@ -2233,8 +2311,13 @@ mod tests {
         }));
         let target = Box::leak(Box::new(TargetFile {
             provider: Some("deepseek".to_owned()),
-            gcp: None,
-            ssh_host: Some("deploy@127.0.0.1".to_owned()),
+            gcp: gcp_transport.then(|| crate::target::GcpTarget {
+                project: "krw-prod-dummy".to_owned(),
+                zone: "asia-northeast3-a".to_owned(),
+                instance: "krw-agent-prod-dummy".to_owned(),
+                instance_id: Some("0000000000000000000".to_owned()),
+            }),
+            ssh_host: (!gcp_transport).then(|| "deploy@127.0.0.1".to_owned()),
             remote_front_dir: Some("/home/deploy/krw-ontology-front".to_owned()),
             compose_project: Some("krw-ontology-front".to_owned()),
             local_ports: Vec::new(),
@@ -2573,10 +2656,25 @@ mod tests {
     }
 
     #[test]
-    fn remote_topology_requires_front_dir_and_defaults_the_compose_project() {
+    fn remote_topology_selects_transport_and_defaults_the_compose_project() {
         let (_guard, deps) = deps_for(false);
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        assert_eq!(
+            topology.transport,
+            RemoteTransport::Ssh { host: "deploy@127.0.0.1".to_owned() }
+        );
         assert_eq!(topology.compose_project, "krw-ontology-front");
+
+        let (_guard, deps) = deps_for_transport(false, true);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        assert_eq!(
+            topology.transport,
+            RemoteTransport::Gcloud {
+                instance: "krw-agent-prod-dummy".to_owned(),
+                project: "krw-prod-dummy".to_owned(),
+                zone: "asia-northeast3-a".to_owned(),
+            }
+        );
 
         let mut local = TargetFile {
             provider: Some("deepseek".to_owned()),
@@ -2594,13 +2692,87 @@ mod tests {
         };
         assert!(resolve_remote_topology(&local).unwrap().is_none());
 
+        // ssh_host without a gcp block and without remote_front_dir fails.
         local.ssh_host = Some("deploy@host".to_owned());
         let error = resolve_remote_topology(&local).unwrap_err();
         assert!(error.contains("remote_front_dir"), "error: {error}");
 
+        // A gcp block with empty fields fails closed before any transport.
+        local.gcp = Some(crate::target::GcpTarget {
+            project: String::new(),
+            zone: "asia-northeast3-a".to_owned(),
+            instance: "krw-agent-prod-dummy".to_owned(),
+            instance_id: None,
+        });
+        let error = resolve_remote_topology(&local).unwrap_err();
+        assert!(error.contains("non-empty project, zone, and instance"), "error: {error}");
+
+        local.gcp.as_mut().unwrap().project = "krw-prod".to_owned();
         local.remote_front_dir = Some("/srv/some-front".to_owned());
         let topology = resolve_remote_topology(&local).unwrap().unwrap();
         assert_eq!(topology.compose_project, "some-front");
+        assert!(matches!(topology.transport, RemoteTransport::Gcloud { .. }));
+    }
+
+    #[test]
+    fn gcp_transport_targets_issue_gcloud_compute_ssh_argv() {
+        let (_guard, deps) = deps_for_transport(false, true);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let expected_prefix = vec![
+            "gcloud".to_owned(),
+            "compute".to_owned(),
+            "ssh".to_owned(),
+            "krw-agent-prod-dummy".to_owned(),
+            "--project".to_owned(),
+            "krw-prod-dummy".to_owned(),
+            "--zone".to_owned(),
+            "asia-northeast3-a".to_owned(),
+            "--command".to_owned(),
+        ];
+        let commands = build_admission_commands_remote(&deps, &topology);
+        assert_eq!(&commands[0].argv[..9], &expected_prefix[..]);
+        assert!(commands[0].argv[9].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", commands[0].argv[9]);
+        assert!(commands[0].argv[9].contains(".simple-deploy/current/runtime.env"));
+        assert!(commands[1].argv[9].contains("-v value=closed"), "payload: {}", commands[1].argv[9]);
+        assert_eq!(commands[1].argv.len(), 10, "one payload element after the gcloud prefix");
+
+        let stage9 = build_stage9_commands(&deps, &topology);
+        assert_eq!(&stage9[0].argv[..9], &expected_prefix[..]);
+        assert!(stage9[0].argv[9].contains("up -d --force-recreate --wait web agent-v1-outbox"));
+
+        let deep = build_web_deep_command_remote(&deps, &topology);
+        assert_eq!(&deep.argv[..9], &expected_prefix[..]);
+        assert!(deep.argv[9].contains("healthz/deep"));
+
+        let open = build_admission_open_commands_remote(&deps, &topology);
+        assert_eq!(&open[1].argv[..9], &expected_prefix[..]);
+        assert!(open[1].argv[9].contains("'open'"), "payload: {}", open[1].argv[9]);
+        // No ssh-style options leak into the gcloud transport.
+        for command in commands.iter().chain(stage9.iter()).chain(open.iter()) {
+            assert!(!command.argv.contains(&"BatchMode=yes".to_owned()));
+            assert!(!command.argv.iter().any(|element| element.starts_with("ConnectTimeout=")));
+        }
+    }
+
+    #[test]
+    fn gcp_block_wins_over_ssh_host_when_both_are_declared() {
+        let (_guard, deps) = deps_for(false);
+        // Rebuild the target with BOTH a gcp block and an ssh_host: the
+        // production transport selection must still be gcloud.
+        let both = TargetFile {
+            gcp: Some(crate::target::GcpTarget {
+                project: "krw-prod-dummy".to_owned(),
+                zone: "asia-northeast3-a".to_owned(),
+                instance: "krw-agent-prod-dummy".to_owned(),
+                instance_id: None,
+            }),
+            ssh_host: Some("deploy@ignored".to_owned()),
+            remote_front_dir: deps.target.remote_front_dir.clone(),
+            compose_project: deps.target.compose_project.clone(),
+            ..(*deps.target).clone()
+        };
+        let topology = resolve_remote_topology(&both).unwrap().unwrap();
+        assert!(matches!(topology.transport, RemoteTransport::Gcloud { .. }));
     }
 
     #[test]

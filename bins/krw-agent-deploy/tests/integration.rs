@@ -26,6 +26,20 @@ const FIXED_NOW: u64 = 1_786_843_200;
 /// id or argv (fix-forward only; the controller has no rollback paths).
 const ROLLBACK_TOKENS: [&str; 5] = ["rollback", "restore", "revert", "migrate down", "db:reset"];
 
+/// gcloud transport argv prefix for the checked-in fixture target (gcp
+/// block declared): instance, project, and zone exactly as recorded.
+const GCLOUD_ARGV_PREFIX: [&str; 9] = [
+    "gcloud",
+    "compute",
+    "ssh",
+    "krw-agent-prod-dummy-placeholder",
+    "--project",
+    "krw-prod-dummy-placeholder",
+    "--zone",
+    "asia-northeast3-a",
+    "--command",
+];
+
 struct Tree {
     root: PathBuf,
     config_path: PathBuf,
@@ -294,6 +308,31 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
     assert_eq!(stages.probes.borrow().len(), 1, "one TCP probe for the one mcp endpoint");
     assert_eq!(stages.probes.borrow()[0].id, "readiness.mcp-tcp-0");
     assert_no_rollback_commands(&stages);
+
+    // The fixture target declares a gcp block => every remote command rides
+    // the production gcloud transport with the shell payload as the single
+    // --command element.
+    for id in [
+        "admission.read-previous",
+        "admission.close",
+        "admission.verify-closed",
+        "remote.web-up",
+        "readiness.remote-web-healthz",
+        "readiness.web-deep",
+        "admission.open",
+        "readiness.admission-open-verify",
+    ] {
+        let command = stages
+            .commands
+            .borrow()
+            .iter()
+            .find(|command| command.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("remote command `{id}` missing"));
+        assert_eq!(&command.argv[..9], &GCLOUD_ARGV_PREFIX[..], "command {id}: {:?}", command.argv);
+        assert_eq!(command.argv.len(), 10, "one payload element: {:?}", command.argv);
+        assert!(command.env_keys_used.is_empty(), "no env keys on transport argv: {id}");
+    }
 
     // Terminal success receipt with the full artifact chain.
     let terminal = tree.terminal_json();
@@ -588,14 +627,21 @@ fn admission_capture_records_the_previous_gate_value_verbatim() {
     // A previously `drain` gate is captured as the previous value and still
     // ends `open` on success (a fresh release must be usable; the captured
     // value is recorded for the operator, not restored). Local-only target
-    // so the captured value comes from the local runtime env file.
+    // (no gcp block, no ssh_host) so the captured value comes from the
+    // local runtime env file.
     let tree = build_tree("admission-capture");
     std::fs::write(
         tree.operator_root().join("runtime/krw-agent-deploy.env"),
         "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_ADMISSION_MODE=drain\n",
     )
     .unwrap();
-    tree.rewrite_target(|text| text.replace("\"ssh_host\": \"deploy@127.0.0.1\",", ""));
+    tree.rewrite_target(|text| {
+        text.replace("\"ssh_host\": \"deploy@127.0.0.1\",", "")
+            .replace(
+                "\"gcp\": {\n    \"project\": \"krw-prod-dummy-placeholder\",\n    \"zone\": \"asia-northeast3-a\",\n    \"instance\": \"krw-agent-prod-dummy-placeholder\",\n    \"instance_id\": \"0000000000000000000\"\n  },\n  ",
+                "",
+            )
+    });
     let stages = FixtureStageExecutor::passing();
     let outcome = run_command(
         CommandMode::Deploy,
@@ -614,6 +660,68 @@ fn admission_capture_records_the_previous_gate_value_verbatim() {
     assert_eq!(terminal["admission"], "open");
     let env_text = std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
     assert!(!env_text.contains("drain"), "env: {env_text}");
+    cleanup(&tree);
+}
+
+#[test]
+fn ssh_only_target_keeps_plain_ssh_remote_transport() {
+    // No gcp block: the remote commands stay on the plain ssh transport
+    // (BatchMode + ConnectTimeout from config), same payloads and stages.
+    let tree = build_tree("ssh-transport");
+    tree.rewrite_target(|text| {
+        text.replace(
+            "\"gcp\": {\n    \"project\": \"krw-prod-dummy-placeholder\",\n    \"zone\": \"asia-northeast3-a\",\n    \"instance\": \"krw-agent-prod-dummy-placeholder\",\n    \"instance_id\": \"0000000000000000000\"\n  },\n  ",
+            "",
+        )
+    });
+    let stages = FixtureStageExecutor::passing();
+    let outcome = run_command(
+        CommandMode::Deploy,
+        &tree.config_path,
+        FIXED_NOW,
+        &FixtureExecutor::passing(),
+        &stages,
+    )
+    .expect("run");
+    assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
+    assert_eq!(outcome.outcome, "success");
+    let read_previous = stages
+        .commands
+        .borrow()
+        .iter()
+        .find(|command| command.id == "admission.read-previous")
+        .cloned()
+        .expect("read-previous command");
+    assert_eq!(read_previous.argv[0], "ssh");
+    assert_eq!(&read_previous.argv[1..3], &["-o", "BatchMode=yes"]);
+    assert_eq!(read_previous.argv[4], "ConnectTimeout=5");
+    assert_eq!(read_previous.argv[5], "deploy@127.0.0.1");
+    assert!(read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", read_previous.argv[6]);
+    let web_up = stages
+        .commands
+        .borrow()
+        .iter()
+        .find(|command| command.id == "remote.web-up")
+        .cloned()
+        .expect("web-up command");
+    assert_eq!(web_up.argv[0], "ssh");
+    // The preflight receipt also records the plain-ssh reachability shape.
+    let run_dir = tree.single_run_dir();
+    let preflight_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap()).unwrap();
+    let reachability = preflight_json["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "ssh-remote-reachable")
+        .unwrap();
+    assert_eq!(reachability["status"], "pass");
+    assert!(
+        reachability["detail"].as_str().unwrap().contains("ssh `deploy@127.0.0.1` reachable"),
+        "detail: {}",
+        reachability["detail"]
+    );
+    assert_no_rollback_commands(&stages);
     cleanup(&tree);
 }
 

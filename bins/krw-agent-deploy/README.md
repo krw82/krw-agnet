@@ -33,9 +33,9 @@ written (the operator root is not yet known); the error goes to stderr.
 | 4 | `seal` | `seal.prepare-production-candidate`, `seal.sign-release-authorization`, `seal.seal-production-candidate`, `seal.finalize-dual-release` — ports the legacy `build_sealed_dual_provider_release.sh` sequence for the ONE config-selected provider; the active signing key id is resolved (pure controller logic) from `<operator>/config/<provider>/release-trust-registry.json` (exactly one non-revoked key valid now); the authorization is written under `<operator>/signing/releases/<run-name>/` |
 | 5 | `frontend_image_prepare` | `frontend-image.build-web` (`docker compose build web` in the frontend source root), `frontend-image.inspect-digest` (`docker image inspect <project>-web:latest --format {{.Id}}`) |
 | 6 | `migrations` | `migrations.db-push-dry-run` (`<frontend>/scripts/supabase-cli.sh db push --dry-run`) — the read-only plan gate; nothing is applied before admission close (05 migration ordering rule 3) |
-| 7 | `admission_close` | `admission.read-previous`, `admission.close`, `admission.verify-closed` (BatchMode ssh payloads porting the legacy `value_of` awk + `upsert_env_value` + `docker compose up -d --no-deps --force-recreate --wait web agent-v1-outbox` + in-container `/api/healthz`), then `migrations.db-push` (forward-only apply) and `migrations.abi-verify-procedure-N` / `migrations.abi-verify-column-N` (psql `information_schema` queries proving the contract's `required_procedures` / `required_columns` entries) |
+| 7 | `admission_close` | `admission.read-previous`, `admission.close`, `admission.verify-closed` (remote-shell payloads over the selected transport — gcloud `compute ssh ... --command` for gcp targets, plain BatchMode ssh otherwise — porting the legacy `value_of` awk + `upsert_env_value` + `docker compose up -d --no-deps --force-recreate --wait web agent-v1-outbox` + in-container `/api/healthz`), then `migrations.db-push` (forward-only apply) and `migrations.abi-verify-procedure-N` / `migrations.abi-verify-column-N` (psql `information_schema` queries proving the contract's `required_procedures` / `required_columns` entries) |
 | 8 | `local_activation` | `activation.agentd-stage`, `activation.capabilityd-activate`, `activation.agentd-activate` — the sealed bundle's `packaging/launchd/install-local-mac-agentd-release.sh` (`--mode stage`, then `--mode activate ... --env-file <runtime-env>`) and `install-local-mac-capabilityd-release.sh` (`--mode activate ... --operator-root`) with `KRW_AGENT_LOCAL_INSTALL_ROOT` from the runtime env |
-| 9 | `remote_activation` | `remote.web-up` (ssh `docker compose up -d --force-recreate --wait web agent-v1-outbox market-web-source-worker market-issue-enrichment-worker`), `readiness.remote-web-healthz` (in-container healthz asserting `deployment_id == release id`) |
+| 9 | `remote_activation` | `remote.web-up` (remote shell `docker compose up -d --force-recreate --wait web agent-v1-outbox market-web-source-worker market-issue-enrichment-worker`), `readiness.remote-web-healthz` (in-container healthz asserting `deployment_id == release id`) — both over the selected transport (Skipped for local-only targets) |
 | 10 | `deep_readiness` | `readiness.daemon-metrics` (local daemon `http://127.0.0.1:<metrics-port>/metrics`, `daemon_ready_ms`), `readiness.mcp-tcp-N` TCP probes + `readiness.mcp-ready-N` (`<endpoint>/readyz`, `mcp_ms`), `readiness.web-deep` (web `/api/healthz/deep` with internal-key headers, `public_ready_ms`), `readiness.db-heartbeat` (psql on `public.agent_v1_daemon_heartbeats` latest row verifying provider + descriptor hash + `mcp_ready`) — three layers, never an LLM call |
 | 11 | `admission_open` | `admission.open` (upsert `open` + recreate web/outbox), `readiness.admission-open-verify` (deep health must report `checks.agent_v1.admission == "open"`) |
 | 12 | `terminal_success_receipt` | immutable `terminal.json` (`outcome: success`, `admission: open`) |
@@ -47,6 +47,15 @@ trait (`RealStageExecutor` / `FixtureStageExecutor`, mirroring the
 preflight `PreflightExecutor` pair). Commands are structured records
 `{stage, id, argv, cwd, env_keys_used, timeout_ms}`:
 
+- **Remote transport selection**: when the target file declares a `gcp`
+  block, ALL remote commands (admission read/upsert, compose up, healthz,
+  deep readiness remote checks) go through
+  `gcloud compute ssh <gcp.instance> --project <gcp.project> --zone <gcp.zone> --command <payload>`
+  — the legacy production transport (`run_remote_buffered_script` in the
+  old deploy script). Plain `ssh -o BatchMode=yes -o ConnectTimeout=<ssh_ms> <host> <payload>`
+  remains only for targets that declare `ssh_host` WITHOUT a gcp block.
+  Payloads are identical across transports; buffering/timeout semantics
+  (record `timeout_ms`, captured stdout) are unchanged.
 - `argv` keeps `<env:NAME>` placeholders unresolved — the real executor
   substitutes values from the operator runtime env file (`<operator>`
   `runtime/krw-agent-deploy.env`) into the child process only; receipts
@@ -59,10 +68,11 @@ preflight `PreflightExecutor` pair). Commands are structured records
   config-derived timeout; the fixture executor is single-shot so tests
   stay deterministic. No `--max-readiness-poll-ms` flag exists — only
   config timeouts bound the wait.
-- The fixture executor records every spec (tests assert exact argv),
-  simulates the sealed-bundle files a real build leaves behind, and
-  learns the run's release id / provider / descriptor hash from the
-  observed argv so canned healthz and heartbeat outputs validate.
+- The fixture executor records every spec (tests assert exact argv,
+  including the chosen transport), simulates the sealed-bundle files a
+  real build leaves behind, and learns the run's release id / provider /
+  descriptor hash from the observed argv so canned healthz and heartbeat
+  outputs validate.
 
 ### Drift guard
 
@@ -89,15 +99,16 @@ always a fresh run (new run dir; `output-dir-absent` is enforced).
 
 ### Local-only targets
 
-The target file may omit `ssh_host` (and `gcp`) for local-dev
+The target file may omit BOTH the `gcp` block and `ssh_host` for local-dev
 deployments: stage 9 records `Skipped-with-reason`, and the remote halves
 of admission close/open record skips while operating on the LOCAL gateway
 stack — the controller upserts `KRW_AGENT_ADMISSION_MODE` on the local
 runtime env file and recreates the local compose `web agent-v1-outbox`
 services through the executor (`--env-file <runtime-env>`). Deep
 readiness' product layer then curls the local `/api/healthz/deep` with
-the internal key from the child env. An `ssh_host` without
-`remote_front_dir` fails closed at admission close.
+the internal key from the child env. Any declared remote transport (gcp
+block or `ssh_host`) without `remote_front_dir` fails closed at admission
+close.
 
 ## Config validation rules (fail-closed)
 
@@ -148,7 +159,11 @@ Implemented checks:
   for every `local_ports` entry in the target file (empty → Skipped).
 - `gcp-target-describable` — read-only `gcloud compute instances describe`
   (Skipped when the target records no gcp section).
-- `ssh-remote-reachable` — BatchMode ssh probe (Skipped without `ssh_host`).
+- `ssh-remote-reachable` — remote-shell reachability with the SAME
+  transport-selection rule as the deploy stages: a gcp block means a
+  read-only `gcloud compute ssh ... --command 'echo ok'` probe; an
+  `ssh_host` without a gcp block means the existing
+  `ssh -o BatchMode=yes` probe (Skipped when neither is declared).
 - `remote-env-required-keys` — required KEY NAMES present in the runtime env
   file; values are never recorded (Skipped when none declared).
 - `supabase-migration-plan` — ordered migration plan recorded in the target
