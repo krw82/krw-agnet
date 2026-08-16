@@ -301,7 +301,7 @@ impl RealStageExecutor {
             }
             plain
         };
-        child.current_dir(&command.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        child.current_dir(&command.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         for key in &command.env_keys_used {
             if key == RUNTIME_ENV_ALL {
                 continue;
@@ -321,6 +321,15 @@ impl RealStageExecutor {
             let _ = stdout_pipe.read_to_string(&mut buffer);
             buffer
         });
+        let mut stderr_pipe = spawned
+            .stderr
+            .take()
+            .ok_or_else(|| format!("command `{}`: stderr pipe unavailable", command.id))?;
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buffer = String::new();
+            let _ = stderr_pipe.read_to_string(&mut buffer);
+            buffer
+        });
         let deadline = Instant::now() + Duration::from_millis(command.timeout_ms.max(1));
         loop {
             match spawned.try_wait() {
@@ -328,6 +337,13 @@ impl RealStageExecutor {
                     let stdout = reader.join().unwrap_or_default();
                     if status.success() {
                         return Ok(stdout);
+                    }
+                    // Surface the child's own diagnostics on the operator's
+                    // stderr. The content never enters receipts or records;
+                    // scrubbing rules for stored artifacts are unchanged.
+                    let stderr = stderr_reader.join().unwrap_or_default();
+                    if !stderr.trim().is_empty() {
+                        eprintln!("---- {}/{} stderr ----\n{}\n------------------------", command.stage, command.id, stderr.trim_end());
                     }
                     return Err(format!(
                         "command `{}` (stage `{}`) exited with status {status}",
