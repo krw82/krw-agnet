@@ -1042,10 +1042,6 @@ fn compose_prefix_in(front_dir: &str, project: &str, env_expr: &str, version: &s
     )
 }
 
-fn compose_prefix(topology: &RemoteTopology, env_file_shell_var: &str, release_id: &str) -> String {
-    compose_prefix_in(&topology.remote_front_dir, &topology.compose_project, env_file_shell_var, release_id)
-}
-
 /// Legacy `value_of` awk reader against the shell variable `$e`.
 fn shell_value_of(key: &str) -> String {
     format!(
@@ -1459,9 +1455,9 @@ fi
 # retags :local to the candidate, leaving the old image unreferenced, and
 # BuildKit garbage-collects unreferenced images mid-build (observed in
 # production run 20260816T095011Z: the closing `docker tag $OLD_IMAGE
-# :local` then failed with "No such image"). The rollback-<release> tag
+# :local` then failed with "No such image"). The prev-<release> tag
 # keeps it referenced and is covered by the post-activation prune pattern.
-OLD_TAG="krw-ontology-front-web:rollback-$RELEASE_ID"
+OLD_TAG="krw-ontology-front-web:prev-$RELEASE_ID"
 docker tag "$OLD_IMAGE" "$OLD_TAG"
 compose_stage() {
   FRONT_DIR="$REMOTE_STAGE" NEXT_PUBLIC_APP_VERSION="$RELEASE_ID" docker compose --project-name "$COMPOSE_PROJECT" --project-directory "$REMOTE_STAGE" --env-file "$REMOTE_STAGE/runtime.env" -f "$REMOTE_STAGE/docker-compose.yml" "$@"
@@ -1608,7 +1604,7 @@ main().catch((error) => { console.error(error instanceof Error ? error.message :
 
 /// Legacy `prune_remote_stale_deployment_artifacts`: keep the sole active
 /// stage and its running local image; remove only inactive stage directories
-/// and stale candidate/release/rollback tags under this deployment root.
+/// and stale candidate/release/prev/rollback tags under this deployment root.
 pub fn payload_prune_stale(topology: &RemoteTopology) -> String {
     render(
         r#"set -eu
@@ -1638,14 +1634,14 @@ docker images --format '{{.Repository}}|{{.Tag}}' \
   | while IFS='|' read -r repository tag; do
       [ "$repository" = "krw-ontology-front-web" ] || continue
       case "$tag" in
-        candidate-*|release-*|rollback-*) docker image rm "$repository:$tag" >/dev/null 2>&1 || true ;;
+        candidate-*|release-*|prev-*|rollback-*) docker image rm "$repository:$tag" >/dev/null 2>&1 || true ;;
       esac
     done
 docker images --format '{{.Repository}}|{{.Tag}}' \
   | while IFS='|' read -r repository tag; do
       [ "$repository" = "caddy" ] || continue
       case "$tag" in
-        candidate-*|release-*|rollback-*) docker image rm "$repository:$tag" >/dev/null 2>&1 || true ;;
+        candidate-*|release-*|prev-*|rollback-*) docker image rm "$repository:$tag" >/dev/null 2>&1 || true ;;
       esac
     done
 echo "Pruned inactive deployment stages and stale web candidate tags.""#,
@@ -4353,9 +4349,9 @@ mod tests {
         assert!(payload.contains("select 1 as supabase_tls"), "payload: {payload}");
         assert!(payload.contains("descriptor.entries.every"), "payload: {payload}");
         assert!(payload.contains("NODE\n"), "payload: {payload}");
-        // The old image is pinned under rollback-<release> before the stage
+        // The old image is pinned under prev-<release> before the stage
         // build (BuildKit GC) and restored to the stable local tag after.
-        assert!(payload.contains("OLD_TAG=\"krw-ontology-front-web:rollback-$RELEASE_ID\""), "payload: {payload}");
+        assert!(payload.contains("OLD_TAG=\"krw-ontology-front-web:prev-$RELEASE_ID\""), "payload: {payload}");
         assert!(payload.contains("docker tag \"$OLD_IMAGE\" \"$OLD_TAG\""), "payload: {payload}");
         assert!(payload.contains("docker tag \"$OLD_TAG\" krw-ontology-front-web:local"), "payload: {payload}");
         assert!(payload.contains("forward-activation.env"), "payload: {payload}");
@@ -4497,7 +4493,7 @@ mod tests {
         assert!(stale.contains("Refusing to prune an unexpected deployment path"), "payload: {stale}");
         assert!(stale.contains("[ \"$candidate\" = \"$active_release\" ] && continue"), "payload: {stale}");
         assert!(stale.contains("rm -rf -- \"$candidate\""), "payload: {stale}");
-        assert!(stale.contains("candidate-*|release-*|rollback-*"), "payload: {stale}");
+        assert!(stale.contains("candidate-*|release-*|prev-*|rollback-*"), "payload: {stale}");
         assert!(stale.contains("[ \"$repository\" = \"krw-ontology-front-web\" ]"), "payload: {stale}");
         assert!(stale.contains("[ \"$repository\" = \"caddy\" ]"), "payload: {stale}");
         let post = &commands[1].argv[6];
