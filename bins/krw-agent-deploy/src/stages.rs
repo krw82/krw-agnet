@@ -535,11 +535,6 @@ mod tests {
             "# fixture env: dummy values only\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\n",
         )
         .unwrap();
-        // Operator provider configuration consumed by the seal stage.
-        let provider_config = operator_root.join("config").join("deepseek");
-        std::fs::create_dir_all(&provider_config).unwrap();
-        std::fs::write(provider_config.join("deployment-binding.yaml"), "provider: deepseek\n").unwrap();
-        std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
         let registry = krw_agent_release_authorization::ReleaseTrustRegistryV1 {
             schema_version: 1,
             registry_id: "krw.deploy-stages-test".to_owned(),
@@ -552,11 +547,19 @@ mod tests {
                 revoked: false,
             }],
         };
-        std::fs::write(
-            provider_config.join("release-trust-registry.json"),
-            serde_jcs::to_vec(&registry).unwrap(),
-        )
-        .unwrap();
+        // Operator provider configuration consumed by the seal stage (both
+        // providers: the seal loop mirrors the legacy dual-provider flow).
+        for seal_provider in ["deepseek", "glm"] {
+            let provider_config = operator_root.join("config").join(seal_provider);
+            std::fs::create_dir_all(&provider_config).unwrap();
+            std::fs::write(provider_config.join("deployment-binding.yaml"), format!("provider: {seal_provider}\n")).unwrap();
+            std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+            std::fs::write(
+                provider_config.join("release-trust-registry.json"),
+                serde_jcs::to_vec(&registry).unwrap(),
+            )
+            .unwrap();
+        }
         std::fs::write(
             operator_root.join("ops/agent-v1-deployment-contract.json"),
             crate::contract::canonical_fixture_contract_json(),

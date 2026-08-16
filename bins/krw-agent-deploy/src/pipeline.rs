@@ -514,7 +514,7 @@ impl FixtureStageExecutor {
                 }
             }
         }
-        if learned.provider.is_none() {
+        if learned.provider.is_none() && command.id == "seal.prepare-production-candidate" {
             if let Some(position) = command.argv.iter().position(|flag| flag == "--provider") {
                 if let Some(provider) = command.argv.get(position + 1) {
                     learned.provider = Some(provider.clone());
@@ -562,13 +562,24 @@ impl FixtureStageExecutor {
         let ship_dir = dir.join(SHIP_DIR_NAME);
         match command.id.as_str() {
             // prepare_production_candidate.sh applies the operator endpoint
-            // bindings to the selected bundle and emits the public descriptor.
-            "seal.prepare-production-candidate" => {
-                let model = if provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
+            // bindings to the bundle named by its own --provider argument and
+            // emits the public descriptor (both providers seal; the id may
+            // carry a -<provider> suffix for the non-selected bundle).
+            id if id == "seal.prepare-production-candidate"
+                || (id.starts_with("seal.prepare-production-candidate-") && id.len() > "seal.prepare-production-candidate-".len()) =>
+            {
+                let argv_provider = command
+                    .argv
+                    .iter()
+                    .position(|flag| flag == "--provider")
+                    .and_then(|position| command.argv.get(position + 1))
+                    .cloned()
+                    .unwrap_or_else(|| provider.clone());
+                let model = if argv_provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
                 let _ = std::fs::write(
-                    dir.join(&provider).join("public-release.json"),
+                    dir.join(&argv_provider).join("public-release.json"),
                     format!(
-                        "{{\"entries\":[{{\"execution\":{{\"resolved_model\":\"{model}\"}}}}],\"release_set_hash\":\"sha256:{}\",\"provider\":\"{provider}\"}}\n",
+                        "{{\"entries\":[{{\"execution\":{{\"resolved_model\":\"{model}\"}}}}],\"release_set_hash\":\"sha256:{}\",\"provider\":\"{argv_provider}\"}}\n",
                         "c".repeat(64),
                     ),
                 );
@@ -1732,19 +1743,37 @@ pub fn build_stage3_command(deps: &PipelineDeps<'_>) -> StageCommand {
 
 pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Vec<StageCommand> {
     let output_dir = &deps.context.output_dir;
-    let provider = &deps.config.provider;
-    let bundle = output_dir.join(provider);
-    let config_root = deps.config.operator_root.join("config").join(provider);
-    let binding = config_root.join("deployment-binding.yaml");
-    let endpoints = config_root.join("endpoint-registry.yaml");
-    let registry = config_root.join("release-trust-registry.json");
-    let authorization_root = deps.config.operator_root.join("signing").join("releases").join(deps.release_id());
-    let authorization = authorization_root.join(format!("release-authorization-{provider}.json"));
-    let now = deps.now_unix_seconds;
-    vec![
-        StageCommand::new(
+    let selected = &deps.config.provider;
+    // The legacy seal loop (build_sealed_dual_provider_release.sh) prepares,
+    // signs, and seals BOTH provider bundles before finalize, which verifies
+    // the dual index. Activation still uses only the selected provider, and
+    // per-provider live credentials are a runtime concern, not a seal-time
+    // one. Mirror that exactly: the non-selected provider seals first, the
+    // selected provider keeps the canonical (unsuffixed) command ids.
+    let mut order = vec![selected.clone()];
+    for provider in ["glm", "deepseek"] {
+        if &provider != selected {
+            order.insert(0, provider.to_owned());
+        }
+    }
+    let mut commands = Vec::new();
+    for provider in &order {
+        let id_suffix = if provider == selected {
+            String::new()
+        } else {
+            format!("-{provider}")
+        };
+        let bundle = output_dir.join(provider);
+        let config_root = deps.config.operator_root.join("config").join(provider);
+        let binding = config_root.join("deployment-binding.yaml");
+        let endpoints = config_root.join("endpoint-registry.yaml");
+        let registry = config_root.join("release-trust-registry.json");
+        let authorization_root = deps.config.operator_root.join("signing").join("releases").join(deps.release_id());
+        let authorization = authorization_root.join(format!("release-authorization-{provider}.json"));
+        let now = deps.now_unix_seconds;
+        commands.push(StageCommand::new(
             crate::stages::STAGE_SEAL,
-            "seal.prepare-production-candidate",
+            format!("seal.prepare-production-candidate{id_suffix}").as_str(),
             vec![
                 "scripts/prepare_production_candidate.sh".to_owned(),
                 "--provider".to_owned(),
@@ -1759,10 +1788,10 @@ pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Ve
             &deps.config.agent_source_root,
             vec![RUNTIME_ENV_ALL.to_owned()],
             SEAL_TIMEOUT_MS,
-        ),
-        StageCommand::new(
+        ));
+        commands.push(StageCommand::new(
             crate::stages::STAGE_SEAL,
-            "seal.sign-release-authorization",
+            format!("seal.sign-release-authorization{id_suffix}").as_str(),
             vec![
                 bundle.join("bin/krw-agent").display().to_string(),
                 "release".to_owned(),
@@ -1789,10 +1818,10 @@ pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Ve
             &deps.config.agent_source_root,
             vec![RUNTIME_ENV_ALL.to_owned()],
             SEAL_TIMEOUT_MS,
-        ),
-        StageCommand::new(
+        ));
+        commands.push(StageCommand::new(
             crate::stages::STAGE_SEAL,
-            "seal.seal-production-candidate",
+            format!("seal.seal-production-candidate{id_suffix}").as_str(),
             vec![
                 "scripts/seal_production_candidate.sh".to_owned(),
                 "--provider".to_owned(),
@@ -1807,20 +1836,21 @@ pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Ve
             &deps.config.agent_source_root,
             vec![RUNTIME_ENV_ALL.to_owned()],
             SEAL_TIMEOUT_MS,
-        ),
-        StageCommand::new(
-            crate::stages::STAGE_SEAL,
-            "seal.finalize-dual-release",
-            vec![
-                "scripts/finalize_dual_provider_release.sh".to_owned(),
-                "--release-root".to_owned(),
-                output_dir.display().to_string(),
-            ],
-            &deps.config.agent_source_root,
-            vec![RUNTIME_ENV_ALL.to_owned()],
-            SEAL_TIMEOUT_MS,
-        ),
-    ]
+        ));
+    }
+    commands.push(StageCommand::new(
+        crate::stages::STAGE_SEAL,
+        "seal.finalize-dual-release",
+        vec![
+            "scripts/finalize_dual_provider_release.sh".to_owned(),
+            "--release-root".to_owned(),
+            output_dir.display().to_string(),
+        ],
+        &deps.config.agent_source_root,
+        vec![RUNTIME_ENV_ALL.to_owned()],
+        SEAL_TIMEOUT_MS,
+    ));
+    commands
 }
 
 /// Stage 5, step 1: re-resolve the frontend commit and pin it against the
@@ -3007,20 +3037,25 @@ fn stage_build(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(
 
 fn stage_seal(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
     let provider = ctx.deps.config.provider.clone();
-    let config_root = ctx.deps.config.operator_root.join("config").join(&provider);
-    let registry = config_root.join("release-trust-registry.json");
-    for required in [
-        config_root.join("deployment-binding.yaml"),
-        config_root.join("endpoint-registry.yaml"),
-        registry.clone(),
-    ] {
-        if !required.is_file() {
-            return Err(format!(
-                "operator configuration for provider `{provider}` is missing or unsafe: {}",
-                required.display()
-            ));
+    // Both provider bundles are sealed (the finalize verifier requires the
+    // dual index); both operators' config roots must therefore exist.
+    for seal_provider in ["glm", "deepseek"] {
+        let config_root = ctx.deps.config.operator_root.join("config").join(seal_provider);
+        for required in [
+            config_root.join("deployment-binding.yaml"),
+            config_root.join("endpoint-registry.yaml"),
+            config_root.join("release-trust-registry.json"),
+        ] {
+            if !required.is_file() {
+                return Err(format!(
+                    "operator configuration for provider `{seal_provider}` is missing or unsafe: {}",
+                    required.display()
+                ));
+            }
         }
     }
+    let config_root = ctx.deps.config.operator_root.join("config").join(&provider);
+    let registry = config_root.join("release-trust-registry.json");
     let registry_bytes = std::fs::read(&registry).map_err(|error| format!("{}: {error}", registry.display()))?;
     let active_key_id = resolve_active_key_id(&registry_bytes, ctx.deps.now_unix_seconds)?;
     ctx.note(format!("resolved active signing key `{active_key_id}` for provider `{provider}`"));
@@ -3820,9 +3855,15 @@ mod tests {
         let (_guard, deps) = deps_for(true);
         let specs = build_stage4_commands(&deps, "the-active-key");
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        // Both provider bundles seal (legacy dual loop; the finalize verifier
+        // requires the dual index). The non-selected provider goes first with
+        // a suffixed id; the selected provider keeps the canonical ids.
         assert_eq!(
             ids,
             [
+                "seal.prepare-production-candidate-glm",
+                "seal.sign-release-authorization-glm",
+                "seal.seal-production-candidate-glm",
                 "seal.prepare-production-candidate",
                 "seal.sign-release-authorization",
                 "seal.seal-production-candidate",
@@ -3832,7 +3873,7 @@ mod tests {
         assert!(specs.iter().all(|spec| spec.stage == "seal"));
         assert!(specs.iter().all(|spec| spec.env_keys_used == [RUNTIME_ENV_ALL.to_owned()]));
 
-        let prepare = &specs[0];
+        let prepare = &specs[3];
         assert_eq!(
             prepare.argv,
             vec![
@@ -3848,7 +3889,7 @@ mod tests {
             ]
         );
 
-        let sign = &specs[1];
+        let sign = &specs[4];
         assert_eq!(sign.argv[0], deps.context.output_dir.join("deepseek/bin/krw-agent").display().to_string());
         assert_eq!(&sign.argv[1..5], &["release", "sign", "--descriptor", &deps.context.output_dir.join("deepseek/public-release.json").display().to_string()]);
         // [5..7] --private-key <operator key>; [7..9] --key-id <active key>.
@@ -3864,7 +3905,7 @@ mod tests {
         assert_eq!(sign.argv[19], "--out");
         assert_eq!(sign.argv[20], deps.config.operator_root.join("signing/releases/20260816T012000Z-abcd1234/release-authorization-deepseek.json").display().to_string());
 
-        let seal = &specs[2];
+        let seal = &specs[5];
         assert_eq!(
             seal.argv[1..3],
             [
@@ -3873,7 +3914,7 @@ mod tests {
             ]
         );
         assert_eq!(seal.argv[seal.argv.len() - 1], deps.config.operator_root.join("config/deepseek/release-trust-registry.json").display().to_string());
-        assert_eq!(&specs[3].argv[1..], &["--release-root", &deps.context.output_dir.display().to_string()]);
+        assert_eq!(&specs[6].argv[1..], &["--release-root", &deps.context.output_dir.display().to_string()]);
     }
 
     #[test]
@@ -4582,7 +4623,10 @@ mod tests {
             "fixture must simulate the dual release index"
         );
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
-        let prepare = build_stage4_commands(&deps, "k").remove(0);
+        let prepare = build_stage4_commands(&deps, "k")
+            .into_iter()
+            .find(|spec| spec.id == "seal.prepare-production-candidate")
+            .expect("selected provider prepare command");
         let error = fixture.execute(&deps.config.runtime_env, &prepare).unwrap_err();
         assert_eq!(error, "injected");
         let read_previous = build_admission_commands_remote(&deps, &topology).remove(0);

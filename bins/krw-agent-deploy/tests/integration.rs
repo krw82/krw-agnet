@@ -114,11 +114,8 @@ fn build_tree(tag: &str) -> Tree {
     std::fs::create_dir_all(operator_root.join("ops")).unwrap();
     std::fs::write(operator_root.join("signing/release-private.pk8"), b"fixture-pkcs8-material").unwrap();
     std::fs::create_dir_all(operator_root.join("runtime")).unwrap();
-    // Operator provider configuration consumed by the seal stage.
-    let provider_config = operator_root.join("config").join("deepseek");
-    std::fs::create_dir_all(&provider_config).unwrap();
-    std::fs::write(provider_config.join("deployment-binding.yaml"), "provider: deepseek\n").unwrap();
-    std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+    // Operator provider configuration consumed by the seal stage (both
+    // providers: the seal loop mirrors the legacy dual-provider flow).
     let registry = krw_agent_release_authorization::ReleaseTrustRegistryV1 {
         schema_version: 1,
         registry_id: "krw.deploy.integration-test".to_owned(),
@@ -131,11 +128,17 @@ fn build_tree(tag: &str) -> Tree {
             revoked: false,
         }],
     };
-    std::fs::write(
-        provider_config.join("release-trust-registry.json"),
-        serde_jcs::to_vec(&registry).unwrap(),
-    )
-    .unwrap();
+    for seal_provider in ["deepseek", "glm"] {
+        let provider_config = operator_root.join("config").join(seal_provider);
+        std::fs::create_dir_all(&provider_config).unwrap();
+        std::fs::write(provider_config.join("deployment-binding.yaml"), format!("provider: {seal_provider}\n")).unwrap();
+        std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+        std::fs::write(
+            provider_config.join("release-trust-registry.json"),
+            serde_jcs::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+    }
     std::fs::write(operator_root.join("ops/agent-v1-deployment-contract.json"), CONTRACT_FIXTURE).unwrap();
     std::fs::write(operator_root.join("ops/production-target.json"), TARGET_FIXTURE).unwrap();
     std::fs::write(
@@ -168,10 +171,14 @@ fn cleanup(tree: &Tree) {
 }
 
 /// Ordered command ids the remote-target happy path must issue.
-const REMOTE_HAPPY_PATH_COMMANDS: [&str; 42] = [
+const REMOTE_HAPPY_PATH_COMMANDS: [&str; 45] = [
     // stage 3 build
     "build.dual-provider-bundles",
-    // stage 4 seal
+    // stage 4 seal (legacy dual loop: the non-selected provider seals first
+    // with suffixed ids, then the selected provider, then the finalize gate)
+    "seal.prepare-production-candidate-glm",
+    "seal.sign-release-authorization-glm",
+    "seal.seal-production-candidate-glm",
     "seal.prepare-production-candidate",
     "seal.sign-release-authorization",
     "seal.seal-production-candidate",
