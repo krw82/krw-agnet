@@ -158,6 +158,7 @@ pub fn run_command(
         config_path,
         config_sha256: config_sha256.clone(),
         output_dir: &context.output_dir,
+        now_unix_seconds,
     };
     let outcome = checks::run_preflight(&plan, executor);
 

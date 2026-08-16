@@ -7,9 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpListener;
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{DeployConfig, REQUIRED_COMMANDS};
 use crate::contract::{self, ContractError};
@@ -54,6 +52,13 @@ pub const CHECK_ORDER: [&str; 15] = [
 
 pub const SIGNING_KEY_RELATIVE_PATH: &str = "signing/release-private.pk8";
 pub const TRUST_REGISTRY_RELATIVE_PATH: &str = "signing/release-trust-registry.json";
+
+/// The REAL operator layout publishes per-provider trust registries at
+/// `<operator_root>/config/<provider>/release-trust-registry.json` (the
+/// same file the seal stage signs against).
+pub fn per_provider_trust_registry_path(operator_root: &Path, provider: &str) -> PathBuf {
+    operator_root.join("config").join(provider).join("release-trust-registry.json")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -105,6 +110,9 @@ pub struct PreflightPlan<'a> {
     pub config_sha256: String,
     /// Run-scoped output directory; must not exist before build.
     pub output_dir: &'a Path,
+    /// Clock used by the "exactly one currently-valid signing key" rule
+    /// (mirrors the seal stage's active-key resolution).
+    pub now_unix_seconds: u64,
 }
 
 /// Run all preflight checks in 05-doc order. Pure read: the only system
@@ -281,6 +289,7 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
 
     // 8. signing key / trust validity.
     let signing_key = config.operator_root.join(SIGNING_KEY_RELATIVE_PATH);
+    let per_provider_registry = per_provider_trust_registry_path(&config.operator_root, &config.provider);
     let trust_registry = config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH);
     let key_bytes = std::fs::read(&signing_key);
     match &key_bytes {
@@ -295,7 +304,34 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
         )),
     }
     if key_bytes.as_ref().is_ok_and(|bytes| !bytes.is_empty()) {
-        if trust_registry.exists() {
+        // Preferred: the per-provider registry the seal stage actually
+        // signs against. It must parse AND carry EXACTLY ONE non-revoked,
+        // currently-valid signing key (same rule as seal; zero or multiple
+        // active keys fail closed).
+        if per_provider_registry.exists() {
+            match std::fs::read(&per_provider_registry) {
+                Ok(bytes) => match crate::pipeline::resolve_active_key_id(&bytes, plan.now_unix_seconds) {
+                    Ok(active_key_id) => checks.push(pass(
+                        CHECK_SIGNING_TRUST_VALIDITY,
+                        format!(
+                            "signing key readable; provider registry `{}` has exactly one active signing key `{}`",
+                            per_provider_registry.display(),
+                            active_key_id
+                        ),
+                    )),
+                    Err(error) => checks.push(fail(
+                        CHECK_SIGNING_TRUST_VALIDITY,
+                        format!("provider trust registry invalid: {}: {error}", per_provider_registry.display()),
+                    )),
+                },
+                Err(error) => checks.push(fail(
+                    CHECK_SIGNING_TRUST_VALIDITY,
+                    format!("provider trust registry unreadable: {}: {error}", per_provider_registry.display()),
+                )),
+            }
+        } else if trust_registry.exists() {
+            // Fallback: legacy shared registry under signing/ (parse
+            // validity only, as before).
             match std::fs::read(&trust_registry) {
                 Ok(bytes) => match krw_agent_release_authorization::parse_canonical_trust_registry(&bytes) {
                     Ok(registry) => checks.push(pass(
@@ -321,7 +357,8 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
                 id: CHECK_SIGNING_TRUST_VALIDITY,
                 status: CheckStatus::Skipped,
                 detail: format!(
-                    "signing key readable; no trust registry published at {}",
+                    "signing key readable; no trust registry published at {} or {}",
+                    per_provider_registry.display(),
                     trust_registry.display()
                 ),
             });
@@ -461,14 +498,17 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
         ));
     }
 
-    // 14. current DB Agent V1 ABI (read-only `select 1` reachability).
+    // 14. current DB Agent V1 ABI (read-only `select 1` reachability; the
+    // db_url_env handle resolves from the RUNTIME ENV FILE, never the
+    // controller's process env, and the URL only ever reaches the psql
+    // child's environment).
     match &target.db_url_env {
         Some(handle) => {
             let abi = target.db_abi.as_deref().unwrap_or("<unspecified>");
-            match executor.db_select_one(handle) {
+            match executor.db_select_one(&config.runtime_env, handle) {
                 Ok(()) => checks.push(pass(
                     CHECK_DB_AGENT_V1_ABI,
-                    format!("db reachable via env handle `{handle}`; declared ABI `{abi}`"),
+                    format!("db reachable via runtime-env handle `{handle}`; declared ABI `{abi}`"),
                 )),
                 Err(error) => checks.push(fail(
                     CHECK_DB_AGENT_V1_ABI,
@@ -585,6 +625,9 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static DIR_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+    /// 2026-08-16T01:20:00Z; every key in the fixture registries is valid at
+    /// this instant (or not, when a test expires one on purpose).
+    const FIXED_NOW: u64 = 1_786_843_200;
 
     struct Fixture {
         root: PathBuf,
@@ -695,6 +738,7 @@ mod tests {
             config_path: &fixture.config_path,
             config_sha256,
             output_dir: &output_dir,
+            now_unix_seconds: FIXED_NOW,
         };
         run_preflight(&plan, executor)
     }
@@ -885,7 +929,132 @@ mod tests {
 
         let fixture = write_fixture("trust-absent");
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status, CheckStatus::Skipped);
+        let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
+        assert_eq!(check.status, CheckStatus::Skipped);
+        assert!(
+            check.detail.contains("config/deepseek/release-trust-registry.json"),
+            "skip detail names both registry locations: {}",
+            check.detail
+        );
+    }
+
+    fn active_key(key_id: &str) -> krw_agent_release_authorization::ReleaseTrustKeyV1 {
+        krw_agent_release_authorization::ReleaseTrustKeyV1 {
+            key_id: key_id.to_owned(),
+            ed25519_public_key_hex: "77".repeat(32),
+            not_before_unix_seconds: 0,
+            not_after_unix_seconds: 4_102_444_800,
+            revoked: false,
+        }
+    }
+
+    fn write_per_provider_registry(
+        fixture: &Fixture,
+        keys: Vec<krw_agent_release_authorization::ReleaseTrustKeyV1>,
+    ) -> PathBuf {
+        let registry = krw_agent_release_authorization::ReleaseTrustRegistryV1 {
+            schema_version: 1,
+            registry_id: "krw.deploy-checks-per-provider".to_owned(),
+            minimum_sequence: 1,
+            keys,
+        };
+        let path = per_provider_trust_registry_path(&fixture.config.operator_root, &fixture.config.provider);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_jcs::to_vec(&registry).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn per_provider_registry_with_one_active_key_passes_and_wins_over_fallback() {
+        let fixture = write_fixture("trust-per-provider");
+        write_per_provider_registry(&fixture, vec![active_key("checks-active-key")]);
+        // An INVALID legacy registry sits next to it: the per-provider file
+        // must take precedence, so the check still passes.
+        std::fs::write(
+            fixture.config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH),
+            b"{\"schema_version\": 99}",
+        )
+        .unwrap();
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
+        assert_eq!(check.status, CheckStatus::Pass);
+        assert!(
+            check.detail.contains("exactly one active signing key `checks-active-key`"),
+            "detail: {}",
+            check.detail
+        );
+        assert!(check.detail.contains("config/deepseek/release-trust-registry.json"), "detail: {}", check.detail);
+    }
+
+    #[test]
+    fn per_provider_registry_with_zero_active_keys_fails() {
+        let fixture = write_fixture("trust-per-provider-expired");
+        let mut expired = active_key("checks-expired-key");
+        expired.not_after_unix_seconds = FIXED_NOW - 1;
+        write_per_provider_registry(&fixture, vec![expired]);
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("no active signing key"), "detail: {}", check.detail);
+
+        // A revoked-only registry is the same zero-active failure.
+        let fixture = write_fixture("trust-per-provider-revoked");
+        let mut revoked = active_key("checks-revoked-key");
+        revoked.revoked = true;
+        write_per_provider_registry(&fixture, vec![revoked]);
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("no active signing key"), "detail: {}", check.detail);
+    }
+
+    #[test]
+    fn per_provider_registry_with_two_active_keys_fails() {
+        let fixture = write_fixture("trust-per-provider-dual");
+        write_per_provider_registry(
+            &fixture,
+            vec![active_key("checks-active-a"), active_key("checks-active-b")],
+        );
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("2 active signing keys"), "detail: {}", check.detail);
+    }
+
+    #[test]
+    fn db_handle_resolves_from_runtime_env_file_not_process_env() {
+        // The handle exists ONLY in the runtime env file — it is never set
+        // in the controller's process env (unique name, never exported).
+        let handle = "KRW_CHECKS_FILE_ONLY_DB_HANDLE_7C";
+        let fixture = write_fixture_with("db-file-handle", |fixture| {
+            std::fs::write(
+                fixture.config.runtime_env.clone(),
+                format!("# names only\nKRW_AGENT_DB_URL=postgresql://dummy\n{handle}=postgresql://fixture-file-only\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.config.target_file.clone(),
+                format!(
+                    r#"{{"provider": "deepseek", "local_ports": [], "required_env_keys": [], "supabase_migration_plan": [], "mcp_endpoints": [], "db_url_env": "{handle}", "db_abi": "agent_v1_v7"}}"#
+                ),
+            )
+            .unwrap();
+        });
+        assert!(std::env::var_os(handle).is_none(), "test handle must not leak into the process env");
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_DB_AGENT_V1_ABI);
+        assert_eq!(check.status, CheckStatus::Pass, "detail: {}", check.detail);
+        assert!(check.detail.contains("runtime-env handle"), "detail: {}", check.detail);
+        assert!(!check.detail.contains("postgresql://"), "detail: {}", check.detail);
+
+        // Same target, but the handle is absent from the runtime env file:
+        // clear key-named failure (the old bug consulted process env).
+        std::fs::write(fixture.config.runtime_env.clone(), "# names only\nKRW_AGENT_DB_URL=postgresql://dummy\n").unwrap();
+        let outcome = run(&fixture, &FixtureExecutor::passing());
+        let check = result_of(&outcome, CHECK_DB_AGENT_V1_ABI);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains(handle), "detail: {}", check.detail);
+        assert!(check.detail.contains("not present"), "detail: {}", check.detail);
     }
 
     #[test]

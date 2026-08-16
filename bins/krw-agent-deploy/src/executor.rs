@@ -42,9 +42,13 @@ pub trait PreflightExecutor: std::fmt::Debug {
     /// `ssh -o BatchMode=yes <host> true` connectivity probe (no writes).
     fn ssh_batch_true(&self, host: &str, ssh_ms: u64) -> Result<(), String>;
 
-    /// `psql <url> -c 'select 1'` reachability probe. The connection string
-    /// is resolved from a process-env handle name and never recorded.
-    fn db_select_one(&self, db_url_env: &str) -> Result<(), String>;
+    /// `psql 'select 1'` reachability probe. The connection string is
+    /// resolved from the RUNTIME ENV FILE (KEY=VALUE lines) for the
+    /// `db_url_env` handle — never from the controller's process env — and
+    /// is passed to the psql child via CHILD ENV (`sh -c 'psql
+    /// "$KRW_DB_URL_HANDLE" ...'`), so it never appears in argv, records,
+    /// error messages, or output.
+    fn db_select_one(&self, env_file: &Path, db_url_env: &str) -> Result<(), String>;
 
     /// TCP connect probe (MCP endpoints; connectivity only, never LLM calls).
     fn tcp_connect(&self, host: &str, port: u16, timeout_ms: u64) -> Result<(), String>;
@@ -184,25 +188,28 @@ impl PreflightExecutor for RealCommandExecutor {
         .map(|_| ())
     }
 
-    fn db_select_one(&self, db_url_env: &str) -> Result<(), String> {
-        let Some(url) = std::env::var_os(db_url_env) else {
-            return Err(format!("env handle `{db_url_env}` is not set (secret values are never recorded)"));
-        };
-        let mut command = Command::new("psql");
+    fn db_select_one(&self, env_file: &Path, db_url_env: &str) -> Result<(), String> {
+        // Resolve the handle from the operator runtime env file (the same
+        // source the deploy stages use), never the controller's process env.
+        let url = crate::pipeline::runtime_env_value(env_file, db_url_env)
+            .map_err(|error| format!("runtime env resolution for `{db_url_env}`: {error}"))?;
+        // The URL reaches the psql child through its ENV only; the shell
+        // command line and every record stay free of the secret.
+        let mut command = Command::new("/bin/sh");
         command
-            .arg(&url)
             .arg("-c")
-            .arg("select 1")
-            .arg("-tA")
-            .arg("-v")
-            .arg("ON_ERROR_STOP=1");
+            .arg("psql \"$KRW_AGENT_DB_URL_HANDLE\" -c 'select 1' -tA -v ON_ERROR_STOP=1");
+        command.env("KRW_AGENT_DB_URL_HANDLE", url);
+        if let Some(path) = &self.path_override {
+            command.env("PATH", path);
+        }
         let output = command
             .output()
             .map_err(|error| format!("cannot spawn `psql`: {error}"))?;
         if output.status.success() {
             Ok(())
         } else {
-            // Never include stderr: it may echo the connection string.
+            // Never include stdout/stderr or the connection string.
             Err(format!("`psql select 1` failed with status {}", output.status))
         }
     }
@@ -294,7 +301,12 @@ impl PreflightExecutor for FixtureExecutor {
         self.ssh.clone()
     }
 
-    fn db_select_one(&self, _db_url_env: &str) -> Result<(), String> {
+    fn db_select_one(&self, env_file: &Path, db_url_env: &str) -> Result<(), String> {
+        // Mirror the real resolution: the handle must exist in the runtime
+        // env FILE (process env is never consulted), then the injected
+        // probe outcome decides pass/fail.
+        crate::pipeline::runtime_env_value(env_file, db_url_env)
+            .map_err(|error| format!("runtime env resolution for `{db_url_env}`: {error}"))?;
         self.db.clone()
     }
 
@@ -348,5 +360,39 @@ mod tests {
         assert_eq!(executor.kind(), "fixture");
         assert!(executor.git_porcelain(Path::new("/x")).unwrap().is_empty());
         assert!(executor.command_available("docker").unwrap());
+    }
+
+    #[test]
+    fn real_db_probe_resolves_the_handle_from_the_runtime_env_file_not_process_env() {
+        let dir = temp_dir("db-env-file");
+        let env_file = dir.join("runtime.env");
+        // A handle that is definitively NOT in the controller's process env;
+        // the value points at a dead local port so a present psql fails
+        // fast without touching anything real.
+        let handle = "KRW_TEST_DB_HANDLE_UNIQUE_9Q";
+        std::fs::write(&env_file, format!("{handle}=postgresql://127.0.0.1:1/krw-none\n")).unwrap();
+        let executor = RealCommandExecutor::new();
+
+        // Resolution comes from the file: the probe gets past handle
+        // lookup (no "not present" error) and never echoes the value.
+        let error = executor.db_select_one(&env_file, handle).unwrap_err();
+        assert!(!error.contains("not present"), "error: {error}");
+        assert!(!error.contains("krw-none"), "secret leaked into error: {error}");
+        assert!(
+            error.contains("psql") || error.contains("spawn"),
+            "expected a psql-level failure after file resolution: {error}"
+        );
+
+        // Missing handle in the file is a clear, key-named failure.
+        let missing = executor.db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE").unwrap_err();
+        assert!(missing.contains("KRW_ABSENT_DB_HANDLE"), "error: {missing}");
+        assert!(missing.contains("not present"), "error: {missing}");
+
+        let fixture = FixtureExecutor::passing();
+        assert!(fixture.db_select_one(&env_file, handle).is_ok());
+        assert!(fixture
+            .db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE")
+            .unwrap_err()
+            .contains("not present"));
     }
 }

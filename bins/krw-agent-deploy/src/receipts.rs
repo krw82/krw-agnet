@@ -457,6 +457,7 @@ mod tests {
             config_path: &config_path,
             config_sha256: sha256_bytes(b"receipt-test-config"),
             output_dir: &output_dir,
+            now_unix_seconds: 1_786_843_200,
         };
         checks::run_preflight(&plan, &FixtureExecutor::passing())
     }
