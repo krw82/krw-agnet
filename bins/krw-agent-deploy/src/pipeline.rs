@@ -2032,7 +2032,7 @@ pub fn build_stage6_dry_run_command(deps: &PipelineDeps<'_>, include_all: bool) 
 /// runner through the front wrapper, with the database URL/CA mapped from
 /// the runtime env's agent DB handle (`--skip-front-migrations`; the front
 /// plan is applied separately by the controller).
-pub fn build_agent_release_migrations_command(deps: &PipelineDeps<'_>, db_handle: &str) -> StageCommand {
+pub fn build_agent_release_migrations_command(deps: &PipelineDeps<'_>, _db_handle: &str) -> StageCommand {
     let apply_script = deps
         .config
         .frontend_source_root
@@ -2041,10 +2041,13 @@ pub fn build_agent_release_migrations_command(deps: &PipelineDeps<'_>, db_handle
         .config
         .frontend_source_root
         .join("ops/certificates/supabase-root-2021-ca.crt");
-    let handle = env_placeholder(db_handle);
+    // The runtime env may compute the DB handle dynamically
+    // (`export KRW_AGENT_DATABASE_URL="$(read_env_file ...)"`), so the URL
+    // must be resolved INSIDE the sourced shell (the executor sources the
+    // env file for RUNTIME_ENV_ALL commands), never through a static
+    // `<env:...>` placeholder. Legacy fallback order preserved.
     let script = format!(
-        "AGENT_V1_DATABASE_URL={url} AGENT_V1_PSQL_URL={url} AGENT_V1_DATABASE_CA_FILE={ca} exec \"$@\"",
-        url = shell_quote(&handle),
+        "agent_database_url=${{KRW_AGENT_DATABASE_URL:-${{AGENT_V1_DATABASE_URL:-${{AGENT_V1_OUTBOX_DATABASE_URL:-${{AGENT_QUEUE_LISTEN_DATABASE_URL:-}}}}}}}}\ncase \"$agent_database_url\" in postgres://*|postgresql://*) ;; *) echo \"Rust Agent V1 migration requires a production Supabase PostgreSQL runtime URL.\" >&2; exit 1 ;; esac\nAGENT_V1_DATABASE_URL=\"$agent_database_url\" AGENT_V1_PSQL_URL=\"$agent_database_url\" AGENT_V1_DATABASE_CA_FILE={ca} exec \"$@\"",
         ca = shell_quote(&ca_path.display().to_string()),
     );
     StageCommand::new(
@@ -2061,7 +2064,7 @@ pub fn build_agent_release_migrations_command(deps: &PipelineDeps<'_>, db_handle
             "--skip-front-migrations".to_owned(),
         ],
         &deps.config.frontend_source_root,
-        vec![RUNTIME_ENV_ALL.to_owned(), db_handle.to_owned()],
+        vec![RUNTIME_ENV_ALL.to_owned()],
         DB_PUSH_TIMEOUT_MS,
     )
 }
@@ -4025,15 +4028,20 @@ mod tests {
         assert_eq!(apply.id, "migrations.agent-release-apply");
         assert_eq!(apply.stage, "admission_close");
         let apply_script = &apply.argv[2];
-        assert!(apply_script.contains("AGENT_V1_DATABASE_URL='<env:KRW_AGENT_DATABASE_URL>'"), "script: {apply_script}");
-        assert!(apply_script.contains("AGENT_V1_PSQL_URL='<env:KRW_AGENT_DATABASE_URL>'"), "script: {apply_script}");
+        // The URL is resolved INSIDE the sourced shell (the runtime env may
+        // compute it dynamically), so no static `<env:...>` placeholder may
+        // appear anywhere in the script.
+        assert!(apply_script.contains("KRW_AGENT_DATABASE_URL:-${AGENT_V1_DATABASE_URL"), "script: {apply_script}");
+        assert!(apply_script.contains("AGENT_V1_DATABASE_URL=\"$agent_database_url\""), "script: {apply_script}");
+        assert!(apply_script.contains("AGENT_V1_PSQL_URL=\"$agent_database_url\""), "script: {apply_script}");
+        assert!(!apply_script.contains("<env:"), "script: {apply_script}");
         assert!(apply_script.contains("supabase-root-2021-ca.crt"), "script: {apply_script}");
         assert_eq!(apply.argv[3], "apply-agent-v1-migrations");
         assert!(apply.argv[4].ends_with("scripts/apply-agent-v1-production-migrations.sh"));
         assert_eq!(apply.argv[5], "--agent-release");
         assert_eq!(apply.argv[6], deps.provider_bundle().display().to_string());
         assert_eq!(apply.argv[7], "--skip-front-migrations");
-        assert_eq!(apply.env_keys_used, [RUNTIME_ENV_ALL.to_owned(), "KRW_AGENT_DATABASE_URL".to_owned()]);
+        assert_eq!(apply.env_keys_used, [RUNTIME_ENV_ALL.to_owned()]);
 
         let smoke = build_schema_smoke_command(&deps);
         assert_eq!(smoke.id, "migrations.schema-smoke");
