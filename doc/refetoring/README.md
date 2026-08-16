@@ -102,14 +102,21 @@
   integrity만 run.failed.
 - (5) 완료 — total compaction, optional projection isolation,
   post-commit infallibility.
-- (6) agent-side 완료(crawler 스크립트 삭제). frontend-side 전환은
-  Wave 9 전제와 함께 대기.
-- (7) 대기 — controller core(`bins/krw-agent-deploy`)는 fail-closed로
-  dry-run receipt까지 검증됨. stage 3-11 실구현 후 frontend adapter
-  전환.
-- (8) agent-side 완료(launchd forward-only, rollback 경로 제거).
-  frontend repo 구 스크립트/.deploy rollback은 (7) 검증 후 삭제.
-- (9) 완료 — controller가 terminal failure receipt + admission closed
-  원칙을 구현.
-- (10) 완료 — workspace 703 tests, check-all.sh, python 검증 4종,
-  controller dry-run 73 tests 모두 green.
+- (6) 완료 — agent-side crawler 삭제 + frontend reconcile crawler 삭제 +
+  `prod:deploy:full` adapter가 versioned contract만 사용.
+- (7) 완료 — `npm run prod:deploy:full`은 krw-agent-deploy 단일
+  controller 호출이며 provider는 명시 필수(default/newest 없음). 실제
+  production config에서 preflight 15/15 PASS + dry-run OK.
+- (8) 완료 — launchd installer forward-only, runtime-env rollback 경로와
+  frontend rollback/recovery cutover graph(pause/recover/queue-pause/
+  deploy-all + `prod:deploy:recover`) 삭제. controller에는 rollback
+  명령이 존재하지 않는다(test 봉인).
+- (9) 완료 — controller가 모든 실패를 admission closed terminal
+  receipt로 종결. 원 crash-loop 원인(migration 후 구 binary rollback)은
+  구조적으로 불가능.
+- (10) 완료 — workspace 703+ tests(deploy controller 118 포함),
+  check-all.sh, python 검증 4종, frontend vitest 1417, controller
+  실world preflight/dry-run 모두 green.
+
+운영자 남은 단 한 단계: 첫 controller production 배포 실행 후
+deploy-production-fast.sh fallback과 `.deploy` phase graph 잔여 정리.

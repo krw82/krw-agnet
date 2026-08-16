@@ -189,15 +189,31 @@ replay/quickstart 하위명령은 `dev-tools` feature(비기본) 뒤로 분리�
 
 ## Wave 8 — deployment controller
 
-상태: controller core 완료. `bins/krw-agent-deploy`(신규 workspace member)가
-명시적 config parser(schema v1, provider 필수, 절대 경로), 15개 read-only
-preflight 검사, immutable preflight/terminal receipt, 12단계 forward-only
-stage table을 갖는다. `preflight`/`dry-run`/`deploy` CLI에서 build/seal/
-activation 단계는 이번 revision에서 fail-closed로 terminal failure
-receipt(admission closed)를 남긴다 — 절반 활성화는 불가능하다. 73 테스트.
-잔여(별도 세션): stage 3-11 실구현, frontend `prod:deploy:full`의 얇은
-adapter 전환, 그 후 Wave 9 삭제. 완료 경로는
-`bins/krw-agent-deploy/README.md`에 문서화됐다.
+상태: 완료(stages 3-12 실구현 + 실world dry-run 검증). `bins/krw-agent-deploy`가
+12단계 전체를 실행한다: exact-commit build → 선택 provider seal(trust
+registry 단일 활성 키) → frontend image → admission close 이후 forward-only
+migration + contract ABI psql 검증 → launchd local activation → gcloud
+compute ssh remote activation → 3층 deep readiness(process/dependency/
+product) → admission open → terminal receipt. 원격 전송은 gcloud compute
+ssh(production 실제 메커니즘). 모든 상호작용은 StageExecutor(Real/Fixture)를
+통과하고 receipt는 비밀을 절대 기록하지 않는다. 어떤 단계 실패도
+admission closed terminal failure receipt로 끝나며 rollback 명령은
+존재하지 않는다(test로 봉인). fix-forward 재실행은 별도 recovery 명령 없이
+새 run으로 동작한다.
+
+실world 검증(2026-08-16, 실제 production config deepseek):
+- preflight 15/15 PASS — 실제 gcloud describe/ssh echo probe, runtime env
+  file에서 해석한 DB handle로 read-only `select 1`, provider별 trust
+  registry 단일 활성 키(`mac-local-prod-v1`), contract hash pin 일치,
+  양 repo clean commit
+- dry-run OK — read-only receipt 완료
+- glm config는 `GLM_API_KEY` 부재로 fail-closed(의도된 동작: provider별
+  live credential은 선택된 release에만 요구)
+- 첫 실제 activation은 operator 실행. 그 전까지 frontend
+  deploy-production-fast.sh가 검증된 fallback으로 남는다.
+
+frontend의 `prod:deploy:full`은 얇은 adapter(controller 호출, provider
+명시 필수)로 전환됐다.
 
 agent repo에 단일 controller를 둔다.
 
@@ -214,9 +230,10 @@ frontend의 `prod:deploy:full`은 controller adapter만 남긴다.
 
 ## Wave 9 — legacy deletion
 
-상태: agent-side 삭제 완료, frontend-side는 계획된 전제 조건 대기 중.
+상태: agent-side + frontend rollback graph 삭제 완료. 최종 잔여는 첫
+controller production 배포 검증 후의 fast script/.deploy phase graph.
 
-agent repo에서 이미 제거된 항목(Wave 1~7에서 수행):
+agent repo에서 제거된 항목(Wave 1~7에서 수행):
 - `krw_skill_local` phantom binding과 local skill MCP 경로
 - `TransportKind::McpStdio/Native` 등 미지원 transport selector
 - `flash_*` profile alias와 암묵 `model-registry.yaml`(local/prod 모두)
@@ -226,14 +243,20 @@ agent repo에서 이미 제거된 항목(Wave 1~7에서 수행):
 - frontend source crawler `check_product_projection_compat.py`
 - dead `DeepSeekProviderCatalog::compile`
 
-frontend repo에 남아 있고 계획된 전제("새 controller가 dry-run과
-production에서 검증된 후 즉시 삭제")를 만족하면 삭제할 항목:
-- old deploy/pause/recover scripts(deploy-all-production.sh 등)
-- `.deploy` phase state machine과 rollback image, newest candidate selection
-- frontend `prod:deploy:full`을 controller adapter로 전환
+frontend repo(krw-ontology-front, branch `refactor/final-form-waves`)에서
+제거된 항목:
+- rollback/recovery cutover graph 전체: pause-production-cutover.sh,
+  recover-production-cutover.sh, deploy-with-queue-pause.sh,
+  deploy-all-production.sh(sealed cutover orchestrator),
+  deploy-full-production-logged.sh, `prod:deploy:recover` npm entry,
+  cutover-recovery test 파일들
+- runtime-env backup/restore 경로와 gateway-contract reconcile crawler
+  (이전 세션 작업 커밋으로 확정)
+- `prod:deploy:full`은 krw-agent-deploy 얇은 adapter(provider 명시 필수)
 
-이 전제는 Wave 8 controller의 stage 3-11 실구현과 production 검증을
-선행한다(05문서의 forward-only 원칙).
+첫 controller production 배포 검증 이후 남을 단계(operator):
+- deploy-production-fast.sh fallback 삭제
+- `.deploy/` phase graph 역사 정리(OS lock 파일은 adapter가 계속 사용)
 
 ## 검증 명령
 
