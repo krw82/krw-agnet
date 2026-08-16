@@ -12,6 +12,30 @@ pub fn format_utc_compact(unix_seconds: u64) -> String {
     format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
 
+/// Inverse of [`format_utc_compact`]: parse a compact UTC timestamp back to
+/// unix seconds. Used to recover a run's wall clock from its stamped run
+/// directory name (kept deterministic in tests).
+pub fn unix_seconds_from_compact(compact: &str) -> Option<u64> {
+    let year: i64 = compact.get(0..4)?.parse().ok()?;
+    let month: i64 = compact.get(4..6)?.parse().ok()?;
+    let day: i64 = compact.get(6..8)?.parse().ok()?;
+    if !compact.get(8..9)?.eq_ignore_ascii_case("t") {
+        return None;
+    }
+    let hour: u64 = compact.get(9..11)?.parse().ok()?;
+    let minute: u64 = compact.get(11..13)?.parse().ok()?;
+    let second: u64 = compact.get(13..15)?.parse().ok()?;
+    if !compact.get(15..16)?.eq_ignore_ascii_case("z") {
+        return None;
+    }
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    let seconds = days * 86_400 + i64::try_from(hour * 3_600 + minute * 60 + second).expect("time of day fits i64");
+    u64::try_from(seconds).ok()
+}
+
 /// ISO-8601 UTC timestamp, e.g. `2026-08-16T01:20:00Z`.
 pub fn format_utc_iso(unix_seconds: u64) -> String {
     let (year, month, day) = civil_from_days(days_from_seconds(unix_seconds));
@@ -50,6 +74,17 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Inverse of `civil_from_days` (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_shifted = (month + 9) % 12;
+    let day_of_year = (153 * month_shifted + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +111,20 @@ mod tests {
     #[test]
     fn year_boundary_rolls_to_next_day() {
         assert_eq!(format_utc_compact(1_786_843_200), "20260816T012000Z");
+    }
+
+    #[test]
+    fn compact_timestamp_round_trips_through_unix_seconds() {
+        for seconds in [0u64, 1_765_000_000, 1_786_843_200, 1_709_251_199, 4_102_444_800] {
+            let compact = format_utc_compact(seconds);
+            assert_eq!(unix_seconds_from_compact(&compact), Some(seconds), "round trip {compact}");
+        }
+    }
+
+    #[test]
+    fn malformed_compact_timestamps_are_rejected() {
+        assert_eq!(unix_seconds_from_compact("20260816T012000"), None);
+        assert_eq!(unix_seconds_from_compact("20261316T012000Z"), None);
+        assert_eq!(unix_seconds_from_compact("not-a-timestamp"), None);
     }
 }

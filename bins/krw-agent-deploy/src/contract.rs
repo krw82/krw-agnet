@@ -33,6 +33,15 @@ pub struct FrontendContract {
     pub contract_id: String,
     pub agent_abi: String,
     pub final_projection_contract: String,
+    /// DB procedures the migrated schema must expose, e.g.
+    /// `agent_v1.enqueue_run(jsonb)`. Verified with psql immediately after
+    /// `db push` (05 migration ordering rule 4). Optional: a contract that
+    /// pins no procedures records none.
+    pub required_procedures: Vec<String>,
+    /// DB columns the migrated schema must expose, e.g.
+    /// `agent_v1_daemon_heartbeats.mcp_ready` (2-part `table.column`, or
+    /// 3-part `schema.table.column` defaulting to `public`).
+    pub required_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +126,44 @@ pub fn parse_contract(bytes: &[u8]) -> Result<FrontendContract, ContractError> {
     // separators=(",", ":")) canonical form.
     let canonical = serde_jcs::to_vec(&value).map_err(|error| ContractError::JsonInvalid(error.to_string()))?;
     let hash = ContentHash::sha256(canonical).to_string();
+    let required_procedures = non_empty_string_list(object.get("required_procedures"), "required_procedures")?;
+    let required_columns = non_empty_string_list(object.get("required_columns"), "required_columns")?;
     Ok(FrontendContract {
         canonical_sha256: hash,
         contract_id: FRONTEND_CONTRACT_ID.to_owned(),
         agent_abi: FRONTEND_CONTRACT_AGENT_ABI.to_owned(),
         final_projection_contract: "agent-final-projection/v1".to_owned(),
+        required_procedures,
+        required_columns,
     })
+}
+
+/// Optional string-array field: absent → empty; present → non-empty entries.
+fn non_empty_string_list(value: Option<&Value>, field: &'static str) -> Result<Vec<String>, ContractError> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut entries = Vec::with_capacity(items.len());
+            for item in items {
+                let text = item.as_str().ok_or_else(|| ContractError::ValueInvalid {
+                    field,
+                    expected: "an array of non-empty strings".to_owned(),
+                })?;
+                if text.trim().is_empty() {
+                    return Err(ContractError::ValueInvalid {
+                        field,
+                        expected: "an array of non-empty strings".to_owned(),
+                    });
+                }
+                entries.push(text.trim().to_owned());
+            }
+            Ok(entries)
+        }
+        Some(_) => Err(ContractError::ValueInvalid {
+            field,
+            expected: "an array of non-empty strings".to_owned(),
+        }),
+    }
 }
 
 const REQUIRED_FIELDS: [&str; 11] = [
@@ -239,6 +280,35 @@ mod tests {
         let error = parse_contract(text.as_bytes()).unwrap_err();
         assert!(
             matches!(error, ContractError::ValueInvalid { field: "required_projection_fields", .. }),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn abi_lists_are_optional_and_parsed_when_present() {
+        // Absent → empty (the canonical fixture pins no DB ABI lists).
+        let contract = parse_contract(canonical_fixture_contract_json().as_bytes()).unwrap();
+        assert!(contract.required_procedures.is_empty());
+        assert!(contract.required_columns.is_empty());
+
+        let text = canonical_fixture_contract_json().replace(
+            "\"visualization_failure_policy\"",
+            "\"required_procedures\": [\"agent_v1.enqueue_run(jsonb)\"],\n  \"required_columns\": [\"agent_v1_daemon_heartbeats.mcp_ready\"],\n  \"visualization_failure_policy\"",
+        );
+        let contract = parse_contract(text.as_bytes()).unwrap();
+        assert_eq!(contract.required_procedures, ["agent_v1.enqueue_run(jsonb)"]);
+        assert_eq!(contract.required_columns, ["agent_v1_daemon_heartbeats.mcp_ready"]);
+    }
+
+    #[test]
+    fn abi_lists_reject_non_string_entries() {
+        let text = canonical_fixture_contract_json().replace(
+            "\"visualization_failure_policy\"",
+            "\"required_procedures\": [42],\n  \"visualization_failure_policy\"",
+        );
+        let error = parse_contract(text.as_bytes()).unwrap_err();
+        assert!(
+            matches!(error, ContractError::ValueInvalid { field: "required_procedures", .. }),
             "unexpected error: {error}"
         );
     }

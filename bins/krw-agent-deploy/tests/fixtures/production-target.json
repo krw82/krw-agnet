@@ -7,6 +7,8 @@
     "instance_id": "0000000000000000000"
   },
   "ssh_host": "deploy@127.0.0.1",
+  "remote_front_dir": "/home/deploy/krw-ontology-front-dummy-placeholder",
+  "compose_project": "krw-ontology-front-dummy",
   "local_ports": [],
   "required_env_keys": ["KRW_AGENT_DB_URL"],
   "db_url_env": "KRW_AGENT_DB_URL",

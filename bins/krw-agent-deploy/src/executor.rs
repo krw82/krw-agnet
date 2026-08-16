@@ -183,20 +183,26 @@ impl PreflightExecutor for RealCommandExecutor {
     }
 
     fn tcp_connect(&self, host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
-        let address = format!("{host}:{port}");
-        let resolved = address
-            .to_socket_addrs()
-            .map_err(|error| format!("cannot resolve `{address}`: {error}"))?
-            .collect::<Vec<_>>();
-        let mut last_error = format!("`{address}` did not resolve to any address");
-        for socket in resolved {
-            match TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms.max(1))) {
-                Ok(_) => return Ok(()),
-                Err(error) => last_error = format!("connect {socket}: {error}"),
-            }
-        }
-        Err(last_error)
+        tcp_connect_once(host, port, timeout_ms)
     }
+}
+
+/// Shared read-only TCP connect probe (preflight checks and stage readiness
+/// layers). Connectivity only; never an LLM call.
+pub fn tcp_connect_once(host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
+    let address = format!("{host}:{port}");
+    let resolved = address
+        .to_socket_addrs()
+        .map_err(|error| format!("cannot resolve `{address}`: {error}"))?
+        .collect::<Vec<_>>();
+    let mut last_error = format!("`{address}` did not resolve to any address");
+    for socket in resolved {
+        match TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms.max(1))) {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = format!("connect {socket}: {error}"),
+        }
+    }
+    Err(last_error)
 }
 
 /// Deterministic fixture executor: every probe succeeds by default and tests

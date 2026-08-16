@@ -6,6 +6,8 @@
   "session_backend": "rust_agent",
   "run_submission_contract": "agent-v1-run-request/v1",
   "final_projection_contract": "agent-final-projection/v1",
+  "required_procedures": ["agent_v1.enqueue_run(jsonb)"],
+  "required_columns": ["agent_v1_daemon_heartbeats.mcp_ready"],
   "required_projection_fields": ["run_id", "answer_bundle_hash", "final_output_hash", "markdown"],
   "optional_projection_fields": [
     "visualizations",

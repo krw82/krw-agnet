@@ -1,0 +1,2640 @@
+//! Real deployment stage runners 3-12 (doc/refetoring/05 §controller).
+//!
+//! Every world interaction of a mutating stage goes through the
+//! [`StageExecutor`] trait. Commands are described as structured
+//! [`StageCommand`] records — `{stage, id, argv, cwd, env_keys_used,
+//! timeout_ms}` — so tests assert the exact argv without executing anything.
+//! Secret values never appear in records: argv elements keep the
+//! `<env:NAME>` placeholder form and `env_keys_used` lists env var NAMES
+//! only. The [`RealStageExecutor`] resolves placeholders against the
+//! operator runtime env file and sources that file (`set -a; . file`) into
+//! full-envelope packaging subprocesses; the [`FixtureStageExecutor`]
+//! records every spec for deterministic tests.
+//!
+//! Stage layout (migration ordering rules 3-4 of the 05 doc):
+//!
+//! | # | stage | executor command ids |
+//! |---|---|---|
+//! | 3 | `build` | `build.dual-provider-bundles` |
+//! | 4 | `seal` | `seal.prepare-production-candidate`, `seal.sign-release-authorization`, `seal.seal-production-candidate`, `seal.finalize-dual-release` (+ trust-registry active key resolution, pure) |
+//! | 5 | `frontend_image_prepare` | `frontend-image.build-web`, `frontend-image.inspect-digest` |
+//! | 6 | `migrations` | `migrations.db-push-dry-run` (read-only gate) |
+//! | 7 | `admission_close` | `admission.read-previous`, `admission.close`, `admission.verify-closed`, then `migrations.db-push` and `migrations.abi-verify-procedure-N`/`-column-N` |
+//! | 8 | `local_activation` | `activation.agentd-stage`, `activation.capabilityd-activate`, `activation.agentd-activate` |
+//! | 9 | `remote_activation` | `remote.web-up`, `readiness.remote-web-healthz` (Skipped for local-only targets) |
+//! | 10 | `deep_readiness` | `readiness.daemon-metrics`, `readiness.mcp-tcp-N` (TCP probes), `readiness.mcp-ready-N`, `readiness.web-deep`, `readiness.db-heartbeat` |
+//! | 11 | `admission_open` | `admission.open`, `readiness.admission-open-verify` |
+//! | 12 | `terminal_success_receipt` | receipt only |
+//!
+//! Failure policy: any stage failure stops the walk, writes the stage
+//! receipt (status `fail`) and the terminal failure receipt, and exits 1.
+//! No rollback commands exist anywhere in this module; recovery is
+//! fix-forward through a fresh run. Local-only targets (no `ssh_host`) skip
+//! the remote stage and run admission against the local gateway stack.
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use crate::config::DeployConfig;
+use crate::hashing::{sha256_file, UNAVAILABLE_HASH};
+use crate::receipts::{
+    DeployArtifacts, SkippedRecord, StageCommandRecord, StageReceipt, StageReceiptStatus,
+    TcpProbeRecord, TerminalAdmission,
+};
+use crate::stages::{RunContext, STAGE_TABLE};
+use crate::target::TargetFile;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Marker env-key entry meaning "the whole runtime env file is exported into
+/// the child process" (legacy `set -a; . <runtime-env>` packaging behavior).
+pub const RUNTIME_ENV_ALL: &str = "<runtime-env:all>";
+
+pub const ADMISSION_ENV_KEY: &str = "KRW_AGENT_ADMISSION_MODE";
+pub const LOCAL_INSTALL_ROOT_ENV_KEY: &str = "KRW_AGENT_LOCAL_INSTALL_ROOT";
+pub const METRICS_PORT_ENV_KEY: &str = "KRW_AGENT_METRICS_PORT";
+pub const INTERNAL_API_KEY_ENV_KEY: &str = "INTERNAL_API_KEY";
+
+/// Installer default from `install-local-mac-agentd-release.sh` usage.
+pub const DEFAULT_METRICS_PORT: &str = "15520";
+
+pub const AUTHORIZATION_TTL_SECONDS: u64 = 2_592_000; // 30 days (legacy default)
+pub const RUNTIME_VERSION: &str = "0.1.0";
+pub const KERNEL_VERSION: &str = "0.1.0";
+
+pub const BUILD_TIMEOUT_MS: u64 = 3_600_000;
+pub const SEAL_TIMEOUT_MS: u64 = 1_800_000;
+pub const IMAGE_BUILD_TIMEOUT_MS: u64 = 3_600_000;
+pub const IMAGE_INSPECT_TIMEOUT_MS: u64 = 120_000;
+pub const DB_DRY_RUN_TIMEOUT_MS: u64 = 600_000;
+pub const DB_PUSH_TIMEOUT_MS: u64 = 1_800_000;
+pub const PSQL_TIMEOUT_MS: u64 = 120_000;
+pub const INSTALL_TIMEOUT_MS: u64 = 1_800_000;
+pub const SSH_QUICK_TIMEOUT_MS: u64 = 120_000;
+pub const SSH_COMPOSE_TIMEOUT_MS: u64 = 900_000;
+
+/// Readiness probes are retried by the real executor until `timeout_ms`.
+const READINESS_ID_PREFIX: &str = "readiness.";
+const READINESS_POLL_INTERVAL_MS: u64 = 2_000;
+
+pub const LOCAL_ONLY_SKIP_REASON: &str = "local-only target: no ssh_host recorded; remote activation skipped";
+
+/// Local gateway stack endpoints (frontend compose runs on the same host).
+const LOCAL_WEB_BASE_URL: &str = "http://127.0.0.1:3000";
+
+pub const PROCEDURE_ABI_PREFIX: &str = "migrations.abi-verify-procedure-";
+pub const COLUMN_ABI_PREFIX: &str = "migrations.abi-verify-column-";
+
+// ---------------------------------------------------------------------------
+// Command records and the executor trait
+// ---------------------------------------------------------------------------
+
+/// One structured world-command. `argv` may contain `<env:NAME>` placeholder
+/// elements (or embedded substrings) that the real executor resolves from
+/// the runtime env file — the placeholder itself is what gets recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageCommand {
+    pub stage: &'static str,
+    pub id: String,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    /// Env var NAMES the command consumes; the special [`RUNTIME_ENV_ALL`]
+    /// entry means the full runtime env file is sourced into the child.
+    pub env_keys_used: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+impl StageCommand {
+    pub fn new(
+        stage: &'static str,
+        id: &str,
+        argv: Vec<String>,
+        cwd: &Path,
+        env_keys_used: Vec<String>,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            stage,
+            id: id.to_owned(),
+            argv,
+            cwd: cwd.to_path_buf(),
+            env_keys_used,
+            timeout_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageCommandOutcome {
+    /// Trimmed stdout. Stderr is never captured into outcomes or receipts.
+    pub stdout: String,
+}
+
+/// TCP connectivity probe record (MCP readiness layer 1; never LLM calls).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TcpProbe {
+    pub stage: &'static str,
+    pub id: String,
+    pub host: String,
+    pub port: u16,
+    pub timeout_ms: u64,
+}
+
+/// Executor for mutating-stage world interaction, modeled on the preflight
+/// `PreflightExecutor`. `git_head` exists for the preflight-receipt drift
+/// guard re-verification before mutating stages.
+pub trait StageExecutor: std::fmt::Debug {
+    /// Stable executor label recorded in receipts (`real`, `fixture`).
+    fn kind(&self) -> &'static str;
+
+    /// Execute one structured command. `env_file` is the operator runtime
+    /// env file the command's env keys resolve from; resolved values only
+    /// ever flow into the child process, never into errors or receipts.
+    fn execute(&self, env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String>;
+
+    /// `git rev-parse HEAD` re-read for the drift guard.
+    fn git_head(&self, root: &Path) -> Result<String, String>;
+
+    /// TCP connect probe (bounded by `timeout_ms`).
+    fn tcp_connect(&self, probe: &TcpProbe) -> Result<(), String>;
+}
+
+/// Build an unresolved `<env:NAME>` argv placeholder element.
+pub fn env_placeholder(name: &str) -> String {
+    format!("<env:{name}>")
+}
+
+// ---------------------------------------------------------------------------
+// Runtime env file helpers (values never logged)
+// ---------------------------------------------------------------------------
+
+/// Read one KEY=VALUE from an env file. Last occurrence wins (legacy
+/// `value_of ... | tail -n 1` semantics); surrounding double then single
+/// quotes are stripped. Errors name the KEY only, never a value.
+pub fn runtime_env_value(env_file: &Path, key: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(env_file).map_err(|error| format!("{}: {error}", env_file.display()))?;
+    let mut found: Option<String> = None;
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((candidate, value)) = line.split_once('=') {
+            if candidate.trim_start_matches("export ").trim() == key {
+                let cleaned = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+                found = Some(cleaned);
+            }
+        }
+    }
+    found.ok_or_else(|| format!("env key `{key}` not present in {}", env_file.display()))
+}
+
+/// KEY NAMES present in an env file (presence probe only).
+pub fn runtime_env_has_key(env_file: &Path, key: &str) -> bool {
+    runtime_env_value(env_file, key).is_ok()
+}
+
+/// Upsert one KEY=VALUE into an env file with the legacy awk semantics:
+/// the first matching assignment is replaced in place, later duplicates are
+/// dropped, and the key is appended when absent. Values are never returned.
+pub fn upsert_env_value(env_file: &Path, key: &str, value: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(env_file).map_err(|error| format!("{}: {error}", env_file.display()))?;
+    let mut output = String::new();
+    let mut seen = false;
+    for line in text.lines() {
+        if let Some((candidate, _)) = line.split_once('=') {
+            if candidate == key {
+                // First matching assignment is replaced in place; later
+                // duplicates are dropped (legacy awk `next` semantics).
+                if !seen {
+                    output.push_str(key);
+                    output.push('=');
+                    output.push_str(value);
+                    output.push('\n');
+                    seen = true;
+                }
+                continue;
+            }
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    if !seen {
+        output.push_str(key);
+        output.push('=');
+        output.push_str(value);
+        output.push('\n');
+    }
+    std::fs::write(env_file, output).map_err(|error| format!("{}: {error}", env_file.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Real executor
+// ---------------------------------------------------------------------------
+
+/// Shell-out stage executor. Resolves `<env:NAME>` argv placeholders from
+/// the runtime env file, sources the full file for `<runtime-env:all>`
+/// commands (child env only), and retries `readiness.`-prefixed probes
+/// until their timeout. Error messages carry the command id and exit status
+/// only — never stdout/stderr contents (they may echo connection data).
+#[derive(Debug, Clone)]
+pub struct RealStageExecutor {
+    pub path_override: Option<PathBuf>,
+}
+
+impl RealStageExecutor {
+    pub fn new() -> Self {
+        Self { path_override: None }
+    }
+
+    fn spawn(
+        &self,
+        env_file: &Path,
+        command: &StageCommand,
+        resolved_argv: &[String],
+    ) -> Result<String, String> {
+        let mut child = if command.env_keys_used.iter().any(|key| key == RUNTIME_ENV_ALL) {
+            let mut shell = Command::new("/bin/sh");
+            shell
+                .arg("-c")
+                // $0 = env file, "$@" = argv; `set -a` exports every sourced var.
+                .arg("set -a; . \"$0\"; exec \"$@\"")
+                .arg(env_file)
+                .args(resolved_argv);
+            shell
+        } else {
+            let mut plain = Command::new(&resolved_argv[0]);
+            plain.args(&resolved_argv[1..]);
+            if let Some(path) = &self.path_override {
+                plain.env("PATH", path);
+            }
+            plain
+        };
+        child.current_dir(&command.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        for key in &command.env_keys_used {
+            if key == RUNTIME_ENV_ALL {
+                continue;
+            }
+            let value = runtime_env_value(env_file, key)
+                .map_err(|error| format!("command `{}` needs env key: {error}", command.id))?;
+            child.env(key, value);
+        }
+        let mut spawned =
+            child.spawn().map_err(|error| format!("cannot spawn `{}`: {error}", resolved_argv[0]))?;
+        let mut stdout_pipe = spawned
+            .stdout
+            .take()
+            .ok_or_else(|| format!("command `{}`: stdout pipe unavailable", command.id))?;
+        let reader = std::thread::spawn(move || {
+            let mut buffer = String::new();
+            let _ = stdout_pipe.read_to_string(&mut buffer);
+            buffer
+        });
+        let deadline = Instant::now() + Duration::from_millis(command.timeout_ms.max(1));
+        loop {
+            match spawned.try_wait() {
+                Ok(Some(status)) => {
+                    let stdout = reader.join().unwrap_or_default();
+                    if status.success() {
+                        return Ok(stdout);
+                    }
+                    return Err(format!(
+                        "command `{}` (stage `{}`) exited with status {status}",
+                        command.id, command.stage
+                    ));
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = spawned.kill();
+                        let _ = spawned.wait();
+                        return Err(format!(
+                            "command `{}` (stage `{}`) timed out after {}ms",
+                            command.id, command.stage, command.timeout_ms
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => {
+                    return Err(format!("command `{}` wait failed: {error}", command.id));
+                }
+            }
+        }
+    }
+
+    fn resolve_placeholders(&self, env_file: &Path, command: &StageCommand) -> Result<Vec<String>, String> {
+        let mut resolved = Vec::with_capacity(command.argv.len());
+        for element in &command.argv {
+            let mut value = element.clone();
+            while let Some(start) = value.find("<env:") {
+                let rest = &value[start + "<env:".len()..];
+                let Some(name_len) = rest.find('>') else {
+                    return Err(format!("command `{}` has a malformed env placeholder: {element}", command.id));
+                };
+                let name = &rest[..name_len];
+                let resolved_value = runtime_env_value(env_file, name)
+                    .map_err(|error| format!("command `{}` cannot resolve placeholder: {error}", command.id))?;
+                value = format!("{}{}{}", &value[..start], resolved_value, &rest[name_len + 1..]);
+            }
+            resolved.push(value);
+        }
+        Ok(resolved)
+    }
+}
+
+impl Default for RealStageExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StageExecutor for RealStageExecutor {
+    fn kind(&self) -> &'static str {
+        "real"
+    }
+
+    fn execute(&self, env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String> {
+        if command.argv.is_empty() {
+            return Err(format!("command `{}` has an empty argv", command.id));
+        }
+        let resolved = self.resolve_placeholders(env_file, command)?;
+        let started = Instant::now();
+        loop {
+            match self.spawn(env_file, command, &resolved) {
+                Ok(stdout) => {
+                    return Ok(StageCommandOutcome {
+                        stdout: stdout.trim().to_owned(),
+                    });
+                }
+                Err(error) => {
+                    let pollable = command.id.starts_with(READINESS_ID_PREFIX);
+                    let deadline = Duration::from_millis(command.timeout_ms.max(1));
+                    if pollable && started.elapsed() + Duration::from_millis(READINESS_POLL_INTERVAL_MS) < deadline {
+                        std::thread::sleep(Duration::from_millis(READINESS_POLL_INTERVAL_MS));
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn git_head(&self, root: &Path) -> Result<String, String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .map_err(|error| format!("cannot spawn `git`: {error}"))?;
+        if output.status.success() {
+            String::from_utf8(output.stdout)
+                .map(|stdout| stdout.trim().to_owned())
+                .map_err(|error| format!("`git rev-parse` output not UTF-8: {error}"))
+        } else {
+            Err(format!("`git rev-parse HEAD` exited with status {}", output.status))
+        }
+    }
+
+    fn tcp_connect(&self, probe: &TcpProbe) -> Result<(), String> {
+        crate::executor::tcp_connect_once(&probe.host, probe.port, probe.timeout_ms)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture executor
+// ---------------------------------------------------------------------------
+
+/// Deterministic fixture stage executor: records every command spec and TCP
+/// probe, fails exactly the command/probe ids a test injects, and (with
+/// `side_effects`) materializes the sealed-bundle marker files a real
+/// `build_dual_provider_release.sh` run would leave behind. It learns the
+/// run's release id, provider, and descriptor hash from the observed argv
+/// and side-effect files so canned healthz/heartbeat outputs validate.
+#[derive(Debug, Clone)]
+pub struct FixtureStageExecutor {
+    /// Every command spec seen, in order (assert exact argv here).
+    pub commands: std::cell::RefCell<Vec<StageCommand>>,
+    /// Every TCP probe seen, in order.
+    pub probes: std::cell::RefCell<Vec<TcpProbe>>,
+    /// Injected failures keyed by command id.
+    pub failures: BTreeMap<String, String>,
+    /// Injected TCP probe failures keyed by probe id.
+    pub probe_failures: BTreeMap<String, String>,
+    /// Canned stdout overrides by command id (defaults otherwise).
+    pub outputs: BTreeMap<String, String>,
+    /// Create build side-effect marker files (default true).
+    pub side_effects: bool,
+    /// `git_head` result for the drift guard.
+    pub head: String,
+    pub head_error: Option<String>,
+    learned: std::cell::RefCell<FixtureLearned>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FixtureLearned {
+    release_id: Option<String>,
+    output_dir: Option<PathBuf>,
+    provider: Option<String>,
+}
+
+impl FixtureStageExecutor {
+    pub fn passing() -> Self {
+        Self {
+            commands: std::cell::RefCell::new(Vec::new()),
+            probes: std::cell::RefCell::new(Vec::new()),
+            failures: BTreeMap::new(),
+            probe_failures: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            side_effects: true,
+            head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            head_error: None,
+            learned: std::cell::RefCell::new(FixtureLearned::default()),
+        }
+    }
+
+    /// Observed command ids in execution order.
+    pub fn command_ids(&self) -> Vec<String> {
+        self.commands.borrow().iter().map(|command| command.id.clone()).collect()
+    }
+
+    fn learn_from(&self, command: &StageCommand) {
+        let mut learned = self.learned.borrow_mut();
+        if learned.output_dir.is_none() {
+            if let Some(position) = command.argv.iter().position(|flag| flag == "--output-root") {
+                if let Some(dir) = command.argv.get(position + 1) {
+                    learned.output_dir = Some(PathBuf::from(dir));
+                    learned.release_id =
+                        PathBuf::from(dir).file_name().map(|name| name.to_string_lossy().to_string());
+                }
+            }
+        }
+        if learned.provider.is_none() {
+            if let Some(position) = command.argv.iter().position(|flag| flag == "--provider") {
+                if let Some(provider) = command.argv.get(position + 1) {
+                    learned.provider = Some(provider.clone());
+                }
+            }
+        }
+    }
+
+    fn simulate_side_effects(&self, command: &StageCommand) {
+        if !self.side_effects || command.id != "build.dual-provider-bundles" {
+            return;
+        }
+        let Some(dir) = self.learned.borrow().output_dir.clone() else {
+            return;
+        };
+        for provider in ["glm", "deepseek"] {
+            let bundle = dir.join(provider);
+            let _ = std::fs::create_dir_all(&bundle);
+            let _ = std::fs::write(
+                bundle.join("public-release.json"),
+                format!("{{\"fixture\": true, \"provider\": \"{provider}\"}}\n"),
+            );
+        }
+    }
+
+    fn canned_output(&self, command: &StageCommand) -> String {
+        if let Some(output) = self.outputs.get(&command.id) {
+            return output.clone();
+        }
+        let learned = self.learned.borrow();
+        let release_id = learned
+            .release_id
+            .clone()
+            .unwrap_or_else(|| "00000000T000000Z-00000000".to_owned());
+        // The checked-in fixture contract pins exactly
+        // `agent_v1.enqueue_run(jsonb)`; tests with other ABI lists override
+        // `outputs`.
+        if command.id.starts_with(PROCEDURE_ABI_PREFIX) {
+            return "1|jsonb".to_owned();
+        }
+        if command.id.starts_with(COLUMN_ABI_PREFIX) {
+            return "1".to_owned();
+        }
+        match command.id.as_str() {
+            "admission.read-previous" => "open".to_owned(),
+            "admission.verify-closed-local" => r#"{"status":"ok"}"#.to_owned(),
+            "frontend-image.inspect-digest" => format!("sha256:{}", "a".repeat(64)),
+            "migrations.db-push" => "Applying migration 0001_agent_v1\nApplying migration 0022_daemon_mcp_readiness\n".to_owned(),
+            "readiness.remote-web-healthz" | "readiness.web-deep" => format!(
+                r#"{{"status":"ok","deployment_id":"{release_id}","checks":{{"agent_v1":{{"admission":"closed"}}}}}}"#
+            ),
+            "readiness.admission-open-verify" | "readiness.admission-open-verify-local" => format!(
+                r#"{{"status":"ok","deployment_id":"{release_id}","checks":{{"agent_v1":{{"admission":"open"}}}}}}"#
+            ),
+            "readiness.db-heartbeat" => {
+                let provider = learned.provider.clone().unwrap_or_else(|| "deepseek".to_owned());
+                let descriptor = learned
+                    .output_dir
+                    .as_ref()
+                    .and_then(|dir| sha256_file(&dir.join(&provider).join("public-release.json")).ok())
+                    .unwrap_or_else(|| format!("sha256:{}", "0".repeat(64)));
+                format!("{provider}|{descriptor}|sha256:{}|t", "b".repeat(64))
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+impl StageExecutor for FixtureStageExecutor {
+    fn kind(&self) -> &'static str {
+        "fixture"
+    }
+
+    fn execute(&self, _env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String> {
+        self.commands.borrow_mut().push(command.clone());
+        self.learn_from(command);
+        if let Some(reason) = self.failures.get(&command.id) {
+            return Err(reason.clone());
+        }
+        self.simulate_side_effects(command);
+        Ok(StageCommandOutcome {
+            stdout: self.canned_output(command),
+        })
+    }
+
+    fn git_head(&self, _root: &Path) -> Result<String, String> {
+        match &self.head_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(self.head.clone()),
+        }
+    }
+
+    fn tcp_connect(&self, probe: &TcpProbe) -> Result<(), String> {
+        self.probes.borrow_mut().push(probe.clone());
+        if let Some(reason) = self.probe_failures.get(&probe.id) {
+            return Err(reason.clone());
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trust-registry active key resolution (pure)
+// ---------------------------------------------------------------------------
+
+/// Resolve the exactly-one active (non-revoked, valid now) signing key id
+/// from a canonical `ReleaseTrustRegistryV1`, porting the legacy Python
+/// gate in `build_sealed_dual_provider_release.sh`.
+pub fn resolve_active_key_id(registry_bytes: &[u8], now_unix_seconds: u64) -> Result<String, String> {
+    let registry = krw_agent_release_authorization::parse_canonical_trust_registry(registry_bytes)
+        .map_err(|error| format!("trust registry invalid: {error}"))?;
+    let active: Vec<&krw_agent_release_authorization::ReleaseTrustKeyV1> = registry
+        .keys
+        .iter()
+        .filter(|key| !key.revoked && key.not_before_unix_seconds <= now_unix_seconds && now_unix_seconds <= key.not_after_unix_seconds)
+        .collect();
+    match active.len() {
+        1 => Ok(active[0].key_id.clone()),
+        0 => Err("trust registry has no active signing key valid now (exactly one required)".to_owned()),
+        count => Err(format!("trust registry has {count} active signing keys (exactly one required)")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Migration output / ABI / healthz parsing (pure)
+// ---------------------------------------------------------------------------
+
+/// Migration names parsed from `supabase db push` output lines of the form
+/// `Applying migration <name>...`.
+pub fn parse_applied_migrations(stdout: &str) -> Vec<String> {
+    const PREFIX: &str = "Applying migration ";
+    stdout
+        .lines()
+        .filter_map(|line| {
+            line.find(PREFIX).map(|position| {
+                line[position + PREFIX.len()..]
+                    .trim()
+                    .trim_end_matches('.')
+                    .trim()
+                    .to_owned()
+            })
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureAbi {
+    pub schema: String,
+    pub name: String,
+    pub arg_list: String,
+}
+
+/// Parse a contract entry like `agent_v1.enqueue_run(jsonb)`.
+pub fn parse_procedure_entry(entry: &str) -> Result<ProcedureAbi, String> {
+    let entry = entry.trim();
+    if entry.contains('\'') || entry.contains('"') {
+        return Err(format!("procedure entry `{entry}` must not contain quote characters"));
+    }
+    if !entry.ends_with(')') {
+        return Err(format!("procedure entry `{entry}` must be schema.name(args)"));
+    }
+    let (path, args) = entry.split_once('(').ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
+    let arg_list = args.trim_end_matches(')').trim().to_owned();
+    let (schema, name) =
+        path.trim().rsplit_once('.').ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
+    if schema.is_empty() || name.is_empty() {
+        return Err(format!("procedure entry `{entry}` must be schema.name(args)"));
+    }
+    Ok(ProcedureAbi {
+        schema: schema.to_owned(),
+        name: name.to_owned(),
+        arg_list,
+    })
+}
+
+impl ProcedureAbi {
+    /// Existence + exact IN-argument shape, one `psql -tA` query.
+    pub fn sql(&self) -> String {
+        format!(
+            "select (select count(*) from information_schema.routines where routine_schema = '{}' and routine_name = '{}' and routine_type = 'FUNCTION') || '|' || coalesce((select string_agg(udt_name, ',' order by ordinal_position) from information_schema.parameters where specific_schema = '{}' and specific_name = '{}' and parameter_mode = 'IN'), '')",
+            self.schema, self.name, self.schema, self.name
+        )
+    }
+
+    pub fn expected_output(&self) -> String {
+        format!("1|{}", self.arg_list)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnAbi {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+}
+
+/// Parse a contract entry like `agent_v1_daemon_heartbeats.mcp_ready`
+/// (2-part defaults to the `public` schema) or `public.t.c` (3-part).
+pub fn parse_column_entry(entry: &str) -> Result<ColumnAbi, String> {
+    let entry = entry.trim();
+    if entry.contains('\'') || entry.contains('"') {
+        return Err(format!("column entry `{entry}` must not contain quote characters"));
+    }
+    let parts: Vec<&str> = entry.split('.').collect();
+    let (schema, table, column) = match parts.as_slice() {
+        [table, column] => ("public".to_owned(), (*table).to_owned(), (*column).to_owned()),
+        [schema, table, column] => ((*schema).to_owned(), (*table).to_owned(), (*column).to_owned()),
+        _ => return Err(format!("column entry `{entry}` must be table.column or schema.table.column")),
+    };
+    if table.is_empty() || column.is_empty() {
+        return Err(format!("column entry `{entry}` has empty table or column"));
+    }
+    Ok(ColumnAbi {
+        schema: schema.to_owned(),
+        table,
+        column,
+    })
+}
+
+impl ColumnAbi {
+    pub fn sql(&self) -> String {
+        format!(
+            "select count(*) from information_schema.columns where table_schema = '{}' and table_name = '{}' and column_name = '{}'",
+            self.schema, self.table, self.column
+        )
+    }
+
+    pub fn expected_output(&self) -> String {
+        "1".to_owned()
+    }
+}
+
+/// Deep healthz observation parsed from the probe output. `None` when the
+/// payload did not return JSON (the probe's own exit status already
+/// enforced the contract in that case).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepHealthObservation {
+    pub status: Option<String>,
+    pub deployment_id: Option<String>,
+    pub admission: Option<String>,
+}
+
+pub fn parse_deep_health(stdout: &str) -> Option<DeepHealthObservation> {
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+    let string = |key: &str| value.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    Some(DeepHealthObservation {
+        status: string("status"),
+        deployment_id: string("deployment_id"),
+        admission: value
+            .get("checks")
+            .and_then(|checks| checks.get("agent_v1"))
+            .and_then(|agent| agent.get("admission"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Remote topology and ssh payloads
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTopology {
+    pub ssh_host: String,
+    pub remote_front_dir: String,
+    pub compose_project: String,
+}
+
+/// Resolve the remote deployment topology. `Ok(None)` = local-only target.
+/// An ssh host without `remote_front_dir` fails closed.
+pub fn resolve_remote_topology(target: &TargetFile) -> Result<Option<RemoteTopology>, String> {
+    let Some(ssh_host) = target.ssh_host.as_deref() else {
+        return Ok(None);
+    };
+    let remote_front_dir = target.remote_front_dir.as_deref().ok_or_else(|| {
+        "target records an ssh_host but no remote_front_dir; remote admission/activation cannot run".to_owned()
+    })?;
+    let compose_project = target.compose_project.clone().unwrap_or_else(|| {
+        PathBuf::from(remote_front_dir)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| remote_front_dir.to_owned())
+    });
+    Ok(Some(RemoteTopology {
+        ssh_host: ssh_host.to_owned(),
+        remote_front_dir: remote_front_dir.to_owned(),
+        compose_project,
+    }))
+}
+
+fn compose_prefix(topology: &RemoteTopology, env_file_shell_var: &str, release_id: &str) -> String {
+    format!(
+        "FRONT_DIR='{front}' NEXT_PUBLIC_APP_VERSION='{id}' docker compose --project-name '{project}' --project-directory '{front}' --env-file {env} -f '{front}/docker-compose.yml'",
+        front = topology.remote_front_dir,
+        id = release_id,
+        project = topology.compose_project,
+        env = env_file_shell_var,
+    )
+}
+
+fn active_env_snippet(front_dir: &str) -> String {
+    format!(
+        "e='{front}/.env'\nif [ -f '{front}/.simple-deploy/current/runtime.env' ]; then e='{front}/.simple-deploy/current/runtime.env'; fi",
+        front = front_dir
+    )
+}
+
+fn upsert_snippet(key: &str, value: &str) -> String {
+    format!(
+        "t=$(mktemp \"${{e}}.XXXXXX\")\nawk -v key={key} -v value={value} '$0 !~ /^[[:space:]]*#/ && $0 ~ (\"^\" key \"=\") {{ if (!seen++) print key \"=\" value; next }} {{ print }} END {{ if (!seen) print key \"=\" value }}' \"$e\" > \"$t\" && chmod 600 \"$t\" && mv \"$t\" \"$e\""
+    )
+}
+
+/// Read `KRW_AGENT_ADMISSION_MODE` from the active release runtime.env
+/// (legacy `value_of` awk logic, `tail -n 1`).
+pub fn payload_read_previous_admission(topology: &RemoteTopology) -> String {
+    format!(
+        "{}\nawk -F= -v key={key} '$0 !~ /^[[:space:]]*#/ && $1 == key {{ sub(/^[^=]*=/, \"\"); gsub(/^[[:space:]]+|[[:space:]]+$/, \"\"); print }}' \"$e\" | tail -n 1",
+        active_env_snippet(&topology.remote_front_dir),
+        key = ADMISSION_ENV_KEY,
+    )
+}
+
+/// Upsert admission to `closed` and recreate web + outbox, then nothing else
+/// (health verification is a separate command).
+pub fn payload_close_admission(topology: &RemoteTopology) -> String {
+    format!(
+        "{}\n{}\n{} up -d --no-deps --force-recreate --wait web agent-v1-outbox",
+        active_env_snippet(&topology.remote_front_dir),
+        upsert_snippet(ADMISSION_ENV_KEY, "closed"),
+        compose_prefix(topology, "\"$e\"", "unused"),
+    )
+}
+
+/// In-container `GET /api/healthz` expecting `status == "ok"`.
+pub fn payload_verify_healthz(topology: &RemoteTopology) -> String {
+    format!(
+        "{prefix} exec -T web node -e 'fetch(\"http://127.0.0.1:3000/api/healthz\").then(async r => {{ const v = await r.json().catch(() => null); if (!r.ok || v?.status !== \"ok\") process.exit(1); }}).catch(() => process.exit(1));'",
+        prefix = compose_prefix(topology, "'unused-env'", "unused"),
+    )
+}
+
+/// Recreate the public web stack (web + outbox + the unconditional market
+/// workers of the legacy activation).
+pub fn payload_remote_web_up(topology: &RemoteTopology) -> String {
+    format!(
+        "{prefix} up -d --force-recreate --wait web agent-v1-outbox market-web-source-worker market-issue-enrichment-worker",
+        prefix = compose_prefix(topology, "'$e'", "unused"),
+    )
+}
+
+/// In-container healthz expecting `deployment_id == release id`; prints the
+/// compact observation JSON for the controller to double-check.
+pub fn payload_remote_web_healthz(topology: &RemoteTopology, release_id: &str) -> String {
+    format!(
+        "{prefix} exec -T -e EXPECTED_RELEASE_ID='{id}' web node -e 'fetch(\"http://127.0.0.1:3000/api/healthz\").then(async r => {{ const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.EXPECTED_RELEASE_ID) process.exit(1); }}).catch(() => process.exit(1));'",
+        prefix = compose_prefix(topology, "'unused-env'", "unused"),
+        id = release_id,
+    )
+}
+
+/// Deep health with the internal-key headers the production proxy supplies;
+/// enforces `deployment_id == release id` and prints the observation JSON.
+pub fn payload_remote_web_deep(topology: &RemoteTopology, release_id: &str) -> String {
+    format!(
+        "{prefix} exec -T web node -e 'const headers = {{ \"x-internal-key\": process.env.{internal} || \"\", \"x-krw-client-ip\": \"127.0.0.1\" }}; fetch(\"http://127.0.0.1:3000/api/healthz/deep\", {{ headers }}).then(async r => {{ let v = null; try {{ v = await r.json(); }} catch {{}} process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.{version}) process.exit(1); }}).catch(() => process.exit(1));'",
+        prefix = compose_prefix(topology, "'unused-env'", release_id),
+        internal = INTERNAL_API_KEY_ENV_KEY,
+        version = "NEXT_PUBLIC_APP_VERSION",
+    )
+}
+
+/// Upsert admission to `open` and recreate web + outbox.
+pub fn payload_open_admission(topology: &RemoteTopology) -> String {
+    format!(
+        "{}\n{}\n{} up -d --no-deps --force-recreate --wait web agent-v1-outbox",
+        active_env_snippet(&topology.remote_front_dir),
+        upsert_snippet(ADMISSION_ENV_KEY, "open"),
+        compose_prefix(topology, "\"$e\"", "unused"),
+    )
+}
+
+/// Deep health expecting `checks.agent_v1.admission == expected`; prints
+/// the observation JSON for the controller to double-check.
+pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, expected: &str) -> String {
+    format!(
+        "{prefix} exec -T web node -e 'const expected = process.argv[1]; const headers = {{ \"x-internal-key\": process.env.{internal} || \"\", \"x-krw-client-ip\": \"127.0.0.1\" }}; fetch(\"http://127.0.0.1:3000/api/healthz/deep\", {{ headers }}).then(async r => {{ const v = await r.json().catch(() => null); process.stdout.write(JSON.stringify({{ status: v && v.status, deployment_id: v && v.deployment_id, admission: v && v.checks && v.checks.agent_v1 && v.checks.agent_v1.admission }})); if (!r.ok || !v || v.status !== \"ok\" || v.deployment_id !== process.env.{version} || v.checks.agent_v1.admission !== expected) process.exit(1); }}).catch(() => process.exit(1));' '{expected}'",
+        prefix = compose_prefix(topology, "'unused-env'", release_id),
+        internal = INTERNAL_API_KEY_ENV_KEY,
+        version = "NEXT_PUBLIC_APP_VERSION",
+        expected = expected,
+    )
+}
+
+fn ssh_command(stage: &'static str, id: &str, ssh_ms: u64, host: &str, payload: String, timeout_ms: u64) -> StageCommand {
+    let connect_seconds = (ssh_ms / 1000).max(1);
+    StageCommand::new(
+        stage,
+        id,
+        vec![
+            "ssh".to_owned(),
+            "-o".to_owned(),
+            "BatchMode=yes".to_owned(),
+            "-o".to_owned(),
+            format!("ConnectTimeout={connect_seconds}"),
+            host.to_owned(),
+            payload,
+        ],
+        Path::new("/"),
+        Vec::new(),
+        timeout_ms,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Command builders (pure; unit-tested for exact argv)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct PipelineDeps<'a> {
+    pub config: &'a DeployConfig,
+    pub config_path: &'a Path,
+    pub target: &'a TargetFile,
+    pub context: &'a RunContext,
+    /// `agent_head` recorded in the preflight receipt (drift guard target).
+    pub preflight_agent_head: &'a str,
+    pub now_unix_seconds: u64,
+}
+
+impl PipelineDeps<'_> {
+    fn release_id(&self) -> String {
+        format!("{}-{}", self.context.run_ts, self.context.run_id)
+    }
+
+    fn metrics_port_token(&self) -> String {
+        if runtime_env_has_key(&self.config.runtime_env, METRICS_PORT_ENV_KEY) {
+            env_placeholder(METRICS_PORT_ENV_KEY)
+        } else {
+            DEFAULT_METRICS_PORT.to_owned()
+        }
+    }
+}
+
+pub fn build_stage3_command(deps: &PipelineDeps<'_>) -> StageCommand {
+    StageCommand::new(
+        crate::stages::STAGE_BUILD,
+        "build.dual-provider-bundles",
+        vec![
+            "scripts/build_dual_provider_release.sh".to_owned(),
+            "--output-root".to_owned(),
+            deps.context.output_dir.display().to_string(),
+        ],
+        &deps.config.agent_source_root,
+        vec![RUNTIME_ENV_ALL.to_owned()],
+        BUILD_TIMEOUT_MS,
+    )
+}
+
+pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Vec<StageCommand> {
+    let output_dir = &deps.context.output_dir;
+    let provider = &deps.config.provider;
+    let bundle = output_dir.join(provider);
+    let config_root = deps.config.operator_root.join("config").join(provider);
+    let binding = config_root.join("deployment-binding.yaml");
+    let endpoints = config_root.join("endpoint-registry.yaml");
+    let registry = config_root.join("release-trust-registry.json");
+    let authorization_root = deps.config.operator_root.join("signing").join("releases").join(deps.release_id());
+    let authorization = authorization_root.join(format!("release-authorization-{provider}.json"));
+    let now = deps.now_unix_seconds;
+    vec![
+        StageCommand::new(
+            crate::stages::STAGE_SEAL,
+            "seal.prepare-production-candidate",
+            vec![
+                "scripts/prepare_production_candidate.sh".to_owned(),
+                "--provider".to_owned(),
+                provider.clone(),
+                "--bundle".to_owned(),
+                bundle.display().to_string(),
+                "--binding".to_owned(),
+                binding.display().to_string(),
+                "--endpoints".to_owned(),
+                endpoints.display().to_string(),
+            ],
+            &deps.config.agent_source_root,
+            vec![RUNTIME_ENV_ALL.to_owned()],
+            SEAL_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_SEAL,
+            "seal.sign-release-authorization",
+            vec![
+                bundle.join("bin/krw-agent").display().to_string(),
+                "release".to_owned(),
+                "sign".to_owned(),
+                "--descriptor".to_owned(),
+                bundle.join("public-release.json").display().to_string(),
+                "--private-key".to_owned(),
+                deps.config.operator_root.join("signing/release-private.pk8").display().to_string(),
+                "--key-id".to_owned(),
+                active_key_id.to_owned(),
+                "--sequence".to_owned(),
+                now.to_string(),
+                "--issued-at-unix-seconds".to_owned(),
+                now.to_string(),
+                "--expires-at-unix-seconds".to_owned(),
+                (now + AUTHORIZATION_TTL_SECONDS).to_string(),
+                "--runtime-version".to_owned(),
+                RUNTIME_VERSION.to_owned(),
+                "--kernel-version".to_owned(),
+                KERNEL_VERSION.to_owned(),
+                "--out".to_owned(),
+                authorization.display().to_string(),
+            ],
+            &deps.config.agent_source_root,
+            vec![RUNTIME_ENV_ALL.to_owned()],
+            SEAL_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_SEAL,
+            "seal.seal-production-candidate",
+            vec![
+                "scripts/seal_production_candidate.sh".to_owned(),
+                "--provider".to_owned(),
+                provider.clone(),
+                "--candidate".to_owned(),
+                bundle.display().to_string(),
+                "--authorization".to_owned(),
+                authorization.display().to_string(),
+                "--trust-registry".to_owned(),
+                registry.display().to_string(),
+            ],
+            &deps.config.agent_source_root,
+            vec![RUNTIME_ENV_ALL.to_owned()],
+            SEAL_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_SEAL,
+            "seal.finalize-dual-release",
+            vec![
+                "scripts/finalize_dual_provider_release.sh".to_owned(),
+                "--release-root".to_owned(),
+                output_dir.display().to_string(),
+            ],
+            &deps.config.agent_source_root,
+            vec![RUNTIME_ENV_ALL.to_owned()],
+            SEAL_TIMEOUT_MS,
+        ),
+    ]
+}
+
+pub fn build_stage5_commands(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
+    let image = format!(
+        "{}-web:latest",
+        deps.config
+            .frontend_source_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "krw-ontology-front".to_owned())
+    );
+    vec![
+        StageCommand::new(
+            crate::stages::STAGE_FRONTEND_IMAGE_PREPARE,
+            "frontend-image.build-web",
+            vec!["docker".to_owned(), "compose".to_owned(), "build".to_owned(), "web".to_owned()],
+            &deps.config.frontend_source_root,
+            vec![RUNTIME_ENV_ALL.to_owned()],
+            IMAGE_BUILD_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_FRONTEND_IMAGE_PREPARE,
+            "frontend-image.inspect-digest",
+            vec![
+                "docker".to_owned(),
+                "image".to_owned(),
+                "inspect".to_owned(),
+                image,
+                "--format".to_owned(),
+                "{{.Id}}".to_owned(),
+            ],
+            &deps.config.frontend_source_root,
+            Vec::new(),
+            IMAGE_INSPECT_TIMEOUT_MS,
+        ),
+    ]
+}
+
+fn supabase_cli_path(deps: &PipelineDeps<'_>) -> String {
+    deps.config.frontend_source_root.join("scripts/supabase-cli.sh").display().to_string()
+}
+
+pub fn build_stage6_command(deps: &PipelineDeps<'_>) -> StageCommand {
+    StageCommand::new(
+        crate::stages::STAGE_MIGRATIONS,
+        "migrations.db-push-dry-run",
+        vec![
+            supabase_cli_path(deps),
+            "db".to_owned(),
+            "push".to_owned(),
+            "--dry-run".to_owned(),
+        ],
+        &deps.config.frontend_source_root,
+        vec![RUNTIME_ENV_ALL.to_owned()],
+        DB_DRY_RUN_TIMEOUT_MS,
+    )
+}
+
+pub fn build_db_push_command(deps: &PipelineDeps<'_>) -> StageCommand {
+    StageCommand::new(
+        crate::stages::STAGE_ADMISSION_CLOSE,
+        "migrations.db-push",
+        vec![supabase_cli_path(deps), "db".to_owned(), "push".to_owned()],
+        &deps.config.frontend_source_root,
+        vec![RUNTIME_ENV_ALL.to_owned()],
+        DB_PUSH_TIMEOUT_MS,
+    )
+}
+
+pub fn build_abi_command(deps: &PipelineDeps<'_>, id: &str, sql: &str) -> StageCommand {
+    let handle = deps
+        .target
+        .db_url_env
+        .clone()
+        .unwrap_or_else(|| "KRW_AGENT_DB_URL".to_owned());
+    StageCommand::new(
+        crate::stages::STAGE_ADMISSION_CLOSE,
+        id,
+        vec![
+            "psql".to_owned(),
+            env_placeholder(&handle),
+            "-tA".to_owned(),
+            "-v".to_owned(),
+            "ON_ERROR_STOP=1".to_owned(),
+            "-c".to_owned(),
+            sql.to_owned(),
+        ],
+        &deps.config.operator_root,
+        vec![handle],
+        PSQL_TIMEOUT_MS,
+    )
+}
+
+pub fn build_admission_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+    let ssh_ms = deps.config.timeouts.ssh_ms;
+    vec![
+        ssh_command(
+            crate::stages::STAGE_ADMISSION_CLOSE,
+            "admission.read-previous",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_read_previous_admission(topology),
+            SSH_QUICK_TIMEOUT_MS,
+        ),
+        ssh_command(
+            crate::stages::STAGE_ADMISSION_CLOSE,
+            "admission.close",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_close_admission(topology),
+            SSH_COMPOSE_TIMEOUT_MS,
+        ),
+        ssh_command(
+            crate::stages::STAGE_ADMISSION_CLOSE,
+            "admission.verify-closed",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_verify_healthz(topology),
+            SSH_QUICK_TIMEOUT_MS,
+        ),
+    ]
+}
+
+fn local_compose_recreate(deps: &PipelineDeps<'_>, id: &str, stage: &'static str) -> StageCommand {
+    StageCommand::new(
+        stage,
+        id,
+        vec![
+            "docker".to_owned(),
+            "compose".to_owned(),
+            "--project-directory".to_owned(),
+            deps.config.frontend_source_root.display().to_string(),
+            "--env-file".to_owned(),
+            deps.config.runtime_env.display().to_string(),
+            "up".to_owned(),
+            "-d".to_owned(),
+            "--no-deps".to_owned(),
+            "--force-recreate".to_owned(),
+            "--wait".to_owned(),
+            "web".to_owned(),
+            "agent-v1-outbox".to_owned(),
+        ],
+        &deps.config.frontend_source_root,
+        Vec::new(),
+        SSH_COMPOSE_TIMEOUT_MS,
+    )
+}
+
+pub fn build_admission_commands_local(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
+    vec![
+        local_compose_recreate(deps, "admission.close-local", crate::stages::STAGE_ADMISSION_CLOSE),
+        StageCommand::new(
+            crate::stages::STAGE_ADMISSION_CLOSE,
+            "admission.verify-closed-local",
+            vec![
+                "curl".to_owned(),
+                "-fsS".to_owned(),
+                "--max-time".to_owned(),
+                seconds_from_ms(deps.config.timeouts.public_ready_ms),
+                format!("{LOCAL_WEB_BASE_URL}/api/healthz"),
+            ],
+            &deps.config.operator_root,
+            Vec::new(),
+            deps.config.timeouts.public_ready_ms,
+        ),
+    ]
+}
+
+pub fn build_stage8_commands(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
+    let provider = &deps.config.provider;
+    let launchd = deps
+        .context
+        .output_dir
+        .join(provider)
+        .join("packaging/launchd");
+    let agentd = launchd.join("install-local-mac-agentd-release.sh");
+    let capabilityd = launchd.join("install-local-mac-capabilityd-release.sh");
+    let release_id = deps.release_id();
+    let mut agentd_activate_argv = vec![
+        agentd.display().to_string(),
+        "--mode".to_owned(),
+        "activate".to_owned(),
+        "--release-id".to_owned(),
+        release_id.clone(),
+        "--provider".to_owned(),
+        provider.clone(),
+        "--env-file".to_owned(),
+        deps.config.runtime_env.display().to_string(),
+    ];
+    if runtime_env_has_key(&deps.config.runtime_env, METRICS_PORT_ENV_KEY) {
+        agentd_activate_argv.push("--metrics-port".to_owned());
+        agentd_activate_argv.push(env_placeholder(METRICS_PORT_ENV_KEY));
+    }
+    vec![
+        StageCommand::new(
+            crate::stages::STAGE_LOCAL_ACTIVATION,
+            "activation.agentd-stage",
+            vec![
+                agentd.display().to_string(),
+                "--mode".to_owned(),
+                "stage".to_owned(),
+                "--release-root".to_owned(),
+                deps.context.output_dir.display().to_string(),
+                "--release-id".to_owned(),
+                release_id.clone(),
+                "--provider".to_owned(),
+                provider.clone(),
+            ],
+            &deps.config.agent_source_root,
+            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            INSTALL_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_LOCAL_ACTIVATION,
+            "activation.capabilityd-activate",
+            vec![
+                capabilityd.display().to_string(),
+                "--mode".to_owned(),
+                "activate".to_owned(),
+                "--release-id".to_owned(),
+                release_id.clone(),
+                "--provider".to_owned(),
+                provider.clone(),
+                "--operator-root".to_owned(),
+                deps.config.operator_root.display().to_string(),
+            ],
+            &deps.config.agent_source_root,
+            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            INSTALL_TIMEOUT_MS,
+        ),
+        StageCommand::new(
+            crate::stages::STAGE_LOCAL_ACTIVATION,
+            "activation.agentd-activate",
+            agentd_activate_argv,
+            &deps.config.agent_source_root,
+            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()],
+            INSTALL_TIMEOUT_MS,
+        ),
+    ]
+}
+
+pub fn build_stage9_commands(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+    let ssh_ms = deps.config.timeouts.ssh_ms;
+    vec![
+        ssh_command(
+            crate::stages::STAGE_REMOTE_ACTIVATION,
+            "remote.web-up",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_remote_web_up(topology),
+            SSH_COMPOSE_TIMEOUT_MS,
+        ),
+        ssh_command(
+            crate::stages::STAGE_REMOTE_ACTIVATION,
+            "readiness.remote-web-healthz",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_remote_web_healthz(topology, &deps.release_id()),
+            SSH_QUICK_TIMEOUT_MS,
+        ),
+    ]
+}
+
+pub fn build_daemon_metrics_command(deps: &PipelineDeps<'_>) -> StageCommand {
+    StageCommand::new(
+        crate::stages::STAGE_DEEP_READINESS,
+        "readiness.daemon-metrics",
+        vec![
+            "curl".to_owned(),
+            "-fsS".to_owned(),
+            "--max-time".to_owned(),
+            seconds_from_ms(deps.config.timeouts.daemon_ready_ms),
+            format!("http://127.0.0.1:{}/metrics", deps.metrics_port_token()),
+        ],
+        &deps.config.operator_root,
+        Vec::new(),
+        deps.config.timeouts.daemon_ready_ms,
+    )
+}
+
+pub fn build_mcp_probe(index: usize, endpoint: &str, mcp_ms: u64) -> Result<TcpProbe, String> {
+    let Some((host, port)) = parse_host_port(endpoint) else {
+        return Err(format!("mcp endpoint `{endpoint}` must be `host:port`"));
+    };
+    Ok(TcpProbe {
+        stage: crate::stages::STAGE_DEEP_READINESS,
+        id: format!("readiness.mcp-tcp-{index}"),
+        host,
+        port,
+        timeout_ms: mcp_ms,
+    })
+}
+
+pub fn build_mcp_ready_command(deps: &PipelineDeps<'_>, index: usize, endpoint: &str) -> Result<StageCommand, String> {
+    let Some((host, port)) = parse_host_port(endpoint) else {
+        return Err(format!("mcp endpoint `{endpoint}` must be `host:port`"));
+    };
+    let scheme = if is_loopback_host(&host) { "http" } else { "https" };
+    Ok(StageCommand::new(
+        crate::stages::STAGE_DEEP_READINESS,
+        &format!("readiness.mcp-ready-{index}"),
+        vec![
+            "curl".to_owned(),
+            "-fsS".to_owned(),
+            "--max-time".to_owned(),
+            seconds_from_ms(deps.config.timeouts.mcp_ms),
+            format!("{scheme}://{host}:{port}/readyz"),
+        ],
+        &deps.config.operator_root,
+        Vec::new(),
+        deps.config.timeouts.mcp_ms,
+    ))
+}
+
+pub fn build_web_deep_command_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> StageCommand {
+    ssh_command(
+        crate::stages::STAGE_DEEP_READINESS,
+        "readiness.web-deep",
+        deps.config.timeouts.ssh_ms,
+        &topology.ssh_host,
+        payload_remote_web_deep(topology, &deps.release_id()),
+        deps.config.timeouts.public_ready_ms.max(SSH_QUICK_TIMEOUT_MS),
+    )
+}
+
+pub fn build_web_deep_command_local(deps: &PipelineDeps<'_>) -> StageCommand {
+    StageCommand::new(
+        crate::stages::STAGE_DEEP_READINESS,
+        "readiness.web-deep",
+        vec![
+            "curl".to_owned(),
+            "-fsS".to_owned(),
+            "--max-time".to_owned(),
+            seconds_from_ms(deps.config.timeouts.public_ready_ms),
+            "-H".to_owned(),
+            format!("x-internal-key: {}", env_placeholder(INTERNAL_API_KEY_ENV_KEY)),
+            "-H".to_owned(),
+            "x-krw-client-ip: 127.0.0.1".to_owned(),
+            format!("{LOCAL_WEB_BASE_URL}/api/healthz/deep"),
+        ],
+        &deps.config.operator_root,
+        vec![INTERNAL_API_KEY_ENV_KEY.to_owned()],
+        deps.config.timeouts.public_ready_ms,
+    )
+}
+
+pub fn build_db_heartbeat_command(deps: &PipelineDeps<'_>) -> Option<StageCommand> {
+    let handle = deps.target.db_url_env.as_deref()?;
+    Some(StageCommand::new(
+        crate::stages::STAGE_DEEP_READINESS,
+        "readiness.db-heartbeat",
+        vec![
+            "psql".to_owned(),
+            env_placeholder(handle),
+            "-tA".to_owned(),
+            "-v".to_owned(),
+            "ON_ERROR_STOP=1".to_owned(),
+            "-c".to_owned(),
+            "select provider, descriptor_artifact_hash, release_set_hash, mcp_ready from public.agent_v1_daemon_heartbeats order by heartbeat_expires_at desc, last_seen_at desc limit 1".to_owned(),
+        ],
+        &deps.config.operator_root,
+        vec![handle.to_owned()],
+        PSQL_TIMEOUT_MS,
+    ))
+}
+
+pub fn build_admission_open_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+    let ssh_ms = deps.config.timeouts.ssh_ms;
+    vec![
+        ssh_command(
+            crate::stages::STAGE_ADMISSION_OPEN,
+            "admission.open",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_open_admission(topology),
+            SSH_COMPOSE_TIMEOUT_MS,
+        ),
+        ssh_command(
+            crate::stages::STAGE_ADMISSION_OPEN,
+            "readiness.admission-open-verify",
+            ssh_ms,
+            &topology.ssh_host,
+            payload_verify_admission(topology, &deps.release_id(), "open"),
+            SSH_QUICK_TIMEOUT_MS,
+        ),
+    ]
+}
+
+pub fn build_admission_open_commands_local(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
+    vec![
+        local_compose_recreate(deps, "admission.open-local", crate::stages::STAGE_ADMISSION_OPEN),
+        StageCommand::new(
+            crate::stages::STAGE_ADMISSION_OPEN,
+            "readiness.admission-open-verify-local",
+            vec![
+                "curl".to_owned(),
+                "-fsS".to_owned(),
+                "--max-time".to_owned(),
+                seconds_from_ms(deps.config.timeouts.public_ready_ms),
+                "-H".to_owned(),
+                format!("x-internal-key: {}", env_placeholder(INTERNAL_API_KEY_ENV_KEY)),
+                "-H".to_owned(),
+                "x-krw-client-ip: 127.0.0.1".to_owned(),
+                format!("{LOCAL_WEB_BASE_URL}/api/healthz/deep"),
+            ],
+            &deps.config.operator_root,
+            vec![INTERNAL_API_KEY_ENV_KEY.to_owned()],
+            deps.config.timeouts.public_ready_ms,
+        ),
+    ]
+}
+
+fn seconds_from_ms(millis: u64) -> String {
+    (millis / 1000).max(1).to_string()
+}
+
+fn parse_host_port(endpoint: &str) -> Option<(String, u16)> {
+    let endpoint = endpoint.trim();
+    let authority = endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint);
+    let authority = authority.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some((host.to_owned(), port))
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline driver
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+struct PipelineState {
+    descriptor_sha256: Option<String>,
+    frontend_image_digest: Option<String>,
+    applied_migrations: Vec<String>,
+    previous_admission: Option<String>,
+    skipped: Vec<SkippedRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineOutcome {
+    pub success: bool,
+    pub failed_stage: Option<&'static str>,
+    pub reason: Option<String>,
+    pub admission: TerminalAdmission,
+    pub artifacts: Option<DeployArtifacts>,
+    pub skipped: Vec<SkippedRecord>,
+}
+
+struct StageCtx<'a> {
+    deps: &'a PipelineDeps<'a>,
+    state: &'a mut PipelineState,
+    receipt: StageReceipt,
+}
+
+impl StageCtx<'_> {
+    fn command(&mut self, executor: &dyn StageExecutor, spec: StageCommand) -> Result<String, String> {
+        let result = executor.execute(&self.deps.config.runtime_env, &spec);
+        let outcome = if result.is_ok() { "pass" } else { "fail" };
+        self.receipt.commands.push(StageCommandRecord {
+            id: spec.id.clone(),
+            stage: spec.stage.to_owned(),
+            argv: spec.argv,
+            cwd: spec.cwd.display().to_string(),
+            env_keys_used: spec.env_keys_used,
+            timeout_ms: spec.timeout_ms,
+            outcome: outcome.to_owned(),
+        });
+        result.map(|output| output.stdout).map_err(|error| format!("command `{}` failed: {error}", spec.id))
+    }
+
+    fn probe(&mut self, executor: &dyn StageExecutor, probe: TcpProbe) -> Result<(), String> {
+        let result = executor.tcp_connect(&probe);
+        let outcome = if result.is_ok() { "pass" } else { "fail" };
+        self.receipt.probes.push(TcpProbeRecord {
+            id: probe.id.clone(),
+            stage: probe.stage.to_owned(),
+            host: probe.host,
+            port: probe.port,
+            timeout_ms: probe.timeout_ms,
+            outcome: outcome.to_owned(),
+        });
+        result.map_err(|error| format!("probe `{}` failed: {error}", probe.id))
+    }
+
+    fn note(&mut self, text: String) {
+        self.receipt.notes.push(text);
+    }
+}
+
+fn stage_table_index(id: &str) -> u8 {
+    STAGE_TABLE
+        .iter()
+        .position(|entry| entry.id == id)
+        .map(|position| (position + 1) as u8)
+        .unwrap_or(0)
+}
+
+/// Re-verify the preflight receipt's agent HEAD and config hash before a
+/// mutating stage (05: build/activate stages reject drift after the receipt).
+fn verify_no_drift(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let head = executor
+        .git_head(&deps.config.agent_source_root)
+        .map_err(|error| format!("agent HEAD re-read failed: {error}"))?;
+    if head != deps.preflight_agent_head {
+        return Err(format!(
+            "agent HEAD drifted since the preflight receipt (preflight {preflight}, now {head}); refusing to mutate",
+            preflight = deps.preflight_agent_head
+        ));
+    }
+    let config_hash = sha256_file(deps.config_path)
+        .map_err(|error| format!("config re-hash failed: {error}"))?;
+    if config_hash != deps.context.config_sha256 {
+        return Err(format!(
+            "config sha256 drifted since the preflight receipt (preflight {preflight}, now {config_hash}); refusing to mutate",
+            preflight = deps.context.config_sha256
+        ));
+    }
+    Ok(())
+}
+
+/// Execute stages 3-12. Writes one immutable stage receipt per stage into
+/// the run's receipt dir and returns the outcome for the terminal receipt.
+pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor) -> PipelineOutcome {
+    let mut state = PipelineState::default();
+    for entry in STAGE_TABLE.iter().skip(2) {
+        let index = stage_table_index(entry.id);
+        if (6..=11).contains(&index) {
+            if let Err(reason) = verify_no_drift(deps, executor) {
+                let mut receipt = new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Fail);
+                receipt.reason = Some(reason.clone());
+                let _ = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt);
+                return failure_outcome(deps, &state, entry.id, index, reason);
+            }
+        }
+        if entry.id == crate::stages::STAGE_REMOTE_ACTIVATION && deps.target.ssh_host.is_none() {
+            state.skipped.push(SkippedRecord {
+                stage: entry.id.to_owned(),
+                operation: None,
+                reason: LOCAL_ONLY_SKIP_REASON.to_owned(),
+            });
+            let mut receipt = new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Skipped);
+            receipt.reason = Some(LOCAL_ONLY_SKIP_REASON.to_owned());
+            if let Err(error) = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt) {
+                return failure_outcome(deps, &state, entry.id, index, format!("stage receipt write failed: {error}"));
+            }
+            continue;
+        }
+        let mut ctx = StageCtx {
+            deps,
+            state: &mut state,
+            receipt: new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Pass),
+        };
+        let result = match entry.id {
+            crate::stages::STAGE_BUILD => stage_build(&mut ctx, executor),
+            crate::stages::STAGE_SEAL => stage_seal(&mut ctx, executor),
+            crate::stages::STAGE_FRONTEND_IMAGE_PREPARE => stage_frontend_image(&mut ctx, executor),
+            crate::stages::STAGE_MIGRATIONS => stage_migrations_dry_run(&mut ctx, executor),
+            crate::stages::STAGE_ADMISSION_CLOSE => stage_admission_close(&mut ctx, executor),
+            crate::stages::STAGE_LOCAL_ACTIVATION => stage_local_activation(&mut ctx, executor),
+            crate::stages::STAGE_REMOTE_ACTIVATION => stage_remote_activation(&mut ctx, executor),
+            crate::stages::STAGE_DEEP_READINESS => stage_deep_readiness(&mut ctx, executor),
+            crate::stages::STAGE_ADMISSION_OPEN => stage_admission_open(&mut ctx, executor),
+            crate::stages::STAGE_TERMINAL_SUCCESS_RECEIPT => Ok(()),
+            other => unreachable!("stage table declared unknown stage `{other}`"),
+        };
+        match result {
+            Ok(()) => {
+                if let Err(error) = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &ctx.receipt) {
+                    let StageCtx { .. } = ctx;
+                    return failure_outcome(deps, &state, entry.id, index, format!("stage receipt write failed: {error}"));
+                }
+            }
+            Err(reason) => {
+                // End the ctx borrow, then record the failure with the
+                // stage's executed commands (status `fail`, write-once).
+                let StageCtx { receipt, .. } = ctx;
+                let mut receipt = receipt;
+                receipt.status = StageReceiptStatus::Fail.as_str().to_owned();
+                receipt.reason = Some(reason.clone());
+                let _ = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt);
+                return failure_outcome(deps, &state, entry.id, index, reason);
+            }
+        }
+    }
+    PipelineOutcome {
+        success: true,
+        failed_stage: None,
+        reason: None,
+        admission: TerminalAdmission::Open,
+        artifacts: Some(DeployArtifacts {
+            release_dir: deps.context.output_dir.display().to_string(),
+            release_id: deps.release_id(),
+            descriptor_sha256: state.descriptor_sha256.clone().unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
+            frontend_image_digest: state
+                .frontend_image_digest
+                .clone()
+                .unwrap_or_else(|| "<unavailable>".to_owned()),
+            applied_migrations: state.applied_migrations.clone(),
+            previous_admission: state.previous_admission.clone().unwrap_or_else(|| "unknown".to_owned()),
+        }),
+        skipped: state.skipped.clone(),
+    }
+}
+
+fn new_receipt(
+    deps: &PipelineDeps<'_>,
+    executor: &dyn StageExecutor,
+    index: u8,
+    stage: &str,
+    status: StageReceiptStatus,
+) -> StageReceipt {
+    StageReceipt::new(
+        &deps.context.run_id,
+        &deps.context.created_at_utc,
+        deps.context.mode.as_str(),
+        executor.kind(),
+        index,
+        stage,
+        status,
+    )
+}
+
+fn failure_outcome(
+    deps: &PipelineDeps<'_>,
+    state: &PipelineState,
+    stage: &'static str,
+    index: u8,
+    reason: String,
+) -> PipelineOutcome {
+    // Admission posture: not-touched before `admission_close` (nothing
+    // mutated), closed from `admission_close` onward (05 failure policy).
+    let admission = if index >= stage_table_index(crate::stages::STAGE_ADMISSION_CLOSE) {
+        TerminalAdmission::Closed
+    } else {
+        TerminalAdmission::NotTouched
+    };
+    PipelineOutcome {
+        success: false,
+        failed_stage: Some(stage),
+        reason: Some(reason),
+        admission,
+        artifacts: partial_artifacts(deps, state),
+        skipped: state.skipped.clone(),
+    }
+}
+
+fn partial_artifacts(deps: &PipelineDeps<'_>, state: &PipelineState) -> Option<DeployArtifacts> {
+    if state.descriptor_sha256.is_none()
+        && state.frontend_image_digest.is_none()
+        && state.previous_admission.is_none()
+        && state.applied_migrations.is_empty()
+    {
+        return None;
+    }
+    Some(DeployArtifacts {
+        release_dir: deps.context.output_dir.display().to_string(),
+        release_id: deps.release_id(),
+        descriptor_sha256: state.descriptor_sha256.clone().unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
+        frontend_image_digest: state
+            .frontend_image_digest
+            .clone()
+            .unwrap_or_else(|| "<unavailable>".to_owned()),
+        applied_migrations: state.applied_migrations.clone(),
+        previous_admission: state.previous_admission.clone().unwrap_or_else(|| "unknown".to_owned()),
+    })
+}
+
+// --- individual stage runners ----------------------------------------------
+
+fn stage_build(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    ctx.command(executor, build_stage3_command(ctx.deps))?;
+    for provider in ["glm", "deepseek"] {
+        let descriptor = ctx.deps.context.output_dir.join(provider).join("public-release.json");
+        if !descriptor.is_file() {
+            return Err(format!(
+                "build did not produce the {provider} bundle descriptor at {}",
+                descriptor.display()
+            ));
+        }
+    }
+    ctx.note(format!(
+        "dual-provider bundles built under {}",
+        ctx.deps.context.output_dir.display()
+    ));
+    Ok(())
+}
+
+fn stage_seal(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let provider = ctx.deps.config.provider.clone();
+    let config_root = ctx.deps.config.operator_root.join("config").join(&provider);
+    let registry = config_root.join("release-trust-registry.json");
+    for required in [
+        config_root.join("deployment-binding.yaml"),
+        config_root.join("endpoint-registry.yaml"),
+        registry.clone(),
+    ] {
+        if !required.is_file() {
+            return Err(format!(
+                "operator configuration for provider `{provider}` is missing or unsafe: {}",
+                required.display()
+            ));
+        }
+    }
+    let registry_bytes = std::fs::read(&registry).map_err(|error| format!("{}: {error}", registry.display()))?;
+    let active_key_id = resolve_active_key_id(&registry_bytes, ctx.deps.now_unix_seconds)?;
+    ctx.note(format!("resolved active signing key `{active_key_id}` for provider `{provider}`"));
+
+    let authorization_root = ctx
+        .deps
+        .config
+        .operator_root
+        .join("signing")
+        .join("releases")
+        .join(ctx.deps.release_id());
+    std::fs::create_dir_all(&authorization_root)
+        .map_err(|error| format!("{}: {error}", authorization_root.display()))?;
+
+    for spec in build_stage4_commands(ctx.deps, &active_key_id) {
+        ctx.command(executor, spec)?;
+    }
+    let descriptor = ctx
+        .deps
+        .context
+        .output_dir
+        .join(&provider)
+        .join("public-release.json");
+    let descriptor_hash = sha256_file(&descriptor).map_err(|error| format!("descriptor hash failed: {error}"))?;
+    ctx.state.descriptor_sha256 = Some(descriptor_hash.clone());
+    ctx.note(format!("sealed provider `{provider}`; descriptor {descriptor_hash}"));
+    Ok(())
+}
+
+fn stage_frontend_image(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let mut commands = build_stage5_commands(ctx.deps).into_iter();
+    let build_spec = commands.next().expect("web build command");
+    ctx.command(executor, build_spec)?;
+    let digest_spec = commands.next().expect("image digest command");
+    let stdout = ctx.command(executor, digest_spec)?;
+    if stdout.is_empty() {
+        return Err("frontend image digest inspection returned an empty image id".to_owned());
+    }
+    ctx.state.frontend_image_digest = Some(stdout);
+    Ok(())
+}
+
+fn stage_migrations_dry_run(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    if ctx.deps.target.supabase_migration_plan.is_empty() {
+        ctx.note("target records no supabase migration plan; dry-run gate recorded only".to_owned());
+        return Ok(());
+    }
+    ctx.command(executor, build_stage6_command(ctx.deps))?;
+    ctx.note(format!(
+        "forward-only migration dry-run passed with {} planned entr{}; nothing applied before admission close",
+        ctx.deps.target.supabase_migration_plan.len(),
+        if ctx.deps.target.supabase_migration_plan.len() == 1 { "y" } else { "ies" }
+    ));
+    Ok(())
+}
+
+fn normalize_previous_admission(raw: &str) -> String {
+    match raw.trim() {
+        "open" | "closed" | "drain" | "canary" => raw.trim().to_owned(),
+        _ => "closed".to_owned(),
+    }
+}
+
+fn verify_deep_observation(observation: Option<DeepHealthObservation>, release_id: &str) -> Result<(), String> {
+    if let Some(observed) = observation {
+        if observed.status.as_deref() != Some("ok") {
+            return Err(format!("deep health reported status `{}`", observed.status.unwrap_or_default()));
+        }
+        if observed.deployment_id.as_deref() != Some(release_id) {
+            return Err(format!(
+                "deep health deployment_id `{}` does not match release `{release_id}`",
+                observed.deployment_id.unwrap_or_default()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn stage_admission_close(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let topology = resolve_remote_topology(ctx.deps.target)?;
+    let previous = match &topology {
+        Some(remote) => {
+            let mut commands = build_admission_commands_remote(ctx.deps, remote).into_iter();
+            let read_previous = commands.next().expect("admission.read-previous command");
+            let raw = ctx.command(executor, read_previous)?;
+            let close = commands.next().expect("admission.close command");
+            ctx.command(executor, close)?;
+            let verify = commands.next().expect("admission.verify-closed command");
+            ctx.command(executor, verify)?;
+            normalize_previous_admission(&raw)
+        }
+        None => {
+            ctx.state.skipped.push(SkippedRecord {
+                stage: crate::stages::STAGE_ADMISSION_CLOSE.to_owned(),
+                operation: Some("admission.read-previous".to_owned()),
+                reason: LOCAL_ONLY_SKIP_REASON.to_owned(),
+            });
+            let value = runtime_env_value(&ctx.deps.config.runtime_env, ADMISSION_ENV_KEY)
+                .unwrap_or_else(|_| "closed".to_owned());
+            upsert_env_value(&ctx.deps.config.runtime_env, ADMISSION_ENV_KEY, "closed")
+                .map_err(|error| format!("local admission upsert failed: {error}"))?;
+            let mut commands = build_admission_commands_local(ctx.deps).into_iter();
+            let close = commands.next().expect("admission.close-local command");
+            ctx.command(executor, close)?;
+            let verify = commands.next().expect("admission.verify-closed-local command");
+            let stdout = ctx.command(executor, verify)?;
+            let status_ok = serde_json::from_str::<serde_json::Value>(&stdout)
+                .ok()
+                .and_then(|value| value.get("status").and_then(serde_json::Value::as_str).map(str::to_owned))
+                == Some("ok".to_owned());
+            if !status_ok {
+                return Err("local gateway stack did not report healthz status ok after admission close".to_owned());
+            }
+            normalize_previous_admission(&value)
+        }
+    };
+    ctx.state.previous_admission = Some(previous.clone());
+    ctx.note(format!("captured previous {ADMISSION_ENV_KEY} `{previous}`"));
+
+    // 05 migration ordering rules 3-4: apply only now (admission is
+    // closed), verify the exact ABI immediately after the push.
+    if ctx.deps.target.supabase_migration_plan.is_empty() {
+        ctx.note("no supabase migration plan recorded; nothing to apply".to_owned());
+    } else {
+        let stdout = ctx.command(executor, build_db_push_command(ctx.deps))?;
+        let applied = parse_applied_migrations(&stdout);
+        ctx.note(format!(
+            "forward-only db push applied {} migration(s): {}",
+            applied.len(),
+            if applied.is_empty() { "(none pending)".to_owned() } else { applied.join(", ") }
+        ));
+        ctx.state.applied_migrations = applied;
+    }
+
+    let procedures = ctx.deps.contract_required_procedures();
+    let columns = ctx.deps.contract_required_columns();
+    if procedures.is_empty() && columns.is_empty() {
+        ctx.note("frontend contract pins no DB ABI lists; ABI verification recorded none".to_owned());
+        return Ok(());
+    }
+    if ctx.deps.target.db_url_env.is_none() {
+        return Err("DB ABI verification requires a db_url_env handle in the target file".to_owned());
+    }
+    for (index, entry) in procedures.iter().enumerate() {
+        let abi = parse_procedure_entry(entry)?;
+        let spec = build_abi_command(ctx.deps, &format!("{PROCEDURE_ABI_PREFIX}{index}"), &abi.sql());
+        let stdout = ctx.command(executor, spec)?;
+        if stdout != abi.expected_output() {
+            return Err(format!(
+                "procedure ABI verification failed for `{entry}`: expected `{}`, got `{stdout}`",
+                abi.expected_output()
+            ));
+        }
+        ctx.note(format!("procedure ABI verified: {entry}"));
+    }
+    for (index, entry) in columns.iter().enumerate() {
+        let abi = parse_column_entry(entry)?;
+        let spec = build_abi_command(ctx.deps, &format!("{COLUMN_ABI_PREFIX}{index}"), &abi.sql());
+        let stdout = ctx.command(executor, spec)?;
+        if stdout != abi.expected_output() {
+            return Err(format!(
+                "column ABI verification failed for `{entry}`: expected `{}`, got `{stdout}`",
+                abi.expected_output()
+            ));
+        }
+        ctx.note(format!("column ABI verified: {entry}"));
+    }
+    Ok(())
+}
+
+fn stage_local_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    for spec in build_stage8_commands(ctx.deps) {
+        ctx.command(executor, spec)?;
+    }
+    ctx.note(format!(
+        "local agentd + capabilityd activated for release `{}` (provider `{}`)",
+        ctx.deps.release_id(),
+        ctx.deps.config.provider
+    ));
+    Ok(())
+}
+
+fn stage_remote_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let Some(topology) = resolve_remote_topology(ctx.deps.target)? else {
+        return Err("remote activation stage reached without a remote topology".to_owned());
+    };
+    for spec in build_stage9_commands(ctx.deps, &topology) {
+        let is_healthz = spec.id == "readiness.remote-web-healthz";
+        let stdout = ctx.command(executor, spec)?;
+        if is_healthz {
+            verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_deep_readiness(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    // Process layer: the local daemon's metrics endpoint.
+    ctx.command(executor, build_daemon_metrics_command(ctx.deps))?;
+
+    // Dependency layer: every MCP endpoint — TCP + readiness endpoint, no
+    // LLM calls.
+    for (index, endpoint) in ctx.deps.target.mcp_endpoints.iter().enumerate() {
+        ctx.probe(executor, build_mcp_probe(index, endpoint, ctx.deps.config.timeouts.mcp_ms)?)?;
+        ctx.command(executor, build_mcp_ready_command(ctx.deps, index, endpoint)?)?;
+    }
+
+    // Product layer 1: web /api/healthz/deep with internal-key headers.
+    let topology = resolve_remote_topology(ctx.deps.target)?;
+    let deep = match &topology {
+        Some(remote) => ctx.command(executor, build_web_deep_command_remote(ctx.deps, remote))?,
+        None => ctx.command(executor, build_web_deep_command_local(ctx.deps))?,
+    };
+    verify_deep_observation(parse_deep_health(&deep), &ctx.deps.release_id())?;
+    if let Some(observed) = parse_deep_health(&deep) {
+        ctx.note(format!(
+            "web deep health: deployment `{}`, agent_v1 admission `{}`",
+            observed.deployment_id.unwrap_or_default(),
+            observed.admission.unwrap_or_default()
+        ));
+    }
+
+    // Product layer 2: the daemon's release-bound DB heartbeat.
+    if let Some(spec) = build_db_heartbeat_command(ctx.deps) {
+        let stdout = ctx.command(executor, spec)?;
+        let parts: Vec<&str> = stdout.split('|').collect();
+        if parts.len() != 4 {
+            return Err(format!("db heartbeat row has the wrong shape: `{stdout}`"));
+        }
+        if parts[0] != ctx.deps.config.provider {
+            return Err(format!(
+                "db heartbeat provider `{}` does not match config provider `{}`",
+                parts[0], ctx.deps.config.provider
+            ));
+        }
+        if let Some(descriptor) = &ctx.state.descriptor_sha256
+            && parts[1] != *descriptor
+        {
+            return Err(format!(
+                "db heartbeat descriptor `{}` does not match the sealed descriptor `{descriptor}`",
+                parts[1]
+            ));
+        }
+        if parts[3] != "t" {
+            return Err(format!("db heartbeat mcp_ready is `{}`, expected `t`", parts[3]));
+        }
+        ctx.note(format!("db heartbeat verified (release_set_hash {})", parts[2]));
+    } else {
+        ctx.note("target records no db_url_env handle; db heartbeat verification recorded none".to_owned());
+    }
+    Ok(())
+}
+
+fn stage_admission_open(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+    let topology = resolve_remote_topology(ctx.deps.target)?;
+    let verify_id_remote = "readiness.admission-open-verify";
+    let verify_id_local = "readiness.admission-open-verify-local";
+    match &topology {
+        Some(remote) => {
+            for spec in build_admission_open_commands_remote(ctx.deps, remote) {
+                let is_verify = spec.id == verify_id_remote;
+                let stdout = ctx.command(executor, spec)?;
+                if is_verify {
+                    verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
+                    if parse_deep_health(&stdout).and_then(|observation| observation.admission) != Some("open".to_owned()) {
+                        return Err("deep health did not report agent_v1 admission `open`".to_owned());
+                    }
+                }
+            }
+        }
+        None => {
+            ctx.state.skipped.push(SkippedRecord {
+                stage: crate::stages::STAGE_ADMISSION_OPEN.to_owned(),
+                operation: Some("admission.open".to_owned()),
+                reason: LOCAL_ONLY_SKIP_REASON.to_owned(),
+            });
+            upsert_env_value(&ctx.deps.config.runtime_env, ADMISSION_ENV_KEY, "open")
+                .map_err(|error| format!("local admission upsert failed: {error}"))?;
+            for spec in build_admission_open_commands_local(ctx.deps) {
+                let is_verify = spec.id == verify_id_local;
+                let stdout = ctx.command(executor, spec)?;
+                if is_verify {
+                    verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
+                    if parse_deep_health(&stdout).and_then(|observation| observation.admission) != Some("open".to_owned()) {
+                        return Err("local deep health did not report agent_v1 admission `open`".to_owned());
+                    }
+                }
+            }
+        }
+    }
+    ctx.note(format!("{ADMISSION_ENV_KEY} set to open and verified through deep health"));
+    Ok(())
+}
+
+impl PipelineDeps<'_> {
+    fn contract_required_procedures(&self) -> Vec<String> {
+        crate::contract::load_contract(&self.config.frontend_contract)
+            .map(|contract| contract.required_procedures)
+            .unwrap_or_default()
+    }
+
+    fn contract_required_columns(&self) -> Vec<String> {
+        crate::contract::load_contract(&self.config.frontend_contract)
+            .map(|contract| contract.required_columns)
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DeployTimeouts;
+    use crate::stages::{CommandMode, RunContext};
+
+    const FIXED_NOW: u64 = 1_786_843_200; // 2026-08-16T01:20:00Z
+
+    fn trust_registry(active_key_id: &str) -> Vec<u8> {
+        serde_jcs::to_vec(&krw_agent_release_authorization::ReleaseTrustRegistryV1 {
+            schema_version: 1,
+            registry_id: "krw.deploy.pipeline-test".to_owned(),
+            minimum_sequence: 1,
+            keys: vec![krw_agent_release_authorization::ReleaseTrustKeyV1 {
+                key_id: active_key_id.to_owned(),
+                ed25519_public_key_hex: "33".repeat(32),
+                not_before_unix_seconds: 0,
+                not_after_unix_seconds: 4_102_444_800,
+                revoked: false,
+            }],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn resolve_active_key_requires_exactly_one_valid_key() {
+        let bytes = trust_registry("pipeline-active-key");
+        assert_eq!(resolve_active_key_id(&bytes, FIXED_NOW).unwrap(), "pipeline-active-key");
+
+        let mut revoked = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        revoked.keys[0].revoked = true;
+        let error = resolve_active_key_id(&serde_jcs::to_vec(&revoked).unwrap(), FIXED_NOW).unwrap_err();
+        assert!(error.contains("no active signing key"), "error: {error}");
+
+        let mut expired = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        expired.keys[0].not_after_unix_seconds = FIXED_NOW - 1;
+        let error = resolve_active_key_id(&serde_jcs::to_vec(&expired).unwrap(), FIXED_NOW).unwrap_err();
+        assert!(error.contains("no active signing key"), "error: {error}");
+
+        let mut dual = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        dual.keys.push(krw_agent_release_authorization::ReleaseTrustKeyV1 {
+            key_id: "second-key".to_owned(),
+            ed25519_public_key_hex: "44".repeat(32),
+            not_before_unix_seconds: 0,
+            not_after_unix_seconds: 4_102_444_800,
+            revoked: false,
+        });
+        let error = resolve_active_key_id(&serde_jcs::to_vec(&dual).unwrap(), FIXED_NOW).unwrap_err();
+        assert!(error.contains("2 active signing keys"), "error: {error}");
+    }
+
+    #[test]
+    fn env_value_and_upsert_follow_the_legacy_awk_semantics() {
+        let dir = std::env::temp_dir().join(format!("krw-pipeline-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let env_file = dir.join("runtime.env");
+        std::fs::write(&env_file, "# comment\nA=first\nB=\"quoted\"\nA=second\n").unwrap();
+        assert_eq!(runtime_env_value(&env_file, "A").unwrap(), "second");
+        assert_eq!(runtime_env_value(&env_file, "B").unwrap(), "quoted");
+        assert!(runtime_env_value(&env_file, "MISSING").is_err());
+        assert!(runtime_env_has_key(&env_file, "A"));
+        assert!(!runtime_env_has_key(&env_file, "MISSING"));
+
+        upsert_env_value(&env_file, "KRW_AGENT_ADMISSION_MODE", "closed").unwrap();
+        let text = std::fs::read_to_string(&env_file).unwrap();
+        assert!(text.contains("KRW_AGENT_ADMISSION_MODE=closed\n"), "text: {text}");
+        assert_eq!(runtime_env_value(&env_file, "A").unwrap(), "second");
+
+        // First occurrence replaced in place, duplicates dropped, order kept.
+        upsert_env_value(&env_file, "A", "replaced").unwrap();
+        let text = std::fs::read_to_string(&env_file).unwrap();
+        assert_eq!(text.matches("A=").count(), 1, "text: {text}");
+        assert!(text.contains("A=replaced"), "text: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn applied_migrations_parse_from_supabase_output() {
+        let stdout = "Searching for migration files...\nApplying migration 0001_agent_v1...\nApplying migration 0022_daemon_mcp_readiness ...\n";
+        assert_eq!(
+            parse_applied_migrations(stdout),
+            ["0001_agent_v1".to_owned(), "0022_daemon_mcp_readiness".to_owned()]
+        );
+        assert!(parse_applied_migrations("no migrations to apply").is_empty());
+    }
+
+    #[test]
+    fn procedure_abi_parses_and_builds_the_verification_query() {
+        let abi = parse_procedure_entry("agent_v1.enqueue_run(jsonb)").unwrap();
+        assert_eq!(abi.schema, "agent_v1");
+        assert_eq!(abi.name, "enqueue_run");
+        assert_eq!(abi.arg_list, "jsonb");
+        assert_eq!(abi.expected_output(), "1|jsonb");
+        let sql = abi.sql();
+        assert!(sql.contains("information_schema.routines"), "sql: {sql}");
+        assert!(sql.contains("routine_schema = 'agent_v1'"), "sql: {sql}");
+        assert!(sql.contains("routine_name = 'enqueue_run'"), "sql: {sql}");
+        assert!(sql.contains("information_schema.parameters"), "sql: {sql}");
+
+        let no_args = parse_procedure_entry("agent_v1.heartbeat_daemon()").unwrap();
+        assert_eq!(no_args.expected_output(), "1|");
+
+        assert!(parse_procedure_entry("enqueue_run(jsonb)").is_err());
+        assert!(parse_procedure_entry("agent_v1.enqueue_run(jsonb").is_err());
+        assert!(parse_procedure_entry("agent_v1.enq'ueue(jsonb)").is_err());
+    }
+
+    #[test]
+    fn column_abi_defaults_to_public_schema() {
+        let abi = parse_column_entry("agent_v1_daemon_heartbeats.mcp_ready").unwrap();
+        assert_eq!(abi.schema, "public");
+        assert_eq!(abi.table, "agent_v1_daemon_heartbeats");
+        assert_eq!(abi.column, "mcp_ready");
+        assert_eq!(abi.expected_output(), "1");
+        assert!(abi.sql().contains("table_schema = 'public'"), "sql: {}", abi.sql());
+
+        let explicit = parse_column_entry("agent_store.mutations.id").unwrap();
+        assert_eq!(explicit.schema, "agent_store");
+        assert!(parse_column_entry("single").is_err());
+        assert!(parse_column_entry("a.b.c.d").is_err());
+    }
+
+    #[test]
+    fn deep_health_observation_parses_and_admission_is_read() {
+        let observed = parse_deep_health(
+            r#"{"status":"ok","deployment_id":"rid","checks":{"agent_v1":{"admission":"closed"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(observed.status.as_deref(), Some("ok"));
+        assert_eq!(observed.deployment_id.as_deref(), Some("rid"));
+        assert_eq!(observed.admission.as_deref(), Some("closed"));
+        assert!(parse_deep_health("not json").is_none());
+    }
+
+    // A tiny guard so the helper below cleans its tempdir up.
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn deps_for(provider_cfg: bool) -> (TempDirGuard, Box<PipelineDeps<'static>>) {
+        let root = std::env::temp_dir().join(format!(
+            "krw-pipeline-deps-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(root.join("agent")).unwrap();
+        std::fs::create_dir_all(root.join("front")).unwrap();
+        std::fs::create_dir_all(root.join("operator/signing")).unwrap();
+        std::fs::create_dir_all(root.join("operator/runtime")).unwrap();
+        std::fs::create_dir_all(root.join("operator/ops")).unwrap();
+        std::fs::write(root.join("operator/runtime/krw-agent-deploy.env"), "KRW_AGENT_DB_URL=postgresql://dummy\n").unwrap();
+        if provider_cfg {
+            let config_dir = root.join("operator/config/deepseek");
+            std::fs::create_dir_all(&config_dir).unwrap();
+            std::fs::write(config_dir.join("deployment-binding.yaml"), "b: 1\n").unwrap();
+            std::fs::write(config_dir.join("endpoint-registry.yaml"), "e: 1\n").unwrap();
+            std::fs::write(config_dir.join("release-trust-registry.json"), trust_registry("deps-key")).unwrap();
+        }
+        std::fs::write(
+            root.join("operator/ops/agent-v1-deployment-contract.json"),
+            crate::contract::canonical_fixture_contract_json(),
+        )
+        .unwrap();
+
+        let config = Box::leak(Box::new(DeployConfig {
+            schema_version: 1,
+            provider: "deepseek".to_owned(),
+            agent_source_root: root.join("agent"),
+            frontend_source_root: root.join("front"),
+            operator_root: root.join("operator"),
+            runtime_env: root.join("operator/runtime/krw-agent-deploy.env"),
+            target_file: root.join("operator/ops/production-target.json"),
+            frontend_contract: root.join("operator/ops/agent-v1-deployment-contract.json"),
+            timeouts: DeployTimeouts {
+                ssh_ms: 5_000,
+                mcp_ms: 7_000,
+                daemon_ready_ms: 90_000,
+                public_ready_ms: 120_000,
+            },
+        }));
+        let target = Box::leak(Box::new(TargetFile {
+            provider: Some("deepseek".to_owned()),
+            gcp: None,
+            ssh_host: Some("deploy@127.0.0.1".to_owned()),
+            remote_front_dir: Some("/home/deploy/krw-ontology-front".to_owned()),
+            compose_project: Some("krw-ontology-front".to_owned()),
+            local_ports: Vec::new(),
+            required_env_keys: vec!["KRW_AGENT_DB_URL".to_owned()],
+            db_url_env: Some("KRW_AGENT_DB_URL".to_owned()),
+            db_abi: Some("agent_v1_v7".to_owned()),
+            mcp_endpoints: vec!["127.0.0.1:18081".to_owned()],
+            supabase_migration_plan: vec!["0001_agent_v1.sql".to_owned()],
+            frontend_contract_sha256: None,
+        }));
+        let context = Box::leak(Box::new(RunContext {
+            mode: CommandMode::Deploy,
+            run_ts: "20260816T012000Z".to_owned(),
+            run_id: "abcd1234".to_owned(),
+            created_at_utc: "2026-08-16T01:20:00Z".to_owned(),
+            config_sha256: "sha256:aa".to_owned(),
+            output_dir: root.join("operator/releases/20260816T012000Z-abcd1234"),
+            receipt_dir: root.join("operator/deploy-receipts/20260816T012000Z-abcd1234"),
+        }));
+        let deps = Box::new(PipelineDeps {
+            config,
+            config_path: Path::new("/nonexistent-config-for-argv-tests.json"),
+            target,
+            context,
+            preflight_agent_head: "0123456789abcdef0123456789abcdef01234567",
+            now_unix_seconds: FIXED_NOW,
+        });
+        (TempDirGuard(root.clone()), deps)
+    }
+
+    #[test]
+    fn stage3_build_argv_matches_the_legacy_script_surface() {
+        let (_guard, deps) = deps_for(false);
+        let spec = build_stage3_command(&deps);
+        assert_eq!(spec.stage, "build");
+        assert_eq!(spec.id, "build.dual-provider-bundles");
+        assert_eq!(
+            spec.argv,
+            vec![
+                "scripts/build_dual_provider_release.sh".to_owned(),
+                "--output-root".to_owned(),
+                deps.context.output_dir.display().to_string(),
+            ]
+        );
+        assert_eq!(spec.cwd, deps.config.agent_source_root);
+        assert_eq!(spec.env_keys_used, [RUNTIME_ENV_ALL.to_owned()]);
+        assert_eq!(spec.timeout_ms, BUILD_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn stage4_seal_argv_ports_the_legacy_sign_sequence() {
+        let (_guard, deps) = deps_for(true);
+        let specs = build_stage4_commands(&deps, "the-active-key");
+        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "seal.prepare-production-candidate",
+                "seal.sign-release-authorization",
+                "seal.seal-production-candidate",
+                "seal.finalize-dual-release"
+            ]
+        );
+        assert!(specs.iter().all(|spec| spec.stage == "seal"));
+        assert!(specs.iter().all(|spec| spec.env_keys_used == [RUNTIME_ENV_ALL.to_owned()]));
+
+        let prepare = &specs[0];
+        assert_eq!(
+            prepare.argv,
+            vec![
+                "scripts/prepare_production_candidate.sh".to_owned(),
+                "--provider".to_owned(),
+                "deepseek".to_owned(),
+                "--bundle".to_owned(),
+                deps.context.output_dir.join("deepseek").display().to_string(),
+                "--binding".to_owned(),
+                deps.config.operator_root.join("config/deepseek/deployment-binding.yaml").display().to_string(),
+                "--endpoints".to_owned(),
+                deps.config.operator_root.join("config/deepseek/endpoint-registry.yaml").display().to_string(),
+            ]
+        );
+
+        let sign = &specs[1];
+        assert_eq!(sign.argv[0], deps.context.output_dir.join("deepseek/bin/krw-agent").display().to_string());
+        assert_eq!(&sign.argv[1..5], &["release", "sign", "--descriptor", &deps.context.output_dir.join("deepseek/public-release.json").display().to_string()]);
+        // [5..7] --private-key <operator key>; [7..9] --key-id <active key>.
+        assert_eq!(sign.argv[8], "the-active-key");
+        assert_eq!(sign.argv[9], "--sequence");
+        assert_eq!(sign.argv[10], FIXED_NOW.to_string());
+        assert_eq!(sign.argv[12], FIXED_NOW.to_string());
+        assert_eq!(sign.argv[14], (FIXED_NOW + AUTHORIZATION_TTL_SECONDS).to_string());
+        assert_eq!(sign.argv[15], "--runtime-version");
+        assert_eq!(sign.argv[16], RUNTIME_VERSION);
+        assert_eq!(sign.argv[17], "--kernel-version");
+        assert_eq!(sign.argv[18], KERNEL_VERSION);
+        assert_eq!(sign.argv[19], "--out");
+        assert_eq!(sign.argv[20], deps.config.operator_root.join("signing/releases/20260816T012000Z-abcd1234/release-authorization-deepseek.json").display().to_string());
+
+        let seal = &specs[2];
+        assert_eq!(
+            seal.argv[1..3],
+            [
+                "--provider".to_owned(),
+                "deepseek".to_owned(),
+            ]
+        );
+        assert_eq!(seal.argv[seal.argv.len() - 1], deps.config.operator_root.join("config/deepseek/release-trust-registry.json").display().to_string());
+        assert_eq!(&specs[3].argv[1..], &["--release-root", &deps.context.output_dir.display().to_string()]);
+    }
+
+    #[test]
+    fn stage5_frontend_image_argv_uses_compose_and_inspects_the_project_image() {
+        let (_guard, deps) = deps_for(false);
+        let specs = build_stage5_commands(&deps);
+        assert_eq!(specs[0].id, "frontend-image.build-web");
+        assert_eq!(specs[0].argv, ["docker", "compose", "build", "web"]);
+        assert_eq!(specs[0].cwd, deps.config.frontend_source_root);
+        assert_eq!(specs[0].env_keys_used, [RUNTIME_ENV_ALL.to_owned()]);
+        assert_eq!(specs[1].id, "frontend-image.inspect-digest");
+        assert_eq!(specs[1].argv, ["docker", "image", "inspect", "front-web:latest", "--format", "{{.Id}}"]);
+        assert!(specs[1].env_keys_used.is_empty());
+    }
+
+    #[test]
+    fn migration_and_abi_argv_use_the_front_cli_and_env_handle_placeholders() {
+        let (_guard, deps) = deps_for(false);
+        let dry_run = build_stage6_command(&deps);
+        assert_eq!(dry_run.stage, "migrations");
+        assert_eq!(dry_run.id, "migrations.db-push-dry-run");
+        assert_eq!(
+            dry_run.argv,
+            vec![
+                deps.config.frontend_source_root.join("scripts/supabase-cli.sh").display().to_string(),
+                "db".to_owned(),
+                "push".to_owned(),
+                "--dry-run".to_owned(),
+            ]
+        );
+        assert_eq!(dry_run.env_keys_used, [RUNTIME_ENV_ALL.to_owned()]);
+
+        let push = build_db_push_command(&deps);
+        assert_eq!(push.stage, "admission_close"); // applied after admission close per 05 ordering
+        assert_eq!(push.id, "migrations.db-push");
+        assert_eq!(&push.argv[1..], &["db", "push"]);
+
+        let abi = build_abi_command(&deps, "migrations.abi-verify-procedure-0", "select 1");
+        assert_eq!(abi.stage, "admission_close");
+        assert_eq!(abi.id, "migrations.abi-verify-procedure-0");
+        assert_eq!(abi.argv[0], "psql");
+        assert_eq!(abi.argv[1], "<env:KRW_AGENT_DB_URL>");
+        assert_eq!(abi.argv[2], "-tA");
+        assert_eq!(&abi.argv[3..5], &["-v", "ON_ERROR_STOP=1"]);
+        assert_eq!(abi.argv[6], "select 1");
+        assert_eq!(abi.env_keys_used, ["KRW_AGENT_DB_URL"]);
+    }
+
+    #[test]
+    fn remote_admission_commands_wrap_the_legacy_payloads_over_batchmode_ssh() {
+        let (_guard, deps) = deps_for(false);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let commands = build_admission_commands_remote(&deps, &topology);
+        let ids: Vec<&str> = commands.iter().map(|command| command.id.as_str()).collect();
+        assert_eq!(ids, ["admission.read-previous", "admission.close", "admission.verify-closed"]);
+        for command in &commands {
+            assert_eq!(&command.argv[0..2], &["ssh", "-o"]);
+            assert_eq!(command.argv[2], "BatchMode=yes");
+            assert_eq!(command.argv[4], format!("ConnectTimeout={}", (deps.config.timeouts.ssh_ms / 1000).max(1)));
+            assert_eq!(command.argv[5], "deploy@127.0.0.1");
+            assert!(command.env_keys_used.is_empty());
+        }
+        let read_previous = &commands[0];
+        assert!(read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", read_previous.argv[6]);
+        assert!(read_previous.argv[6].contains(".simple-deploy/current/runtime.env"));
+        assert!(read_previous.argv[6].contains("tail -n 1"));
+        let close = &commands[1];
+        assert!(close.argv[6].contains("-v value=closed"), "payload: {}", close.argv[6]);
+        assert!(close.argv[6].contains("up -d --no-deps --force-recreate --wait web agent-v1-outbox"));
+        let verify = &commands[2];
+        assert!(verify.argv[6].contains("/api/healthz"));
+    }
+
+    #[test]
+    fn local_admission_commands_use_the_runtime_env_compose_stack() {
+        let (_guard, deps) = deps_for(false);
+        let commands = build_admission_commands_local(&deps);
+        assert_eq!(commands[0].id, "admission.close-local");
+        assert_eq!(
+            commands[0].argv,
+            vec![
+                "docker".to_owned(),
+                "compose".to_owned(),
+                "--project-directory".to_owned(),
+                deps.config.frontend_source_root.display().to_string(),
+                "--env-file".to_owned(),
+                deps.config.runtime_env.display().to_string(),
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--no-deps".to_owned(),
+                "--force-recreate".to_owned(),
+                "--wait".to_owned(),
+                "web".to_owned(),
+                "agent-v1-outbox".to_owned(),
+            ]
+        );
+        assert_eq!(commands[1].id, "admission.verify-closed-local");
+        assert_eq!(commands[1].argv[0], "curl");
+        assert!(commands[1].argv.iter().any(|element| element.contains("/api/healthz")));
+    }
+
+    #[test]
+    fn local_activation_ports_the_two_launchd_installers() {
+        let (_guard, deps) = deps_for(false);
+        let specs = build_stage8_commands(&deps);
+        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["activation.agentd-stage", "activation.capabilityd-activate", "activation.agentd-activate"]
+        );
+        for spec in &specs {
+            assert_eq!(spec.env_keys_used, [LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()]);
+            assert_eq!(spec.timeout_ms, INSTALL_TIMEOUT_MS);
+        }
+        let agentd_stage = &specs[0];
+        assert_eq!(
+            agentd_stage.argv,
+            vec![
+                deps.context.output_dir.join("deepseek/packaging/launchd/install-local-mac-agentd-release.sh").display().to_string(),
+                "--mode".to_owned(),
+                "stage".to_owned(),
+                "--release-root".to_owned(),
+                deps.context.output_dir.display().to_string(),
+                "--release-id".to_owned(),
+                "20260816T012000Z-abcd1234".to_owned(),
+                "--provider".to_owned(),
+                "deepseek".to_owned(),
+            ]
+        );
+        let capabilityd = &specs[1];
+        assert_eq!(capabilityd.argv[1..3], ["--mode".to_owned(), "activate".to_owned()]);
+        assert_eq!(
+            capabilityd.argv[capabilityd.argv.len() - 1],
+            deps.config.operator_root.display().to_string()
+        );
+        // No KRW_AGENT_METRICS_PORT in the fixture runtime env: literal default.
+        let agentd_activate = &specs[2];
+        assert!(!agentd_activate.argv.contains(&"--metrics-port".to_owned()));
+        assert_eq!(agentd_activate.argv[4], "20260816T012000Z-abcd1234");
+        assert!(agentd_activate.argv.contains(&deps.config.runtime_env.display().to_string()));
+    }
+
+    #[test]
+    fn metrics_port_placeholder_replaces_the_default_when_declared() {
+        let (guard, deps) = deps_for(false);
+        std::fs::write(
+            &deps.config.runtime_env,
+            "KRW_AGENT_DB_URL=postgresql://dummy\nKRW_AGENT_METRICS_PORT=15599\n",
+        )
+        .unwrap();
+        let specs = build_stage8_commands(&deps);
+        let activate = &specs[2];
+        let position = activate.argv.iter().position(|flag| flag == "--metrics-port").unwrap();
+        assert_eq!(activate.argv[position + 1], "<env:KRW_AGENT_METRICS_PORT>");
+
+        let metrics = build_daemon_metrics_command(&deps);
+        assert!(metrics.argv[4].contains("http://127.0.0.1:<env:KRW_AGENT_METRICS_PORT>/metrics"));
+        drop(guard);
+    }
+
+    #[test]
+    fn stage9_remote_activation_recreates_web_outbox_and_market_workers() {
+        let (_guard, deps) = deps_for(false);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let specs = build_stage9_commands(&deps, &topology);
+        assert_eq!(specs[0].id, "remote.web-up");
+        assert!(specs[0].argv[6].contains("up -d --force-recreate --wait web agent-v1-outbox market-web-source-worker market-issue-enrichment-worker"), "payload: {}", specs[0].argv[6]);
+        assert_eq!(specs[1].id, "readiness.remote-web-healthz");
+        assert!(specs[1].argv[6].contains("EXPECTED_RELEASE_ID='20260816T012000Z-abcd1234'"));
+        assert!(specs[1].argv[6].contains("deployment_id"));
+    }
+
+    #[test]
+    fn readiness_layer_commands_carry_the_configured_timeouts() {
+        let (_guard, deps) = deps_for(false);
+        let metrics = build_daemon_metrics_command(&deps);
+        assert_eq!(metrics.id, "readiness.daemon-metrics");
+        assert_eq!(metrics.argv[3], "90"); // daemon_ready_ms -> seconds
+        assert_eq!(metrics.timeout_ms, deps.config.timeouts.daemon_ready_ms);
+        assert!(metrics.argv[4].ends_with("/metrics"));
+
+        let probe = build_mcp_probe(0, "127.0.0.1:18081", deps.config.timeouts.mcp_ms).unwrap();
+        assert_eq!(probe.id, "readiness.mcp-tcp-0");
+        assert_eq!(probe.host, "127.0.0.1");
+        assert_eq!(probe.port, 18081);
+        assert_eq!(probe.timeout_ms, 7_000);
+        assert!(build_mcp_probe(0, "no-port", 1_000).is_err());
+
+        let ready = build_mcp_ready_command(&deps, 0, "127.0.0.1:18081").unwrap();
+        assert_eq!(ready.id, "readiness.mcp-ready-0");
+        assert_eq!(ready.argv[4], "http://127.0.0.1:18081/readyz"); // loopback -> http
+        let tls_ready = build_mcp_ready_command(&deps, 1, "mcp.example.com:9443").unwrap();
+        assert_eq!(tls_ready.argv[4], "https://mcp.example.com:9443/readyz");
+
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let deep = build_web_deep_command_remote(&deps, &topology);
+        assert_eq!(deep.id, "readiness.web-deep");
+        assert!(deep.argv[6].contains("healthz/deep"));
+        assert!(deep.argv[6].contains("INTERNAL_API_KEY"));
+        assert!(deep.argv[6].contains("NEXT_PUBLIC_APP_VERSION"));
+
+        let local_deep = build_web_deep_command_local(&deps);
+        assert_eq!(local_deep.env_keys_used, [INTERNAL_API_KEY_ENV_KEY.to_owned()]);
+        assert_eq!(local_deep.argv[3], "120"); // public_ready_ms -> seconds
+        assert!(local_deep.argv.iter().any(|element| element.starts_with("x-internal-key: <env:")));
+
+        let heartbeat = build_db_heartbeat_command(&deps).unwrap();
+        assert_eq!(heartbeat.id, "readiness.db-heartbeat");
+        assert_eq!(heartbeat.argv[1], "<env:KRW_AGENT_DB_URL>");
+        assert!(heartbeat.argv[6].contains("agent_v1_daemon_heartbeats"));
+        assert!(heartbeat.argv[6].contains("mcp_ready"));
+    }
+
+    #[test]
+    fn admission_open_commands_upsert_open_then_verify_deep_admission() {
+        let (_guard, deps) = deps_for(false);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let commands = build_admission_open_commands_remote(&deps, &topology);
+        assert_eq!(commands[0].id, "admission.open");
+        assert!(commands[0].argv[6].contains("-v value=open"), "payload: {}", commands[0].argv[6]);
+        assert_eq!(commands[1].id, "readiness.admission-open-verify");
+        assert!(commands[1].argv[6].contains("'open'"), "payload: {}", commands[1].argv[6]);
+
+        let local = build_admission_open_commands_local(&deps);
+        assert_eq!(local[0].id, "admission.open-local");
+        assert_eq!(local[1].id, "readiness.admission-open-verify-local");
+        assert_eq!(local[1].env_keys_used, [INTERNAL_API_KEY_ENV_KEY.to_owned()]);
+    }
+
+    #[test]
+    fn remote_topology_requires_front_dir_and_defaults_the_compose_project() {
+        let (_guard, deps) = deps_for(false);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        assert_eq!(topology.compose_project, "krw-ontology-front");
+
+        let mut local = TargetFile {
+            provider: Some("deepseek".to_owned()),
+            gcp: None,
+            ssh_host: None,
+            remote_front_dir: None,
+            compose_project: None,
+            local_ports: Vec::new(),
+            required_env_keys: Vec::new(),
+            db_url_env: None,
+            db_abi: None,
+            mcp_endpoints: Vec::new(),
+            supabase_migration_plan: Vec::new(),
+            frontend_contract_sha256: None,
+        };
+        assert!(resolve_remote_topology(&local).unwrap().is_none());
+
+        local.ssh_host = Some("deploy@host".to_owned());
+        let error = resolve_remote_topology(&local).unwrap_err();
+        assert!(error.contains("remote_front_dir"), "error: {error}");
+
+        local.remote_front_dir = Some("/srv/some-front".to_owned());
+        let topology = resolve_remote_topology(&local).unwrap().unwrap();
+        assert_eq!(topology.compose_project, "some-front");
+    }
+
+    #[test]
+    fn previous_admission_normalizes_unknown_values_to_closed() {
+        assert_eq!(normalize_previous_admission("open"), "open");
+        assert_eq!(normalize_previous_admission(" canary "), "canary");
+        assert_eq!(normalize_previous_admission("bogus"), "closed");
+        assert_eq!(normalize_previous_admission(""), "closed");
+    }
+
+    #[test]
+    fn fixture_executor_records_specs_and_simulates_build_side_effects() {
+        let (guard, deps) = deps_for(false);
+        let mut fixture = FixtureStageExecutor::passing();
+        fixture.failures.insert("seal.prepare-production-candidate".to_owned(), "injected".to_owned());
+        let build = build_stage3_command(&deps);
+        let outcome = fixture.execute(&deps.config.runtime_env, &build).unwrap();
+        assert!(outcome.stdout.is_empty());
+        assert!(
+            deps.context.output_dir.join("glm/public-release.json").is_file(),
+            "fixture must simulate the built bundles"
+        );
+        assert!(
+            deps.context.output_dir.join("deepseek/public-release.json").is_file(),
+            "fixture must simulate the built bundles"
+        );
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let prepare = build_stage4_commands(&deps, "k").remove(0);
+        let error = fixture.execute(&deps.config.runtime_env, &prepare).unwrap_err();
+        assert_eq!(error, "injected");
+        let read_previous = build_admission_commands_remote(&deps, &topology).remove(0);
+        let outcome = fixture.execute(&deps.config.runtime_env, &read_previous).unwrap();
+        assert_eq!(outcome.stdout, "open");
+        assert_eq!(fixture.command_ids(), vec!["build.dual-provider-bundles", "seal.prepare-production-candidate", "admission.read-previous"]);
+        drop(guard);
+    }
+}

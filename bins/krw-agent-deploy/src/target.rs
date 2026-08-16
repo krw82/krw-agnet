@@ -28,6 +28,13 @@ pub struct TargetFile {
     pub db_abi: Option<String>,
     /// Remote MCP endpoints as `host:port` strings (connectivity only, no LLM calls).
     pub mcp_endpoints: Vec<String>,
+    /// Remote frontend directory on the deploy target (used by ssh-driven
+    /// admission/activation stages). Absent together with `ssh_host` marks a
+    /// local-only deployment.
+    pub remote_front_dir: Option<String>,
+    /// Remote docker compose project name (defaults to the basename of
+    /// `remote_front_dir`).
+    pub compose_project: Option<String>,
     /// Supabase forward migration plan entries (read-only ordering proof).
     pub supabase_migration_plan: Vec<String>,
     /// Operator-pinned `sha256:<hex>` of the canonical frontend contract JSON.
@@ -123,6 +130,8 @@ impl TargetFile {
             provider,
             gcp,
             ssh_host: string_field("ssh_host"),
+            remote_front_dir: string_field("remote_front_dir"),
+            compose_project: string_field("compose_project"),
             local_ports: object
                 .get("local_ports")
                 .and_then(Value::as_array)
@@ -264,5 +273,20 @@ mod tests {
         assert_eq!(identity.get("provider").map(String::as_str), Some("deepseek"));
         assert_eq!(identity.get("gcp_zone").map(String::as_str), Some("asia-northeast3-a"));
         assert_eq!(identity.get("gcp_instance_id").map(String::as_str), Some("1234567890123456789"));
+    }
+
+    #[test]
+    fn remote_topology_fields_parse_and_default_to_none() {
+        let target = TargetFile::from_json_bytes(minimal_target_json().as_bytes()).unwrap();
+        assert!(target.remote_front_dir.is_none());
+        assert!(target.compose_project.is_none());
+
+        let text = minimal_target_json().replace(
+            "\"ssh_host\": \"deploy@127.0.0.1\",",
+            "\"ssh_host\": \"deploy@127.0.0.1\",\n  \"remote_front_dir\": \"/home/deploy/krw-ontology-front\",\n  \"compose_project\": \"krw-ontology-front\",",
+        );
+        let target = TargetFile::from_json_bytes(text.as_bytes()).unwrap();
+        assert_eq!(target.remote_front_dir.as_deref(), Some("/home/deploy/krw-ontology-front"));
+        assert_eq!(target.compose_project.as_deref(), Some("krw-ontology-front"));
     }
 }

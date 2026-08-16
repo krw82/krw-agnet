@@ -1,12 +1,16 @@
 //! Immutable deployment receipts (doc/refetoring/05 §controller 단계 2, 12).
 //!
-//! Two receipt kinds:
+//! Three receipt kinds:
 //!
 //! * [`PreflightReceipt`] — every input hash, the target identity, all check
 //!   results, and the overall verdict, written after the read-only preflight.
+//! * [`StageReceipt`] — one per executed stage 3-12 (`stage-<n>-<id>.json`),
+//!   recording the exact structured command records the stage issued through
+//!   the stage executor (argv with `<env:NAME>` placeholders — never resolved
+//!   secret values).
 //! * [`TerminalReceipt`] — the final controller outcome for the run
-//!   (`dry-run-ok` or `failure`), including the admission state and the
-//!   stage that stopped the run.
+//!   (`success`, `dry-run-ok`, or `failure`), including the admission state,
+//!   the stage that stopped the run, and the run's artifact records.
 //!
 //! Receipts are deterministic JSON (`to_string_pretty`, `BTreeMap`-ordered
 //! maps) and write-once: overwriting an existing receipt file is an error,
@@ -60,10 +64,11 @@ pub struct TerminalReceipt {
     pub run_id: String,
     pub created_at_utc: String,
     pub command: String,
-    /// `dry-run-ok` or `failure`.
+    /// `success`, `dry-run-ok`, or `failure`.
     pub outcome: String,
-    /// `closed` (deploy failures; admission must stay closed) or
-    /// `not-touched` (dry-run never mutates admission).
+    /// `open` (deploy success), `closed` (failures from `admission_close`
+    /// onward; the 05 failure policy), or `not-touched` (before
+    /// `admission_close`; dry-run never mutates admission).
     pub admission: String,
     /// Last stage reached: `dry_run`, `preflight`, or a stage-table id.
     pub reached_stage: String,
@@ -77,6 +82,39 @@ pub struct TerminalReceipt {
     /// Dry-run-only validation records (build/seal input resolution).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub validations: Vec<DryRunValidation>,
+    /// Deploy-run artifact records (release identity, image digest, applied
+    /// migrations, previous admission value). No secrets ever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<DeployArtifacts>,
+    /// Stages or sub-operations recorded as Skipped-with-reason (e.g. the
+    /// remote half of a local-only target deployment).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedRecord>,
+}
+
+/// Artifact records for a deploy run. Paths and hashes only — no env values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeployArtifacts {
+    /// `<operator_root>/releases/<run-name>` sealed release directory.
+    pub release_dir: String,
+    /// Run name (`<utc-ts>-<run-id>`); the release identity everywhere.
+    pub release_id: String,
+    /// `sha256:<hex>` of the selected provider bundle's public descriptor.
+    pub descriptor_sha256: String,
+    /// Docker image id of the locally prepared frontend web image.
+    pub frontend_image_digest: String,
+    /// Migration names parsed from the `db push` output (forward-only).
+    pub applied_migrations: Vec<String>,
+    /// `KRW_AGENT_ADMISSION_MODE` captured from the active release before
+    /// `admission_close` changed it (`open`/`closed`/`drain`/`canary`).
+    pub previous_admission: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkippedRecord {
+    pub stage: String,
+    pub operation: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -138,6 +176,38 @@ impl TerminalReceipt {
             reason: Some("read-only dry-run reached; no build, migration, or activation executed".to_owned()),
             receipt_path,
             validations,
+            artifacts: None,
+            skipped: Vec::new(),
+        }
+    }
+
+    /// Full-walk success receipt: admission is open, all artifacts recorded.
+    pub fn success(
+        run_id: &str,
+        created_at_utc: &str,
+        command: &str,
+        receipt_path: Option<String>,
+        artifacts: DeployArtifacts,
+        skipped: Vec<SkippedRecord>,
+    ) -> Self {
+        Self {
+            schema_version: RECEIPT_SCHEMA_VERSION,
+            receipt_kind: "terminal",
+            run_id: run_id.to_owned(),
+            created_at_utc: created_at_utc.to_owned(),
+            command: command.to_owned(),
+            outcome: "success".to_owned(),
+            admission: "open".to_owned(),
+            reached_stage: "terminal_success_receipt".to_owned(),
+            failed_stage: None,
+            reason: Some(format!(
+                "12-stage forward-only walk complete; admission open; {} stage-level skip(s) recorded",
+                skipped.len()
+            )),
+            receipt_path,
+            validations: Vec::new(),
+            artifacts: Some(artifacts),
+            skipped,
         }
     }
 
@@ -151,6 +221,8 @@ impl TerminalReceipt {
         admission: TerminalAdmission,
         receipt_path: Option<String>,
         validations: Vec<DryRunValidation>,
+        artifacts: Option<DeployArtifacts>,
+        skipped: Vec<SkippedRecord>,
     ) -> Self {
         Self {
             schema_version: RECEIPT_SCHEMA_VERSION,
@@ -165,12 +237,15 @@ impl TerminalReceipt {
             reason: Some(reason),
             receipt_path,
             validations,
+            artifacts,
+            skipped,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalAdmission {
+    Open,
     Closed,
     NotTouched,
 }
@@ -178,6 +253,7 @@ pub enum TerminalAdmission {
 impl TerminalAdmission {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Open => "open",
             Self::Closed => "closed",
             Self::NotTouched => "not-touched",
         }
@@ -195,6 +271,104 @@ pub fn release_output_dir(operator_root: &Path, run_name: &str) -> PathBuf {
     operator_root.join("releases").join(run_name)
 }
 
+/// One structured command record: the exact argv the stage issued, with
+/// `<env:NAME>` placeholders kept unresolved (secret values are never
+/// recorded) and only the NAMES of consumed env keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StageCommandRecord {
+    pub id: String,
+    pub stage: String,
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub env_keys_used: Vec<String>,
+    pub timeout_ms: u64,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TcpProbeRecord {
+    pub id: String,
+    pub stage: String,
+    pub host: String,
+    pub port: u16,
+    pub timeout_ms: u64,
+    pub outcome: String,
+}
+
+/// Per-stage receipt for stages 3-12 (`stage-<n>-<id>.json`, write-once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StageReceipt {
+    pub schema_version: u16,
+    pub receipt_kind: &'static str,
+    pub run_id: String,
+    pub created_at_utc: String,
+    pub command: String,
+    pub executor_kind: String,
+    /// 1-based position in the 05-doc stage table.
+    pub stage_index: u8,
+    pub stage: String,
+    /// `pass`, `skipped`, or `fail`.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub commands: Vec<StageCommandRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<TcpProbeRecord>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl StageReceipt {
+    #[allow(clippy::too_many_arguments)] // mirrors the flat receipt schema
+    pub fn new(
+        run_id: &str,
+        created_at_utc: &str,
+        command: &str,
+        executor_kind: &str,
+        stage_index: u8,
+        stage: &str,
+        status: StageReceiptStatus,
+    ) -> Self {
+        Self {
+            schema_version: RECEIPT_SCHEMA_VERSION,
+            receipt_kind: "stage",
+            run_id: run_id.to_owned(),
+            created_at_utc: created_at_utc.to_owned(),
+            command: command.to_owned(),
+            executor_kind: executor_kind.to_owned(),
+            stage_index,
+            stage: stage.to_owned(),
+            status: status.as_str().to_owned(),
+            reason: None,
+            commands: Vec::new(),
+            probes: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageReceiptStatus {
+    Pass,
+    Skipped,
+    Fail,
+}
+
+impl StageReceiptStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Skipped => "skipped",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+/// Receipt file name for stage `n` (1-based table position) with id `id`.
+pub fn stage_receipt_file_name(stage_index: u8, stage_id: &str) -> String {
+    format!("stage-{stage_index}-{stage_id}.json")
+}
+
 /// Stable run id: 8-hex prefix of the config file sha256.
 pub fn run_id_from_config_sha256(config_sha256: &str) -> String {
     let hex = config_sha256.strip_prefix("sha256:").unwrap_or(config_sha256);
@@ -209,6 +383,11 @@ pub fn write_preflight_receipt(dir: &Path, receipt: &PreflightReceipt) -> Result
 /// Write a terminal receipt under `dir` (creates `dir` on first write).
 pub fn write_terminal_receipt(dir: &Path, receipt: &TerminalReceipt) -> Result<PathBuf, ReceiptError> {
     write_receipt(dir, TERMINAL_RECEIPT_FILE, receipt)
+}
+
+/// Write one per-stage receipt (`stage-<n>-<id>.json`, write-once).
+pub fn write_stage_receipt(dir: &Path, receipt: &StageReceipt) -> Result<PathBuf, ReceiptError> {
+    write_receipt(dir, &stage_receipt_file_name(receipt.stage_index, &receipt.stage), receipt)
 }
 
 fn write_receipt<T: Serialize>(dir: &Path, file_name: &str, receipt: &T) -> Result<PathBuf, ReceiptError> {
@@ -312,9 +491,11 @@ mod tests {
             "2026-08-16T00:00:00Z",
             "deploy",
             "build",
-            "controller build/seal/activation stages not yet enabled in this revision; admission left closed; fix-forward".to_owned(),
+            "build command failed; admission left closed; fix-forward".to_owned(),
             TerminalAdmission::Closed,
             Some("/operator/deploy-receipts/20260816T000000Z-abc12345/preflight.json".to_owned()),
+            Vec::new(),
+            None,
             Vec::new(),
         );
         let value: serde_json::Value = serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
@@ -324,6 +505,102 @@ mod tests {
         assert_eq!(value["reached_stage"], "build");
         assert!(value["reason"].as_str().unwrap().contains("fix-forward"));
         assert!(value.get("validations").is_none(), "empty validations are omitted");
+        assert!(value.get("artifacts").is_none(), "absent artifacts are omitted");
+        assert!(value.get("skipped").is_none(), "empty skips are omitted");
+    }
+
+    #[test]
+    fn success_receipt_records_open_admission_and_artifacts() {
+        let artifacts = DeployArtifacts {
+            release_dir: "/operator/releases/20260816T000000Z-abc12345".to_owned(),
+            release_id: "20260816T000000Z-abc12345".to_owned(),
+            descriptor_sha256: "sha256:164482f3fe99eb82977bcd77c07792d0472cae014f8218a0c492f42c1a29055e".to_owned(),
+            frontend_image_digest: "sha256:9ed2b4b7d3a1f0c6e5d8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0".to_owned(),
+            applied_migrations: vec!["0001_agent_v1".to_owned(), "0022_daemon_mcp_readiness".to_owned()],
+            previous_admission: "open".to_owned(),
+        };
+        let receipt = TerminalReceipt::success(
+            "abc12345",
+            "2026-08-16T00:00:00Z",
+            "deploy",
+            Some("/operator/deploy-receipts/20260816T000000Z-abc12345/preflight.json".to_owned()),
+            artifacts,
+            vec![SkippedRecord {
+                stage: "remote_activation".to_owned(),
+                operation: Some("remote.web-up".to_owned()),
+                reason: "local-only target: no ssh_host recorded".to_owned(),
+            }],
+        );
+        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
+        assert_eq!(value["outcome"], "success");
+        assert_eq!(value["admission"], "open");
+        assert_eq!(value["reached_stage"], "terminal_success_receipt");
+        assert!(value.get("failed_stage").is_none());
+        assert_eq!(value["artifacts"]["release_id"], "20260816T000000Z-abc12345");
+        assert_eq!(value["artifacts"]["applied_migrations"].as_array().unwrap().len(), 2);
+        assert_eq!(value["skipped"].as_array().unwrap().len(), 1);
+        assert_eq!(value["skipped"][0]["stage"], "remote_activation");
+    }
+
+    #[test]
+    fn stage_receipt_keeps_env_placeholders_unresolved_and_is_write_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "krw-agent-deploy-stage-receipt-{}-{}",
+            std::process::id(),
+            DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut receipt = StageReceipt::new(
+            "abc12345",
+            "2026-08-16T00:00:00Z",
+            "deploy",
+            "fixture",
+            10,
+            "deep_readiness",
+            StageReceiptStatus::Pass,
+        );
+        receipt.commands.push(StageCommandRecord {
+            id: "readiness.db-heartbeat".to_owned(),
+            stage: "deep_readiness".to_owned(),
+            argv: vec![
+                "psql".to_owned(),
+                "<env:KRW_AGENT_DB_URL>".to_owned(),
+                "-tA".to_owned(),
+            ],
+            cwd: "/agent".to_owned(),
+            env_keys_used: vec!["KRW_AGENT_DB_URL".to_owned()],
+            timeout_ms: 120_000,
+            outcome: "pass".to_owned(),
+        });
+        receipt.probes.push(TcpProbeRecord {
+            id: "readiness.mcp-tcp-0".to_owned(),
+            stage: "deep_readiness".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 18081,
+            timeout_ms: 5_000,
+            outcome: "pass".to_owned(),
+        });
+        let path = write_stage_receipt(&dir, &receipt).unwrap();
+        assert!(path.ends_with("stage-10-deep_readiness.json"));
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["receipt_kind"], "stage");
+        assert_eq!(value["stage_index"], 10);
+        assert_eq!(value["status"], "pass");
+        assert_eq!(value["commands"][0]["argv"][1], "<env:KRW_AGENT_DB_URL>");
+        assert_eq!(value["commands"][0]["env_keys_used"][0], "KRW_AGENT_DB_URL");
+        let error = write_stage_receipt(&dir, &receipt).unwrap_err();
+        assert!(matches!(error, ReceiptError::AlreadyExists(_)), "unexpected error: {error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_receipt_file_names_follow_the_stage_table_positions() {
+        assert_eq!(stage_receipt_file_name(3, "build"), "stage-3-build.json");
+        assert_eq!(
+            stage_receipt_file_name(12, "terminal_success_receipt"),
+            "stage-12-terminal_success_receipt.json"
+        );
     }
 
     #[test]

@@ -1,51 +1,103 @@
-# krw-agent-deploy — deployment controller (Wave 8 core)
+# krw-agent-deploy — deployment controller
 
 Implementation of `doc/refetoring/05-deployment-and-front-contract.md`.
-This revision delivers the honest fail-closed core: config parsing, the
-ordered read-only preflight, immutable receipts, and the forward-only stage
-machine validated up to the "read-only dry-run receipt" bar. No real
-activation exists in this revision by design — a `deploy` can never
-half-run.
+All twelve controller stages are implemented: config parsing, the ordered
+read-only preflight, immutable receipts, and the real forward-only deploy
+walk (build, seal, frontend image prepare, forward-only migrations,
+admission close, local/remote activation, bounded deep readiness, admission
+open, terminal success receipt). Any stage failure writes a terminal
+failure receipt with the correct admission posture and exits 1; the
+controller has no rollback paths anywhere — recovery is always fix-forward
+through a fresh run.
 
 ## CLI surface
 
 ```text
 krw-agent-deploy --config <absolute production config> preflight   # read-only checks + preflight receipt, exit 0/1
 krw-agent-deploy --config <absolute production config> dry-run     # preflight + build/seal input resolution + dry-run receipt, exit 0/1
-krw-agent-deploy --config <absolute production config> deploy      # preflight, then TERMINAL FAILURE at stage `build`, exit 1
+krw-agent-deploy --config <absolute production config> deploy      # the full 12-stage forward-only walk, exit 0/1
 ```
 
-Exit codes: `0` pass / dry-run-ok, `1` fail-closed outcome, `2` controller
-error (config unreadable/unparseable, receipt write failure). When the
-config itself cannot be parsed no receipt is written (the operator root is
-not yet known); the error goes to stderr.
+Exit codes: `0` pass / dry-run-ok / deploy success, `1` fail-closed
+outcome, `2` controller error (config unreadable/unparseable, receipt
+write failure). When the config itself cannot be parsed no receipt is
+written (the operator root is not yet known); the error goes to stderr.
 
-## Stage list (doc/refetoring/05) and revision status
+## Stage list (doc/refetoring/05) — all implemented
 
-| # | stage id | status in this revision |
+| # | stage id | executor command ids (structured records) |
 |---|---|---|
-| 1 | `preflight` | implemented (read-only) |
-| 2 | `preflight_receipt` | implemented (immutable, write-once) |
-| 3 | `build` | not implemented — deploy stops here, fail-closed |
-| 4 | `seal` | not implemented |
-| 5 | `frontend_image_prepare` | not implemented |
-| 6 | `migrations` (forward-only) | not implemented |
-| 7 | `admission_close` | not implemented |
-| 8 | `local_activation` | not implemented |
-| 9 | `remote_activation` | not implemented |
-| 10 | `deep_readiness` | not implemented |
-| 11 | `admission_open` | not implemented |
-| 12 | `terminal_success_receipt` | not implemented |
+| 1 | `preflight` | read-only checks (see below) |
+| 2 | `preflight_receipt` | immutable `preflight.json` |
+| 3 | `build` | `build.dual-provider-bundles` — `scripts/build_dual_provider_release.sh --output-root <run-output>` in the agent source root |
+| 4 | `seal` | `seal.prepare-production-candidate`, `seal.sign-release-authorization`, `seal.seal-production-candidate`, `seal.finalize-dual-release` — ports the legacy `build_sealed_dual_provider_release.sh` sequence for the ONE config-selected provider; the active signing key id is resolved (pure controller logic) from `<operator>/config/<provider>/release-trust-registry.json` (exactly one non-revoked key valid now); the authorization is written under `<operator>/signing/releases/<run-name>/` |
+| 5 | `frontend_image_prepare` | `frontend-image.build-web` (`docker compose build web` in the frontend source root), `frontend-image.inspect-digest` (`docker image inspect <project>-web:latest --format {{.Id}}`) |
+| 6 | `migrations` | `migrations.db-push-dry-run` (`<frontend>/scripts/supabase-cli.sh db push --dry-run`) — the read-only plan gate; nothing is applied before admission close (05 migration ordering rule 3) |
+| 7 | `admission_close` | `admission.read-previous`, `admission.close`, `admission.verify-closed` (BatchMode ssh payloads porting the legacy `value_of` awk + `upsert_env_value` + `docker compose up -d --no-deps --force-recreate --wait web agent-v1-outbox` + in-container `/api/healthz`), then `migrations.db-push` (forward-only apply) and `migrations.abi-verify-procedure-N` / `migrations.abi-verify-column-N` (psql `information_schema` queries proving the contract's `required_procedures` / `required_columns` entries) |
+| 8 | `local_activation` | `activation.agentd-stage`, `activation.capabilityd-activate`, `activation.agentd-activate` — the sealed bundle's `packaging/launchd/install-local-mac-agentd-release.sh` (`--mode stage`, then `--mode activate ... --env-file <runtime-env>`) and `install-local-mac-capabilityd-release.sh` (`--mode activate ... --operator-root`) with `KRW_AGENT_LOCAL_INSTALL_ROOT` from the runtime env |
+| 9 | `remote_activation` | `remote.web-up` (ssh `docker compose up -d --force-recreate --wait web agent-v1-outbox market-web-source-worker market-issue-enrichment-worker`), `readiness.remote-web-healthz` (in-container healthz asserting `deployment_id == release id`) |
+| 10 | `deep_readiness` | `readiness.daemon-metrics` (local daemon `http://127.0.0.1:<metrics-port>/metrics`, `daemon_ready_ms`), `readiness.mcp-tcp-N` TCP probes + `readiness.mcp-ready-N` (`<endpoint>/readyz`, `mcp_ms`), `readiness.web-deep` (web `/api/healthz/deep` with internal-key headers, `public_ready_ms`), `readiness.db-heartbeat` (psql on `public.agent_v1_daemon_heartbeats` latest row verifying provider + descriptor hash + `mcp_ready`) — three layers, never an LLM call |
+| 11 | `admission_open` | `admission.open` (upsert `open` + recreate web/outbox), `readiness.admission-open-verify` (deep health must report `checks.agent_v1.admission == "open"`) |
+| 12 | `terminal_success_receipt` | immutable `terminal.json` (`outcome: success`, `admission: open`) |
 
-Stages 3-12 are declared in `src/stages.rs::STAGE_TABLE` as
-`NotImplementedThisRevision`. When a live `deploy` walk reaches one, the
-controller writes a terminal failure receipt with
-`admission: closed` and exits non-zero. Stages 6-9 (migrations, admission
-close/open, local/remote activation, deep readiness) can therefore never
-execute partially: either the whole controller stops before them (this
-revision, always) or a future revision implements them fully. Failures are
-recorded with admission closed; recovery is fix-forward only — the
-controller never rolls back binaries or DB schema.
+### Executor model
+
+Every world interaction in stages 3-12 goes through the `StageExecutor`
+trait (`RealStageExecutor` / `FixtureStageExecutor`, mirroring the
+preflight `PreflightExecutor` pair). Commands are structured records
+`{stage, id, argv, cwd, env_keys_used, timeout_ms}`:
+
+- `argv` keeps `<env:NAME>` placeholders unresolved — the real executor
+  substitutes values from the operator runtime env file (`<operator>`
+  `runtime/krw-agent-deploy.env`) into the child process only; receipts
+  and tests assert the placeholder form, so secret values are never
+  recorded, printed, or logged.
+- `env_keys_used` lists env var NAMES (the special `<runtime-env:all>`
+  entry marks commands whose whole runtime env file is exported into the
+  child via `set -a; . file`, the legacy packaging behavior).
+- `readiness.*` commands are retried by the real executor until their
+  config-derived timeout; the fixture executor is single-shot so tests
+  stay deterministic. No `--max-readiness-poll-ms` flag exists — only
+  config timeouts bound the wait.
+- The fixture executor records every spec (tests assert exact argv),
+  simulates the sealed-bundle files a real build leaves behind, and
+  learns the run's release id / provider / descriptor hash from the
+  observed argv so canned healthz and heartbeat outputs validate.
+
+### Drift guard
+
+Before each mutating stage (6-11) the controller re-reads the agent HEAD
+and re-hashes the config; any divergence from the preflight receipt is a
+terminal failure at that stage (nothing after the receipt may mutate a
+drifted tree).
+
+### Failure policy (no rollback, anywhere)
+
+Any stage failure writes the stage receipt (`status: fail`, including the
+failing command record) and the terminal failure receipt, then exits 1:
+
+- admission is `not-touched` for failures before `admission_close`
+  (build, seal, frontend image, migration dry-run — nothing mutated),
+- admission is `closed` from `admission_close` onward (the 05 rule: a
+  pushed schema never serves an older runtime; the queue stays stopped),
+- success is the only path that ends `open`.
+
+There are no rollback, restore, revert, or down-migration commands in the
+controller; the test suite asserts the recorded command log of every
+failure path never contains rollback-shaped ids or argv. A re-run is
+always a fresh run (new run dir; `output-dir-absent` is enforced).
+
+### Local-only targets
+
+The target file may omit `ssh_host` (and `gcp`) for local-dev
+deployments: stage 9 records `Skipped-with-reason`, and the remote halves
+of admission close/open record skips while operating on the LOCAL gateway
+stack — the controller upserts `KRW_AGENT_ADMISSION_MODE` on the local
+runtime env file and recreates the local compose `web agent-v1-outbox`
+services through the executor (`--env-file <runtime-env>`). Deep
+readiness' product layer then curls the local `/api/healthz/deep` with
+the internal key from the child env. An `ssh_host` without
+`remote_front_dir` fails closed at admission close.
 
 ## Config validation rules (fail-closed)
 
@@ -58,11 +110,12 @@ exactly 1:
   `runtime_env`, `target_file`, `frontend_contract` — REQUIRED, all
   absolute (relative paths rejected with the field named).
 - `timeouts.{ssh_ms,mcp_ms,daemon_ready_ms,public_ready_ms}` — REQUIRED,
-  positive integers.
+  positive integers. These are the ONLY bounds; no readiness flags exist.
 - Unknown top-level or `timeouts` fields are rejected (a stale config can
   never select unintended behavior).
 - Secret values are never stored in the config or receipts; the runtime env
-  file is read for KEY NAMES only.
+  file is read for KEY NAMES only (values flow into child processes
+  exclusively).
 
 ## Preflight checks (stable ids, 05-doc order)
 
@@ -106,11 +159,6 @@ Implemented checks:
 - `mcp-endpoint-reachable` — TCP connect to each `mcp_endpoints`
   `host:port`; connectivity only, never an LLM call (Skipped when none).
 
-Structured-stub note: the remote probes above are real read-only executors,
-but their deeper 05 semantics (exact Origin/TLS/pin checks, ABI SQL
-verification, remote disk inspection) land with stages 6-11 in the
-controller-completion pass; the executor trait is the extension point.
-
 ## Frontend deployment contract hash check
 
 The frontend owns one canonical contract artifact
@@ -124,6 +172,12 @@ operator target file may pin `frontend_contract_sha256`
 (`sha256:<hex>` or bare hex); a pin mismatch fails preflight. Without a pin
 the hash is still computed and recorded in the receipt.
 
+The contract may additionally pin DB ABI lists — `required_procedures`
+(e.g. `agent_v1.enqueue_run(jsonb)`) and `required_columns` (e.g.
+`agent_v1_daemon_heartbeats.mcp_ready`) — which stage 7 verifies with psql
+immediately after the forward-only `db push` (05 migration ordering
+rule 4).
+
 ## Receipts
 
 Written under `<operator_root>/deploy-receipts/<utc-ts>-<run-id>/` where
@@ -136,41 +190,46 @@ config + clock). Receipts are write-once; overwriting is an error.
   `frontend_contract_sha256`, `target_file_sha256`), `target_identity`
   (provider + gcp project/zone/instance/instance-id when present), the
   ordered `checks` array (`id`/`status`/`detail`), and `verdict`.
-- `terminal.json` — `outcome` (`dry-run-ok` | `failure`), `admission`
-  (`closed` for deploy failures per the 05 failure policy; `not-touched`
-  for dry-run, which never mutates admission), `reached_stage`,
-  `failed_stage`, `reason`, `receipt_path` (the preflight receipt), and
-  dry-run `validations`.
+- `stage-<n>-<id>.json` (n = 3..12) — per-stage receipt: `stage_index`,
+  `stage`, `status` (`pass` | `skipped` | `fail`), optional `reason`, the
+  executed `commands` (exact `{id, argv, cwd, env_keys_used, timeout_ms,
+  outcome}` records with env placeholders unresolved), `probes` (TCP
+  records), and `notes`.
+- `terminal.json` — `outcome` (`success` | `dry-run-ok` | `failure`),
+  `admission` (`open` on success; `closed` for deploy failures from
+  `admission_close` onward; `not-touched` before it and for dry-run),
+  `reached_stage`, `failed_stage`, `reason`, `receipt_path` (the preflight
+  receipt), dry-run `validations`, `artifacts` (`release_dir`,
+  `release_id`, `descriptor_sha256`, `frontend_image_digest`,
+  `applied_migrations` parsed from the `db push` output,
+  `previous_admission` captured before close), and `skipped` records
+  (local-only remote halves). No secrets ever appear in any receipt.
 
 `dry-run` additionally validates that build/seal inputs resolve (agent
 workspace + `Cargo.toml` present, frontend source root present,
 `cargo metadata --no-deps` readable, output dir absent) without executing
 any build.
 
-## Path to completion (finish line for this controller)
+## Path to completion (remaining integration steps)
 
-1. Implement stage 3 `build` (exact source commit build into the run output
-   directory, sealed against the receipt hashes) and stage 4 `seal` (one
-   selected runtime release set, signed against the operator trust
-   registry).
-2. Implement stage 5 `frontend_image_prepare` from the release manifest.
-3. Implement stages 6-9 (forward-only migrations with the sealed DB ABI
-   checker, admission close, local capability/gateway/daemon activation,
-   remote web + outbox activation), then 10-12 (bounded deep readiness,
-   admission open, terminal success receipt). Keep the invariant: any
-   failure writes a terminal failure receipt with admission closed and
-   exits non-zero; never roll back.
-4. Replace the frontend `npm run prod:deploy:full` body with the thin
+1. Replace the frontend `npm run prod:deploy:full` body with the thin
    adapter that runs `krw-agent-deploy --config <absolute config> deploy`.
-5. Wave 9 deletion: remove old deploy/pause/recover scripts, rollback
+2. Wave 9 deletion: remove old deploy/pause/recover scripts, rollback
    branches, dual/newest candidate selection, old provider aliases, the
    `.deploy` phase graph, and the legacy scripts this controller supersedes
-   (`build_sealed_dual_provider_release.sh` flow becomes controller stages).
+   (`build_sealed_dual_provider_release.sh` flow is now controller stages
+   3-4).
 
 ## Testing
 
 `cargo test -p krw-agent-deploy` — unit tests per module (config, target,
-contract, executor, checks, receipts, stages) plus
-`tests/integration.rs` driving `run_command` end to end against tempdir
-trees assembled from `tests/fixtures/` (dummy local paths and placeholder
-provider ids only; no credentials). No test touches a real operator root.
+contract, executor, checks, receipts, stages, pipeline: trust-key
+resolution, env upsert semantics, migration/ABI/healthz parsing, payload
+construction, exact argv for every command) plus `tests/integration.rs`
+driving `run_command` end to end against tempdir trees assembled from
+`tests/fixtures/`: the 12-stage happy path (ordered command records,
+success receipt with artifacts), an injected failure at each stage 3-11
+(correct failed stage, admission posture, no rollback commands), drift
+between preflight and stage 6, migration dry-run abort, ABI-failure-after-
+push, admission capture values, local-only skipping, and a no-secret-leak
+scan of every receipt. No test touches a real operator root.

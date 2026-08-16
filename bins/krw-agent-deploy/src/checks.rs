@@ -158,6 +158,8 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
                 provider: None,
                 gcp: None,
                 ssh_host: None,
+                remote_front_dir: None,
+                compose_project: None,
                 local_ports: Vec::new(),
                 required_env_keys: Vec::new(),
                 db_url_env: None,

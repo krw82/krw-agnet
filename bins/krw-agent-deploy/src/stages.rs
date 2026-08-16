@@ -1,15 +1,15 @@
 //! Forward-only stage machine and controller run modes.
 //!
-//! The 05-doc stage list is declared as a fixed table. In this controller
-//! revision only stages 1-2 (`preflight`, `preflight_receipt`) are
-//! implemented. Every mutating stage (build, seal, frontend image prepare,
-//! migrations, admission close/open, local/remote activation, deep
-//! readiness, success receipt) is declared as
-//! [`StageStatus::NotImplementedThisRevision`]: when a live `deploy` walk
-//! reaches such a stage the controller writes a TERMINAL FAILURE RECEIPT
-//! recording `admission: closed` and exits non-zero. The controller never
-//! half-activates and never rolls back binaries or DB schema; recovery is
-//! always fix-forward.
+//! The 05-doc stage list is declared as a fixed table. Stages 1-2
+//! (`preflight`, `preflight_receipt`) run inline here; stages 3-12 (build,
+//! seal, frontend image prepare, migrations, admission close/open, local and
+//! remote activation, deep readiness, terminal success receipt) execute
+//! through [`crate::pipeline::run_deploy_pipeline`] with every world command
+//! recorded as a structured [`crate::pipeline::StageCommand`]. Any stage
+//! failure writes a TERMINAL FAILURE RECEIPT (admission `closed` from
+//! `admission_close` onward, `not-touched` before) and exits non-zero. The
+//! controller never half-activates and never rolls back binaries or DB
+//! schema; recovery is always fix-forward through a fresh run.
 
 use std::path::{Path, PathBuf};
 
@@ -17,10 +17,12 @@ use crate::checks::{self, CheckStatus, PreflightOutcome, PreflightPlan};
 use crate::config::DeployConfig;
 use crate::executor::PreflightExecutor;
 use crate::hashing::sha256_bytes;
+use crate::pipeline::{PipelineDeps, PipelineOutcome, StageExecutor};
 use crate::receipts::{
     write_preflight_receipt, write_terminal_receipt, PreflightReceipt, ReceiptError, TerminalAdmission,
     TerminalReceipt,
 };
+use crate::target::TargetFile;
 use crate::timeutil;
 
 pub const STAGE_PREFLIGHT: &str = "preflight";
@@ -39,7 +41,6 @@ pub const STAGE_TERMINAL_SUCCESS_RECEIPT: &str = "terminal_success_receipt";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageStatus {
     Implemented,
-    NotImplementedThisRevision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,24 +49,22 @@ pub struct StageEntry {
     pub status: StageStatus,
 }
 
-/// The 05-doc stage list, in forward-only order.
+/// The 05-doc stage list, in forward-only order. Every stage is implemented:
+/// 3-12 run through the stage executor in `crate::pipeline`.
 pub const STAGE_TABLE: [StageEntry; 12] = [
     StageEntry { id: STAGE_PREFLIGHT, status: StageStatus::Implemented },
     StageEntry { id: STAGE_PREFLIGHT_RECEIPT, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_BUILD, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_SEAL, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_FRONTEND_IMAGE_PREPARE, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_MIGRATIONS, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_ADMISSION_CLOSE, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_LOCAL_ACTIVATION, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_REMOTE_ACTIVATION, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_DEEP_READINESS, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_ADMISSION_OPEN, status: StageStatus::NotImplementedThisRevision },
-    StageEntry { id: STAGE_TERMINAL_SUCCESS_RECEIPT, status: StageStatus::NotImplementedThisRevision },
+    StageEntry { id: STAGE_BUILD, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_SEAL, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_FRONTEND_IMAGE_PREPARE, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_MIGRATIONS, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_ADMISSION_CLOSE, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_LOCAL_ACTIVATION, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_REMOTE_ACTIVATION, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_DEEP_READINESS, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_ADMISSION_OPEN, status: StageStatus::Implemented },
+    StageEntry { id: STAGE_TERMINAL_SUCCESS_RECEIPT, status: StageStatus::Implemented },
 ];
-
-pub const NOT_IMPLEMENTED_REASON: &str =
-    "controller build/seal/activation stages not yet enabled in this revision; admission left closed; fix-forward";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandMode {
@@ -136,13 +135,16 @@ pub fn prepare_run(config: &DeployConfig, config_sha256: &str, now_unix_seconds:
 }
 
 /// Execute one controller command end to end (read-only in preflight and
-/// dry-run modes; deploy stops fail-closed at the first unimplemented stage).
-/// The only filesystem writes are receipts under the run's receipt dir.
+/// dry-run modes; deploy runs all twelve stages through the stage
+/// executor). The only filesystem writes are receipts under the run's
+/// receipt dir plus the release output and operator signing trees a real
+/// deploy legitimately produces.
 pub fn run_command(
     mode: CommandMode,
     config_path: &Path,
     now_unix_seconds: u64,
     executor: &dyn PreflightExecutor,
+    stage_executor: &dyn StageExecutor,
 ) -> Result<RunOutcome, ControllerError> {
     let config_bytes = std::fs::read(config_path)
         .map_err(|error| ControllerError::ConfigRead(format!("{}: {error}", config_path.display())))?;
@@ -180,7 +182,14 @@ pub fn run_command(
             message: verdict_message(&outcome),
         }),
         CommandMode::DryRun => Ok(run_dry_run(&config, &context, &outcome, &preflight_path_string, executor)),
-        CommandMode::Deploy => Ok(run_deploy(&context, &outcome, &preflight_path_string)),
+        CommandMode::Deploy => Ok(run_deploy(
+            &config,
+            config_path,
+            &context,
+            &outcome,
+            &preflight_path_string,
+            stage_executor,
+        )),
     }
 }
 
@@ -206,6 +215,8 @@ fn run_dry_run(
             format!("preflight failed; failing checks: {failed_ids}"),
             TerminalAdmission::NotTouched,
             Some(preflight_path.to_owned()),
+            Vec::new(),
+            None,
             Vec::new(),
         );
         return finish_with_terminal(context, &receipt, 1, format!("preflight failed: {failed_ids}"));
@@ -241,6 +252,8 @@ fn run_dry_run(
         TerminalAdmission::NotTouched,
         Some(preflight_path.to_owned()),
         validations,
+        None,
+        Vec::new(),
     );
     finish_with_terminal(context, &receipt, 1, format!("dry-run validation failed: {failed}"))
 }
@@ -290,7 +303,14 @@ fn dry_run_validations(
     validations
 }
 
-fn run_deploy(context: &RunContext, outcome: &PreflightOutcome, preflight_path: &str) -> RunOutcome {
+fn run_deploy(
+    config: &DeployConfig,
+    config_path: &Path,
+    context: &RunContext,
+    outcome: &PreflightOutcome,
+    preflight_path: &str,
+    stage_executor: &dyn StageExecutor,
+) -> RunOutcome {
     if outcome.verdict == CheckStatus::Fail {
         let failed_ids = outcome
             .failed_checks()
@@ -307,30 +327,109 @@ fn run_deploy(context: &RunContext, outcome: &PreflightOutcome, preflight_path: 
             TerminalAdmission::Closed,
             Some(preflight_path.to_owned()),
             Vec::new(),
+            None,
+            Vec::new(),
         );
         return finish_with_terminal(context, &receipt, 1, format!("deploy aborted: preflight failed: {failed_ids}"));
     }
 
-    // Forward-only walk. Stages 1-2 (preflight, preflight receipt) are done;
-    // the first stage after them decides the outcome. In this revision that
-    // is always `build`, declared not implemented: fail closed with a
-    // terminal failure receipt and admission recorded closed.
-    let next = STAGE_TABLE
-        .iter()
-        .find(|entry| entry.id != STAGE_PREFLIGHT && entry.id != STAGE_PREFLIGHT_RECEIPT)
-        .expect("stage table always declares a post-preflight stage");
-    debug_assert_eq!(next.id, STAGE_BUILD);
+    // Stages 1-2 are complete (preflight + immutable receipt). Re-load the
+    // target for the stage walk; a target that preflight accepted always
+    // re-parses.
+    let target = match TargetFile::from_path(&config.target_file) {
+        Ok(target) => target,
+        Err(error) => {
+            let receipt = TerminalReceipt::failure(
+                &context.run_id,
+                &context.created_at_utc,
+                context.mode.as_str(),
+                STAGE_BUILD,
+                format!("target file became unreadable after preflight: {error}"),
+                TerminalAdmission::NotTouched,
+                Some(preflight_path.to_owned()),
+                Vec::new(),
+                None,
+                Vec::new(),
+            );
+            return finish_with_terminal(
+                context,
+                &receipt,
+                1,
+                format!("deploy stopped before stage `{STAGE_BUILD}`: target file unreadable: {error}"),
+            );
+        }
+    };
+    let agent_head = outcome
+        .input_hashes
+        .get("agent_head")
+        .cloned()
+        .unwrap_or_else(|| crate::hashing::UNAVAILABLE_HASH.to_owned());
+    let deps = PipelineDeps {
+        config,
+        config_path,
+        target: &target,
+        context,
+        preflight_agent_head: &agent_head,
+        now_unix_seconds: now_unix_seconds_for(context),
+    };
+    let pipeline_outcome = crate::pipeline::run_deploy_pipeline(&deps, stage_executor);
+    finish_pipeline(context, preflight_path, pipeline_outcome)
+}
+
+/// Recover the wall-clock the run was stamped with (deterministic in tests).
+fn now_unix_seconds_for(context: &RunContext) -> u64 {
+    timeutil::unix_seconds_from_compact(&context.run_ts).unwrap_or_default()
+}
+
+fn finish_pipeline(context: &RunContext, preflight_path: &str, pipeline: PipelineOutcome) -> RunOutcome {
+    if pipeline.success {
+        let artifacts = pipeline.artifacts.clone().unwrap_or_else(|| crate::receipts::DeployArtifacts {
+            release_dir: context.output_dir.display().to_string(),
+            release_id: format!("{}-{}", context.run_ts, context.run_id),
+            descriptor_sha256: crate::hashing::UNAVAILABLE_HASH.to_owned(),
+            frontend_image_digest: "<unavailable>".to_owned(),
+            applied_migrations: Vec::new(),
+            previous_admission: "unknown".to_owned(),
+        });
+        let release_id = artifacts.release_id.clone();
+        let receipt = TerminalReceipt::success(
+            &context.run_id,
+            &context.created_at_utc,
+            context.mode.as_str(),
+            Some(preflight_path.to_owned()),
+            artifacts,
+            pipeline.skipped.clone(),
+        );
+        let message = format!(
+            "deploy success: release {release_id} sealed, activated, and open ({} stage-level skip(s))",
+            pipeline.skipped.len()
+        );
+        return finish_with_terminal(context, &receipt, 0, message);
+    }
+    let failed_stage = pipeline.failed_stage.unwrap_or(STAGE_TERMINAL_SUCCESS_RECEIPT);
+    let reason = pipeline
+        .reason
+        .clone()
+        .unwrap_or_else(|| "deploy failed; admission left closed; fix-forward".to_owned());
+    let admission_label = match pipeline.admission {
+        TerminalAdmission::Closed => "closed",
+        TerminalAdmission::NotTouched => "not-touched",
+        TerminalAdmission::Open => "open",
+    };
     let receipt = TerminalReceipt::failure(
         &context.run_id,
         &context.created_at_utc,
         context.mode.as_str(),
-        next.id,
-        NOT_IMPLEMENTED_REASON.to_owned(),
-        TerminalAdmission::Closed,
+        failed_stage,
+        format!("{reason}; admission {admission_label}; fix-forward"),
+        pipeline.admission,
         Some(preflight_path.to_owned()),
         Vec::new(),
+        pipeline.artifacts.clone(),
+        pipeline.skipped.clone(),
     );
-    finish_with_terminal(context, &receipt, 1, format!("deploy stopped at stage `{}`: {NOT_IMPLEMENTED_REASON}", next.id))
+    let message = format!("deploy failed at stage `{failed_stage}`: {reason} (admission {admission_label}; fix-forward)");
+    finish_with_terminal(context, &receipt, 1, message)
 }
 
 fn finish_with_terminal(context: &RunContext, receipt: &TerminalReceipt, exit_code: i32, message: String) -> RunOutcome {
@@ -377,6 +476,7 @@ fn verdict_message(outcome: &PreflightOutcome) -> String {
 mod tests {
     use super::*;
     use crate::executor::FixtureExecutor;
+    use crate::pipeline::FixtureStageExecutor;
     use crate::receipts::{PREFLIGHT_RECEIPT_FILE, TERMINAL_RECEIPT_FILE};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -421,7 +521,35 @@ mod tests {
         std::fs::create_dir_all(&frontend_root).unwrap();
         std::fs::create_dir_all(operator_root.join("signing")).unwrap();
         std::fs::create_dir_all(operator_root.join("ops")).unwrap();
+        std::fs::create_dir_all(operator_root.join("runtime")).unwrap();
         std::fs::write(operator_root.join("signing/release-private.pk8"), b"dummy-pkcs8").unwrap();
+        std::fs::write(
+            operator_root.join("runtime/krw-agent-deploy.env"),
+            "# fixture env: dummy values only\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\n",
+        )
+        .unwrap();
+        // Operator provider configuration consumed by the seal stage.
+        let provider_config = operator_root.join("config").join("deepseek");
+        std::fs::create_dir_all(&provider_config).unwrap();
+        std::fs::write(provider_config.join("deployment-binding.yaml"), "provider: deepseek\n").unwrap();
+        std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+        let registry = krw_agent_release_authorization::ReleaseTrustRegistryV1 {
+            schema_version: 1,
+            registry_id: "krw.deploy-stages-test".to_owned(),
+            minimum_sequence: 1,
+            keys: vec![krw_agent_release_authorization::ReleaseTrustKeyV1 {
+                key_id: "stages-test-key".to_owned(),
+                ed25519_public_key_hex: "22".repeat(32),
+                not_before_unix_seconds: 0,
+                not_after_unix_seconds: 4_102_444_800,
+                revoked: false,
+            }],
+        };
+        std::fs::write(
+            provider_config.join("release-trust-registry.json"),
+            serde_jcs::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             operator_root.join("ops/agent-v1-deployment-contract.json"),
             crate::contract::canonical_fixture_contract_json(),
@@ -474,14 +602,20 @@ mod tests {
                 "terminal_success_receipt"
             ]
         );
-        assert_eq!(STAGE_TABLE.iter().filter(|entry| entry.status == StageStatus::Implemented).count(), 2);
+        assert!(STAGE_TABLE.iter().all(|entry| entry.status == StageStatus::Implemented));
     }
 
     #[test]
     fn preflight_mode_passes_and_writes_only_the_preflight_receipt() {
         let fixture = write_fixture("preflight-mode");
-        let outcome = run_command(CommandMode::Preflight, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::Preflight,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(outcome.outcome, "pass");
         let run_dir = fixture.single_run_dir();
@@ -502,8 +636,14 @@ mod tests {
     fn preflight_mode_fails_and_exits_nonzero_when_a_check_fails() {
         let fixture = write_fixture("preflight-fail");
         std::fs::remove_file(fixture.operator_root().join("signing/release-private.pk8")).unwrap();
-        let outcome = run_command(CommandMode::Preflight, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::Preflight,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 1);
         assert_eq!(outcome.outcome, "fail");
         assert!(outcome.message.contains("signing-trust-validity"), "message: {}", outcome.message);
@@ -513,8 +653,14 @@ mod tests {
     #[test]
     fn dry_run_ok_writes_dry_run_terminal_receipt() {
         let fixture = write_fixture("dry-run-ok");
-        let outcome = run_command(CommandMode::DryRun, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::DryRun,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
         assert_eq!(outcome.outcome, "dry-run-ok");
         let run_dir = fixture.single_run_dir();
@@ -533,8 +679,14 @@ mod tests {
     fn dry_run_with_failing_preflight_records_not_touched_admission() {
         let fixture = write_fixture("dry-run-fail");
         std::fs::remove_file(fixture.operator_root().join("signing/release-private.pk8")).unwrap();
-        let outcome = run_command(CommandMode::DryRun, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::DryRun,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 1);
         let run_dir = fixture.single_run_dir();
         let terminal: serde_json::Value =
@@ -546,22 +698,60 @@ mod tests {
     }
 
     #[test]
-    fn deploy_fails_closed_at_build_stage_with_admission_closed() {
-        let fixture = write_fixture("deploy-fail-closed");
-        let outcome = run_command(CommandMode::Deploy, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
-        assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
+    fn deploy_walks_all_twelve_stages_to_success_with_local_only_target() {
+        // This fixture target has no gcp and no ssh_host: the full walk runs
+        // in local-only mode and still succeeds end to end.
+        let fixture = write_fixture("deploy-success");
+        let outcome = run_command(
+            CommandMode::Deploy,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
+        assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
+        assert_eq!(outcome.outcome, "success");
         let run_dir = fixture.single_run_dir();
+        for (index, stage) in [
+            (3, "build"),
+            (4, "seal"),
+            (5, "frontend_image_prepare"),
+            (6, "migrations"),
+            (7, "admission_close"),
+            (8, "local_activation"),
+            (9, "remote_activation"),
+            (10, "deep_readiness"),
+            (11, "admission_open"),
+            (12, "terminal_success_receipt"),
+        ] {
+            assert!(
+                run_dir.join(format!("stage-{index}-{stage}.json")).is_file(),
+                "missing stage-{index}-{stage}.json in {}",
+                run_dir.display()
+            );
+        }
         let terminal: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
-        assert_eq!(terminal["outcome"], "failure");
-        assert_eq!(terminal["failed_stage"], "build");
-        assert_eq!(terminal["reached_stage"], "build");
-        assert_eq!(terminal["admission"], "closed");
-        assert!(terminal["reason"].as_str().unwrap().contains("not yet enabled"));
-        assert!(terminal["reason"].as_str().unwrap().contains("fix-forward"));
-        // Nothing was built: no release output tree beyond receipts.
-        assert!(!fixture.operator_root().join("releases").exists());
+        assert_eq!(terminal["outcome"], "success");
+        assert_eq!(terminal["admission"], "open");
+        assert_eq!(terminal["reached_stage"], "terminal_success_receipt");
+        let expected_run_id = crate::receipts::run_id_from_config_sha256(
+            &crate::hashing::sha256_file(&fixture.config_path).unwrap(),
+        );
+        assert_eq!(
+            terminal["artifacts"]["release_id"],
+            format!("20260816T012000Z-{expected_run_id}"),
+            "artifacts: {}",
+            terminal["artifacts"]
+        );
+        assert!(terminal["artifacts"]["descriptor_sha256"].as_str().unwrap().starts_with("sha256:"));
+        assert!(terminal["skipped"].as_array().unwrap().iter().any(|skip| skip["stage"] == "remote_activation"));
+        let remote_stage: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join("stage-9-remote_activation.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(remote_stage["status"], "skipped");
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
 
@@ -569,14 +759,22 @@ mod tests {
     fn deploy_with_failing_preflight_records_preflight_failure_admission_closed() {
         let fixture = write_fixture("deploy-preflight-fail");
         std::fs::remove_file(fixture.operator_root().join("signing/release-private.pk8")).unwrap();
-        let outcome = run_command(CommandMode::Deploy, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::Deploy,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 1);
         let run_dir = fixture.single_run_dir();
         let terminal: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
         assert_eq!(terminal["failed_stage"], "preflight");
         assert_eq!(terminal["admission"], "closed");
+        // No stage receipts: the walk never started.
+        assert!(!run_dir.join("stage-3-build.json").exists());
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
 
@@ -584,8 +782,14 @@ mod tests {
     fn unparseable_config_surfaces_controller_error_without_receipts() {
         let fixture = write_fixture("config-error");
         std::fs::write(&fixture.config_path, "{\"schema_version\": 1}").unwrap();
-        let error = run_command(CommandMode::Deploy, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap_err();
+        let error = run_command(
+            CommandMode::Deploy,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap_err();
         assert!(matches!(error, ControllerError::Config(_)), "unexpected error: {error}");
         assert!(!fixture.receipt_root().exists());
         let _ = std::fs::remove_dir_all(&fixture.root);
@@ -595,8 +799,14 @@ mod tests {
     fn dry_run_detects_missing_agent_workspace() {
         let fixture = write_fixture("dry-run-no-workspace");
         std::fs::remove_file(fixture.root.join("agent/Cargo.toml")).unwrap();
-        let outcome = run_command(CommandMode::DryRun, &fixture.config_path, FIXED_NOW, &FixtureExecutor::passing())
-            .unwrap();
+        let outcome = run_command(
+            CommandMode::DryRun,
+            &fixture.config_path,
+            FIXED_NOW,
+            &FixtureExecutor::passing(),
+            &FixtureStageExecutor::passing(),
+        )
+        .unwrap();
         assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
         assert_eq!(outcome.outcome, "failure");
         assert!(outcome.message.contains("agent-workspace-resolvable"), "message: {}", outcome.message);
