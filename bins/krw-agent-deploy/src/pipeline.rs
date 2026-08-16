@@ -1241,7 +1241,7 @@ pub fn payload_remote_web_healthz(topology: &RemoteTopology, release_id: &str) -
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
+            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
             release_id,
         ),
         id = release_id,
@@ -1256,7 +1256,7 @@ pub fn payload_remote_web_deep(topology: &RemoteTopology, release_id: &str) -> S
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
+            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
             release_id,
         ),
         internal = INTERNAL_API_KEY_ENV_KEY,
@@ -1320,7 +1320,7 @@ pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, exp
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
+            &shell_quote(&format!("{stage}/runtime.env", stage = remote_stage_dir(topology, release_id))),
             release_id,
         ),
         internal = INTERNAL_API_KEY_ENV_KEY,
@@ -4359,6 +4359,29 @@ mod tests {
         // No unresolved render tokens.
         for token in ["@IMAGE_ARCHIVE@", "@PREFLIGHT_JS@", "@HELPERS@", "@TENANT@"] {
             assert!(!payload.contains(token), "unresolved token {token}: {payload}");
+        }
+    }
+
+    #[test]
+    fn remote_compose_probes_read_the_stage_runtime_env_file() {
+        // Regression: the in-container probes once rendered the stage
+        // DIRECTORY as the compose --env-file (docker compose then fails
+        // with "X is a directory"), and before that a literal 'unused-env'.
+        // Every probe must resolve the same stage runtime.env the web-up
+        // compose_stage uses.
+        let (_guard, deps) = deps_for(false);
+        let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
+        let release_id = deps.release_id();
+        let expected = format!(
+            "--env-file '{}'",
+            remote_stage_dir(&topology, &release_id) + "/runtime.env"
+        );
+        for (name, payload) in [
+            ("healthz", payload_remote_web_healthz(&topology, &release_id)),
+            ("deep", payload_remote_web_deep(&topology, &release_id)),
+            ("verify_admission", payload_verify_admission(&topology, &release_id, "open")),
+        ] {
+            assert!(payload.contains(&expected), "{name} probe must read the stage runtime.env: {payload}");
         }
     }
 
