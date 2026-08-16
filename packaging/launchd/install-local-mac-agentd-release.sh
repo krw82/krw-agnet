@@ -318,24 +318,24 @@ TARGET_RELEASE_ROOT="$RELEASES_ROOT/$RELEASE_ID"
 STATE_DIR="$STATE_ROOT/$RELEASE_ID"
 
 write_activation_status() {
-  status=$1
-  exit_code=$2
+  w_status=$1
+  w_exit_code=$2
   temporary=$(mktemp "$STATE_DIR/.activation-status.XXXXXX")
   printf '{"schema_version":1,"component":"krw-agentd","release_id":"%s","provider":"%s","status":"%s","exit_code":%s}\n' \
-    "$RELEASE_ID" "$PROVIDER" "$status" "$exit_code" > "$temporary"
+    "$RELEASE_ID" "$PROVIDER" "$w_status" "$w_exit_code" > "$temporary"
   chmod 0600 "$temporary"
   mv -f "$temporary" "$STATE_DIR/activation-status.json"
 }
 
 ACTIVATION_FAILURE_ARMED=0
 record_activation_failure() {
-  status=$?
+  trap_status=$?
   trap - EXIT INT TERM
   if [ "$ACTIVATION_FAILURE_ARMED" = "1" ]; then
     ACTIVATION_FAILURE_ARMED=0
-    write_activation_status failed "$status" || true
+    write_activation_status failed "$trap_status" || true
   fi
-  exit "$status"
+  exit "$trap_status"
 }
 
 stage_release() {
