@@ -43,7 +43,12 @@ profiles:
       max_input_tokens: 144000
       max_output_tokens: 60000
       max_evidence_bytes: 8388608
-      deadline_ms: 1200000
+      # Wall-clock ceiling for the 20-turn envelope: GLM high-reasoning turns
+      # run 96-144s each, so a full-depth run needs ~32-48 minutes. The old
+      # 20-minute deadline starved exactly those deep runs (2026-08-16 A/B:
+      # five of eight fell to the ledger fallback at the clock while three
+      # shallower runs composed real answers in 11-14 minutes).
+      deadline_ms: 2400000
       capability_call_limits:
         ontology.query_context: 4
         ontology.company_context: 2
@@ -63,7 +68,7 @@ profiles:
       # evidence review and the final Korean answer.
       max_output_tokens: 24000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 1200000
       capability_call_limits:
         ontology.query_context: 4
         ontology.query: 4
@@ -82,7 +87,7 @@ profiles:
       max_input_tokens: 120000
       max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      deadline_ms: 1200000
       capability_call_limits:
         ontology.query_context: 4
         ontology.query: 4
@@ -97,7 +102,7 @@ profiles:
       max_input_tokens: 120000
       max_output_tokens: 14000
       max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      deadline_ms: 900000
       capability_call_limits:
         ontology.query_context_universe: 4
         ontology.query_universe: 4
@@ -111,7 +116,7 @@ profiles:
       max_input_tokens: 120000
       max_output_tokens: 28000
       max_evidence_bytes: 8388608
-      deadline_ms: 600000
+      deadline_ms: 1200000
       capability_call_limits:
         ontology.query_context_universe: 4
         ontology.query_universe: 5
