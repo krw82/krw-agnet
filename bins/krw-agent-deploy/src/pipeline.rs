@@ -1245,7 +1245,7 @@ pub fn payload_remote_web_healthz(topology: &RemoteTopology, release_id: &str) -
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            "'unused-env'",
+            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
             release_id,
         ),
         id = release_id,
@@ -1260,7 +1260,7 @@ pub fn payload_remote_web_deep(topology: &RemoteTopology, release_id: &str) -> S
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            "'unused-env'",
+            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
             release_id,
         ),
         internal = INTERNAL_API_KEY_ENV_KEY,
@@ -1324,7 +1324,7 @@ pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, exp
         prefix = compose_prefix_in(
             &remote_stage_dir(topology, release_id),
             &topology.compose_project,
-            "'unused-env'",
+            &format!("'{stage_env}'", stage_env = remote_stage_dir(topology, release_id).replace('\'', "'\\''")),
             release_id,
         ),
         internal = INTERNAL_API_KEY_ENV_KEY,
