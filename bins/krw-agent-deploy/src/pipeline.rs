@@ -2698,7 +2698,10 @@ pub fn build_web_deep_command_remote(deps: &PipelineDeps<'_>, topology: &RemoteT
         topology,
         deps.config.timeouts.ssh_ms,
         payload_remote_web_deep(topology, &deps.release_id()),
-        deps.config.timeouts.public_ready_ms.max(SSH_QUICK_TIMEOUT_MS),
+        // The payload retries 36 × 5s in-script while the remote web
+        // container settles on the new release id; the quick 120s budget
+        // killed the probe mid-retry (production run 20260818T153014Z).
+        SSH_COMPOSE_TIMEOUT_MS,
     )
 }
 
@@ -4543,6 +4546,9 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let deep = build_web_deep_command_remote(&deps, &topology);
         assert_eq!(deep.id, "readiness.web-deep");
+        // The command budget must outlive the 36 × 5s in-script retry loop,
+        // not the quick 120s cap that killed the probe mid-retry.
+        assert_eq!(deep.timeout_ms, SSH_COMPOSE_TIMEOUT_MS);
         assert!(deep.argv[6].contains("healthz/deep"));
         assert!(deep.argv[6].contains("INTERNAL_API_KEY"));
         assert!(deep.argv[6].contains("NEXT_PUBLIC_APP_VERSION"));
