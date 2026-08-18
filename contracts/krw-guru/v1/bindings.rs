@@ -27,4 +27,4 @@ pub const KRW_GURU_RESEARCH_PACK_V1: &str = "krw-guru-research-pack/v1";
 pub const KRW_GURU_RESEARCH_PACK_V1_SCHEMA_SHA256: &str = "sha256:cab1b5ce2a9b33caf4dd8955e47b53ab1ef98c21f61430cf5929876bb05c0c5b";
 pub const KRW_GURU_VALIDATED_EVIDENCE_ANALYSIS_V1: &str = "krw-guru-validated-evidence-analysis/v1";
 pub const KRW_GURU_VALIDATED_EVIDENCE_ANALYSIS_V1_SCHEMA_SHA256: &str = "sha256:cef5fa685b0ad561a07ffb23842bfe7ea14d98c3dd834ff74daf9a259fad2705";
-pub const GURU_GENERATED_MANIFEST_SHA256: &str = "sha256:7def5dabbc935c1d1a698540e50dd7e0c43359c035b6681fc528744b6a6c248a";
+pub const GURU_GENERATED_MANIFEST_SHA256: &str = "sha256:c48eb1e84c698a23981aa4847d92208d3e4f64bed4a1eea7eb9007bfd5b88069";

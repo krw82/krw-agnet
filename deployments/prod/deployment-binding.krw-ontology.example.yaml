@@ -73,3 +73,39 @@ capabilities:
     data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
     max_connections: 4
     request_timeout_ms: 30000
+  # Guru tools ride the same sealed capabilityd endpoint: that runtime derives
+  # the neutral light company context from the ontology release and attaches it
+  # to the query-context result boundary.
+  - binding_key: krw_guru_query_context
+    mcp_tool_name: krw_guru_query_context
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: attested-stateless-v1
+    server_schema_bundle_hash: sha256:REPLACE_WITH_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
+    max_connections: 4
+    request_timeout_ms: 15000
+  - binding_key: krw_guru_company_brief
+    mcp_tool_name: krw_guru_company_brief
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: attested-stateless-v1
+    server_schema_bundle_hash: sha256:REPLACE_WITH_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
+    max_connections: 4
+    request_timeout_ms: 30000
+  - binding_key: krw_guru_review_company_evidence
+    mcp_tool_name: krw_guru_review_company_evidence
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: attested-stateless-v1
+    server_schema_bundle_hash: sha256:REPLACE_WITH_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
+    max_connections: 4
+    request_timeout_ms: 30000

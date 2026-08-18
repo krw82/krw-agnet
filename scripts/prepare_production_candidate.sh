@@ -78,8 +78,10 @@ for relative in ("deployments/deployment-binding.yaml", "deployments/endpoint-re
 # The ontology capability identity is produced by the sealed runtime itself.
 # Materialize it into every ontology binding while preparing the candidate so
 # operators never hand-edit three coupled hashes or accidentally bind the
-# previous sidecar build.  Guru/feed/filings bindings remain independent
-# services and are intentionally left unchanged.
+# previous sidecar build.  Guru bindings ride the same capabilityd endpoint
+# (that runtime derives the trusted light company context from the ontology
+# release), so they receive the identical identity.  Feed/filings bindings
+# remain independent services and are intentionally left unchanged.
 identity_path = root / "capability-runtime" / "identity.json"
 identity = json.loads(identity_path.read_text(encoding="utf-8"))
 required = ("build_id", "tool_schema_sha256", "release_manifest_sha256")

@@ -1813,28 +1813,9 @@ pub fn enrich_guru_query_input_with_result_context(
     query_result_value: &Value,
 ) -> Result<Value, ContractValueError> {
     validate_guru_query_exchange(query_input_value, query_result_value)?;
-    let query_input: GuruQueryContextInput =
-        decode(query_input_value, KRW_GURU_QUERY_CONTEXT_INPUT_V1)?;
     let result: GuruQueryContextResult =
         decode(query_result_value, KRW_GURU_QUERY_CONTEXT_RESULT_V1)?;
-    // Preserve the caller's exact light-context JSON when replaying a legacy
-    // ticker-only result.  Serializing the typed fallback would add optional
-    // `null` fields (for example `industry`) and make a downstream physical
-    // review envelope differ from the committed request even though the
-    // trusted context is identical.
-    let context = if query_result_value
-        .get("company_context")
-        .and_then(Value::as_object)
-        .is_some_and(|object| object.len() == 1 && object.get("ticker").is_some())
-        && query_input_value.get("company_context").is_some()
-    {
-        query_input_value
-            .get("company_context")
-            .cloned()
-            .ok_or(ContractValueError::Shape(KRW_GURU_LIGHT_COMPANY_CONTEXT_V1))?
-    } else {
-        normalized_query_result_context(&result, Some(&query_input))?
-    };
+    let context = normalized_query_result_context(&result)?;
     let mut enriched = query_input_value
         .as_object()
         .cloned()
@@ -1847,34 +1828,12 @@ pub fn enrich_guru_query_input_with_result_context(
 
 fn normalized_query_result_context(
     result: &GuruQueryContextResult,
-    fallback_input: Option<&GuruQueryContextInput>,
 ) -> Result<Value, ContractValueError> {
     let raw = serde_json::to_value(&result.company_context).map_err(ContractValueError::Json)?;
-    if let Ok(normalized) = normalize_light_company_context(&raw) {
-        return Ok(normalized);
-    }
-
-    // Older committed vectors only carried the ticker at the result
-    // boundary.  They are replayable only when the original request already
-    // contained a validated light context with that exact ticker.  A current
-    // empty-trigger Guru call cannot take this fallback, so a model cannot
-    // manufacture company context by returning the legacy shape.
-    let Some(input_context) = fallback_input.and_then(|input| input.company_context.as_ref())
-    else {
-        return Err(ContractValueError::Shape(KRW_GURU_LIGHT_COMPANY_CONTEXT_V1));
-    };
-    let ticker_only = raw.as_object().is_some_and(|object| {
-        object.len() == 1
-            && object
-                .get("ticker")
-                .and_then(Value::as_str)
-                .is_some_and(|ticker| ticker == input_context.ticker)
-    });
-    if ticker_only {
-        serde_json::to_value(input_context).map_err(ContractValueError::Json)
-    } else {
-        Err(ContractValueError::Shape(KRW_GURU_LIGHT_COMPANY_CONTEXT_V1))
-    }
+    // Only the trusted Guru runtime's neutral light company context is a
+    // valid result boundary. A bare ticker or empty object is the legacy
+    // replay shape and is rejected outright.
+    normalize_light_company_context(&raw)
 }
 
 /// Bind the company-scoped Guru retrieval result to the exact request that
@@ -1901,7 +1860,7 @@ pub fn validate_guru_query_exchange(
             KRW_GURU_QUERY_CONTEXT_RESULT_V1,
         ));
     };
-    let context_value = normalized_query_result_context(&result, Some(&input))?;
+    let context_value = normalized_query_result_context(&result)?;
     let context: GuruLightCompanyContext =
         decode(&context_value, KRW_GURU_LIGHT_COMPANY_CONTEXT_V1)?;
     let input_context_matches = match input.company_context.as_ref() {
