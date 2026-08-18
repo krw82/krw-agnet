@@ -1269,12 +1269,12 @@ probe() {
 }
 observed=
 attempt=1
-while [ "$attempt" -le 20 ]; do
+while [ "$attempt" -le 36 ]; do
   if observed=$(probe 2>/dev/null); then
     printf '%s\n' "$observed"
     exit 0
   fi
-  sleep 2
+  sleep 5
   attempt=$((attempt + 1))
 done
 echo "Deep health did not report the release id after retries." >&2
@@ -4425,7 +4425,11 @@ mod tests {
         let release_id = deps.release_id();
         for (name, payload, attempts) in [
             ("healthz", payload_remote_web_healthz(&topology, &release_id), 20),
-            ("deep", payload_remote_web_deep(&topology, &release_id), 20),
+            // The web container's cold start (Next.js boot + release id
+            // propagation) can exceed the healthz settling window, so the
+            // deep probe carries the wider budget (production run
+            // 20260818T145351Z failed deep readiness on the settling race).
+            ("deep", payload_remote_web_deep(&topology, &release_id), 36),
             ("verify_admission", payload_verify_admission(&topology, &release_id, "open"), 30),
         ] {
             assert!(
