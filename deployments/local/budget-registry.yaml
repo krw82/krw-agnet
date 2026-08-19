@@ -213,11 +213,13 @@ profiles:
       # the cumulative output budget mid-run.
       max_output_tokens: 60000
       max_evidence_bytes: 8388608
-      # Guru uses several normal GLM turns; keep the same ten-minute
-      # envelope as company_research_glm so a slow but valid turn is not
-      # mistaken for a workflow failure. Existing action caps remain explicit;
-      # the causal chain gets one additional optional slot.
-      deadline_ms: 600000
+      # Guru uses several normal GLM turns; match company_research_glm's
+      # 40-minute wall-clock envelope so a slow but valid turn is not
+      # mistaken for a workflow failure. With the researcher at the full
+      # 16384-token ceiling, real lens consultations run 10-15 minutes and
+      # the old ten-minute wall killed them at the deadline (production
+      # 2026-08-19: buffett/terry_smith refires finished at exactly 10.0min).
+      deadline_ms: 2400000
       capability_call_limits:
         guru.query_context: 1
         guru.company_brief: 2
