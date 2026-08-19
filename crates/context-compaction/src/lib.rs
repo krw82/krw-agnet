@@ -14,9 +14,9 @@ use krw_agent_evidence::{
     Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger, NormalizedFact,
     PublicCitation,
 };
+use krw_agent_planning::GoalStatus;
 use krw_agent_protocol::ContentHash;
 use krw_agent_provider_wire::ProviderMessage;
-use krw_agent_planning::GoalStatus;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
 use krw_ontology_adapter::{
     Continuation, MAX_SUPPLEMENTAL_READ_STATUSES, ResearchPlanningProjection,
@@ -840,7 +840,12 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
     // bounded ranked view with a reason-coded omission receipt.
     let mut omissions = CompactionOmissions::default();
     let protected = unresolved_required_goal_evidence_ids(input.research_projection);
-    enforce_count_bounds(&mut evidence_index, &mut candidates, &protected, &mut omissions)?;
+    enforce_count_bounds(
+        &mut evidence_index,
+        &mut candidates,
+        &protected,
+        &mut omissions,
+    )?;
     let calculations = input.calculations.values().cloned().collect::<Vec<_>>();
     let research_projection = input.research_projection.cloned();
     let retrieval_status = research_projection
@@ -1886,7 +1891,10 @@ mod tests {
             "dropped evidence must be hash-recorded in the omission receipt"
         );
         // Identity material survives the degradation untouched.
-        assert_eq!(output.context.boundary_hash, boundary.boundary_hash().unwrap());
+        assert_eq!(
+            output.context.boundary_hash,
+            boundary.boundary_hash().unwrap()
+        );
         assert_eq!(output.context.state.contract.id, "state-facts/v1");
         // The unresolved required goal's witness is reserved.
         assert!(
@@ -2009,7 +2017,10 @@ mod tests {
         assert!(output.context.omissions.evidence_entries >= (600 - MAX_ACTIVE_EVIDENCE) as u32);
         assert!(output.context.omissions.facts >= (600 - MAX_ACTIVE_EVIDENCE) as u32);
         // The irreducible identity core survives.
-        assert_eq!(output.context.boundary_hash, boundary.boundary_hash().unwrap());
+        assert_eq!(
+            output.context.boundary_hash,
+            boundary.boundary_hash().unwrap()
+        );
         assert_eq!(
             output.context.state.artifact_hash,
             artifact.artifact_hash().unwrap()

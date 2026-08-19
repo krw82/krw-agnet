@@ -67,7 +67,9 @@ impl fmt::Display for TargetError {
             Self::Read(message) => write!(formatter, "target file unreadable: {message}"),
             Self::InvalidJson(message) => write!(formatter, "target file JSON invalid: {message}"),
             Self::RootNotObject => write!(formatter, "target file root must be an object"),
-            Self::ProviderInvalid(message) => write!(formatter, "target provider invalid: {message}"),
+            Self::ProviderInvalid(message) => {
+                write!(formatter, "target provider invalid: {message}")
+            }
         }
     }
 }
@@ -80,13 +82,14 @@ const AMBIGUOUS_PROVIDER_KEYS: [&str; 3] = ["providers", "provider_candidates", 
 
 impl TargetFile {
     pub fn from_path(path: &Path) -> Result<Self, TargetError> {
-        let bytes = std::fs::read(path).map_err(|error| TargetError::Read(format!("{}: {error}", path.display())))?;
+        let bytes = std::fs::read(path)
+            .map_err(|error| TargetError::Read(format!("{}: {error}", path.display())))?;
         Self::from_json_bytes(&bytes)
     }
 
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, TargetError> {
-        let value: Value =
-            serde_json::from_slice(bytes).map_err(|error| TargetError::InvalidJson(error.to_string()))?;
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| TargetError::InvalidJson(error.to_string()))?;
         let object = value.as_object().ok_or(TargetError::RootNotObject)?;
         Self::from_object(object)
     }
@@ -124,12 +127,30 @@ impl TargetFile {
                 })
                 .unwrap_or_default()
         };
-        let gcp = object.get("gcp").and_then(Value::as_object).map(|gcp| GcpTarget {
-            project: gcp.get("project").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            zone: gcp.get("zone").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            instance: gcp.get("instance").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            instance_id: gcp.get("instance_id").and_then(Value::as_str).map(str::to_owned),
-        });
+        let gcp = object
+            .get("gcp")
+            .and_then(Value::as_object)
+            .map(|gcp| GcpTarget {
+                project: gcp
+                    .get("project")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                zone: gcp
+                    .get("zone")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                instance: gcp
+                    .get("instance")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                instance_id: gcp
+                    .get("instance_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
         Ok(Self {
             provider,
             gcp,
@@ -154,7 +175,9 @@ impl TargetFile {
             mcp_endpoints: string_list("mcp_endpoints"),
             supabase_migration_plan: string_list("supabase_migration_plan"),
             site_origins: string_list("site_origins"),
-            frontend_contract_sha256: string_field("frontend_contract_sha256").as_deref().map(normalize_hash_pin),
+            frontend_contract_sha256: string_field("frontend_contract_sha256")
+                .as_deref()
+                .map(normalize_hash_pin),
         })
     }
 
@@ -185,7 +208,10 @@ impl TargetFile {
 /// Accept `sha256:<hex>` or a bare 64-char hex pin; always normalize to the
 /// `sha256:<lowercase-hex>` form used by receipts and contract hashing.
 fn normalize_hash_pin(pin: &str) -> String {
-    let hex_part = pin.strip_prefix("sha256:").unwrap_or(pin).to_ascii_lowercase();
+    let hex_part = pin
+        .strip_prefix("sha256:")
+        .unwrap_or(pin)
+        .to_ascii_lowercase();
     format!("sha256:{hex_part}")
 }
 
@@ -226,7 +252,10 @@ mod tests {
         assert_eq!(target.required_env_keys.len(), 2);
         assert_eq!(target.mcp_endpoints, ["127.0.0.1:18081"]);
         assert_eq!(target.supabase_migration_plan.len(), 2);
-        assert_eq!(target.site_origins, ["https://one.example.com", "https://two.example.com"]);
+        assert_eq!(
+            target.site_origins,
+            ["https://one.example.com", "https://two.example.com"]
+        );
         assert_eq!(
             target.frontend_contract_sha256.as_deref(),
             Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -242,9 +271,15 @@ mod tests {
 
     #[test]
     fn provider_array_is_rejected_as_ambiguous() {
-        let text = minimal_target_json().replace("\"provider\": \"deepseek\"", "\"provider\": [\"glm\", \"deepseek\"]");
+        let text = minimal_target_json().replace(
+            "\"provider\": \"deepseek\"",
+            "\"provider\": [\"glm\", \"deepseek\"]",
+        );
         let error = TargetFile::from_json_bytes(text.as_bytes()).unwrap_err();
-        assert!(matches!(error, TargetError::ProviderInvalid(_)), "unexpected error: {error}");
+        assert!(
+            matches!(error, TargetError::ProviderInvalid(_)),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -277,9 +312,18 @@ mod tests {
     fn identity_map_records_provider_and_gcp() {
         let target = TargetFile::from_json_bytes(minimal_target_json().as_bytes()).unwrap();
         let identity = target.identity_map();
-        assert_eq!(identity.get("provider").map(String::as_str), Some("deepseek"));
-        assert_eq!(identity.get("gcp_zone").map(String::as_str), Some("asia-northeast3-a"));
-        assert_eq!(identity.get("gcp_instance_id").map(String::as_str), Some("1234567890123456789"));
+        assert_eq!(
+            identity.get("provider").map(String::as_str),
+            Some("deepseek")
+        );
+        assert_eq!(
+            identity.get("gcp_zone").map(String::as_str),
+            Some("asia-northeast3-a")
+        );
+        assert_eq!(
+            identity.get("gcp_instance_id").map(String::as_str),
+            Some("1234567890123456789")
+        );
     }
 
     #[test]
@@ -293,7 +337,13 @@ mod tests {
             "\"ssh_host\": \"deploy@127.0.0.1\",\n  \"remote_front_dir\": \"/home/deploy/krw-ontology-front\",\n  \"compose_project\": \"krw-ontology-front\",",
         );
         let target = TargetFile::from_json_bytes(text.as_bytes()).unwrap();
-        assert_eq!(target.remote_front_dir.as_deref(), Some("/home/deploy/krw-ontology-front"));
-        assert_eq!(target.compose_project.as_deref(), Some("krw-ontology-front"));
+        assert_eq!(
+            target.remote_front_dir.as_deref(),
+            Some("/home/deploy/krw-ontology-front")
+        );
+        assert_eq!(
+            target.compose_project.as_deref(),
+            Some("krw-ontology-front")
+        );
     }
 }

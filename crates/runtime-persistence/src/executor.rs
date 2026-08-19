@@ -132,7 +132,9 @@ fn build_api_keys_by_base<'a>(
 /// Collect the startup-resolved per-kind credentials of every provider kind
 /// the registry knows about. Kinds the release does not advertise carry an
 /// empty value that `compile_from` treats as missing.
-fn api_keys_by_kind(releases: &ResolvedReleaseSet) -> BTreeMap<krw_agent_protocol::ProviderKind, String> {
+fn api_keys_by_kind(
+    releases: &ResolvedReleaseSet,
+) -> BTreeMap<krw_agent_protocol::ProviderKind, String> {
     krw_agent_protocol::PROVIDER_KINDS
         .iter()
         .map(|kind| (*kind, releases.provider_api_key(*kind).to_owned()))
@@ -1259,8 +1261,10 @@ mod tests {
         async fn invoke(
             &self,
             invocation: &krw_agent_execution_contracts::CapabilityInvocation,
-        ) -> Result<krw_agent_execution_contracts::CapabilityResult, krw_agent_execution_contracts::DependencyFailure>
-        {
+        ) -> Result<
+            krw_agent_execution_contracts::CapabilityResult,
+            krw_agent_execution_contracts::DependencyFailure,
+        > {
             self.invocations.lock().unwrap().push(invocation.clone());
             Ok(krw_agent_execution_contracts::CapabilityResult {
                 provider_content: self.provider_content.clone(),
@@ -1479,8 +1483,14 @@ mod tests {
     fn fixture_provider_catalog(releases: &ResolvedReleaseSet) -> Arc<ProviderCatalog> {
         let models = releases.models().cloned().collect::<Vec<_>>();
         let api_keys_by_kind = BTreeMap::from([
-            (krw_agent_protocol::ProviderKind::Deepseek, "fixture-deepseek-key".to_owned()),
-            (krw_agent_protocol::ProviderKind::Glm, "fixture-glm-key".to_owned()),
+            (
+                krw_agent_protocol::ProviderKind::Deepseek,
+                "fixture-deepseek-key".to_owned(),
+            ),
+            (
+                krw_agent_protocol::ProviderKind::Glm,
+                "fixture-glm-key".to_owned(),
+            ),
         ]);
         let api_keys = build_api_keys_by_base(models.iter(), &api_keys_by_kind);
         ProviderCatalog::compile_from(models.iter(), &api_keys, 8).unwrap()
@@ -1683,8 +1693,14 @@ mod tests {
         forbidden.model_id = "forbidden-provider-model".into();
         let descriptors = [models.models[0].clone(), forbidden];
         let api_keys_by_kind = BTreeMap::from([
-            (krw_agent_protocol::ProviderKind::Deepseek, "fixture-key".to_owned()),
-            (krw_agent_protocol::ProviderKind::Glm, "fixture-key".to_owned()),
+            (
+                krw_agent_protocol::ProviderKind::Deepseek,
+                "fixture-key".to_owned(),
+            ),
+            (
+                krw_agent_protocol::ProviderKind::Glm,
+                "fixture-key".to_owned(),
+            ),
         ]);
         let api_keys_by_base = build_api_keys_by_base(descriptors.iter(), &api_keys_by_kind);
         assert!(matches!(
@@ -1716,9 +1732,8 @@ mod tests {
             ),
         ]);
         let api_keys_by_base = build_api_keys_by_base(descriptors.iter(), &api_keys_by_kind);
-        let catalog =
-            ProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8)
-                .expect("multi-model catalog compiles when every model is allowed");
+        let catalog = ProviderCatalog::compile_from(descriptors.iter(), &api_keys_by_base, 8)
+            .expect("multi-model catalog compiles when every model is allowed");
         assert_eq!(catalog.by_model.len(), 2);
         assert!(catalog.exact(DEEPSEEK_MODEL_ID).is_some());
         assert!(catalog.exact(GLM_MODEL_ID).is_some());

@@ -321,11 +321,7 @@ pub(crate) fn parse_typed_json_content(content: &str) -> Result<Value, serde_jso
 /// Everything else `validate_answer` reports is a presentation/quality
 /// defect: it must degrade the answer (`AcceptedWithWarnings`), never produce
 /// `run.failed`.
-fn issue_is_integrity(
-    issue: &ValidationIssue,
-    answer: &AnswerIr,
-    ledger: &EvidenceLedger,
-) -> bool {
+fn issue_is_integrity(issue: &ValidationIssue, answer: &AnswerIr, ledger: &EvidenceLedger) -> bool {
     match issue.code {
         "unsupported_answer_schema"
         | "untrusted_calculation"
@@ -578,7 +574,9 @@ fn sanitize_answer_ir(
     let mut seen_section_ids = BTreeSet::new();
     let mut sections = Vec::new();
     for (index, section) in sanitized.sections.iter_mut().enumerate() {
-        if issues.iter().any(|issue| issue.code == "invalid_section_id")
+        if issues
+            .iter()
+            .any(|issue| issue.code == "invalid_section_id")
             && (section.section_id.trim().is_empty()
                 || !section_identifier_is_valid(&section.section_id)
                 || !seen_section_ids.insert(section.section_id.clone()))
@@ -589,20 +587,30 @@ fn sanitize_answer_ir(
         if clear_uncertainty_text {
             section.disclosed_uncertainty = None;
         }
-        if issues.iter().any(|issue| issue.code == "invalid_section_heading") {
-            section.heading = SANITIZER_HEADING_FALLBACKS
-                .get(index)
-                .map_or_else(|| format!("핵심 판단 {}", index + 1), |value| (*value).to_owned());
+        if issues
+            .iter()
+            .any(|issue| issue.code == "invalid_section_heading")
+        {
+            section.heading = SANITIZER_HEADING_FALLBACKS.get(index).map_or_else(
+                || format!("핵심 판단 {}", index + 1),
+                |value| (*value).to_owned(),
+            );
         }
         // Drop references to claims that no longer exist (including claims
         // dropped above) and dedupe within the section, mirroring
         // `duplicate_section_claim` / `section_unknown_claim`.
         let mut local = BTreeSet::new();
         section.claim_ids.retain(|claim_id| {
-            sanitized.claims.iter().any(|claim| &claim.claim_id == claim_id)
+            sanitized
+                .claims
+                .iter()
+                .any(|claim| &claim.claim_id == claim_id)
                 && local.insert(claim_id.clone())
         });
-        if issues.iter().any(|issue| issue.code == "too_many_section_claims") {
+        if issues
+            .iter()
+            .any(|issue| issue.code == "too_many_section_claims")
+        {
             section.claim_ids.truncate(MAX_CLAIMS_PER_SECTION);
         }
         // Step 6: a section with nothing left to say is empty presentation.
@@ -622,7 +630,9 @@ fn sanitize_answer_ir(
         .iter()
         .flat_map(|section| section.claim_ids.iter().cloned())
         .collect::<BTreeSet<_>>();
-    sanitized.claims.retain(|claim| rendered.contains(&claim.claim_id));
+    sanitized
+        .claims
+        .retain(|claim| rendered.contains(&claim.claim_id));
 
     // Step 8: keep only valid follow-up questions, bounded by the policy
     // count when too many. A shortfall is left as-is; the sanitizer never
@@ -635,7 +645,9 @@ fn sanitize_answer_ir(
             .follow_up_questions
             .retain(|question| follow_up_is_presentable(question, policy));
     }
-    if issues.iter().any(|issue| issue.code == "follow_up_count_mismatch")
+    if issues
+        .iter()
+        .any(|issue| issue.code == "follow_up_count_mismatch")
         && sanitized.follow_up_questions.len() > policy.exact_follow_up_count
     {
         sanitized
@@ -787,7 +799,10 @@ fn fallback_fact_line(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(fallback_public_inline);
-    let mut line = format!("- {subject}: {predicate} = {}", fallback_json_value(&fact.value));
+    let mut line = format!(
+        "- {subject}: {predicate} = {}",
+        fallback_json_value(&fact.value)
+    );
     if let Some(unit) = unit {
         line.push(' ');
         line.push_str(&unit);
@@ -853,15 +868,17 @@ pub(crate) fn fallback_answer_from_ledger(
         .collect::<Vec<_>>();
     let related_records = ledger
         .iter()
-        .filter(|(_, record)| {
-            record.directness == krw_agent_evidence::Directness::Related
-        })
+        .filter(|(_, record)| record.directness == krw_agent_evidence::Directness::Related)
         .take(LEDGER_FALLBACK_MAX_RECORDS)
         .collect::<Vec<_>>();
 
     let mut direct_lines = Vec::new();
     for (_, record) in &direct_records {
-        for fact in record.facts.iter().take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD) {
+        for fact in record
+            .facts
+            .iter()
+            .take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD)
+        {
             if let Some(line) = fallback_fact_line(record, fact, &mut citations) {
                 direct_lines.push(line);
             }
@@ -877,7 +894,11 @@ pub(crate) fn fallback_answer_from_ledger(
 
     let mut related_lines = Vec::new();
     for (_, record) in &related_records {
-        for fact in record.facts.iter().take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD) {
+        for fact in record
+            .facts
+            .iter()
+            .take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD)
+        {
             if let Some(mut line) = fallback_fact_line(record, fact, &mut citations) {
                 line.push_str(" · 간접 근거이므로 참고 수준으로만 반영");
                 related_lines.push(line);
@@ -959,7 +980,9 @@ pub(crate) fn fallback_answer_from_ledger(
         if !uncovered.is_empty() {
             markdown.push_str("\n## 다루지 못한 목표\n\n");
             for goal_id in uncovered {
-                markdown.push_str(&format!("- 목표 {goal_id} 는 이번 실행에서 충족되지 못했습니다.\n"));
+                markdown.push_str(&format!(
+                    "- 목표 {goal_id} 는 이번 실행에서 충족되지 못했습니다.\n"
+                ));
             }
         }
     }
@@ -970,7 +993,9 @@ pub(crate) fn fallback_answer_from_ledger(
         ledger.len(),
         accepted_capability_results
     ));
-    markdown.push_str("- 연구가 완료되지 않았으므로 위 내용은 부분 자료이며, 완전한 답변이 아닙니다.\n");
+    markdown.push_str(
+        "- 연구가 완료되지 않았으므로 위 내용은 부분 자료이며, 완전한 답변이 아닙니다.\n",
+    );
 
     let periods = ledger
         .iter()
@@ -987,10 +1012,16 @@ pub(crate) fn fallback_answer_from_ledger(
     if !periods.is_empty() || !as_of.is_empty() {
         markdown.push_str("\n## 자료 시점\n\n");
         if !periods.is_empty() {
-            markdown.push_str(&format!("- 근거 기간: {}\n", periods.into_iter().collect::<Vec<_>>().join(", ")));
+            markdown.push_str(&format!(
+                "- 근거 기간: {}\n",
+                periods.into_iter().collect::<Vec<_>>().join(", ")
+            ));
         }
         if !as_of.is_empty() {
-            markdown.push_str(&format!("- 자료 기준일: {}\n", as_of.into_iter().collect::<Vec<_>>().join(", ")));
+            markdown.push_str(&format!(
+                "- 자료 기준일: {}\n",
+                as_of.into_iter().collect::<Vec<_>>().join(", ")
+            ));
         }
         markdown.push_str("- 나열된 기간 이후 상황은 반영되지 않았습니다.\n");
     }
@@ -1001,7 +1032,11 @@ pub(crate) fn fallback_answer_from_ledger(
             let Some(record) = ledger.active(evidence_id) else {
                 continue;
             };
-            let mut line = format!("[^{}]: {}", index + 1, fallback_public_inline(&record.citation.title));
+            let mut line = format!(
+                "[^{}]: {}",
+                index + 1,
+                fallback_public_inline(&record.citation.title)
+            );
             if let Some(document_type) = record
                 .citation
                 .document_type
@@ -1777,18 +1812,21 @@ where
             session_memory_delta: None,
             next_memory_frontier_hash: None,
         };
-        let final_status =
-            match await_until(commit_deadline, self.persistence.commit_final(&durable_final)).await
-            {
-                Ok(Ok(status)) => status,
-                Ok(Err(failure)) if failure.delivery == DeliveryCertainty::MayHaveDispatched => {
-                    return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash));
-                }
-                // The fallback commit deterministically did not dispatch:
-                // surface the original dependency cause, not the notice.
-                Ok(Err(_)) => return Err(error),
-                Err(()) => return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash)),
-            };
+        let final_status = match await_until(
+            commit_deadline,
+            self.persistence.commit_final(&durable_final),
+        )
+        .await
+        {
+            Ok(Ok(status)) => status,
+            Ok(Err(failure)) if failure.delivery == DeliveryCertainty::MayHaveDispatched => {
+                return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash));
+            }
+            // The fallback commit deterministically did not dispatch:
+            // surface the original dependency cause, not the notice.
+            Ok(Err(_)) => return Err(error),
+            Err(()) => return Err(EngineError::FinalCommitAmbiguous(answer_bundle_hash)),
+        };
         if final_status == FinalStatus::Cancelled {
             return Err(EngineError::Cancelled);
         }
@@ -1911,9 +1949,7 @@ pub(crate) fn run_outcome_after_commit(
     answer_bundle_hash: ContentHash,
     final_status: FinalStatus,
 ) -> RunOutcome {
-    if let Err(error) =
-        finalize_post_commit_workflow(state, execution, output, output_contract)
-    {
+    if let Err(error) = finalize_post_commit_workflow(state, execution, output, output_contract) {
         tracing::warn!(
             error = ?error,
             "workflow edge failed after the durable final commit; committed answer stays final"

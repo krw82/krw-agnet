@@ -173,7 +173,9 @@ impl TerminalReceipt {
             admission: "not-touched".to_owned(),
             reached_stage: "dry_run".to_owned(),
             failed_stage: None,
-            reason: Some("read-only dry-run reached; no build, migration, or activation executed".to_owned()),
+            reason: Some(
+                "read-only dry-run reached; no build, migration, or activation executed".to_owned(),
+            ),
             receipt_path,
             validations,
             artifacts: None,
@@ -371,41 +373,60 @@ pub fn stage_receipt_file_name(stage_index: u8, stage_id: &str) -> String {
 
 /// Stable run id: 8-hex prefix of the config file sha256.
 pub fn run_id_from_config_sha256(config_sha256: &str) -> String {
-    let hex = config_sha256.strip_prefix("sha256:").unwrap_or(config_sha256);
+    let hex = config_sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(config_sha256);
     hex.chars().take(8).collect()
 }
 
 /// Write a preflight receipt under `dir` (creates `dir` on first write).
-pub fn write_preflight_receipt(dir: &Path, receipt: &PreflightReceipt) -> Result<PathBuf, ReceiptError> {
+pub fn write_preflight_receipt(
+    dir: &Path,
+    receipt: &PreflightReceipt,
+) -> Result<PathBuf, ReceiptError> {
     write_receipt(dir, PREFLIGHT_RECEIPT_FILE, receipt)
 }
 
 /// Write a terminal receipt under `dir` (creates `dir` on first write).
-pub fn write_terminal_receipt(dir: &Path, receipt: &TerminalReceipt) -> Result<PathBuf, ReceiptError> {
+pub fn write_terminal_receipt(
+    dir: &Path,
+    receipt: &TerminalReceipt,
+) -> Result<PathBuf, ReceiptError> {
     write_receipt(dir, TERMINAL_RECEIPT_FILE, receipt)
 }
 
 /// Write one per-stage receipt (`stage-<n>-<id>.json`, write-once).
 pub fn write_stage_receipt(dir: &Path, receipt: &StageReceipt) -> Result<PathBuf, ReceiptError> {
-    write_receipt(dir, &stage_receipt_file_name(receipt.stage_index, &receipt.stage), receipt)
+    write_receipt(
+        dir,
+        &stage_receipt_file_name(receipt.stage_index, &receipt.stage),
+        receipt,
+    )
 }
 
-fn write_receipt<T: Serialize>(dir: &Path, file_name: &str, receipt: &T) -> Result<PathBuf, ReceiptError> {
+fn write_receipt<T: Serialize>(
+    dir: &Path,
+    file_name: &str,
+    receipt: &T,
+) -> Result<PathBuf, ReceiptError> {
     let path = dir.join(file_name);
     if path.exists() {
         return Err(ReceiptError::AlreadyExists(path));
     }
-    std::fs::create_dir_all(dir).map_err(|error| ReceiptError::Write(format!("{}: {error}", dir.display())))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|error| ReceiptError::Write(format!("{}: {error}", dir.display())))?;
     let json = serde_json::to_string_pretty(receipt)
         .map_err(|error| ReceiptError::Write(format!("serialize {file_name}: {error}")))?;
-    std::fs::write(&path, json + "\n").map_err(|error| ReceiptError::Write(format!("{}: {error}", path.display())))?;
+    std::fs::write(&path, json + "\n")
+        .map_err(|error| ReceiptError::Write(format!("{}: {error}", path.display())))?;
     Ok(path)
 }
 
 /// Deterministic receipt identity helper for tests and callers: sha256 of the
 /// serialized receipt bytes (drift evidence between stages).
 pub fn receipt_digest<T: Serialize>(receipt: &T) -> Result<String, ReceiptError> {
-    let bytes = serde_json::to_vec(receipt).map_err(|error| ReceiptError::Write(format!("serialize: {error}")))?;
+    let bytes = serde_json::to_vec(receipt)
+        .map_err(|error| ReceiptError::Write(format!("serialize: {error}")))?;
     Ok(sha256_bytes(&bytes))
 }
 
@@ -465,7 +486,13 @@ mod tests {
     #[test]
     fn preflight_receipt_serializes_deterministically() {
         let outcome = outcome_fixture();
-        let receipt = PreflightReceipt::from_outcome(&outcome, "abc12345", "2026-08-16T00:00:00Z", "preflight", "fixture");
+        let receipt = PreflightReceipt::from_outcome(
+            &outcome,
+            "abc12345",
+            "2026-08-16T00:00:00Z",
+            "preflight",
+            "fixture",
+        );
         let first = serde_json::to_string_pretty(&receipt).unwrap();
         let second = serde_json::to_string_pretty(&receipt).unwrap();
         assert_eq!(first, second);
@@ -475,13 +502,27 @@ mod tests {
         assert_eq!(value["verdict"], outcome.verdict.as_str());
         assert_eq!(value["run_id"], "abc12345");
         // Maps serialize in sorted key order (BTreeMap).
-        let hash_keys = value["input_hashes"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        let hash_keys = value["input_hashes"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         let mut sorted = hash_keys.clone();
         sorted.sort();
         assert_eq!(hash_keys, sorted);
         // Check order is preserved exactly as executed.
-        let check_ids = value["checks"].as_array().unwrap().iter().map(|check| check["id"].clone()).collect::<Vec<_>>();
-        let expected_ids = outcome.checks.iter().map(|check| serde_json::Value::from(check.id)).collect::<Vec<_>>();
+        let check_ids = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|check| check["id"].clone())
+            .collect::<Vec<_>>();
+        let expected_ids = outcome
+            .checks
+            .iter()
+            .map(|check| serde_json::Value::from(check.id))
+            .collect::<Vec<_>>();
         assert_eq!(check_ids, expected_ids);
     }
 
@@ -499,14 +540,21 @@ mod tests {
             None,
             Vec::new(),
         );
-        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
         assert_eq!(value["outcome"], "failure");
         assert_eq!(value["admission"], "closed");
         assert_eq!(value["failed_stage"], "build");
         assert_eq!(value["reached_stage"], "build");
         assert!(value["reason"].as_str().unwrap().contains("fix-forward"));
-        assert!(value.get("validations").is_none(), "empty validations are omitted");
-        assert!(value.get("artifacts").is_none(), "absent artifacts are omitted");
+        assert!(
+            value.get("validations").is_none(),
+            "empty validations are omitted"
+        );
+        assert!(
+            value.get("artifacts").is_none(),
+            "absent artifacts are omitted"
+        );
         assert!(value.get("skipped").is_none(), "empty skips are omitted");
     }
 
@@ -515,9 +563,14 @@ mod tests {
         let artifacts = DeployArtifacts {
             release_dir: "/operator/releases/20260816T000000Z-abc12345".to_owned(),
             release_id: "20260816T000000Z-abc12345".to_owned(),
-            descriptor_sha256: "sha256:164482f3fe99eb82977bcd77c07792d0472cae014f8218a0c492f42c1a29055e".to_owned(),
-            frontend_image_digest: "sha256:9ed2b4b7d3a1f0c6e5d8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0".to_owned(),
-            applied_migrations: vec!["0001_agent_v1".to_owned(), "0022_daemon_mcp_readiness".to_owned()],
+            descriptor_sha256:
+                "sha256:164482f3fe99eb82977bcd77c07792d0472cae014f8218a0c492f42c1a29055e".to_owned(),
+            frontend_image_digest:
+                "sha256:9ed2b4b7d3a1f0c6e5d8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0".to_owned(),
+            applied_migrations: vec![
+                "0001_agent_v1".to_owned(),
+                "0022_daemon_mcp_readiness".to_owned(),
+            ],
             previous_admission: "open".to_owned(),
         };
         let receipt = TerminalReceipt::success(
@@ -532,13 +585,23 @@ mod tests {
                 reason: "local-only target: no ssh_host recorded".to_owned(),
             }],
         );
-        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
         assert_eq!(value["outcome"], "success");
         assert_eq!(value["admission"], "open");
         assert_eq!(value["reached_stage"], "terminal_success_receipt");
         assert!(value.get("failed_stage").is_none());
-        assert_eq!(value["artifacts"]["release_id"], "20260816T000000Z-abc12345");
-        assert_eq!(value["artifacts"]["applied_migrations"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["artifacts"]["release_id"],
+            "20260816T000000Z-abc12345"
+        );
+        assert_eq!(
+            value["artifacts"]["applied_migrations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         assert_eq!(value["skipped"].as_array().unwrap().len(), 1);
         assert_eq!(value["skipped"][0]["stage"], "remote_activation");
     }
@@ -591,7 +654,10 @@ mod tests {
         assert_eq!(value["commands"][0]["argv"][1], "<env:KRW_AGENT_DB_URL>");
         assert_eq!(value["commands"][0]["env_keys_used"][0], "KRW_AGENT_DB_URL");
         let error = write_stage_receipt(&dir, &receipt).unwrap_err();
-        assert!(matches!(error, ReceiptError::AlreadyExists(_)), "unexpected error: {error}");
+        assert!(
+            matches!(error, ReceiptError::AlreadyExists(_)),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -617,7 +683,8 @@ mod tests {
             }],
             None,
         );
-        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
         assert_eq!(value["outcome"], "dry-run-ok");
         assert_eq!(value["admission"], "not-touched");
         assert_eq!(value["reached_stage"], "dry_run");
@@ -633,20 +700,37 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         let outcome = outcome_fixture();
-        let receipt = PreflightReceipt::from_outcome(&outcome, "abc12345", "2026-08-16T00:00:00Z", "preflight", "fixture");
+        let receipt = PreflightReceipt::from_outcome(
+            &outcome,
+            "abc12345",
+            "2026-08-16T00:00:00Z",
+            "preflight",
+            "fixture",
+        );
         let path = write_preflight_receipt(&dir, &receipt).unwrap();
         assert!(path.ends_with(PREFLIGHT_RECEIPT_FILE));
         assert!(dir.join(PREFLIGHT_RECEIPT_FILE).is_file());
-        let receipt = PreflightReceipt::from_outcome(&outcome, "abc12345", "2026-08-16T00:00:00Z", "preflight", "fixture");
+        let receipt = PreflightReceipt::from_outcome(
+            &outcome,
+            "abc12345",
+            "2026-08-16T00:00:00Z",
+            "preflight",
+            "fixture",
+        );
         let error = write_preflight_receipt(&dir, &receipt).unwrap_err();
-        assert!(matches!(error, ReceiptError::AlreadyExists(_)), "unexpected error: {error}");
+        assert!(
+            matches!(error, ReceiptError::AlreadyExists(_)),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn run_id_is_config_hash_prefix() {
         assert_eq!(
-            run_id_from_config_sha256("sha256:164482f3fe99eb82977bcd77c07792d0472cae014f8218a0c492f42c1a29055e"),
+            run_id_from_config_sha256(
+                "sha256:164482f3fe99eb82977bcd77c07792d0472cae014f8218a0c492f42c1a29055e"
+            ),
             "164482f3"
         );
     }

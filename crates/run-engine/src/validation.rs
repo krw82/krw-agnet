@@ -948,7 +948,10 @@ pub(crate) fn evaluate_rules(
     }
 }
 
-pub(crate) fn validate_input(input: &RunInput<'_>, config: &EngineConfig) -> Result<(), EngineError> {
+pub(crate) fn validate_input(
+    input: &RunInput<'_>,
+    config: &EngineConfig,
+) -> Result<(), EngineError> {
     validate_bounded_run_request(input.request)?;
     let entrypoint = selected_entrypoint(input.image, input.request)?;
     entrypoint
@@ -1359,7 +1362,11 @@ pub(crate) fn ensure_before(deadline: Instant, phase: &'static str) -> Result<()
     }
 }
 
-pub(crate) fn ensure_size(observed: usize, limit: usize, resource: &'static str) -> Result<(), EngineError> {
+pub(crate) fn ensure_size(
+    observed: usize,
+    limit: usize,
+    resource: &'static str,
+) -> Result<(), EngineError> {
     if observed > limit {
         Err(EngineError::SizeLimit {
             resource,

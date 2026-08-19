@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use krw_agent_deploy::executor::FixtureExecutor;
 use krw_agent_deploy::pipeline::FixtureStageExecutor;
-use krw_agent_deploy::stages::{run_command, CommandMode, ControllerError};
+use krw_agent_deploy::stages::{CommandMode, ControllerError, run_command};
 
 const CONTRACT_FIXTURE: &str = include_str!("fixtures/agent-v1-deployment-contract.json");
 const TARGET_FIXTURE: &str = include_str!("fixtures/production-target.json");
@@ -93,7 +93,8 @@ impl Tree {
 
     fn terminal_json(&self) -> serde_json::Value {
         let run_dir = self.single_run_dir();
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("terminal.json")).unwrap()).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("terminal.json")).unwrap())
+            .unwrap()
     }
 }
 
@@ -108,11 +109,19 @@ fn build_tree(tag: &str) -> Tree {
     let frontend_root = root.join("front");
     let operator_root = root.join("operator");
     std::fs::create_dir_all(agent_root.join("src")).unwrap();
-    std::fs::write(agent_root.join("Cargo.toml"), "[package]\nname = \"fixture-agent\"\n").unwrap();
+    std::fs::write(
+        agent_root.join("Cargo.toml"),
+        "[package]\nname = \"fixture-agent\"\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(&frontend_root).unwrap();
     std::fs::create_dir_all(operator_root.join("signing")).unwrap();
     std::fs::create_dir_all(operator_root.join("ops")).unwrap();
-    std::fs::write(operator_root.join("signing/release-private.pk8"), b"fixture-pkcs8-material").unwrap();
+    std::fs::write(
+        operator_root.join("signing/release-private.pk8"),
+        b"fixture-pkcs8-material",
+    )
+    .unwrap();
     std::fs::create_dir_all(operator_root.join("runtime")).unwrap();
     // Operator provider configuration consumed by the seal stage (both
     // providers: the seal loop mirrors the legacy dual-provider flow).
@@ -131,16 +140,32 @@ fn build_tree(tag: &str) -> Tree {
     for seal_provider in ["deepseek", "glm"] {
         let provider_config = operator_root.join("config").join(seal_provider);
         std::fs::create_dir_all(&provider_config).unwrap();
-        std::fs::write(provider_config.join("deployment-binding.yaml"), format!("provider: {seal_provider}\n")).unwrap();
-        std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+        std::fs::write(
+            provider_config.join("deployment-binding.yaml"),
+            format!("provider: {seal_provider}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            provider_config.join("endpoint-registry.yaml"),
+            "endpoints: []\n",
+        )
+        .unwrap();
         std::fs::write(
             provider_config.join("release-trust-registry.json"),
             serde_jcs::to_vec(&registry).unwrap(),
         )
         .unwrap();
     }
-    std::fs::write(operator_root.join("ops/agent-v1-deployment-contract.json"), CONTRACT_FIXTURE).unwrap();
-    std::fs::write(operator_root.join("ops/production-target.json"), TARGET_FIXTURE).unwrap();
+    std::fs::write(
+        operator_root.join("ops/agent-v1-deployment-contract.json"),
+        CONTRACT_FIXTURE,
+    )
+    .unwrap();
+    std::fs::write(
+        operator_root.join("ops/production-target.json"),
+        TARGET_FIXTURE,
+    )
+    .unwrap();
     std::fs::write(
         operator_root.join("runtime/krw-agent-deploy.env"),
         "# fixture env: names only, dummy values\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\n",
@@ -249,13 +274,17 @@ fn preflight_then_dry_run_produce_read_only_receipts() {
     assert!(run_dir.join("preflight.json").is_file());
     assert!(!run_dir.join("terminal.json").exists());
     let preflight_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap())
+            .unwrap();
     assert_eq!(preflight_json["verdict"], "pass");
     assert_eq!(preflight_json["executor_kind"], "fixture");
     let checks = preflight_json["checks"].as_array().unwrap();
     assert_eq!(checks.len(), 15);
     // Remote fixtures from production-target.json are exercised, not skipped.
-    let ids = checks.iter().map(|check| check["id"].as_str().unwrap().to_owned()).collect::<BTreeSet<_>>();
+    let ids = checks
+        .iter()
+        .map(|check| check["id"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
     for expected in [
         "gcp-target-describable",
         "ssh-remote-reachable",
@@ -264,11 +293,13 @@ fn preflight_then_dry_run_produce_read_only_receipts() {
         "supabase-migration-plan",
         "remote-env-required-keys",
     ] {
-        assert!(ids.contains(expected), "missing check {expected} in {ids:?}");
+        assert!(
+            ids.contains(expected),
+            "missing check {expected} in {ids:?}"
+        );
     }
     assert_eq!(
-        preflight_json["target_identity"]["provider"],
-        "deepseek",
+        preflight_json["target_identity"]["provider"], "deepseek",
         "target identity recorded: {}",
         preflight_json["target_identity"]
     );
@@ -284,13 +315,24 @@ fn preflight_then_dry_run_produce_read_only_receipts() {
     .expect("dry-run run");
     assert_eq!(dry_run.exit_code, 0, "message: {}", dry_run.message);
     assert_eq!(dry_run.outcome, "dry-run-ok");
-    let dry_run_dir = dry_run.terminal_receipt_path.expect("terminal receipt").parent().unwrap().to_path_buf();
+    let dry_run_dir = dry_run
+        .terminal_receipt_path
+        .expect("terminal receipt")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let terminal: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dry_run_dir.join("terminal.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dry_run_dir.join("terminal.json")).unwrap())
+            .unwrap();
     assert_eq!(terminal["outcome"], "dry-run-ok");
     assert_eq!(terminal["admission"], "not-touched");
     assert_eq!(terminal["reached_stage"], "dry_run");
-    assert!(terminal["receipt_path"].as_str().unwrap().ends_with("preflight.json"));
+    assert!(
+        terminal["receipt_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("preflight.json")
+    );
 
     // Read-only invariant: no release output tree, only receipts under
     // deploy-receipts, and the source fixtures are untouched.
@@ -330,7 +372,9 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         (12, "terminal_success_receipt"),
     ] {
         assert!(
-            run_dir.join(format!("stage-{index}-{stage}.json")).is_file(),
+            run_dir
+                .join(format!("stage-{index}-{stage}.json"))
+                .is_file(),
             "missing stage-{index}-{stage}.json in {}",
             run_dir.display()
         );
@@ -339,8 +383,16 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
     // Ordered command records: the exact executor walk. (TCP probes are
     // recorded separately and asserted below.)
     let expected = REMOTE_HAPPY_PATH_COMMANDS.to_vec();
-    assert_eq!(stages.command_ids(), expected, "ordered command ids diverged");
-    assert_eq!(stages.probes.borrow().len(), 1, "one TCP probe for the one mcp endpoint");
+    assert_eq!(
+        stages.command_ids(),
+        expected,
+        "ordered command ids diverged"
+    );
+    assert_eq!(
+        stages.probes.borrow().len(),
+        1,
+        "one TCP probe for the one mcp endpoint"
+    );
     assert_eq!(stages.probes.borrow()[0].id, "readiness.mcp-tcp-0");
     assert_no_rollback_commands(&stages);
 
@@ -368,9 +420,22 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
             .find(|command| command.id == id)
             .cloned()
             .unwrap_or_else(|| panic!("remote command `{id}` missing"));
-        assert_eq!(&command.argv[..9], &GCLOUD_ARGV_PREFIX[..], "command {id}: {:?}", command.argv);
-        assert_eq!(command.argv.len(), 10, "one payload element: {:?}", command.argv);
-        assert!(command.env_keys_used.is_empty(), "no env keys on transport argv: {id}");
+        assert_eq!(
+            &command.argv[..9],
+            &GCLOUD_ARGV_PREFIX[..],
+            "command {id}: {:?}",
+            command.argv
+        );
+        assert_eq!(
+            command.argv.len(),
+            10,
+            "one payload element: {:?}",
+            command.argv
+        );
+        assert!(
+            command.env_keys_used.is_empty(),
+            "no env keys on transport argv: {id}"
+        );
     }
 
     // Uploads ride the legacy gcloud scp transport with keep-alive flags —
@@ -399,12 +464,23 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         .collect::<Vec<_>>();
     assert_eq!(
         scp_ids,
-        ["ship.scp-front-archive".to_owned(), "ship.scp-agent-descriptor".to_owned()],
+        [
+            "ship.scp-front-archive".to_owned(),
+            "ship.scp-agent-descriptor".to_owned()
+        ],
         "exactly the two legacy uploads: {scp_ids:?}"
     );
     for (id, expected_remote, expected_local_suffix) in [
-        ("ship.scp-front-archive", "/tmp/krw-front-20260816T012000Z-", "ship/front.tar.gz"),
-        ("ship.scp-agent-descriptor", "/tmp/krw-agent-public-release-20260816T012000Z-", "ship/public-release.json"),
+        (
+            "ship.scp-front-archive",
+            "/tmp/krw-front-20260816T012000Z-",
+            "ship/front.tar.gz",
+        ),
+        (
+            "ship.scp-agent-descriptor",
+            "/tmp/krw-agent-public-release-20260816T012000Z-",
+            "ship/public-release.json",
+        ),
     ] {
         let command = stages
             .commands
@@ -413,11 +489,33 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
             .find(|command| command.id == id)
             .cloned()
             .unwrap_or_else(|| panic!("scp command `{id}` missing"));
-        assert_eq!(&command.argv[..9], &expected_scp_prefix[..], "command {id}: {:?}", command.argv);
-        assert_eq!(command.argv.len(), 11, "local + remote path pair: {:?}", command.argv);
-        assert!(command.argv[9].ends_with(expected_local_suffix), "command {id}: {:?}", command.argv);
-        assert!(command.argv[10].starts_with("krw-agent-prod-dummy-placeholder:"), "command {id}: {:?}", command.argv);
-        assert!(command.argv[10].contains(expected_remote), "command {id}: {:?}", command.argv);
+        assert_eq!(
+            &command.argv[..9],
+            &expected_scp_prefix[..],
+            "command {id}: {:?}",
+            command.argv
+        );
+        assert_eq!(
+            command.argv.len(),
+            11,
+            "local + remote path pair: {:?}",
+            command.argv
+        );
+        assert!(
+            command.argv[9].ends_with(expected_local_suffix),
+            "command {id}: {:?}",
+            command.argv
+        );
+        assert!(
+            command.argv[10].starts_with("krw-agent-prod-dummy-placeholder:"),
+            "command {id}: {:?}",
+            command.argv
+        );
+        assert!(
+            command.argv[10].contains(expected_remote),
+            "command {id}: {:?}",
+            command.argv
+        );
     }
 
     // No-local-docker invariant: the controller NEVER builds, tags, saves, or
@@ -427,10 +525,18 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         .commands
         .borrow()
         .iter()
-        .filter(|command| command.argv.first().is_some_and(|program| program == "docker"))
+        .filter(|command| {
+            command
+                .argv
+                .first()
+                .is_some_and(|program| program == "docker")
+        })
         .map(|command| command.id.clone())
         .collect::<Vec<_>>();
-    assert!(local_docker.is_empty(), "no local docker commands may exist: {local_docker:?}");
+    assert!(
+        local_docker.is_empty(),
+        "no local docker commands may exist: {local_docker:?}"
+    );
 
     // The remote prepare payload builds, tags, and candidate-validates the
     // image ON THE VM from the shipped source (legacy verbatim).
@@ -442,15 +548,33 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         .cloned()
         .expect("remote prepare command");
     let payload = &prepare.argv[9];
-    assert!(payload.contains("compose_stage build web"), "payload must build on the VM");
-    assert!(payload.contains("docker tag \"$CANDIDATE_IMAGE\" \"$CANDIDATE_TAG\""), "payload must tag the candidate on the VM");
-    assert!(payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'"), "payload runs the in-container candidate preflight");
-    assert!(payload.contains("gcp_agent_v1_candidate_preflight"), "payload embeds the legacy preflight check id");
-    assert!(!payload.contains("docker load"), "payload must never load a shipped image: {payload}");
+    assert!(
+        payload.contains("compose_stage build web"),
+        "payload must build on the VM"
+    );
+    assert!(
+        payload.contains("docker tag \"$CANDIDATE_IMAGE\" \"$CANDIDATE_TAG\""),
+        "payload must tag the candidate on the VM"
+    );
+    assert!(
+        payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'"),
+        "payload runs the in-container candidate preflight"
+    );
+    assert!(
+        payload.contains("gcp_agent_v1_candidate_preflight"),
+        "payload embeds the legacy preflight check id"
+    );
+    assert!(
+        !payload.contains("docker load"),
+        "payload must never load a shipped image: {payload}"
+    );
     // The remote build reports the candidate image id as the run's digest.
     let terminal_for_digest = tree.terminal_json();
     assert!(
-        terminal_for_digest["artifacts"]["frontend_image_digest"].as_str().unwrap().starts_with("sha256:"),
+        terminal_for_digest["artifacts"]["frontend_image_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"),
         "remote-built digest recorded: {terminal_for_digest}"
     );
 
@@ -476,7 +600,10 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
             .iter()
             .map(|record| record["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["cleanup.remote-prune-stale", "cleanup.remote-prune-post-activation"]
+        [
+            "cleanup.remote-prune-stale",
+            "cleanup.remote-prune-post-activation"
+        ]
     );
 
     // Terminal success receipt with the full artifact chain.
@@ -490,26 +617,48 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         terminal["artifacts"]["applied_migrations"],
         serde_json::json!(["0001_agent_v1", "0022_daemon_mcp_readiness"])
     );
-    assert!(terminal["artifacts"]["descriptor_sha256"].as_str().unwrap().starts_with("sha256:"));
-    assert!(terminal["artifacts"]["frontend_image_digest"].as_str().unwrap().starts_with("sha256:"));
-    assert!(terminal.get("skipped").is_none(), "no skips on a remote-target walk: {terminal}");
+    assert!(
+        terminal["artifacts"]["descriptor_sha256"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        terminal["artifacts"]["frontend_image_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        terminal.get("skipped").is_none(),
+        "no skips on a remote-target walk: {terminal}"
+    );
 
     // Stage receipts keep env placeholders unresolved (no secret values).
-    let stage7: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("stage-7-admission_close.json")).unwrap()).unwrap();
+    let stage7: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("stage-7-admission_close.json")).unwrap(),
+    )
+    .unwrap();
     let abi_argv = stage7["commands"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|record| record["id"].as_str().unwrap().starts_with("migrations.abi-verify-procedure"))
+        .find(|record| {
+            record["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("migrations.abi-verify-procedure")
+        })
         .unwrap()["argv"]
         .as_array()
         .unwrap()
         .clone();
     assert_eq!(abi_argv[1], "<env:KRW_AGENT_DB_URL>");
-    assert!(!std::fs::read_to_string(run_dir.join("stage-7-admission_close.json"))
-        .unwrap()
-        .contains("postgresql://fixture-dummy"));
+    assert!(
+        !std::fs::read_to_string(run_dir.join("stage-7-admission_close.json"))
+            .unwrap()
+            .contains("postgresql://fixture-dummy")
+    );
     cleanup(&tree);
 }
 
@@ -522,7 +671,11 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
         // (injected failing command id, expected failed_stage, expected admission)
         ("build.dual-provider-bundles", "build", "not-touched"),
         ("seal.prepare-production-candidate", "seal", "not-touched"),
-        ("frontend-image.archive-source", "frontend_image_prepare", "not-touched"),
+        (
+            "frontend-image.archive-source",
+            "frontend_image_prepare",
+            "not-touched",
+        ),
         ("migrations.db-push-dry-run", "migrations", "not-touched"),
         ("admission.close", "admission_close", "closed"),
         ("activation.agentd-stage", "local_activation", "closed"),
@@ -533,11 +686,19 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
     for (failing_id, failed_stage, admission) in matrix {
         let tag: String = failing_id
             .chars()
-            .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let tree = build_tree(&format!("matrix-{tag}"));
         let mut stages = FixtureStageExecutor::passing();
-        stages.failures.insert(failing_id.to_owned(), "injected failure".to_owned());
+        stages
+            .failures
+            .insert(failing_id.to_owned(), "injected failure".to_owned());
         let outcome = run_command(
             CommandMode::Deploy,
             &tree.config_path,
@@ -546,15 +707,37 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
             &stages,
         )
         .expect("deploy run completes (fail-closed)");
-        assert_eq!(outcome.exit_code, 1, "[{failing_id}] message: {}", outcome.message);
+        assert_eq!(
+            outcome.exit_code, 1,
+            "[{failing_id}] message: {}",
+            outcome.message
+        );
         assert_eq!(outcome.outcome, "failure", "[{failing_id}]");
         let terminal = tree.terminal_json();
-        assert_eq!(terminal["outcome"], "failure", "[{failing_id}] terminal: {terminal}");
-        assert_eq!(terminal["failed_stage"], failed_stage, "[{failing_id}] terminal: {terminal}");
-        assert_eq!(terminal["reached_stage"], failed_stage, "[{failing_id}] terminal: {terminal}");
-        assert_eq!(terminal["admission"], admission, "[{failing_id}] terminal: {terminal}");
-        assert!(terminal["reason"].as_str().unwrap().contains(failing_id), "[{failing_id}] reason: {terminal}");
-        assert!(terminal["reason"].as_str().unwrap().contains("fix-forward"), "[{failing_id}] reason: {terminal}");
+        assert_eq!(
+            terminal["outcome"], "failure",
+            "[{failing_id}] terminal: {terminal}"
+        );
+        assert_eq!(
+            terminal["failed_stage"], failed_stage,
+            "[{failing_id}] terminal: {terminal}"
+        );
+        assert_eq!(
+            terminal["reached_stage"], failed_stage,
+            "[{failing_id}] terminal: {terminal}"
+        );
+        assert_eq!(
+            terminal["admission"], admission,
+            "[{failing_id}] terminal: {terminal}"
+        );
+        assert!(
+            terminal["reason"].as_str().unwrap().contains(failing_id),
+            "[{failing_id}] reason: {terminal}"
+        );
+        assert!(
+            terminal["reason"].as_str().unwrap().contains("fix-forward"),
+            "[{failing_id}] reason: {terminal}"
+        );
 
         // The failing stage's own receipt records the failed command.
         let run_dir = tree.single_run_dir();
@@ -564,8 +747,12 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
             .unwrap_or_else(|| panic!("[{failing_id}] not part of the happy-path command set"));
         let stage_file = stage_receipt_file_for(failed_stage);
         let stage_json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join(&stage_file)).unwrap()).unwrap();
-        assert_eq!(stage_json["status"], "fail", "[{failing_id}] stage receipt: {stage_json}");
+            serde_json::from_str(&std::fs::read_to_string(run_dir.join(&stage_file)).unwrap())
+                .unwrap();
+        assert_eq!(
+            stage_json["status"], "fail",
+            "[{failing_id}] stage receipt: {stage_json}"
+        );
         assert!(
             stage_json["commands"]
                 .as_array()
@@ -589,7 +776,10 @@ fn deploy_failure_matrix_covers_every_stage_three_to_eleven() {
             "admission_open",
             "terminal_success_receipt",
         ];
-        let failed_position = stage_order.iter().position(|stage| *stage == failed_stage).unwrap();
+        let failed_position = stage_order
+            .iter()
+            .position(|stage| *stage == failed_stage)
+            .unwrap();
         for later in stage_order.iter().skip(failed_position + 1) {
             assert!(
                 !run_dir.join(stage_receipt_file_for(later)).exists(),
@@ -624,7 +814,10 @@ fn stage_receipt_file_for(stage: &str) -> String {
 fn migration_dry_run_failure_aborts_before_any_mutation() {
     let tree = build_tree("migration-dry-run-fail");
     let mut stages = FixtureStageExecutor::passing();
-    stages.failures.insert("migrations.db-push-dry-run".to_owned(), "injected dry-run failure".to_owned());
+    stages.failures.insert(
+        "migrations.db-push-dry-run".to_owned(),
+        "injected dry-run failure".to_owned(),
+    );
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -639,12 +832,25 @@ fn migration_dry_run_failure_aborts_before_any_mutation() {
     assert_eq!(terminal["admission"], "not-touched");
     let ids = stages.command_ids();
     assert!(ids.contains(&"migrations.db-push-dry-run".to_owned()));
-    assert!(!ids.contains(&"migrations.db-push".to_owned()), "real push must never run: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("admission.")), "admission untouched: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("activation.")), "no activation: {ids:?}");
+    assert!(
+        !ids.contains(&"migrations.db-push".to_owned()),
+        "real push must never run: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("admission.")),
+        "admission untouched: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("activation.")),
+        "no activation: {ids:?}"
+    );
     // The runtime env file was never rewritten by admission upserts.
-    let env_text = std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
-    assert!(!env_text.contains("KRW_AGENT_ADMISSION_MODE"), "env: {env_text}");
+    let env_text =
+        std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
+    assert!(
+        !env_text.contains("KRW_AGENT_ADMISSION_MODE"),
+        "env: {env_text}"
+    );
     cleanup(&tree);
 }
 
@@ -654,7 +860,10 @@ fn abi_verification_failure_after_push_keeps_admission_closed() {
     // failure must leave admission closed with the applied list recorded.
     let tree = build_tree("abi-fail");
     let mut stages = FixtureStageExecutor::passing();
-    stages.failures.insert("migrations.abi-verify-procedure-0".to_owned(), "injected ABI failure".to_owned());
+    stages.failures.insert(
+        "migrations.abi-verify-procedure-0".to_owned(),
+        "injected ABI failure".to_owned(),
+    );
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -674,8 +883,14 @@ fn abi_verification_failure_after_push_keeps_admission_closed() {
         "pushed migrations recorded for fix-forward"
     );
     let ids = stages.command_ids();
-    assert!(ids.contains(&"migrations.db-push".to_owned()), "push ran before the ABI check: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("activation.")), "no activation after ABI failure");
+    assert!(
+        ids.contains(&"migrations.db-push".to_owned()),
+        "push ran before the ABI check: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("activation.")),
+        "no activation after ABI failure"
+    );
     // No rollback of the pushed schema.
     assert_no_rollback_commands(&stages);
     cleanup(&tree);
@@ -704,18 +919,32 @@ fn drift_between_preflight_and_mutating_stage_fails_closed() {
         terminal["failed_stage"], "frontend_image_prepare",
         "the frontend commit pin catches drift at the image stage: {terminal}"
     );
-    assert!(terminal["reason"].as_str().unwrap().contains("drifted"), "reason: {terminal}");
+    assert!(
+        terminal["reason"].as_str().unwrap().contains("drifted"),
+        "reason: {terminal}"
+    );
     assert_eq!(terminal["admission"], "not-touched");
     let ids = stages.command_ids();
-    assert!(!ids.iter().any(|id| id.contains("migrations.")), "no migration command after drift: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("admission.")), "no admission command after drift: {ids:?}");
+    assert!(
+        !ids.iter().any(|id| id.contains("migrations.")),
+        "no migration command after drift: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("admission.")),
+        "no admission command after drift: {ids:?}"
+    );
     let run_dir = tree.single_run_dir();
-    let stage5: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("stage-5-frontend_image_prepare.json")).unwrap())
-        .unwrap();
+    let stage5: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("stage-5-frontend_image_prepare.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(stage5["status"], "fail");
     assert!(
-        stage5["commands"].as_array().unwrap().iter().any(|record| record["id"] == "frontend-image.resolve-commit"),
+        stage5["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["id"] == "frontend-image.resolve-commit"),
         "the drift was observed through the recorded resolve command: {stage5}"
     );
     cleanup(&tree);
@@ -744,31 +973,63 @@ fn local_only_target_skips_remote_and_runs_local_admission() {
     .expect("run");
     assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
     let ids = stages.command_ids();
-    assert!(!ids.iter().any(|id| id.starts_with("remote.")), "no remote activation: {ids:?}");
-    assert!(!ids.iter().any(|id| id.contains("ssh") || id == "readiness.remote-web-healthz"), "no ssh: {ids:?}");
-    assert!(ids.contains(&"admission.close-local".to_owned()), "local close command: {ids:?}");
-    assert!(ids.contains(&"admission.verify-closed-local".to_owned()), "local close verify: {ids:?}");
-    assert!(ids.contains(&"admission.open-local".to_owned()), "local open command: {ids:?}");
-    assert!(ids.contains(&"readiness.admission-open-verify-local".to_owned()), "local open verify: {ids:?}");
+    assert!(
+        !ids.iter().any(|id| id.starts_with("remote.")),
+        "no remote activation: {ids:?}"
+    );
+    assert!(
+        !ids.iter()
+            .any(|id| id.contains("ssh") || id == "readiness.remote-web-healthz"),
+        "no ssh: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"admission.close-local".to_owned()),
+        "local close command: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"admission.verify-closed-local".to_owned()),
+        "local close verify: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"admission.open-local".to_owned()),
+        "local open command: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"readiness.admission-open-verify-local".to_owned()),
+        "local open verify: {ids:?}"
+    );
 
     let terminal = tree.terminal_json();
     assert_eq!(terminal["outcome"], "success");
     assert_eq!(terminal["admission"], "open");
     let skipped = terminal["skipped"].as_array().unwrap();
-    assert!(skipped.iter().any(|record| record["stage"] == "remote_activation"), "skipped: {skipped:?}");
     assert!(
-        skipped.iter().any(|record| record["stage"] == "admission_close" && record["operation"] == "admission.read-previous"),
+        skipped
+            .iter()
+            .any(|record| record["stage"] == "remote_activation"),
+        "skipped: {skipped:?}"
+    );
+    assert!(
+        skipped
+            .iter()
+            .any(|record| record["stage"] == "admission_close"
+                && record["operation"] == "admission.read-previous"),
         "remote admission half skipped: {skipped:?}"
     );
     // previous admission was read from the LOCAL runtime env (absent -> closed).
     assert_eq!(terminal["artifacts"]["previous_admission"], "closed");
     // The local admission upserts actually rewrote the runtime env file.
-    let env_text = std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
-    assert!(env_text.contains("KRW_AGENT_ADMISSION_MODE=open"), "env: {env_text}");
+    let env_text =
+        std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
+    assert!(
+        env_text.contains("KRW_AGENT_ADMISSION_MODE=open"),
+        "env: {env_text}"
+    );
     let run_dir = tree.single_run_dir();
-    let stage9: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("stage-9-remote_activation.json")).unwrap())
-        .unwrap();
+    let stage9: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("stage-9-remote_activation.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(stage9["status"], "skipped");
     assert_no_rollback_commands(&stages);
     cleanup(&tree);
@@ -805,12 +1066,19 @@ fn admission_capture_records_the_previous_gate_value_verbatim() {
     .expect("run");
     assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
     let ids = stages.command_ids();
-    assert!(ids.contains(&"admission.close-local".to_owned()), "local admission path: {ids:?}");
-    assert!(!ids.iter().any(|id| id == "admission.read-previous"), "remote read skipped: {ids:?}");
+    assert!(
+        ids.contains(&"admission.close-local".to_owned()),
+        "local admission path: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id == "admission.read-previous"),
+        "remote read skipped: {ids:?}"
+    );
     let terminal = tree.terminal_json();
     assert_eq!(terminal["artifacts"]["previous_admission"], "drain");
     assert_eq!(terminal["admission"], "open");
-    let env_text = std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
+    let env_text =
+        std::fs::read_to_string(tree.operator_root().join("runtime/krw-agent-deploy.env")).unwrap();
     assert!(!env_text.contains("drain"), "env: {env_text}");
     cleanup(&tree);
 }
@@ -848,7 +1116,11 @@ fn ssh_only_target_keeps_plain_ssh_remote_transport() {
     assert_eq!(&read_previous.argv[1..3], &["-o", "BatchMode=yes"]);
     assert_eq!(read_previous.argv[4], "ConnectTimeout=5");
     assert_eq!(read_previous.argv[5], "deploy@127.0.0.1");
-    assert!(read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", read_previous.argv[6]);
+    assert!(
+        read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"),
+        "payload: {}",
+        read_previous.argv[6]
+    );
     let web_up = stages
         .commands
         .borrow()
@@ -860,7 +1132,8 @@ fn ssh_only_target_keeps_plain_ssh_remote_transport() {
     // The preflight receipt also records the plain-ssh reachability shape.
     let run_dir = tree.single_run_dir();
     let preflight_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap())
+            .unwrap();
     let reachability = preflight_json["checks"]
         .as_array()
         .unwrap()
@@ -869,7 +1142,10 @@ fn ssh_only_target_keeps_plain_ssh_remote_transport() {
         .unwrap();
     assert_eq!(reachability["status"], "pass");
     assert!(
-        reachability["detail"].as_str().unwrap().contains("ssh `deploy@127.0.0.1` reachable"),
+        reachability["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ssh `deploy@127.0.0.1` reachable"),
         "detail: {}",
         reachability["detail"]
     );
@@ -896,7 +1172,10 @@ fn deploy_with_failing_preflight_writes_no_stage_receipts() {
     assert_eq!(terminal["admission"], "closed");
     let run_dir = tree.single_run_dir();
     assert!(!run_dir.join("stage-3-build.json").exists());
-    assert!(stages.commands.borrow().is_empty(), "no stage command may run after a failed preflight");
+    assert!(
+        stages.commands.borrow().is_empty(),
+        "no stage command may run after a failed preflight"
+    );
     cleanup(&tree);
 }
 
@@ -905,7 +1184,9 @@ fn in_use_port_fails_preflight_end_to_end() {
     let tree = build_tree("port-in-use");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    tree.rewrite_target(|text| text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]")));
+    tree.rewrite_target(|text| {
+        text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]"))
+    });
     let outcome = run_command(
         CommandMode::Preflight,
         &tree.config_path,
@@ -915,10 +1196,15 @@ fn in_use_port_fails_preflight_end_to_end() {
     )
     .expect("run");
     assert_eq!(outcome.exit_code, 1);
-    assert!(outcome.message.contains("port-ownership"), "message: {}", outcome.message);
+    assert!(
+        outcome.message.contains("port-ownership"),
+        "message: {}",
+        outcome.message
+    );
     let run_dir = tree.single_run_dir();
     let preflight_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("preflight.json")).unwrap())
+            .unwrap();
     assert_eq!(preflight_json["verdict"], "fail");
     let port_check = preflight_json["checks"]
         .as_array()
@@ -927,7 +1213,12 @@ fn in_use_port_fails_preflight_end_to_end() {
         .find(|check| check["id"] == "port-ownership")
         .unwrap();
     assert_eq!(port_check["status"], "fail");
-    assert!(port_check["detail"].as_str().unwrap().contains(&port.to_string()));
+    assert!(
+        port_check["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&port.to_string())
+    );
     drop(listener);
     cleanup(&tree);
 }
@@ -950,7 +1241,11 @@ fn contract_hash_drift_fails_preflight_end_to_end() {
     )
     .expect("run");
     assert_eq!(outcome.exit_code, 1);
-    assert!(outcome.message.contains("frontend-contract-hash"), "message: {}", outcome.message);
+    assert!(
+        outcome.message.contains("frontend-contract-hash"),
+        "message: {}",
+        outcome.message
+    );
     cleanup(&tree);
 }
 
@@ -983,8 +1278,14 @@ fn strict_config_rejects_unknown_fields_without_receipts() {
         &FixtureStageExecutor::passing(),
     )
     .unwrap_err();
-    assert!(matches!(error, ControllerError::Config(_)), "unexpected error: {error}");
-    assert!(!tree.receipt_root().exists(), "no receipts without a parseable config");
+    assert!(
+        matches!(error, ControllerError::Config(_)),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !tree.receipt_root().exists(),
+        "no receipts without a parseable config"
+    );
     cleanup(&tree);
 }
 
@@ -1010,7 +1311,10 @@ fn repeated_run_at_same_timestamp_refuses_to_overwrite_receipts() {
         &FixtureExecutor::passing(),
         &FixtureStageExecutor::passing(),
     );
-    assert!(second.is_err(), "receipt overwrite must be refused: {second:?}");
+    assert!(
+        second.is_err(),
+        "receipt overwrite must be refused: {second:?}"
+    );
     let receipt_entries = std::fs::read_dir(tree.receipt_root()).unwrap().count();
     assert_eq!(receipt_entries, 1, "still exactly one run directory");
     cleanup(&tree);
@@ -1024,9 +1328,10 @@ fn source_archive_failure_aborts_before_any_mutation() {
     // failure surface is covered by the remote-prepare failure test.
     let tree = build_tree("archive-source-fail");
     let mut stages = FixtureStageExecutor::passing();
-    stages
-        .failures
-        .insert("frontend-image.archive-source".to_owned(), "injected archive failure".to_owned());
+    stages.failures.insert(
+        "frontend-image.archive-source".to_owned(),
+        "injected archive failure".to_owned(),
+    );
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -1040,17 +1345,28 @@ fn source_archive_failure_aborts_before_any_mutation() {
     assert_eq!(terminal["failed_stage"], "frontend_image_prepare");
     assert_eq!(terminal["admission"], "not-touched");
     let ids = stages.command_ids();
-    assert!(ids.contains(&"frontend-image.archive-source".to_owned()), "ids: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("ship.")), "nothing ships after a failed archive: {ids:?}");
-    assert!(!ids.iter().any(|id| id.starts_with("admission.")), "admission untouched: {ids:?}");
-    assert!(!ids.contains(&"migrations.db-push".to_owned()), "no push: {ids:?}");
+    assert!(
+        ids.contains(&"frontend-image.archive-source".to_owned()),
+        "ids: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("ship.")),
+        "nothing ships after a failed archive: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("admission.")),
+        "admission untouched: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"migrations.db-push".to_owned()),
+        "no push: {ids:?}"
+    );
     // No docker interaction anywhere (local build is not part of the flow).
     assert!(
-        !stages
-            .commands
-            .borrow()
-            .iter()
-            .any(|command| command.argv.first().is_some_and(|program| program == "docker")),
+        !stages.commands.borrow().iter().any(|command| command
+            .argv
+            .first()
+            .is_some_and(|program| program == "docker")),
         "no local docker commands: {:?}",
         stages.command_ids()
     );
@@ -1065,7 +1381,10 @@ fn remote_prepare_failure_keeps_admission_closed_after_uploads() {
     // already closed (schema may have moved under it).
     let tree = build_tree("remote-prepare-fail");
     let mut stages = FixtureStageExecutor::passing();
-    stages.failures.insert("ship.remote-prepare".to_owned(), "injected prepare failure".to_owned());
+    stages.failures.insert(
+        "ship.remote-prepare".to_owned(),
+        "injected prepare failure".to_owned(),
+    );
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -1079,9 +1398,18 @@ fn remote_prepare_failure_keeps_admission_closed_after_uploads() {
     assert_eq!(terminal["failed_stage"], "remote_activation");
     assert_eq!(terminal["admission"], "closed");
     let ids = stages.command_ids();
-    assert!(ids.contains(&"ship.scp-agent-descriptor".to_owned()), "uploads happened before prepare: {ids:?}");
-    assert!(!ids.contains(&"remote.candidate-abi".to_owned()), "no candidate ABI after failed prepare: {ids:?}");
-    assert!(!ids.contains(&"remote.web-up".to_owned()), "no activation after failed prepare: {ids:?}");
+    assert!(
+        ids.contains(&"ship.scp-agent-descriptor".to_owned()),
+        "uploads happened before prepare: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"remote.candidate-abi".to_owned()),
+        "no candidate ABI after failed prepare: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"remote.web-up".to_owned()),
+        "no activation after failed prepare: {ids:?}"
+    );
     assert_no_rollback_commands(&stages);
     cleanup(&tree);
 }
@@ -1092,9 +1420,10 @@ fn cleanup_failures_never_fail_the_deploy() {
     // recorded in the stage-12 receipt, and the run still ends open.
     let tree = build_tree("cleanup-fail");
     let mut stages = FixtureStageExecutor::passing();
-    stages
-        .failures
-        .insert("cleanup.remote-prune-stale".to_owned(), "injected cleanup failure".to_owned());
+    stages.failures.insert(
+        "cleanup.remote-prune-stale".to_owned(),
+        "injected cleanup failure".to_owned(),
+    );
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -1112,7 +1441,10 @@ fn cleanup_failures_never_fail_the_deploy() {
         &std::fs::read_to_string(run_dir.join("stage-12-terminal_success_receipt.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(stage12["status"], "pass", "cleanup failure must not fail stage 12: {stage12}");
+    assert_eq!(
+        stage12["status"], "pass",
+        "cleanup failure must not fail stage 12: {stage12}"
+    );
     let prune = stage12["commands"]
         .as_array()
         .unwrap()
@@ -1121,11 +1453,10 @@ fn cleanup_failures_never_fail_the_deploy() {
         .unwrap();
     assert_eq!(prune["outcome"], "fail");
     assert!(
-        stage12["notes"]
-            .as_array()
+        stage12["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|note| note.as_str().unwrap().contains("best-effort cleanup `cleanup.remote-prune-stale` failed")),
+            .contains("best-effort cleanup `cleanup.remote-prune-stale` failed")),
         "failure noted: {stage12}"
     );
     cleanup(&tree);
@@ -1160,7 +1491,10 @@ fn dry_run_migration_include_all_retry_is_detected_from_dry_run_output() {
         .iter()
         .position(|id| id == "migrations.db-push-dry-run-include-all")
         .expect("include-all dry-run re-ran");
-    let push_position = ids.iter().position(|id| id == "migrations.db-push-include-all").expect("include-all push");
+    let push_position = ids
+        .iter()
+        .position(|id| id == "migrations.db-push-include-all")
+        .expect("include-all push");
     assert!(dry_run_position < include_position, "ids: {ids:?}");
     assert!(include_position < push_position, "ids: {ids:?}");
     cleanup(&tree);
@@ -1172,7 +1506,10 @@ fn remote_target_without_two_site_origins_fails_closed_at_activation() {
     // controller refuses to ship to a target that does not declare them.
     let tree = build_tree("origins-missing");
     tree.rewrite_target(|text| {
-        text.replace(",\n  \"site_origins\": [\"https://one.example.com\", \"https://two.example.com\"]", "")
+        text.replace(
+            ",\n  \"site_origins\": [\"https://one.example.com\", \"https://two.example.com\"]",
+            "",
+        )
     });
     let stages = FixtureStageExecutor::passing();
     let outcome = run_command(
@@ -1187,9 +1524,18 @@ fn remote_target_without_two_site_origins_fails_closed_at_activation() {
     let terminal = tree.terminal_json();
     assert_eq!(terminal["failed_stage"], "remote_activation");
     assert_eq!(terminal["admission"], "closed");
-    assert!(terminal["reason"].as_str().unwrap().contains("site_origins"), "reason: {terminal}");
+    assert!(
+        terminal["reason"]
+            .as_str()
+            .unwrap()
+            .contains("site_origins"),
+        "reason: {terminal}"
+    );
     let ids = stages.command_ids();
-    assert!(!ids.iter().any(|id| id.starts_with("ship.")), "nothing ships without origins: {ids:?}");
+    assert!(
+        !ids.iter().any(|id| id.starts_with("ship.")),
+        "nothing ships without origins: {ids:?}"
+    );
     cleanup(&tree);
 }
 
@@ -1206,7 +1552,9 @@ fn failure_receipts_never_embed_runtime_env_values() {
     // (the only "secret-shaped" string in the fixture tree).
     let tree = build_tree("no-secret-leak");
     let mut stages = FixtureStageExecutor::passing();
-    stages.failures.insert("readiness.db-heartbeat".to_owned(), "injected".to_owned());
+    stages
+        .failures
+        .insert("readiness.db-heartbeat".to_owned(), "injected".to_owned());
     let outcome = run_command(
         CommandMode::Deploy,
         &tree.config_path,
@@ -1218,7 +1566,10 @@ fn failure_receipts_never_embed_runtime_env_values() {
     assert_eq!(outcome.exit_code, 1);
     for entry in std::fs::read_dir(tree.single_run_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|extension| extension == "json") {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
             let text = std::fs::read_to_string(&path).unwrap();
             assert!(
                 !text.contains("postgresql://fixture-dummy"),

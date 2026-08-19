@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::config::{DeployConfig, REQUIRED_COMMANDS};
 use crate::contract::{self, ContractError};
 use crate::executor::PreflightExecutor;
-use crate::hashing::{sha256_file_or_unavailable, UNAVAILABLE_HASH};
+use crate::hashing::{UNAVAILABLE_HASH, sha256_file_or_unavailable};
 use crate::target::{TargetError, TargetFile};
 
 pub const CHECK_CONFIG_SCHEMA: &str = "config-schema";
@@ -57,7 +57,10 @@ pub const TRUST_REGISTRY_RELATIVE_PATH: &str = "signing/release-trust-registry.j
 /// `<operator_root>/config/<provider>/release-trust-registry.json` (the
 /// same file the seal stage signs against).
 pub fn per_provider_trust_registry_path(operator_root: &Path, provider: &str) -> PathBuf {
-    operator_root.join("config").join(provider).join("release-trust-registry.json")
+    operator_root
+        .join("config")
+        .join(provider)
+        .join("release-trust-registry.json")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +101,10 @@ pub struct PreflightOutcome {
 
 impl PreflightOutcome {
     pub fn failed_checks(&self) -> Vec<&CheckResult> {
-        self.checks.iter().filter(|check| check.status == CheckStatus::Fail).collect()
+        self.checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Fail)
+            .collect()
     }
 }
 
@@ -117,7 +123,10 @@ pub struct PreflightPlan<'a> {
 
 /// Run all preflight checks in 05-doc order. Pure read: the only system
 /// effects are executor probes (read-only shell-outs / TCP connects).
-pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor) -> PreflightOutcome {
+pub fn run_preflight(
+    plan: &PreflightPlan<'_>,
+    executor: &dyn PreflightExecutor,
+) -> PreflightOutcome {
     let mut checks = Vec::new();
     let config = plan.config;
 
@@ -148,7 +157,9 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
                     checks.push(pass(CHECK_TARGET_EXPLICIT_PROVIDER, detail));
                 }
                 (Some(target_provider), config_provider) => {
-                    detail = format!("target provider `{target_provider}` does not match config provider `{config_provider}`");
+                    detail = format!(
+                        "target provider `{target_provider}` does not match config provider `{config_provider}`"
+                    );
                     checks.push(fail(CHECK_TARGET_EXPLICIT_PROVIDER, detail));
                 }
                 (None, _) => {
@@ -161,7 +172,10 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
             target
         }
         Err(error) => {
-            checks.push(fail(CHECK_TARGET_EXPLICIT_PROVIDER, format!("target file unusable: {error}")));
+            checks.push(fail(
+                CHECK_TARGET_EXPLICIT_PROVIDER,
+                format!("target file unusable: {error}"),
+            ));
             TargetFile {
                 provider: None,
                 gcp: None,
@@ -181,15 +195,24 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
     };
 
     // 3. agent source clean commit.
-    let agent_head = match (executor.git_porcelain(&config.agent_source_root), executor.git_head(&config.agent_source_root)) {
+    let agent_head = match (
+        executor.git_porcelain(&config.agent_source_root),
+        executor.git_head(&config.agent_source_root),
+    ) {
         (Ok(porcelain), Ok(head)) if porcelain.trim().is_empty() => {
-            checks.push(pass(CHECK_AGENT_SOURCE_CLEAN_COMMIT, format!("clean tree at HEAD {head}")));
+            checks.push(pass(
+                CHECK_AGENT_SOURCE_CLEAN_COMMIT,
+                format!("clean tree at HEAD {head}"),
+            ));
             head
         }
         (Ok(porcelain), Ok(head)) => {
             checks.push(fail(
                 CHECK_AGENT_SOURCE_CLEAN_COMMIT,
-                format!("agent source dirty at HEAD {head}: {} uncommitted entries", porcelain.lines().count()),
+                format!(
+                    "agent source dirty at HEAD {head}: {} uncommitted entries",
+                    porcelain.lines().count()
+                ),
             ));
             head
         }
@@ -205,13 +228,19 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
         executor.git_head(&config.frontend_source_root),
     ) {
         (Ok(porcelain), Ok(head)) if porcelain.trim().is_empty() => {
-            checks.push(pass(CHECK_FRONTEND_SOURCE_CLEAN_COMMIT, format!("clean tree at HEAD {head}")));
+            checks.push(pass(
+                CHECK_FRONTEND_SOURCE_CLEAN_COMMIT,
+                format!("clean tree at HEAD {head}"),
+            ));
             head
         }
         (Ok(porcelain), Ok(head)) => {
             checks.push(fail(
                 CHECK_FRONTEND_SOURCE_CLEAN_COMMIT,
-                format!("frontend source dirty at HEAD {head}: {} uncommitted entries", porcelain.lines().count()),
+                format!(
+                    "frontend source dirty at HEAD {head}: {} uncommitted entries",
+                    porcelain.lines().count()
+                ),
             ));
             head
         }
@@ -225,7 +254,10 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
     if plan.output_dir.exists() {
         checks.push(fail(
             CHECK_OUTPUT_DIR_ABSENT,
-            format!("output directory already exists: {}", plan.output_dir.display()),
+            format!(
+                "output directory already exists: {}",
+                plan.output_dir.display()
+            ),
         ));
     } else {
         checks.push(pass(
@@ -248,7 +280,10 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
     if missing_commands.is_empty() {
         checks.push(pass(
             CHECK_REQUIRED_COMMANDS,
-            format!("all {} required commands resolve on PATH", REQUIRED_COMMANDS.len()),
+            format!(
+                "all {} required commands resolve on PATH",
+                REQUIRED_COMMANDS.len()
+            ),
         ));
     } else {
         checks.push(fail(
@@ -273,13 +308,18 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
                 None => checks.push(CheckResult {
                     id: CHECK_FRONTEND_CONTRACT_HASH,
                     status: CheckStatus::Skipped,
-                    detail: format!("contract valid; canonical {hash} recorded; target pins no contract hash"),
+                    detail: format!(
+                        "contract valid; canonical {hash} recorded; target pins no contract hash"
+                    ),
                 }),
             }
             hash
         }
         Err(ContractError::MissingOrUnsafe(detail)) => {
-            checks.push(fail(CHECK_FRONTEND_CONTRACT_HASH, format!("contract missing or unsafe: {detail}")));
+            checks.push(fail(
+                CHECK_FRONTEND_CONTRACT_HASH,
+                format!("contract missing or unsafe: {detail}"),
+            ));
             UNAVAILABLE_HASH.to_owned()
         }
         Err(error) => {
@@ -290,7 +330,8 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
 
     // 8. signing key / trust validity.
     let signing_key = config.operator_root.join(SIGNING_KEY_RELATIVE_PATH);
-    let per_provider_registry = per_provider_trust_registry_path(&config.operator_root, &config.provider);
+    let per_provider_registry =
+        per_provider_trust_registry_path(&config.operator_root, &config.provider);
     let trust_registry = config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH);
     let key_bytes = std::fs::read(&signing_key);
     match &key_bytes {
@@ -334,23 +375,31 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
             // Fallback: legacy shared registry under signing/ (parse
             // validity only, as before).
             match std::fs::read(&trust_registry) {
-                Ok(bytes) => match krw_agent_release_authorization::parse_canonical_trust_registry(&bytes) {
-                    Ok(registry) => checks.push(pass(
-                        CHECK_SIGNING_TRUST_VALIDITY,
-                        format!(
-                            "signing key readable; trust registry `{}` parses with {} key(s)",
-                            registry.registry_id,
-                            registry.keys.len()
-                        ),
-                    )),
-                    Err(error) => checks.push(fail(
-                        CHECK_SIGNING_TRUST_VALIDITY,
-                        format!("trust registry invalid: {}: {error}", trust_registry.display()),
-                    )),
-                },
+                Ok(bytes) => {
+                    match krw_agent_release_authorization::parse_canonical_trust_registry(&bytes) {
+                        Ok(registry) => checks.push(pass(
+                            CHECK_SIGNING_TRUST_VALIDITY,
+                            format!(
+                                "signing key readable; trust registry `{}` parses with {} key(s)",
+                                registry.registry_id,
+                                registry.keys.len()
+                            ),
+                        )),
+                        Err(error) => checks.push(fail(
+                            CHECK_SIGNING_TRUST_VALIDITY,
+                            format!(
+                                "trust registry invalid: {}: {error}",
+                                trust_registry.display()
+                            ),
+                        )),
+                    }
+                }
                 Err(error) => checks.push(fail(
                     CHECK_SIGNING_TRUST_VALIDITY,
-                    format!("trust registry unreadable: {}: {error}", trust_registry.display()),
+                    format!(
+                        "trust registry unreadable: {}: {error}",
+                        trust_registry.display()
+                    ),
                 )),
             }
         } else {
@@ -545,7 +594,10 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
         if failures.is_empty() {
             checks.push(pass(
                 CHECK_MCP_ENDPOINT_REACHABLE,
-                format!("{} mcp endpoint(s) connectable (no LLM calls)", target.mcp_endpoints.len()),
+                format!(
+                    "{} mcp endpoint(s) connectable (no LLM calls)",
+                    target.mcp_endpoints.len()
+                ),
             ));
         } else {
             checks.push(fail(
@@ -566,7 +618,10 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
     input_hashes.insert("agent_head".to_owned(), agent_head);
     input_hashes.insert("frontend_head".to_owned(), frontend_head);
     input_hashes.insert("frontend_contract_sha256".to_owned(), contract_sha256);
-    input_hashes.insert("target_file_sha256".to_owned(), sha256_file_or_unavailable(&config.target_file));
+    input_hashes.insert(
+        "target_file_sha256".to_owned(),
+        sha256_file_or_unavailable(&config.target_file),
+    );
 
     PreflightOutcome {
         checks,
@@ -577,11 +632,19 @@ pub fn run_preflight(plan: &PreflightPlan<'_>, executor: &dyn PreflightExecutor)
 }
 
 fn pass(id: &'static str, detail: String) -> CheckResult {
-    CheckResult { id, status: CheckStatus::Pass, detail }
+    CheckResult {
+        id,
+        status: CheckStatus::Pass,
+        detail,
+    }
 }
 
 fn fail(id: &'static str, detail: String) -> CheckResult {
-    CheckResult { id, status: CheckStatus::Fail, detail }
+    CheckResult {
+        id,
+        status: CheckStatus::Fail,
+        detail,
+    }
 }
 
 fn load_target(path: &Path) -> Result<TargetFile, TargetError> {
@@ -591,7 +654,8 @@ fn load_target(path: &Path) -> Result<TargetFile, TargetError> {
 /// KEY=NAME parsing of an env file: returns key NAMES only. Comment lines
 /// and blanks are ignored; `export ` prefixes are tolerated.
 fn env_key_names(path: &Path) -> Result<BTreeSet<String>, String> {
-    let text = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut names = BTreeSet::new();
     for line in text.lines() {
         let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
@@ -615,7 +679,11 @@ fn parse_host_port(endpoint: &str) -> Option<(String, u16)> {
     let authority = authority.split('/').next()?;
     let (host, port) = authority.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
-    if host.is_empty() { None } else { Some((host.to_owned(), port)) }
+    if host.is_empty() {
+        None
+    } else {
+        Some((host.to_owned(), port))
+    }
 }
 
 #[cfg(test)]
@@ -671,13 +739,21 @@ mod tests {
         std::fs::create_dir_all(operator_root.join("signing")).unwrap();
         std::fs::create_dir_all(operator_root.join("ops")).unwrap();
         std::fs::create_dir_all(operator_root.join("runtime")).unwrap();
-        std::fs::write(operator_root.join("signing/release-private.pk8"), b"dummy-pkcs8-bytes").unwrap();
+        std::fs::write(
+            operator_root.join("signing/release-private.pk8"),
+            b"dummy-pkcs8-bytes",
+        )
+        .unwrap();
         std::fs::write(
             operator_root.join("runtime/krw-agent-deploy.env"),
             "KRW_AGENT_DB_URL=postgresql://dummy\n# comment\nKRW_AGENT_PROVIDER_KEY_HANDLE=dummy\n",
         )
         .unwrap();
-        std::fs::write(operator_root.join("ops/agent-v1-deployment-contract.json"), contract::canonical_fixture_contract_json()).unwrap();
+        std::fs::write(
+            operator_root.join("ops/agent-v1-deployment-contract.json"),
+            contract::canonical_fixture_contract_json(),
+        )
+        .unwrap();
         let fixture = Fixture {
             config_path: operator_root.join("ops/deploy-config.json"),
             config: DeployConfig {
@@ -756,7 +832,12 @@ mod tests {
     fn happy_path_passes_with_fixture_executor() {
         let fixture = write_fixture("happy");
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(outcome.verdict, CheckStatus::Pass, "details: {:#?}", outcome.failed_checks());
+        assert_eq!(
+            outcome.verdict,
+            CheckStatus::Pass,
+            "details: {:#?}",
+            outcome.failed_checks()
+        );
         assert_eq!(outcome.checks.len(), CHECK_ORDER.len());
         assert_eq!(
             outcome
@@ -766,9 +847,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             CHECK_ORDER
         );
-        assert_eq!(outcome.input_hashes.get("agent_head").map(String::as_str), Some("0123456789abcdef0123456789abcdef01234567"));
-        assert!(outcome.input_hashes.get("config_sha256").unwrap().starts_with("sha256:"));
-        assert_eq!(outcome.target_identity.get("provider").map(String::as_str), Some("deepseek"));
+        assert_eq!(
+            outcome.input_hashes.get("agent_head").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert!(
+            outcome
+                .input_hashes
+                .get("config_sha256")
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert_eq!(
+            outcome.target_identity.get("provider").map(String::as_str),
+            Some("deepseek")
+        );
     }
 
     #[test]
@@ -777,7 +870,10 @@ mod tests {
         std::fs::create_dir_all(fixture.output_dir()).unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
         assert_eq!(outcome.verdict, CheckStatus::Fail);
-        assert_eq!(result_of(&outcome, CHECK_OUTPUT_DIR_ABSENT).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_OUTPUT_DIR_ABSENT).status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -785,18 +881,27 @@ mod tests {
         let fixture = write_fixture("provider-missing");
         fixture.rewrite_target(|text| text.replace("\"provider\": \"deepseek\",", ""));
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_TARGET_EXPLICIT_PROVIDER).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_TARGET_EXPLICIT_PROVIDER).status,
+            CheckStatus::Fail
+        );
         assert_eq!(outcome.verdict, CheckStatus::Fail);
     }
 
     #[test]
     fn provider_mismatch_between_config_and_target_fails() {
         let fixture = write_fixture("provider-mismatch");
-        fixture.rewrite_target(|text| text.replace("\"provider\": \"deepseek\"", "\"provider\": \"glm\""));
+        fixture.rewrite_target(|text| {
+            text.replace("\"provider\": \"deepseek\"", "\"provider\": \"glm\"")
+        });
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_TARGET_EXPLICIT_PROVIDER);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("does not match"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("does not match"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -812,7 +917,11 @@ mod tests {
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_FRONTEND_CONTRACT_HASH);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("does not match target pin"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("does not match target pin"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -820,7 +929,9 @@ mod tests {
         let fixture = write_fixture("contract-pin");
         let contract_path = fixture.config.frontend_contract.clone();
         let contract_bytes = std::fs::read(&contract_path).unwrap();
-        let pinned = crate::contract::parse_contract(&contract_bytes).unwrap().canonical_sha256;
+        let pinned = crate::contract::parse_contract(&contract_bytes)
+            .unwrap()
+            .canonical_sha256;
         fixture.rewrite_target(|text| {
             text.replace(
                 "\"local_ports\": []",
@@ -828,7 +939,10 @@ mod tests {
             )
         });
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_FRONTEND_CONTRACT_HASH).status, CheckStatus::Pass);
+        assert_eq!(
+            result_of(&outcome, CHECK_FRONTEND_CONTRACT_HASH).status,
+            CheckStatus::Pass
+        );
     }
 
     #[test]
@@ -836,8 +950,17 @@ mod tests {
         let fixture = write_fixture("contract-missing");
         std::fs::remove_file(fixture.config.frontend_contract.clone()).unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_FRONTEND_CONTRACT_HASH).status, CheckStatus::Fail);
-        assert_eq!(outcome.input_hashes.get("frontend_contract_sha256").map(String::as_str), Some(UNAVAILABLE_HASH));
+        assert_eq!(
+            result_of(&outcome, CHECK_FRONTEND_CONTRACT_HASH).status,
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            outcome
+                .input_hashes
+                .get("frontend_contract_sha256")
+                .map(String::as_str),
+            Some(UNAVAILABLE_HASH)
+        );
     }
 
     #[test]
@@ -845,11 +968,17 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let fixture = write_fixture("port-in-use");
-        fixture.rewrite_target(|text| text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]")));
+        fixture.rewrite_target(|text| {
+            text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]"))
+        });
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_PORT_OWNERSHIP);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains(&port.to_string()), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains(&port.to_string()),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -858,16 +987,24 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let fixture = write_fixture("port-free");
-        fixture.rewrite_target(|text| text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]")));
+        fixture.rewrite_target(|text| {
+            text.replace("\"local_ports\": []", &format!("\"local_ports\": [{port}]"))
+        });
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_PORT_OWNERSHIP).status, CheckStatus::Pass);
+        assert_eq!(
+            result_of(&outcome, CHECK_PORT_OWNERSHIP).status,
+            CheckStatus::Pass
+        );
     }
 
     #[test]
     fn missing_required_commands_fail() {
         let fixture = write_fixture("commands-missing");
         let mut executor = FixtureExecutor::passing();
-        executor.missing_commands = REQUIRED_COMMANDS.iter().map(|command| (*command).to_owned()).collect();
+        executor.missing_commands = REQUIRED_COMMANDS
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect();
         let outcome = run(&fixture, &executor);
         let check = result_of(&outcome, CHECK_REQUIRED_COMMANDS);
         assert_eq!(check.status, CheckStatus::Fail);
@@ -880,7 +1017,10 @@ mod tests {
         let mut executor = FixtureExecutor::passing();
         executor.porcelain = Ok(" M crates/foo/src/lib.rs\n?? scratch.txt\n".to_owned());
         let outcome = run(&fixture, &executor);
-        assert_eq!(result_of(&outcome, CHECK_AGENT_SOURCE_CLEAN_COMMIT).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_AGENT_SOURCE_CLEAN_COMMIT).status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -888,19 +1028,28 @@ mod tests {
         let fixture = write_fixture("key-missing");
         std::fs::remove_file(fixture.config.operator_root.join(SIGNING_KEY_RELATIVE_PATH)).unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
     fn invalid_trust_registry_fails_when_published() {
         let fixture = write_fixture("trust-invalid");
         std::fs::write(
-            fixture.config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH),
+            fixture
+                .config
+                .operator_root
+                .join(TRUST_REGISTRY_RELATIVE_PATH),
             b"{\"schema_version\": 99}",
         )
         .unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -921,19 +1070,27 @@ mod tests {
             }],
         };
         std::fs::write(
-            fixture.config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH),
+            fixture
+                .config
+                .operator_root
+                .join(TRUST_REGISTRY_RELATIVE_PATH),
             serde_jcs::to_vec(&registry).unwrap(),
         )
         .unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status, CheckStatus::Pass);
+        assert_eq!(
+            result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY).status,
+            CheckStatus::Pass
+        );
 
         let fixture = write_fixture("trust-absent");
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
         assert_eq!(check.status, CheckStatus::Skipped);
         assert!(
-            check.detail.contains("config/deepseek/release-trust-registry.json"),
+            check
+                .detail
+                .contains("config/deepseek/release-trust-registry.json"),
             "skip detail names both registry locations: {}",
             check.detail
         );
@@ -959,7 +1116,10 @@ mod tests {
             minimum_sequence: 1,
             keys,
         };
-        let path = per_provider_trust_registry_path(&fixture.config.operator_root, &fixture.config.provider);
+        let path = per_provider_trust_registry_path(
+            &fixture.config.operator_root,
+            &fixture.config.provider,
+        );
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_jcs::to_vec(&registry).unwrap()).unwrap();
         path
@@ -972,7 +1132,10 @@ mod tests {
         // An INVALID legacy registry sits next to it: the per-provider file
         // must take precedence, so the check still passes.
         std::fs::write(
-            fixture.config.operator_root.join(TRUST_REGISTRY_RELATIVE_PATH),
+            fixture
+                .config
+                .operator_root
+                .join(TRUST_REGISTRY_RELATIVE_PATH),
             b"{\"schema_version\": 99}",
         )
         .unwrap();
@@ -980,11 +1143,19 @@ mod tests {
         let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(
-            check.detail.contains("exactly one active signing key `checks-active-key`"),
+            check
+                .detail
+                .contains("exactly one active signing key `checks-active-key`"),
             "detail: {}",
             check.detail
         );
-        assert!(check.detail.contains("config/deepseek/release-trust-registry.json"), "detail: {}", check.detail);
+        assert!(
+            check
+                .detail
+                .contains("config/deepseek/release-trust-registry.json"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -996,7 +1167,11 @@ mod tests {
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("no active signing key"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("no active signing key"),
+            "detail: {}",
+            check.detail
+        );
 
         // A revoked-only registry is the same zero-active failure.
         let fixture = write_fixture("trust-per-provider-revoked");
@@ -1006,7 +1181,11 @@ mod tests {
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("no active signing key"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("no active signing key"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -1019,7 +1198,11 @@ mod tests {
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_SIGNING_TRUST_VALIDITY);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("2 active signing keys"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("2 active signing keys"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -1041,33 +1224,59 @@ mod tests {
             )
             .unwrap();
         });
-        assert!(std::env::var_os(handle).is_none(), "test handle must not leak into the process env");
+        assert!(
+            std::env::var_os(handle).is_none(),
+            "test handle must not leak into the process env"
+        );
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_DB_AGENT_V1_ABI);
         assert_eq!(check.status, CheckStatus::Pass, "detail: {}", check.detail);
-        assert!(check.detail.contains("runtime-env handle"), "detail: {}", check.detail);
-        assert!(!check.detail.contains("postgresql://"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("runtime-env handle"),
+            "detail: {}",
+            check.detail
+        );
+        assert!(
+            !check.detail.contains("postgresql://"),
+            "detail: {}",
+            check.detail
+        );
 
         // Same target, but the handle is absent from the runtime env file:
         // clear key-named failure (the old bug consulted process env).
-        std::fs::write(fixture.config.runtime_env.clone(), "# names only\nKRW_AGENT_DB_URL=postgresql://dummy\n").unwrap();
+        std::fs::write(
+            fixture.config.runtime_env.clone(),
+            "# names only\nKRW_AGENT_DB_URL=postgresql://dummy\n",
+        )
+        .unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_DB_AGENT_V1_ABI);
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.detail.contains(handle), "detail: {}", check.detail);
-        assert!(check.detail.contains("not present"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("not present"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
     fn missing_required_env_keys_fail() {
         let fixture = write_fixture("env-missing");
         fixture.rewrite_target(|text| {
-            text.replace("\"required_env_keys\": []", "\"required_env_keys\": [\"KRW_AGENT_DB_URL\", \"KRW_AGENT_MISSING_KEY\"]")
+            text.replace(
+                "\"required_env_keys\": []",
+                "\"required_env_keys\": [\"KRW_AGENT_DB_URL\", \"KRW_AGENT_MISSING_KEY\"]",
+            )
         });
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let check = result_of(&outcome, CHECK_REMOTE_ENV_REQUIRED_KEYS);
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains("KRW_AGENT_MISSING_KEY"), "detail: {}", check.detail);
+        assert!(
+            check.detail.contains("KRW_AGENT_MISSING_KEY"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -1098,7 +1307,10 @@ mod tests {
         executor.db = Err("env handle `KRW_AGENT_DB_URL` is not set".to_owned());
         executor.tcp = Err("connect refused".to_owned());
         let outcome = run(&fixture, &executor);
-        assert_eq!(result_of(&outcome, CHECK_GCP_TARGET_DESCRIBABLE).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_GCP_TARGET_DESCRIBABLE).status,
+            CheckStatus::Fail
+        );
         let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
         assert_eq!(reachability.status, CheckStatus::Fail);
         assert!(
@@ -1106,9 +1318,18 @@ mod tests {
             "detail: {}",
             reachability.detail
         );
-        assert_eq!(result_of(&outcome, CHECK_DB_AGENT_V1_ABI).status, CheckStatus::Fail);
-        assert_eq!(result_of(&outcome, CHECK_MCP_ENDPOINT_REACHABLE).status, CheckStatus::Fail);
-        assert_eq!(result_of(&outcome, CHECK_SUPABASE_MIGRATION_PLAN).status, CheckStatus::Pass);
+        assert_eq!(
+            result_of(&outcome, CHECK_DB_AGENT_V1_ABI).status,
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            result_of(&outcome, CHECK_MCP_ENDPOINT_REACHABLE).status,
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            result_of(&outcome, CHECK_SUPABASE_MIGRATION_PLAN).status,
+            CheckStatus::Pass
+        );
     }
 
     #[test]
@@ -1134,14 +1355,20 @@ mod tests {
         let outcome = run(&fixture, &executor);
         let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
         assert_eq!(reachability.status, CheckStatus::Fail);
-        assert!(reachability.detail.contains("connection refused"), "detail: {}", reachability.detail);
+        assert!(
+            reachability.detail.contains("connection refused"),
+            "detail: {}",
+            reachability.detail
+        );
 
         // The passing form names the plain-ssh transport.
         let outcome = run(&fixture, &FixtureExecutor::passing());
         let reachability = result_of(&outcome, CHECK_SSH_REMOTE_REACHABLE);
         assert_eq!(reachability.status, CheckStatus::Pass);
         assert!(
-            reachability.detail.contains("ssh `deploy@127.0.0.1` reachable"),
+            reachability
+                .detail
+                .contains("ssh `deploy@127.0.0.1` reachable"),
             "detail: {}",
             reachability.detail
         );
@@ -1160,7 +1387,11 @@ mod tests {
             CHECK_DB_AGENT_V1_ABI,
             CHECK_MCP_ENDPOINT_REACHABLE,
         ] {
-            assert_eq!(result_of(&outcome, id).status, CheckStatus::Skipped, "check {id}");
+            assert_eq!(
+                result_of(&outcome, id).status,
+                CheckStatus::Skipped,
+                "check {id}"
+            );
         }
         assert_eq!(outcome.verdict, CheckStatus::Pass);
     }
@@ -1170,15 +1401,30 @@ mod tests {
         let fixture = write_fixture("target-broken");
         std::fs::write(fixture.target_path(), b"{ not json").unwrap();
         let outcome = run(&fixture, &FixtureExecutor::passing());
-        assert_eq!(result_of(&outcome, CHECK_TARGET_EXPLICIT_PROVIDER).status, CheckStatus::Fail);
+        assert_eq!(
+            result_of(&outcome, CHECK_TARGET_EXPLICIT_PROVIDER).status,
+            CheckStatus::Fail
+        );
         // The unparseable-but-present file still hashes: drift evidence.
-        assert!(outcome.input_hashes.get("target_file_sha256").unwrap().starts_with("sha256:"));
+        assert!(
+            outcome
+                .input_hashes
+                .get("target_file_sha256")
+                .unwrap()
+                .starts_with("sha256:")
+        );
     }
 
     #[test]
     fn parse_host_port_accepts_known_forms() {
-        assert_eq!(parse_host_port("127.0.0.1:18081"), Some(("127.0.0.1".to_owned(), 18081)));
-        assert_eq!(parse_host_port("https://mcp.local:9443/base"), Some(("mcp.local".to_owned(), 9443)));
+        assert_eq!(
+            parse_host_port("127.0.0.1:18081"),
+            Some(("127.0.0.1".to_owned(), 18081))
+        );
+        assert_eq!(
+            parse_host_port("https://mcp.local:9443/base"),
+            Some(("mcp.local".to_owned(), 9443))
+        );
         assert_eq!(parse_host_port("no-port"), None);
         assert_eq!(parse_host_port("host:notaport"), None);
     }

@@ -63,7 +63,9 @@ pub struct RealCommandExecutor {
 
 impl RealCommandExecutor {
     pub fn new() -> Self {
-        Self { path_override: None }
+        Self {
+            path_override: None,
+        }
     }
 
     fn shell(&self, program: &str, args: &[&str]) -> Result<String, String> {
@@ -102,18 +104,29 @@ impl PreflightExecutor for RealCommandExecutor {
     fn git_porcelain(&self, root: &Path) -> Result<String, String> {
         self.shell(
             "git",
-            &["-C", &root.display().to_string(), "status", "--porcelain=v1", "--untracked-files=normal"],
+            &[
+                "-C",
+                &root.display().to_string(),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=normal",
+            ],
         )
     }
 
     fn git_head(&self, root: &Path) -> Result<String, String> {
-        self.shell("git", &["-C", &root.display().to_string(), "rev-parse", "HEAD"])
-            .map(|stdout| stdout.trim().to_owned())
+        self.shell(
+            "git",
+            &["-C", &root.display().to_string(), "rev-parse", "HEAD"],
+        )
+        .map(|stdout| stdout.trim().to_owned())
     }
 
     fn command_available(&self, name: &str) -> Result<bool, String> {
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(format!("command -v {name} >/dev/null 2>&1"));
+        command
+            .arg("-c")
+            .arg(format!("command -v {name} >/dev/null 2>&1"));
         if let Some(path) = &self.path_override {
             command.env("PATH", path);
         }
@@ -210,7 +223,10 @@ impl PreflightExecutor for RealCommandExecutor {
             Ok(())
         } else {
             // Never include stdout/stderr or the connection string.
-            Err(format!("`psql select 1` failed with status {}", output.status))
+            Err(format!(
+                "`psql select 1` failed with status {}",
+                output.status
+            ))
         }
     }
 
@@ -333,7 +349,9 @@ mod tests {
     #[test]
     fn real_command_probe_fails_closed_with_empty_path() {
         let empty_path = temp_dir("empty-path");
-        let executor = RealCommandExecutor { path_override: Some(empty_path) };
+        let executor = RealCommandExecutor {
+            path_override: Some(empty_path),
+        };
         assert!(!executor.command_available("git").unwrap());
     }
 
@@ -349,7 +367,10 @@ mod tests {
     #[test]
     fn real_git_executor_reports_head_of_this_repository() {
         let executor = RealCommandExecutor::new();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
         let head = executor.git_head(&root).unwrap();
         assert_eq!(head.len(), 40, "HEAD must be a 40-char sha1, got `{head}`");
     }
@@ -370,29 +391,40 @@ mod tests {
         // the value points at a dead local port so a present psql fails
         // fast without touching anything real.
         let handle = "KRW_TEST_DB_HANDLE_UNIQUE_9Q";
-        std::fs::write(&env_file, format!("{handle}=postgresql://127.0.0.1:1/krw-none\n")).unwrap();
+        std::fs::write(
+            &env_file,
+            format!("{handle}=postgresql://127.0.0.1:1/krw-none\n"),
+        )
+        .unwrap();
         let executor = RealCommandExecutor::new();
 
         // Resolution comes from the file: the probe gets past handle
         // lookup (no "not present" error) and never echoes the value.
         let error = executor.db_select_one(&env_file, handle).unwrap_err();
         assert!(!error.contains("not present"), "error: {error}");
-        assert!(!error.contains("krw-none"), "secret leaked into error: {error}");
+        assert!(
+            !error.contains("krw-none"),
+            "secret leaked into error: {error}"
+        );
         assert!(
             error.contains("psql") || error.contains("spawn"),
             "expected a psql-level failure after file resolution: {error}"
         );
 
         // Missing handle in the file is a clear, key-named failure.
-        let missing = executor.db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE").unwrap_err();
+        let missing = executor
+            .db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE")
+            .unwrap_err();
         assert!(missing.contains("KRW_ABSENT_DB_HANDLE"), "error: {missing}");
         assert!(missing.contains("not present"), "error: {missing}");
 
         let fixture = FixtureExecutor::passing();
         assert!(fixture.db_select_one(&env_file, handle).is_ok());
-        assert!(fixture
-            .db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE")
-            .unwrap_err()
-            .contains("not present"));
+        assert!(
+            fixture
+                .db_select_one(&env_file, "KRW_ABSENT_DB_HANDLE")
+                .unwrap_err()
+                .contains("not present")
+        );
     }
 }

@@ -39,7 +39,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::config::DeployConfig;
-use crate::hashing::{sha256_file, UNAVAILABLE_HASH};
+use crate::hashing::{UNAVAILABLE_HASH, sha256_file};
 use crate::receipts::{
     DeployArtifacts, SkippedRecord, StageCommandRecord, StageReceipt, StageReceiptStatus,
     TcpProbeRecord, TerminalAdmission,
@@ -182,7 +182,11 @@ pub trait StageExecutor: std::fmt::Debug {
     /// Execute one structured command. `env_file` is the operator runtime
     /// env file the command's env keys resolve from; resolved values only
     /// ever flow into the child process, never into errors or receipts.
-    fn execute(&self, env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String>;
+    fn execute(
+        &self,
+        env_file: &Path,
+        command: &StageCommand,
+    ) -> Result<StageCommandOutcome, String>;
 
     /// `git rev-parse HEAD` re-read for the drift guard.
     fn git_head(&self, root: &Path) -> Result<String, String>;
@@ -204,7 +208,8 @@ pub fn env_placeholder(name: &str) -> String {
 /// `value_of ... | tail -n 1` semantics); surrounding double then single
 /// quotes are stripped. Errors name the KEY only, never a value.
 pub fn runtime_env_value(env_file: &Path, key: &str) -> Result<String, String> {
-    let text = std::fs::read_to_string(env_file).map_err(|error| format!("{}: {error}", env_file.display()))?;
+    let text = std::fs::read_to_string(env_file)
+        .map_err(|error| format!("{}: {error}", env_file.display()))?;
     let mut found: Option<String> = None;
     for line in text.lines() {
         if line.trim_start().starts_with('#') {
@@ -229,7 +234,8 @@ pub fn runtime_env_has_key(env_file: &Path, key: &str) -> bool {
 /// the first matching assignment is replaced in place, later duplicates are
 /// dropped, and the key is appended when absent. Values are never returned.
 pub fn upsert_env_value(env_file: &Path, key: &str, value: &str) -> Result<(), String> {
-    let text = std::fs::read_to_string(env_file).map_err(|error| format!("{}: {error}", env_file.display()))?;
+    let text = std::fs::read_to_string(env_file)
+        .map_err(|error| format!("{}: {error}", env_file.display()))?;
     let mut output = String::new();
     let mut seen = false;
     for line in text.lines() {
@@ -275,7 +281,9 @@ pub struct RealStageExecutor {
 
 impl RealStageExecutor {
     pub fn new() -> Self {
-        Self { path_override: None }
+        Self {
+            path_override: None,
+        }
     }
 
     fn spawn(
@@ -284,7 +292,11 @@ impl RealStageExecutor {
         command: &StageCommand,
         resolved_argv: &[String],
     ) -> Result<String, String> {
-        let mut child = if command.env_keys_used.iter().any(|key| key == RUNTIME_ENV_ALL) {
+        let mut child = if command
+            .env_keys_used
+            .iter()
+            .any(|key| key == RUNTIME_ENV_ALL)
+        {
             let mut shell = Command::new("/bin/sh");
             shell
                 .arg("-c")
@@ -301,7 +313,11 @@ impl RealStageExecutor {
             }
             plain
         };
-        child.current_dir(&command.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        child
+            .current_dir(&command.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         for key in &command.env_keys_used {
             if key == RUNTIME_ENV_ALL {
                 continue;
@@ -310,8 +326,9 @@ impl RealStageExecutor {
                 .map_err(|error| format!("command `{}` needs env key: {error}", command.id))?;
             child.env(key, value);
         }
-        let mut spawned =
-            child.spawn().map_err(|error| format!("cannot spawn `{}`: {error}", resolved_argv[0]))?;
+        let mut spawned = child
+            .spawn()
+            .map_err(|error| format!("cannot spawn `{}`: {error}", resolved_argv[0]))?;
         let mut stdout_pipe = spawned
             .stdout
             .take()
@@ -343,7 +360,12 @@ impl RealStageExecutor {
                     // scrubbing rules for stored artifacts are unchanged.
                     let stderr = stderr_reader.join().unwrap_or_default();
                     if !stderr.trim().is_empty() {
-                        eprintln!("---- {}/{} stderr ----\n{}\n------------------------", command.stage, command.id, stderr.trim_end());
+                        eprintln!(
+                            "---- {}/{} stderr ----\n{}\n------------------------",
+                            command.stage,
+                            command.id,
+                            stderr.trim_end()
+                        );
                     }
                     return Err(format!(
                         "command `{}` (stage `{}`) exited with status {status}",
@@ -368,19 +390,35 @@ impl RealStageExecutor {
         }
     }
 
-    fn resolve_placeholders(&self, env_file: &Path, command: &StageCommand) -> Result<Vec<String>, String> {
+    fn resolve_placeholders(
+        &self,
+        env_file: &Path,
+        command: &StageCommand,
+    ) -> Result<Vec<String>, String> {
         let mut resolved = Vec::with_capacity(command.argv.len());
         for element in &command.argv {
             let mut value = element.clone();
             while let Some(start) = value.find("<env:") {
                 let rest = &value[start + "<env:".len()..];
                 let Some(name_len) = rest.find('>') else {
-                    return Err(format!("command `{}` has a malformed env placeholder: {element}", command.id));
+                    return Err(format!(
+                        "command `{}` has a malformed env placeholder: {element}",
+                        command.id
+                    ));
                 };
                 let name = &rest[..name_len];
-                let resolved_value = runtime_env_value(env_file, name)
-                    .map_err(|error| format!("command `{}` cannot resolve placeholder: {error}", command.id))?;
-                value = format!("{}{}{}", &value[..start], resolved_value, &rest[name_len + 1..]);
+                let resolved_value = runtime_env_value(env_file, name).map_err(|error| {
+                    format!(
+                        "command `{}` cannot resolve placeholder: {error}",
+                        command.id
+                    )
+                })?;
+                value = format!(
+                    "{}{}{}",
+                    &value[..start],
+                    resolved_value,
+                    &rest[name_len + 1..]
+                );
             }
             resolved.push(value);
         }
@@ -399,7 +437,11 @@ impl StageExecutor for RealStageExecutor {
         "real"
     }
 
-    fn execute(&self, env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String> {
+    fn execute(
+        &self,
+        env_file: &Path,
+        command: &StageCommand,
+    ) -> Result<StageCommandOutcome, String> {
         if command.argv.is_empty() {
             return Err(format!("command `{}` has an empty argv", command.id));
         }
@@ -415,7 +457,10 @@ impl StageExecutor for RealStageExecutor {
                 Err(error) => {
                     let pollable = command.id.starts_with(READINESS_ID_PREFIX);
                     let deadline = Duration::from_millis(command.timeout_ms.max(1));
-                    if pollable && started.elapsed() + Duration::from_millis(READINESS_POLL_INTERVAL_MS) < deadline {
+                    if pollable
+                        && started.elapsed() + Duration::from_millis(READINESS_POLL_INTERVAL_MS)
+                            < deadline
+                    {
                         std::thread::sleep(Duration::from_millis(READINESS_POLL_INTERVAL_MS));
                         continue;
                     }
@@ -437,7 +482,10 @@ impl StageExecutor for RealStageExecutor {
                 .map(|stdout| stdout.trim().to_owned())
                 .map_err(|error| format!("`git rev-parse` output not UTF-8: {error}"))
         } else {
-            Err(format!("`git rev-parse HEAD` exited with status {}", output.status))
+            Err(format!(
+                "`git rev-parse HEAD` exited with status {}",
+                output.status
+            ))
         }
     }
 
@@ -500,7 +548,11 @@ impl FixtureStageExecutor {
 
     /// Observed command ids in execution order.
     pub fn command_ids(&self) -> Vec<String> {
-        self.commands.borrow().iter().map(|command| command.id.clone()).collect()
+        self.commands
+            .borrow()
+            .iter()
+            .map(|command| command.id.clone())
+            .collect()
     }
 
     fn learn_from(&self, command: &StageCommand) {
@@ -509,8 +561,9 @@ impl FixtureStageExecutor {
             if let Some(position) = command.argv.iter().position(|flag| flag == "--output-root") {
                 if let Some(dir) = command.argv.get(position + 1) {
                     learned.output_dir = Some(PathBuf::from(dir));
-                    learned.release_id =
-                        PathBuf::from(dir).file_name().map(|name| name.to_string_lossy().to_string());
+                    learned.release_id = PathBuf::from(dir)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string());
                 }
             }
         }
@@ -535,7 +588,11 @@ impl FixtureStageExecutor {
             for provider in ["glm", "deepseek"] {
                 let bundle = dir.join(provider);
                 let _ = std::fs::create_dir_all(&bundle);
-                let model = if provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
+                let model = if provider == "glm" {
+                    "glm-5.3"
+                } else {
+                    "deepseek-v4-flash"
+                };
                 // The raw build emits per-bundle manifests and the dual
                 // index; the sealed public descriptor appears only after the
                 // seal stage's prepare step (mirrors the real scripts).
@@ -543,7 +600,10 @@ impl FixtureStageExecutor {
                     bundle.join("release-manifest.json"),
                     format!("{{\"provider\":\"{provider}\",\"model\":\"{model}\"}}\n"),
                 );
-                let _ = std::fs::write(dir.join("dual-release-index.json"), "{\"providers\":[\"glm\",\"deepseek\"]}\n");
+                let _ = std::fs::write(
+                    dir.join("dual-release-index.json"),
+                    "{\"providers\":[\"glm\",\"deepseek\"]}\n",
+                );
                 let _ = std::fs::create_dir_all(bundle.join("packaging/launchd"));
                 let _ = std::fs::write(bundle.join("apply_migrations.sh"), "#!/bin/sh\nexit 0\n");
                 for launcher in [
@@ -551,7 +611,10 @@ impl FixtureStageExecutor {
                     "install-local-mac-capabilityd-release.sh",
                     "krw-agentd-start-local",
                 ] {
-                    let _ = std::fs::write(bundle.join("packaging/launchd").join(launcher), "#!/bin/sh\nexit 0\n");
+                    let _ = std::fs::write(
+                        bundle.join("packaging/launchd").join(launcher),
+                        "#!/bin/sh\nexit 0\n",
+                    );
                 }
             }
             return;
@@ -565,7 +628,8 @@ impl FixtureStageExecutor {
             // emits the public descriptor (both providers seal; the id may
             // carry a -<provider> suffix for the non-selected bundle).
             id if id == "seal.prepare-production-candidate"
-                || (id.starts_with("seal.prepare-production-candidate-") && id.len() > "seal.prepare-production-candidate-".len()) =>
+                || (id.starts_with("seal.prepare-production-candidate-")
+                    && id.len() > "seal.prepare-production-candidate-".len()) =>
             {
                 let argv_provider = command
                     .argv
@@ -574,7 +638,11 @@ impl FixtureStageExecutor {
                     .and_then(|position| command.argv.get(position + 1))
                     .cloned()
                     .unwrap_or_else(|| provider.clone());
-                let model = if argv_provider == "glm" { "glm-5.3" } else { "deepseek-v4-flash" };
+                let model = if argv_provider == "glm" {
+                    "glm-5.3"
+                } else {
+                    "deepseek-v4-flash"
+                };
                 let _ = std::fs::write(
                     dir.join(&argv_provider).join("public-release.json"),
                     format!(
@@ -672,7 +740,11 @@ impl StageExecutor for FixtureStageExecutor {
         "fixture"
     }
 
-    fn execute(&self, _env_file: &Path, command: &StageCommand) -> Result<StageCommandOutcome, String> {
+    fn execute(
+        &self,
+        _env_file: &Path,
+        command: &StageCommand,
+    ) -> Result<StageCommandOutcome, String> {
         self.commands.borrow_mut().push(command.clone());
         self.learn_from(command);
         if let Some(reason) = self.failures.get(&command.id) {
@@ -707,18 +779,29 @@ impl StageExecutor for FixtureStageExecutor {
 /// Resolve the exactly-one active (non-revoked, valid now) signing key id
 /// from a canonical `ReleaseTrustRegistryV1`, porting the legacy Python
 /// gate in `build_sealed_dual_provider_release.sh`.
-pub fn resolve_active_key_id(registry_bytes: &[u8], now_unix_seconds: u64) -> Result<String, String> {
+pub fn resolve_active_key_id(
+    registry_bytes: &[u8],
+    now_unix_seconds: u64,
+) -> Result<String, String> {
     let registry = krw_agent_release_authorization::parse_canonical_trust_registry(registry_bytes)
         .map_err(|error| format!("trust registry invalid: {error}"))?;
     let active: Vec<&krw_agent_release_authorization::ReleaseTrustKeyV1> = registry
         .keys
         .iter()
-        .filter(|key| !key.revoked && key.not_before_unix_seconds <= now_unix_seconds && now_unix_seconds <= key.not_after_unix_seconds)
+        .filter(|key| {
+            !key.revoked
+                && key.not_before_unix_seconds <= now_unix_seconds
+                && now_unix_seconds <= key.not_after_unix_seconds
+        })
         .collect();
     match active.len() {
         1 => Ok(active[0].key_id.clone()),
-        0 => Err("trust registry has no active signing key valid now (exactly one required)".to_owned()),
-        count => Err(format!("trust registry has {count} active signing keys (exactly one required)")),
+        0 => Err(
+            "trust registry has no active signing key valid now (exactly one required)".to_owned(),
+        ),
+        count => Err(format!(
+            "trust registry has {count} active signing keys (exactly one required)"
+        )),
     }
 }
 
@@ -756,17 +839,27 @@ pub struct ProcedureAbi {
 pub fn parse_procedure_entry(entry: &str) -> Result<ProcedureAbi, String> {
     let entry = entry.trim();
     if entry.contains('\'') || entry.contains('"') {
-        return Err(format!("procedure entry `{entry}` must not contain quote characters"));
+        return Err(format!(
+            "procedure entry `{entry}` must not contain quote characters"
+        ));
     }
     if !entry.ends_with(')') {
-        return Err(format!("procedure entry `{entry}` must be schema.name(args)"));
+        return Err(format!(
+            "procedure entry `{entry}` must be schema.name(args)"
+        ));
     }
-    let (path, args) = entry.split_once('(').ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
+    let (path, args) = entry
+        .split_once('(')
+        .ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
     let arg_list = args.trim_end_matches(')').trim().to_owned();
-    let (schema, name) =
-        path.trim().rsplit_once('.').ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
+    let (schema, name) = path
+        .trim()
+        .rsplit_once('.')
+        .ok_or_else(|| format!("procedure entry `{entry}` must be schema.name(args)"))?;
     if schema.is_empty() || name.is_empty() {
-        return Err(format!("procedure entry `{entry}` must be schema.name(args)"));
+        return Err(format!(
+            "procedure entry `{entry}` must be schema.name(args)"
+        ));
     }
     Ok(ProcedureAbi {
         schema: schema.to_owned(),
@@ -801,13 +894,27 @@ pub struct ColumnAbi {
 pub fn parse_column_entry(entry: &str) -> Result<ColumnAbi, String> {
     let entry = entry.trim();
     if entry.contains('\'') || entry.contains('"') {
-        return Err(format!("column entry `{entry}` must not contain quote characters"));
+        return Err(format!(
+            "column entry `{entry}` must not contain quote characters"
+        ));
     }
     let parts: Vec<&str> = entry.split('.').collect();
     let (schema, table, column) = match parts.as_slice() {
-        [table, column] => ("public".to_owned(), (*table).to_owned(), (*column).to_owned()),
-        [schema, table, column] => ((*schema).to_owned(), (*table).to_owned(), (*column).to_owned()),
-        _ => return Err(format!("column entry `{entry}` must be table.column or schema.table.column")),
+        [table, column] => (
+            "public".to_owned(),
+            (*table).to_owned(),
+            (*column).to_owned(),
+        ),
+        [schema, table, column] => (
+            (*schema).to_owned(),
+            (*table).to_owned(),
+            (*column).to_owned(),
+        ),
+        _ => {
+            return Err(format!(
+                "column entry `{entry}` must be table.column or schema.table.column"
+            ));
+        }
     };
     if table.is_empty() || column.is_empty() {
         return Err(format!("column entry `{entry}` has empty table or column"));
@@ -844,7 +951,12 @@ pub struct DeepHealthObservation {
 
 pub fn parse_deep_health(stdout: &str) -> Option<DeepHealthObservation> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
-    let string = |key: &str| value.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    let string = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
     Some(DeepHealthObservation {
         status: string("status"),
         deployment_id: string("deployment_id"),
@@ -881,7 +993,11 @@ impl RemoteTransport {
     /// argv prefix in front of the shell payload (no payload element).
     fn argv_prefix(&self, ssh_ms: u64) -> Vec<String> {
         match self {
-            Self::Gcloud { instance, project, zone } => vec![
+            Self::Gcloud {
+                instance,
+                project,
+                zone,
+            } => vec![
                 "gcloud".to_owned(),
                 "compute".to_owned(),
                 "ssh".to_owned(),
@@ -909,7 +1025,11 @@ impl RemoteTransport {
     /// Human label for receipts and error messages (no secrets either way).
     pub fn label(&self) -> String {
         match self {
-            Self::Gcloud { instance, project, zone } => {
+            Self::Gcloud {
+                instance,
+                project,
+                zone,
+            } => {
                 format!("gcloud compute ssh `{instance}` (project `{project}`, zone `{zone}`)")
             }
             Self::Ssh { host } => format!("ssh `{host}`"),
@@ -956,7 +1076,10 @@ impl RemoteTransport {
 /// Remote release stage directory (the legacy `REMOTE_STAGE`):
 /// `<remote_front_dir>/.simple-deploy/releases/<release_id>`.
 pub fn remote_stage_dir(topology: &RemoteTopology, release_id: &str) -> String {
-    format!("{}/.simple-deploy/releases/{release_id}", topology.remote_front_dir)
+    format!(
+        "{}/.simple-deploy/releases/{release_id}",
+        topology.remote_front_dir
+    )
 }
 
 /// Remote upload paths (legacy: `REMOTE_ARCHIVE_DIR=/tmp`).
@@ -983,7 +1106,9 @@ pub struct RemoteTopology {
 pub fn resolve_remote_topology(target: &TargetFile) -> Result<Option<RemoteTopology>, String> {
     let transport = if let Some(gcp) = &target.gcp {
         if gcp.project.is_empty() || gcp.zone.is_empty() || gcp.instance.is_empty() {
-            return Err("target gcp block must record non-empty project, zone, and instance".to_owned());
+            return Err(
+                "target gcp block must record non-empty project, zone, and instance".to_owned(),
+            );
         }
         RemoteTransport::Gcloud {
             instance: gcp.instance.clone(),
@@ -991,7 +1116,9 @@ pub fn resolve_remote_topology(target: &TargetFile) -> Result<Option<RemoteTopol
             zone: gcp.zone.clone(),
         }
     } else if let Some(host) = target.ssh_host.as_deref() {
-        RemoteTransport::Ssh { host: host.to_owned() }
+        RemoteTransport::Ssh {
+            host: host.to_owned(),
+        }
     } else {
         return Ok(None);
     };
@@ -1117,7 +1244,11 @@ pub fn payload_verify_healthz(topology: &RemoteTopology) -> String {
 /// promote the candidate image to the stable `local` tag, recreate the whole
 /// service set, wait for in-container + public healthz at the new deployment
 /// id, start the conditional market workers, and flip the `current` symlink.
-pub fn payload_remote_web_up(topology: &RemoteTopology, release_id: &str, origins: &[String]) -> String {
+pub fn payload_remote_web_up(
+    topology: &RemoteTopology,
+    release_id: &str,
+    origins: &[String],
+) -> String {
     let origin_one = origins.first().cloned().unwrap_or_default();
     let origin_two = origins.get(1).cloned().unwrap_or_default();
     render(
@@ -1340,7 +1471,11 @@ echo "Research admission opened after deep readiness: $RELEASE_ID""#,
 /// bounded budget: the admission flip force-recreates the web container and
 /// the first deep probe after recreation can fail transiently (observed in
 /// production run 20260816T113245Z).
-pub fn payload_verify_admission(topology: &RemoteTopology, release_id: &str, expected: &str) -> String {
+pub fn payload_verify_admission(
+    topology: &RemoteTopology,
+    release_id: &str,
+    expected: &str,
+) -> String {
     render(
         r#"set -eu
 RELEASE_ID='@RELEASE_ID@'
@@ -1382,7 +1517,15 @@ exit 1"#,
 /// runtime.env pin (descriptor install + hash gate, provider, DB/TLS/tenant
 /// bindings, closed admission, old-image preservation, candidate tag,
 /// forward-activation record) is the legacy mechanism verbatim.
-pub fn payload_remote_prepare(topology: &RemoteTopology, release_id: &str, front_commit: &str, descriptor_hash: &str, release_set_hash: &str, provider: &str, tenant_id: &str) -> String {
+pub fn payload_remote_prepare(
+    topology: &RemoteTopology,
+    release_id: &str,
+    front_commit: &str,
+    descriptor_hash: &str,
+    release_set_hash: &str,
+    provider: &str,
+    tenant_id: &str,
+) -> String {
     render(
         r#"set -e
 RELEASE_ID='@RELEASE_ID@'
@@ -1532,7 +1675,10 @@ echo "Prepared fast VM candidate: $RELEASE_ID""#,
             ("FRONT_DIR", &topology.remote_front_dir),
             ("STAGE", &remote_stage_dir(topology, release_id)),
             ("FRONT_ARCHIVE", &remote_front_archive_path(release_id)),
-            ("AGENT_DESCRIPTOR", &remote_agent_descriptor_path(release_id)),
+            (
+                "AGENT_DESCRIPTOR",
+                &remote_agent_descriptor_path(release_id),
+            ),
             ("PROJECT", &topology.compose_project),
             ("PROVIDER", provider),
             ("DESCRIPTOR_HASH", descriptor_hash),
@@ -1846,8 +1992,14 @@ pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Ve
         let binding = config_root.join("deployment-binding.yaml");
         let endpoints = config_root.join("endpoint-registry.yaml");
         let registry = config_root.join("release-trust-registry.json");
-        let authorization_root = deps.config.operator_root.join("signing").join("releases").join(deps.release_id());
-        let authorization = authorization_root.join(format!("release-authorization-{provider}.json"));
+        let authorization_root = deps
+            .config
+            .operator_root
+            .join("signing")
+            .join("releases")
+            .join(deps.release_id());
+        let authorization =
+            authorization_root.join(format!("release-authorization-{provider}.json"));
         let now = deps.now_unix_seconds;
         commands.push(StageCommand::new(
             crate::stages::STAGE_SEAL,
@@ -1877,7 +2029,11 @@ pub fn build_stage4_commands(deps: &PipelineDeps<'_>, active_key_id: &str) -> Ve
                 "--descriptor".to_owned(),
                 bundle.join("public-release.json").display().to_string(),
                 "--private-key".to_owned(),
-                deps.config.operator_root.join("signing/release-private.pk8").display().to_string(),
+                deps.config
+                    .operator_root
+                    .join("signing/release-private.pk8")
+                    .display()
+                    .to_string(),
                 "--key-id".to_owned(),
                 active_key_id.to_owned(),
                 "--sequence".to_owned(),
@@ -1998,7 +2154,11 @@ pub fn build_stage5_descriptor_copy_command(deps: &PipelineDeps<'_>) -> StageCom
 }
 
 fn supabase_cli_path(deps: &PipelineDeps<'_>) -> String {
-    deps.config.frontend_source_root.join("scripts/supabase-cli.sh").display().to_string()
+    deps.config
+        .frontend_source_root
+        .join("scripts/supabase-cli.sh")
+        .display()
+        .to_string()
 }
 
 /// Extract the shell-quoted absolute path ending in `/<file>` from a
@@ -2007,7 +2167,11 @@ fn extract_ship_file_path(script: &str, file: &str) -> Option<String> {
     let needle = format!("/{file}'");
     let start = script.rfind(&needle)?;
     let begin = script[..start].rfind('\'')? + 1;
-    Some(format!("{}{}", &script[begin..start], needle.trim_matches('\'')))
+    Some(format!(
+        "{}{}",
+        &script[begin..start],
+        needle.trim_matches('\'')
+    ))
 }
 
 /// Legacy `run_front_migration` wrapper as one shell command: capture the
@@ -2105,7 +2269,10 @@ pub fn build_stage6_dry_run_command(deps: &PipelineDeps<'_>, include_all: bool) 
 /// runner through the front wrapper, with the database URL/CA mapped from
 /// the runtime env's agent DB handle (`--skip-front-migrations`; the front
 /// plan is applied separately by the controller).
-pub fn build_agent_release_migrations_command(deps: &PipelineDeps<'_>, _db_handle: &str) -> StageCommand {
+pub fn build_agent_release_migrations_command(
+    deps: &PipelineDeps<'_>,
+    _db_handle: &str,
+) -> StageCommand {
     let apply_script = deps
         .config
         .frontend_source_root
@@ -2149,9 +2316,24 @@ pub fn build_schema_smoke_command(deps: &PipelineDeps<'_>) -> StageCommand {
     let front = &deps.config.frontend_source_root;
     let script = format!(
         "node {smoke} || exit 1\nagent_database_url=${{KRW_AGENT_DATABASE_URL:-${{AGENT_V1_DATABASE_URL:-${{AGENT_V1_OUTBOX_DATABASE_URL:-${{AGENT_QUEUE_LISTEN_DATABASE_URL:-}}}}}}}}\ncase \"$agent_database_url\" in postgres://*|postgresql://*) ;; *) echo \"Rust Agent V1 schema smoke requires a production Supabase PostgreSQL runtime URL.\" >&2; exit 1 ;; esac\nAGENT_V1_DATABASE_URL=\"$agent_database_url\" AGENT_V1_DATABASE_CA_FILE={ca} node {compat}",
-        smoke = shell_quote(&front.join("scripts/supabase-schema-smoke.mjs").display().to_string()),
-        ca = shell_quote(&front.join("ops/certificates/supabase-root-2021-ca.crt").display().to_string()),
-        compat = shell_quote(&front.join("scripts/verify-agent-v1-compatibility.mjs").display().to_string()),
+        smoke = shell_quote(
+            &front
+                .join("scripts/supabase-schema-smoke.mjs")
+                .display()
+                .to_string()
+        ),
+        ca = shell_quote(
+            &front
+                .join("ops/certificates/supabase-root-2021-ca.crt")
+                .display()
+                .to_string()
+        ),
+        compat = shell_quote(
+            &front
+                .join("scripts/verify-agent-v1-compatibility.mjs")
+                .display()
+                .to_string()
+        ),
     );
     StageCommand::new(
         crate::stages::STAGE_ADMISSION_CLOSE,
@@ -2166,17 +2348,22 @@ pub fn build_schema_smoke_command(deps: &PipelineDeps<'_>) -> StageCommand {
 /// One-time overlay for the sealed bundle's launchd launcher checks
 /// (`verify_sealed_local_agent_database_abi` / `..._mcp_abi`): a temp tree
 /// with a `current` symlink to the sealed bundle and a 0600 overlay env.
-fn prepare_sealed_check_overlay(deps: &PipelineDeps<'_>, worker_id: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+fn prepare_sealed_check_overlay(
+    deps: &PipelineDeps<'_>,
+    worker_id: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let check_dir = std::env::temp_dir().join(format!(
         "krw-agent-sealed-check-{}-{worker_id}",
         deps.context.run_id
     ));
-    std::fs::create_dir_all(&check_dir).map_err(|error| format!("{}: {error}", check_dir.display()))?;
+    std::fs::create_dir_all(&check_dir)
+        .map_err(|error| format!("{}: {error}", check_dir.display()))?;
     let current = check_dir.join("current");
     let _ = std::fs::remove_file(&current);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(deps.provider_bundle(), &current)
-        .map_err(|error| format!("cannot link the sealed bundle for the {worker_id} check: {error}"))?;
+    std::os::unix::fs::symlink(deps.provider_bundle(), &current).map_err(|error| {
+        format!("cannot link the sealed bundle for the {worker_id} check: {error}")
+    })?;
     let overlay = check_dir.join("overlay.env");
     let contents = format!(
         "KRW_AGENT_CURRENT_DIR={current}\nKRW_AGENT_PROVIDER={provider}\nKRW_AGENT_ARTIFACT_ROOT={artifacts}\nKRW_AGENT_WORKER_ID={worker_id}\n",
@@ -2184,7 +2371,8 @@ fn prepare_sealed_check_overlay(deps: &PipelineDeps<'_>, worker_id: &str) -> Res
         provider = deps.config.provider,
         artifacts = check_dir.join("artifacts").display(),
     );
-    std::fs::write(&overlay, contents).map_err(|error| format!("{}: {error}", overlay.display()))?;
+    std::fs::write(&overlay, contents)
+        .map_err(|error| format!("{}: {error}", overlay.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2196,13 +2384,27 @@ fn prepare_sealed_check_overlay(deps: &PipelineDeps<'_>, worker_id: &str) -> Res
 /// Legacy sealed-bundle ABI checks: exercise the exact immutable bundle
 /// through the same launcher launchd will use — `--database-check` after
 /// migrations, `--mcp-check` after the gateways are active.
-pub fn build_sealed_abi_command(deps: &PipelineDeps<'_>, mode: SealedAbiMode, overlay: &Path) -> Result<StageCommand, String> {
+pub fn build_sealed_abi_command(
+    deps: &PipelineDeps<'_>,
+    mode: SealedAbiMode,
+    overlay: &Path,
+) -> Result<StageCommand, String> {
     let (id, flag, worker_id) = match mode {
-        SealedAbiMode::Database => ("migrations.sealed-database-abi", "--database-check", "sealed-release-database-check"),
-        SealedAbiMode::Mcp => ("activation.sealed-mcp-abi", "--mcp-check", "sealed-release-mcp-check"),
+        SealedAbiMode::Database => (
+            "migrations.sealed-database-abi",
+            "--database-check",
+            "sealed-release-database-check",
+        ),
+        SealedAbiMode::Mcp => (
+            "activation.sealed-mcp-abi",
+            "--mcp-check",
+            "sealed-release-mcp-check",
+        ),
     };
     let _ = worker_id;
-    let launcher = deps.provider_bundle().join("packaging/launchd/krw-agentd-start-local");
+    let launcher = deps
+        .provider_bundle()
+        .join("packaging/launchd/krw-agentd-start-local");
     Ok(StageCommand::new(
         if mode == SealedAbiMode::Database {
             crate::stages::STAGE_ADMISSION_CLOSE
@@ -2231,7 +2433,11 @@ pub enum SealedAbiMode {
 }
 
 pub fn build_db_push_command(deps: &PipelineDeps<'_>, include_all: bool) -> StageCommand {
-    let args = if include_all { "db push --include-all" } else { "db push" };
+    let args = if include_all {
+        "db push --include-all"
+    } else {
+        "db push"
+    };
     let mut command = migration_wrapper_command(
         crate::stages::STAGE_ADMISSION_CLOSE,
         "migrations.db-push",
@@ -2270,7 +2476,10 @@ pub fn build_abi_command(deps: &PipelineDeps<'_>, id: &str, sql: &str) -> StageC
     )
 }
 
-pub fn build_admission_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+pub fn build_admission_commands_remote(
+    deps: &PipelineDeps<'_>,
+    topology: &RemoteTopology,
+) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
         remote_shell_command(
@@ -2327,7 +2536,11 @@ fn local_compose_recreate(deps: &PipelineDeps<'_>, id: &str, stage: &'static str
 
 pub fn build_admission_commands_local(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
     vec![
-        local_compose_recreate(deps, "admission.close-local", crate::stages::STAGE_ADMISSION_CLOSE),
+        local_compose_recreate(
+            deps,
+            "admission.close-local",
+            crate::stages::STAGE_ADMISSION_CLOSE,
+        ),
         StageCommand::new(
             crate::stages::STAGE_ADMISSION_CLOSE,
             "admission.verify-closed-local",
@@ -2359,11 +2572,12 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
     let release_id = deps.release_id();
     // The installers default to ~/.local/share/krw-agent when the override
     // key is absent; only forward it when the operator env declares one.
-    let install_root_env: Vec<String> = if runtime_env_has_key(&deps.config.runtime_env, LOCAL_INSTALL_ROOT_ENV_KEY) {
-        vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()]
-    } else {
-        Vec::new()
-    };
+    let install_root_env: Vec<String> =
+        if runtime_env_has_key(&deps.config.runtime_env, LOCAL_INSTALL_ROOT_ENV_KEY) {
+            vec![LOCAL_INSTALL_ROOT_ENV_KEY.to_owned()]
+        } else {
+            Vec::new()
+        };
     let mut agentd_activate_argv = vec![
         agentd.display().to_string(),
         "--mode".to_owned(),
@@ -2380,26 +2594,24 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
         agentd_activate_argv.push("--metrics-port".to_owned());
         agentd_activate_argv.push(env_placeholder(METRICS_PORT_ENV_KEY));
     }
-    let mut commands = vec![
-        StageCommand::new(
-            crate::stages::STAGE_LOCAL_ACTIVATION,
-            "activation.agentd-stage",
-            vec![
-                agentd.display().to_string(),
-                "--mode".to_owned(),
-                "stage".to_owned(),
-                "--release-root".to_owned(),
-                deps.context.output_dir.display().to_string(),
-                "--release-id".to_owned(),
-                release_id.clone(),
-                "--provider".to_owned(),
-                provider.clone(),
-            ],
-            &deps.config.agent_source_root,
-            install_root_env.clone(),
-            INSTALL_TIMEOUT_MS,
-        ),
-    ];
+    let mut commands = vec![StageCommand::new(
+        crate::stages::STAGE_LOCAL_ACTIVATION,
+        "activation.agentd-stage",
+        vec![
+            agentd.display().to_string(),
+            "--mode".to_owned(),
+            "stage".to_owned(),
+            "--release-root".to_owned(),
+            deps.context.output_dir.display().to_string(),
+            "--release-id".to_owned(),
+            release_id.clone(),
+            "--provider".to_owned(),
+            provider.clone(),
+        ],
+        &deps.config.agent_source_root,
+        install_root_env.clone(),
+        INSTALL_TIMEOUT_MS,
+    )];
     // Legacy `activate_agent_runtime_env_candidate`: only when the operator
     // staged a candidate envelope; the normal path has none and skips.
     if runtime_env_has_key(&deps.config.runtime_env, RUNTIME_ENV_CANDIDATE_ENV_KEY) {
@@ -2482,7 +2694,10 @@ pub fn build_stage8_commands(deps: &PipelineDeps<'_>, mcp_overlay: &Path) -> Vec
         ));
     }
     // Legacy `verify_sealed_local_agent_mcp_abi` (built with the overlay).
-    commands.push(build_sealed_abi_command(deps, SealedAbiMode::Mcp, mcp_overlay).expect("sealed mcp abi command"));
+    commands.push(
+        build_sealed_abi_command(deps, SealedAbiMode::Mcp, mcp_overlay)
+            .expect("sealed mcp abi command"),
+    );
     // Legacy `start_local_agent_release`.
     let mut agentd_start_argv = vec![
         agentd.display().to_string(),
@@ -2522,7 +2737,9 @@ pub fn build_ship_scp_command(
     remote_path: &str,
     topology: &RemoteTopology,
 ) -> StageCommand {
-    let mut argv = topology.transport.scp_argv_prefix(deps.config.timeouts.ssh_ms);
+    let mut argv = topology
+        .transport
+        .scp_argv_prefix(deps.config.timeouts.ssh_ms);
     argv.push(local_path.display().to_string());
     argv.push(topology.transport.scp_destination(remote_path));
     StageCommand::new(
@@ -2564,7 +2781,10 @@ pub fn build_remote_prepare_command(
     )
 }
 
-pub fn build_stage9_commands(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+pub fn build_stage9_commands(
+    deps: &PipelineDeps<'_>,
+    topology: &RemoteTopology,
+) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
         remote_shell_command(
@@ -2596,7 +2816,10 @@ pub fn build_stage9_commands(deps: &PipelineDeps<'_>, topology: &RemoteTopology)
 
 /// Stage 12 best-effort remote artifact cleanup (05 artifact-cleanup rules;
 /// failures never fail the deploy — they are recorded as notes).
-pub fn build_stage12_cleanup_commands(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+pub fn build_stage12_cleanup_commands(
+    deps: &PipelineDeps<'_>,
+    topology: &RemoteTopology,
+) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
         remote_shell_command(
@@ -2621,7 +2844,11 @@ pub fn build_stage12_cleanup_commands(deps: &PipelineDeps<'_>, topology: &Remote
 /// Public-origin healthz probe from the operator host (legacy
 /// `run_remote_deep_verify` public loop): status `ok` and the new
 /// deployment id, retried by the executor until `public_ready_ms`.
-pub fn build_public_healthz_command(deps: &PipelineDeps<'_>, index: usize, origin: &str) -> StageCommand {
+pub fn build_public_healthz_command(
+    deps: &PipelineDeps<'_>,
+    index: usize,
+    origin: &str,
+) -> StageCommand {
     StageCommand::new(
         crate::stages::STAGE_DEEP_READINESS,
         &format!("readiness.public-healthz-{index}"),
@@ -2670,11 +2897,19 @@ pub fn build_mcp_probe(index: usize, endpoint: &str, mcp_ms: u64) -> Result<TcpP
     })
 }
 
-pub fn build_mcp_ready_command(deps: &PipelineDeps<'_>, index: usize, endpoint: &str) -> Result<StageCommand, String> {
+pub fn build_mcp_ready_command(
+    deps: &PipelineDeps<'_>,
+    index: usize,
+    endpoint: &str,
+) -> Result<StageCommand, String> {
     let Some((host, port)) = parse_host_port(endpoint) else {
         return Err(format!("mcp endpoint `{endpoint}` must be `host:port`"));
     };
-    let scheme = if is_loopback_host(&host) { "http" } else { "https" };
+    let scheme = if is_loopback_host(&host) {
+        "http"
+    } else {
+        "https"
+    };
     Ok(StageCommand::new(
         crate::stages::STAGE_DEEP_READINESS,
         &format!("readiness.mcp-ready-{index}"),
@@ -2691,7 +2926,10 @@ pub fn build_mcp_ready_command(deps: &PipelineDeps<'_>, index: usize, endpoint: 
     ))
 }
 
-pub fn build_web_deep_command_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> StageCommand {
+pub fn build_web_deep_command_remote(
+    deps: &PipelineDeps<'_>,
+    topology: &RemoteTopology,
+) -> StageCommand {
     remote_shell_command(
         crate::stages::STAGE_DEEP_READINESS,
         "readiness.web-deep",
@@ -2715,7 +2953,10 @@ pub fn build_web_deep_command_local(deps: &PipelineDeps<'_>) -> StageCommand {
             "--max-time".to_owned(),
             seconds_from_ms(deps.config.timeouts.public_ready_ms),
             "-H".to_owned(),
-            format!("x-internal-key: {}", env_placeholder(INTERNAL_API_KEY_ENV_KEY)),
+            format!(
+                "x-internal-key: {}",
+                env_placeholder(INTERNAL_API_KEY_ENV_KEY)
+            ),
             "-H".to_owned(),
             "x-krw-client-ip: 127.0.0.1".to_owned(),
             format!("{LOCAL_WEB_BASE_URL}/api/healthz/deep"),
@@ -2746,7 +2987,10 @@ pub fn build_db_heartbeat_command(deps: &PipelineDeps<'_>) -> Option<StageComman
     ))
 }
 
-pub fn build_admission_open_commands_remote(deps: &PipelineDeps<'_>, topology: &RemoteTopology) -> Vec<StageCommand> {
+pub fn build_admission_open_commands_remote(
+    deps: &PipelineDeps<'_>,
+    topology: &RemoteTopology,
+) -> Vec<StageCommand> {
     let ssh_ms = deps.config.timeouts.ssh_ms;
     vec![
         remote_shell_command(
@@ -2774,7 +3018,11 @@ pub fn build_admission_open_commands_remote(deps: &PipelineDeps<'_>, topology: &
 
 pub fn build_admission_open_commands_local(deps: &PipelineDeps<'_>) -> Vec<StageCommand> {
     vec![
-        local_compose_recreate(deps, "admission.open-local", crate::stages::STAGE_ADMISSION_OPEN),
+        local_compose_recreate(
+            deps,
+            "admission.open-local",
+            crate::stages::STAGE_ADMISSION_OPEN,
+        ),
         StageCommand::new(
             crate::stages::STAGE_ADMISSION_OPEN,
             "readiness.admission-open-verify-local",
@@ -2784,7 +3032,10 @@ pub fn build_admission_open_commands_local(deps: &PipelineDeps<'_>) -> Vec<Stage
                 "--max-time".to_owned(),
                 seconds_from_ms(deps.config.timeouts.public_ready_ms),
                 "-H".to_owned(),
-                format!("x-internal-key: {}", env_placeholder(INTERNAL_API_KEY_ENV_KEY)),
+                format!(
+                    "x-internal-key: {}",
+                    env_placeholder(INTERNAL_API_KEY_ENV_KEY)
+                ),
                 "-H".to_owned(),
                 "x-krw-client-ip: 127.0.0.1".to_owned(),
                 format!("{LOCAL_WEB_BASE_URL}/api/healthz/deep"),
@@ -2856,7 +3107,11 @@ struct StageCtx<'a> {
 }
 
 impl StageCtx<'_> {
-    fn command(&mut self, executor: &dyn StageExecutor, spec: StageCommand) -> Result<String, String> {
+    fn command(
+        &mut self,
+        executor: &dyn StageExecutor,
+        spec: StageCommand,
+    ) -> Result<String, String> {
         let result = executor.execute(&self.deps.config.runtime_env, &spec);
         let outcome = if result.is_ok() { "pass" } else { "fail" };
         self.receipt.commands.push(StageCommandRecord {
@@ -2868,7 +3123,9 @@ impl StageCtx<'_> {
             timeout_ms: spec.timeout_ms,
             outcome: outcome.to_owned(),
         });
-        result.map(|output| output.stdout).map_err(|error| format!("command `{}` failed: {error}", spec.id))
+        result
+            .map(|output| output.stdout)
+            .map_err(|error| format!("command `{}` failed: {error}", spec.id))
     }
 
     /// Legacy `upload_archive` retry envelope: up to [`SCP_MAX_ATTEMPTS`]
@@ -2884,7 +3141,10 @@ impl StageCtx<'_> {
             match self.command(executor, spec.clone()) {
                 Ok(stdout) => {
                     if attempt > 1 {
-                        self.note(format!("command `{}` succeeded on attempt {attempt}", spec.id));
+                        self.note(format!(
+                            "command `{}` succeeded on attempt {attempt}",
+                            spec.id
+                        ));
                     }
                     return Ok(stdout);
                 }
@@ -2904,7 +3164,10 @@ impl StageCtx<'_> {
     /// a receipt note for the operator.
     fn best_effort_command(&mut self, executor: &dyn StageExecutor, spec: StageCommand) {
         if let Err(error) = self.command(executor, spec.clone()) {
-            self.note(format!("best-effort cleanup `{}` failed (ignored): {error}", spec.id));
+            self.note(format!(
+                "best-effort cleanup `{}` failed (ignored): {error}",
+                spec.id
+            ));
         }
     }
 
@@ -2947,8 +3210,8 @@ fn verify_no_drift(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor) -> Res
             preflight = deps.preflight_agent_head
         ));
     }
-    let config_hash = sha256_file(deps.config_path)
-        .map_err(|error| format!("config re-hash failed: {error}"))?;
+    let config_hash =
+        sha256_file(deps.config_path).map_err(|error| format!("config re-hash failed: {error}"))?;
     if config_hash != deps.context.config_sha256 {
         return Err(format!(
             "config sha256 drifted since the preflight receipt (preflight {preflight}, now {config_hash}); refusing to mutate",
@@ -2960,13 +3223,17 @@ fn verify_no_drift(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor) -> Res
 
 /// Execute stages 3-12. Writes one immutable stage receipt per stage into
 /// the run's receipt dir and returns the outcome for the terminal receipt.
-pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor) -> PipelineOutcome {
+pub fn run_deploy_pipeline(
+    deps: &PipelineDeps<'_>,
+    executor: &dyn StageExecutor,
+) -> PipelineOutcome {
     let mut state = PipelineState::default();
     for entry in STAGE_TABLE.iter().skip(2) {
         let index = stage_table_index(entry.id);
         if (6..=11).contains(&index) {
             if let Err(reason) = verify_no_drift(deps, executor) {
-                let mut receipt = new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Fail);
+                let mut receipt =
+                    new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Fail);
                 receipt.reason = Some(reason.clone());
                 let _ = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt);
                 return failure_outcome(deps, &state, entry.id, index, reason);
@@ -2981,10 +3248,19 @@ pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor
                 operation: None,
                 reason: LOCAL_ONLY_SKIP_REASON.to_owned(),
             });
-            let mut receipt = new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Skipped);
+            let mut receipt =
+                new_receipt(deps, executor, index, entry.id, StageReceiptStatus::Skipped);
             receipt.reason = Some(LOCAL_ONLY_SKIP_REASON.to_owned());
-            if let Err(error) = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt) {
-                return failure_outcome(deps, &state, entry.id, index, format!("stage receipt write failed: {error}"));
+            if let Err(error) =
+                crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &receipt)
+            {
+                return failure_outcome(
+                    deps,
+                    &state,
+                    entry.id,
+                    index,
+                    format!("stage receipt write failed: {error}"),
+                );
             }
             continue;
         }
@@ -3003,14 +3279,24 @@ pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor
             crate::stages::STAGE_REMOTE_ACTIVATION => stage_remote_activation(&mut ctx, executor),
             crate::stages::STAGE_DEEP_READINESS => stage_deep_readiness(&mut ctx, executor),
             crate::stages::STAGE_ADMISSION_OPEN => stage_admission_open(&mut ctx, executor),
-            crate::stages::STAGE_TERMINAL_SUCCESS_RECEIPT => stage_terminal_cleanup(&mut ctx, executor),
+            crate::stages::STAGE_TERMINAL_SUCCESS_RECEIPT => {
+                stage_terminal_cleanup(&mut ctx, executor)
+            }
             other => unreachable!("stage table declared unknown stage `{other}`"),
         };
         match result {
             Ok(()) => {
-                if let Err(error) = crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &ctx.receipt) {
+                if let Err(error) =
+                    crate::receipts::write_stage_receipt(&deps.context.receipt_dir, &ctx.receipt)
+                {
                     let StageCtx { .. } = ctx;
-                    return failure_outcome(deps, &state, entry.id, index, format!("stage receipt write failed: {error}"));
+                    return failure_outcome(
+                        deps,
+                        &state,
+                        entry.id,
+                        index,
+                        format!("stage receipt write failed: {error}"),
+                    );
                 }
             }
             Err(reason) => {
@@ -3033,13 +3319,19 @@ pub fn run_deploy_pipeline(deps: &PipelineDeps<'_>, executor: &dyn StageExecutor
         artifacts: Some(DeployArtifacts {
             release_dir: deps.context.output_dir.display().to_string(),
             release_id: deps.release_id(),
-            descriptor_sha256: state.descriptor_sha256.clone().unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
+            descriptor_sha256: state
+                .descriptor_sha256
+                .clone()
+                .unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
             frontend_image_digest: state
                 .frontend_image_digest
                 .clone()
                 .unwrap_or_else(|| "<unavailable>".to_owned()),
             applied_migrations: state.applied_migrations.clone(),
-            previous_admission: state.previous_admission.clone().unwrap_or_else(|| "unknown".to_owned()),
+            previous_admission: state
+                .previous_admission
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
         }),
         skipped: state.skipped.clone(),
     }
@@ -3098,13 +3390,19 @@ fn partial_artifacts(deps: &PipelineDeps<'_>, state: &PipelineState) -> Option<D
     Some(DeployArtifacts {
         release_dir: deps.context.output_dir.display().to_string(),
         release_id: deps.release_id(),
-        descriptor_sha256: state.descriptor_sha256.clone().unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
+        descriptor_sha256: state
+            .descriptor_sha256
+            .clone()
+            .unwrap_or_else(|| UNAVAILABLE_HASH.to_owned()),
         frontend_image_digest: state
             .frontend_image_digest
             .clone()
             .unwrap_or_else(|| "<unavailable>".to_owned()),
         applied_migrations: state.applied_migrations.clone(),
-        previous_admission: state.previous_admission.clone().unwrap_or_else(|| "unknown".to_owned()),
+        previous_admission: state
+            .previous_admission
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned()),
     })
 }
 
@@ -3117,7 +3415,12 @@ fn stage_build(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(
     // into existence when stage 4's `prepare_production_candidate.sh` applies
     // the operator endpoint bindings to the SELECTED provider bundle.
     for provider in ["glm", "deepseek"] {
-        let manifest = ctx.deps.context.output_dir.join(provider).join("release-manifest.json");
+        let manifest = ctx
+            .deps
+            .context
+            .output_dir
+            .join(provider)
+            .join("release-manifest.json");
         if !manifest.is_file() {
             return Err(format!(
                 "build did not produce the {provider} bundle manifest at {}",
@@ -3144,7 +3447,12 @@ fn stage_seal(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<()
     // Both provider bundles are sealed (the finalize verifier requires the
     // dual index); both operators' config roots must therefore exist.
     for seal_provider in ["glm", "deepseek"] {
-        let config_root = ctx.deps.config.operator_root.join("config").join(seal_provider);
+        let config_root = ctx
+            .deps
+            .config
+            .operator_root
+            .join("config")
+            .join(seal_provider);
         for required in [
             config_root.join("deployment-binding.yaml"),
             config_root.join("endpoint-registry.yaml"),
@@ -3160,9 +3468,12 @@ fn stage_seal(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<()
     }
     let config_root = ctx.deps.config.operator_root.join("config").join(&provider);
     let registry = config_root.join("release-trust-registry.json");
-    let registry_bytes = std::fs::read(&registry).map_err(|error| format!("{}: {error}", registry.display()))?;
+    let registry_bytes =
+        std::fs::read(&registry).map_err(|error| format!("{}: {error}", registry.display()))?;
     let active_key_id = resolve_active_key_id(&registry_bytes, ctx.deps.now_unix_seconds)?;
-    ctx.note(format!("resolved active signing key `{active_key_id}` for provider `{provider}`"));
+    ctx.note(format!(
+        "resolved active signing key `{active_key_id}` for provider `{provider}`"
+    ));
 
     let authorization_root = ctx
         .deps
@@ -3183,29 +3494,41 @@ fn stage_seal(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<()
         .output_dir
         .join(&provider)
         .join("public-release.json");
-    let descriptor_hash = sha256_file(&descriptor).map_err(|error| format!("descriptor hash failed: {error}"))?;
+    let descriptor_hash =
+        sha256_file(&descriptor).map_err(|error| format!("descriptor hash failed: {error}"))?;
     let release_set_hash = read_descriptor_release_set_hash(&descriptor)?;
     ctx.state.descriptor_sha256 = Some(descriptor_hash.clone());
     ctx.state.release_set_hash = Some(release_set_hash.clone());
-    ctx.note(format!("sealed provider `{provider}`; descriptor {descriptor_hash}; release set {release_set_hash}"));
+    ctx.note(format!(
+        "sealed provider `{provider}`; descriptor {descriptor_hash}; release set {release_set_hash}"
+    ));
     Ok(())
 }
 
 /// `selected_release_set_hash` from the sealed public descriptor (the legacy
 /// `verify-krw-agent-production-release.mjs` field), fail-closed when absent.
 fn read_descriptor_release_set_hash(descriptor: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(descriptor).map_err(|error| format!("{}: {error}", descriptor.display()))?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|error| format!("{} is not valid JSON: {error}", descriptor.display()))?;
+    let bytes =
+        std::fs::read(descriptor).map_err(|error| format!("{}: {error}", descriptor.display()))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{} is not valid JSON: {error}", descriptor.display()))?;
     value
         .get("release_set_hash")
         .and_then(serde_json::Value::as_str)
         .filter(|hash| !hash.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| format!("sealed descriptor {} has no release_set_hash", descriptor.display()))
+        .ok_or_else(|| {
+            format!(
+                "sealed descriptor {} has no release_set_hash",
+                descriptor.display()
+            )
+        })
 }
 
-fn stage_frontend_image(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_frontend_image(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     // Pin the exact clean commit the preflight receipt recorded.
     let commit = ctx.command(executor, build_stage5_resolve_commit(ctx.deps))?;
     let commit = commit.trim().to_owned();
@@ -3226,8 +3549,12 @@ fn stage_frontend_image(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
     // built or shipped locally — the VM builds the image inside the shipped
     // immutable context during stage 9's remote prepare.
     let ship_dir = ctx.deps.ship_dir();
-    std::fs::create_dir_all(&ship_dir).map_err(|error| format!("{}: {error}", ship_dir.display()))?;
-    ctx.command(executor, build_stage5_archive_source_command(ctx.deps, &commit))?;
+    std::fs::create_dir_all(&ship_dir)
+        .map_err(|error| format!("{}: {error}", ship_dir.display()))?;
+    ctx.command(
+        executor,
+        build_stage5_archive_source_command(ctx.deps, &commit),
+    )?;
     let archive = ship_dir.join("front.tar.gz");
     if !archive.is_file() {
         return Err(format!(
@@ -3262,10 +3589,15 @@ fn stage_frontend_image(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
 /// docker/compose noise may surround it, so scan for the marker line.
 fn verify_candidate_check_output(stdout: &str, check_name: &str) -> Result<(), String> {
     let marker = format!("\"check\":\"{check_name}\"");
-    if stdout.lines().any(|line| line.contains("\"status\":\"ok\"") && line.contains(&marker)) {
+    if stdout
+        .lines()
+        .any(|line| line.contains("\"status\":\"ok\"") && line.contains(&marker))
+    {
         Ok(())
     } else {
-        Err(format!("in-container check `{check_name}` did not report status ok"))
+        Err(format!(
+            "in-container check `{check_name}` did not report status ok"
+        ))
     }
 }
 
@@ -3281,7 +3613,10 @@ pub fn parse_candidate_image_id(prepare_output: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn stage_migrations_dry_run(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_migrations_dry_run(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     // Legacy order: the RPC-contract gate runs before the migration plan.
     ctx.command(executor, build_stage6_rpc_contract_command(ctx.deps))?;
     let stdout = ctx.command(executor, build_stage6_dry_run_command(ctx.deps, false))?;
@@ -3289,7 +3624,10 @@ fn stage_migrations_dry_run(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor
     // an instruction to rerun with --include-all; detect the advisory or the
     // real apply silently omits lifecycle migrations.
     if stdout.contains("--include-all") {
-        ctx.note("migration plan reported out-of-order local migrations; retrying with --include-all".to_owned());
+        ctx.note(
+            "migration plan reported out-of-order local migrations; retrying with --include-all"
+                .to_owned(),
+        );
         ctx.command(executor, build_stage6_dry_run_command(ctx.deps, true))?;
         ctx.state.migration_include_all = true;
     }
@@ -3308,10 +3646,16 @@ fn normalize_previous_admission(raw: &str) -> String {
     }
 }
 
-fn verify_deep_observation(observation: Option<DeepHealthObservation>, release_id: &str) -> Result<(), String> {
+fn verify_deep_observation(
+    observation: Option<DeepHealthObservation>,
+    release_id: &str,
+) -> Result<(), String> {
     if let Some(observed) = observation {
         if observed.status.as_deref() != Some("ok") {
-            return Err(format!("deep health reported status `{}`", observed.status.unwrap_or_default()));
+            return Err(format!(
+                "deep health reported status `{}`",
+                observed.status.unwrap_or_default()
+            ));
         }
         if observed.deployment_id.as_deref() != Some(release_id) {
             return Err(format!(
@@ -3323,11 +3667,17 @@ fn verify_deep_observation(observation: Option<DeepHealthObservation>, release_i
     Ok(())
 }
 
-fn stage_admission_close(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_admission_close(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     let topology = resolve_remote_topology(ctx.deps.target)?;
     let previous = match &topology {
         Some(remote) => {
-            ctx.note(format!("remote admission transport: {}", remote.transport.label()));
+            ctx.note(format!(
+                "remote admission transport: {}",
+                remote.transport.label()
+            ));
             let mut commands = build_admission_commands_remote(ctx.deps, remote).into_iter();
             let read_previous = commands.next().expect("admission.read-previous command");
             let raw = ctx.command(executor, read_previous)?;
@@ -3350,58 +3700,91 @@ fn stage_admission_close(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -
             let mut commands = build_admission_commands_local(ctx.deps).into_iter();
             let close = commands.next().expect("admission.close-local command");
             ctx.command(executor, close)?;
-            let verify = commands.next().expect("admission.verify-closed-local command");
+            let verify = commands
+                .next()
+                .expect("admission.verify-closed-local command");
             let stdout = ctx.command(executor, verify)?;
             let status_ok = serde_json::from_str::<serde_json::Value>(&stdout)
                 .ok()
-                .and_then(|value| value.get("status").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .and_then(|value| {
+                    value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
                 == Some("ok".to_owned());
             if !status_ok {
-                return Err("local gateway stack did not report healthz status ok after admission close".to_owned());
+                return Err(
+                    "local gateway stack did not report healthz status ok after admission close"
+                        .to_owned(),
+                );
             }
             normalize_previous_admission(&value)
         }
     };
     ctx.state.previous_admission = Some(previous.clone());
-    ctx.note(format!("captured previous {ADMISSION_ENV_KEY} `{previous}`"));
+    ctx.note(format!(
+        "captured previous {ADMISSION_ENV_KEY} `{previous}`"
+    ));
 
     // 05 migration ordering rules 3-4 + the legacy apply order: with the
     // gate closed, first the sealed bundle's own migrations, then the front
     // plan, then the schema smoke, then the sealed DB ABI — and only then
     // the contract's exact ABI entries.
     let db_handle = ctx.deps.agent_db_url_handle()?;
-    ctx.command(executor, build_agent_release_migrations_command(ctx.deps, &db_handle))
-        .map_err(|error| format!("sealed agent release migrations failed: {error}"))?;
+    ctx.command(
+        executor,
+        build_agent_release_migrations_command(ctx.deps, &db_handle),
+    )
+    .map_err(|error| format!("sealed agent release migrations failed: {error}"))?;
     let include_all = ctx.state.migration_include_all;
     let stdout = ctx.command(executor, build_db_push_command(ctx.deps, include_all))?;
     let applied = parse_applied_migrations(&stdout);
     ctx.note(format!(
         "forward-only db push applied {} migration(s): {}",
         applied.len(),
-        if applied.is_empty() { "(none pending)".to_owned() } else { applied.join(", ") }
+        if applied.is_empty() {
+            "(none pending)".to_owned()
+        } else {
+            applied.join(", ")
+        }
     ));
     ctx.state.applied_migrations = applied;
     ctx.command(executor, build_schema_smoke_command(ctx.deps))
         .map_err(|error| format!("supabase schema smoke failed: {error}"))?;
-    let (check_dir, overlay) = prepare_sealed_check_overlay(ctx.deps, "sealed-release-database-check")?;
-    let abi_result = ctx.command(executor, build_sealed_abi_command(ctx.deps, SealedAbiMode::Database, &overlay)?);
+    let (check_dir, overlay) =
+        prepare_sealed_check_overlay(ctx.deps, "sealed-release-database-check")?;
+    let abi_result = ctx.command(
+        executor,
+        build_sealed_abi_command(ctx.deps, SealedAbiMode::Database, &overlay)?,
+    );
     let _ = std::fs::remove_dir_all(&check_dir);
     abi_result
         .map_err(|error| format!("sealed local database ABI verification failed: {error}"))?;
-    ctx.note("sealed local Rust daemon database ABI verified through the launchd entrypoint".to_owned());
+    ctx.note(
+        "sealed local Rust daemon database ABI verified through the launchd entrypoint".to_owned(),
+    );
 
     let procedures = ctx.deps.contract_required_procedures();
     let columns = ctx.deps.contract_required_columns();
     if procedures.is_empty() && columns.is_empty() {
-        ctx.note("frontend contract pins no DB ABI lists; ABI verification recorded none".to_owned());
+        ctx.note(
+            "frontend contract pins no DB ABI lists; ABI verification recorded none".to_owned(),
+        );
         return Ok(());
     }
     if ctx.deps.target.db_url_env.is_none() {
-        return Err("DB ABI verification requires a db_url_env handle in the target file".to_owned());
+        return Err(
+            "DB ABI verification requires a db_url_env handle in the target file".to_owned(),
+        );
     }
     for (index, entry) in procedures.iter().enumerate() {
         let abi = parse_procedure_entry(entry)?;
-        let spec = build_abi_command(ctx.deps, &format!("{PROCEDURE_ABI_PREFIX}{index}"), &abi.sql());
+        let spec = build_abi_command(
+            ctx.deps,
+            &format!("{PROCEDURE_ABI_PREFIX}{index}"),
+            &abi.sql(),
+        );
         let stdout = ctx.command(executor, spec)?;
         if stdout != abi.expected_output() {
             return Err(format!(
@@ -3426,7 +3809,10 @@ fn stage_admission_close(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -
     Ok(())
 }
 
-fn stage_local_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_local_activation(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     // Legacy `require_file` gates on the sealed bundle packaging surface.
     let bundle = ctx.deps.provider_bundle();
     for required in [
@@ -3442,7 +3828,8 @@ fn stage_local_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) 
             ));
         }
     }
-    let (mcp_check_dir, mcp_overlay) = prepare_sealed_check_overlay(ctx.deps, "sealed-release-mcp-check")?;
+    let (mcp_check_dir, mcp_overlay) =
+        prepare_sealed_check_overlay(ctx.deps, "sealed-release-mcp-check")?;
     let result: Result<(), String> = (|| {
         for spec in build_stage8_commands(ctx.deps, &mcp_overlay) {
             ctx.command(executor, spec)?;
@@ -3464,7 +3851,10 @@ fn stage_local_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) 
     Ok(())
 }
 
-fn stage_remote_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_remote_activation(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     let Some(topology) = resolve_remote_topology(ctx.deps.target)? else {
         return Err("remote activation stage reached without a remote topology".to_owned());
     };
@@ -3510,24 +3900,44 @@ fn stage_remote_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor)
     }
     ctx.command_with_retries(
         executor,
-        build_ship_scp_command(ctx.deps, "ship.scp-front-archive", &archive, &remote_front_archive_path(&release_id), &topology),
+        build_ship_scp_command(
+            ctx.deps,
+            "ship.scp-front-archive",
+            &archive,
+            &remote_front_archive_path(&release_id),
+            &topology,
+        ),
         SCP_MAX_ATTEMPTS,
     )?;
     ctx.command_with_retries(
         executor,
-        build_ship_scp_command(ctx.deps, "ship.scp-agent-descriptor", &descriptor_copy, &remote_agent_descriptor_path(&release_id), &topology),
+        build_ship_scp_command(
+            ctx.deps,
+            "ship.scp-agent-descriptor",
+            &descriptor_copy,
+            &remote_agent_descriptor_path(&release_id),
+            &topology,
+        ),
         SCP_MAX_ATTEMPTS,
     )?;
-    let prepare_output = ctx.command(executor, build_remote_prepare_command(ctx.deps, &topology, &descriptor_hash, &release_set_hash))?;
+    let prepare_output = ctx.command(
+        executor,
+        build_remote_prepare_command(ctx.deps, &topology, &descriptor_hash, &release_set_hash),
+    )?;
     // The remote build reports the candidate image id; surface it as the
     // run's frontend image digest artifact (never a secret).
     if let Some(image_id) = parse_candidate_image_id(&prepare_output) {
         ctx.state.frontend_image_digest = Some(image_id.clone());
-        ctx.note(format!("remote candidate image built and validated: {image_id}"));
+        ctx.note(format!(
+            "remote candidate image built and validated: {image_id}"
+        ));
     } else {
         ctx.note("remote prepare completed without a reported CANDIDATE_IMAGE; frontend_image_digest left unavailable".to_owned());
     }
-    ctx.note(format!("remote candidate prepared at {}", remote_stage_dir(&topology, &release_id)));
+    ctx.note(format!(
+        "remote candidate prepared at {}",
+        remote_stage_dir(&topology, &release_id)
+    ));
 
     // Post-migration candidate ABI proof, then the public activation.
     for spec in build_stage9_commands(ctx.deps, &topology) {
@@ -3535,8 +3945,9 @@ fn stage_remote_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor)
         let stdout = ctx.command(executor, spec)?;
         match id.as_str() {
             "remote.candidate-abi" => {
-                verify_candidate_check_output(&stdout, "gcp_agent_v1_candidate_abi")
-                    .map_err(|error| format!("remote candidate ABI verification failed: {error}"))?;
+                verify_candidate_check_output(&stdout, "gcp_agent_v1_candidate_abi").map_err(
+                    |error| format!("remote candidate ABI verification failed: {error}"),
+                )?;
                 ctx.note("remote candidate queue/outbox ABI verified in-container".to_owned());
             }
             "readiness.remote-web-healthz" => {
@@ -3548,15 +3959,24 @@ fn stage_remote_activation(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor)
     Ok(())
 }
 
-fn stage_deep_readiness(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_deep_readiness(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     // Process layer: the local daemon's metrics endpoint.
     ctx.command(executor, build_daemon_metrics_command(ctx.deps))?;
 
     // Dependency layer: every MCP endpoint — TCP + readiness endpoint, no
     // LLM calls.
     for (index, endpoint) in ctx.deps.target.mcp_endpoints.iter().enumerate() {
-        ctx.probe(executor, build_mcp_probe(index, endpoint, ctx.deps.config.timeouts.mcp_ms)?)?;
-        ctx.command(executor, build_mcp_ready_command(ctx.deps, index, endpoint)?)?;
+        ctx.probe(
+            executor,
+            build_mcp_probe(index, endpoint, ctx.deps.config.timeouts.mcp_ms)?,
+        )?;
+        ctx.command(
+            executor,
+            build_mcp_ready_command(ctx.deps, index, endpoint)?,
+        )?;
     }
 
     // Product layer 1: web /api/healthz/deep with internal-key headers.
@@ -3580,9 +4000,14 @@ fn stage_deep_readiness(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
         if topology.is_none() {
             break;
         }
-        let stdout = ctx.command(executor, build_public_healthz_command(ctx.deps, index, origin))?;
+        let stdout = ctx.command(
+            executor,
+            build_public_healthz_command(ctx.deps, index, origin),
+        )?;
         verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
-        ctx.note(format!("public origin {origin} serves the new deployment id"));
+        ctx.note(format!(
+            "public origin {origin} serves the new deployment id"
+        ));
     }
 
     // Product layer 2: the daemon's release-bound DB heartbeat.
@@ -3607,16 +4032,28 @@ fn stage_deep_readiness(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
             ));
         }
         if parts[3] != "t" {
-            return Err(format!("db heartbeat mcp_ready is `{}`, expected `t`", parts[3]));
+            return Err(format!(
+                "db heartbeat mcp_ready is `{}`, expected `t`",
+                parts[3]
+            ));
         }
-        ctx.note(format!("db heartbeat verified (release_set_hash {})", parts[2]));
+        ctx.note(format!(
+            "db heartbeat verified (release_set_hash {})",
+            parts[2]
+        ));
     } else {
-        ctx.note("target records no db_url_env handle; db heartbeat verification recorded none".to_owned());
+        ctx.note(
+            "target records no db_url_env handle; db heartbeat verification recorded none"
+                .to_owned(),
+        );
     }
     Ok(())
 }
 
-fn stage_admission_open(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_admission_open(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     let topology = resolve_remote_topology(ctx.deps.target)?;
     let verify_id_remote = "readiness.admission-open-verify";
     let verify_id_local = "readiness.admission-open-verify-local";
@@ -3627,8 +4064,12 @@ fn stage_admission_open(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
                 let stdout = ctx.command(executor, spec)?;
                 if is_verify {
                     verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
-                    if parse_deep_health(&stdout).and_then(|observation| observation.admission) != Some("open".to_owned()) {
-                        return Err("deep health did not report agent_v1 admission `open`".to_owned());
+                    if parse_deep_health(&stdout).and_then(|observation| observation.admission)
+                        != Some("open".to_owned())
+                    {
+                        return Err(
+                            "deep health did not report agent_v1 admission `open`".to_owned()
+                        );
                     }
                 }
             }
@@ -3646,28 +4087,40 @@ fn stage_admission_open(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) ->
                 let stdout = ctx.command(executor, spec)?;
                 if is_verify {
                     verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
-                    if parse_deep_health(&stdout).and_then(|observation| observation.admission) != Some("open".to_owned()) {
-                        return Err("local deep health did not report agent_v1 admission `open`".to_owned());
+                    if parse_deep_health(&stdout).and_then(|observation| observation.admission)
+                        != Some("open".to_owned())
+                    {
+                        return Err(
+                            "local deep health did not report agent_v1 admission `open`".to_owned()
+                        );
                     }
                 }
             }
         }
     }
-    ctx.note(format!("{ADMISSION_ENV_KEY} set to open and verified through deep health"));
+    ctx.note(format!(
+        "{ADMISSION_ENV_KEY} set to open and verified through deep health"
+    ));
     Ok(())
 }
 
 /// Stage 12: best-effort remote artifact cleanup BEFORE the terminal
 /// receipt (05 artifact-cleanup rules). Cleanup failures never fail the
 /// deploy — they are recorded in the stage receipt as notes.
-fn stage_terminal_cleanup(ctx: &mut StageCtx<'_>, executor: &dyn StageExecutor) -> Result<(), String> {
+fn stage_terminal_cleanup(
+    ctx: &mut StageCtx<'_>,
+    executor: &dyn StageExecutor,
+) -> Result<(), String> {
     let topology = resolve_remote_topology(ctx.deps.target)?;
     match topology {
         Some(remote) => {
             for spec in build_stage12_cleanup_commands(ctx.deps, &remote) {
                 ctx.best_effort_command(executor, spec);
             }
-            ctx.note("remote artifact cleanup recorded (best-effort; bounded by exact project labels)".to_owned());
+            ctx.note(
+                "remote artifact cleanup recorded (best-effort; bounded by exact project labels)"
+                    .to_owned(),
+            );
         }
         None => {
             ctx.state.skipped.push(SkippedRecord {
@@ -3721,27 +4174,37 @@ mod tests {
     #[test]
     fn resolve_active_key_requires_exactly_one_valid_key() {
         let bytes = trust_registry("pipeline-active-key");
-        assert_eq!(resolve_active_key_id(&bytes, FIXED_NOW).unwrap(), "pipeline-active-key");
+        assert_eq!(
+            resolve_active_key_id(&bytes, FIXED_NOW).unwrap(),
+            "pipeline-active-key"
+        );
 
-        let mut revoked = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        let mut revoked =
+            krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
         revoked.keys[0].revoked = true;
-        let error = resolve_active_key_id(&serde_jcs::to_vec(&revoked).unwrap(), FIXED_NOW).unwrap_err();
+        let error =
+            resolve_active_key_id(&serde_jcs::to_vec(&revoked).unwrap(), FIXED_NOW).unwrap_err();
         assert!(error.contains("no active signing key"), "error: {error}");
 
-        let mut expired = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        let mut expired =
+            krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
         expired.keys[0].not_after_unix_seconds = FIXED_NOW - 1;
-        let error = resolve_active_key_id(&serde_jcs::to_vec(&expired).unwrap(), FIXED_NOW).unwrap_err();
+        let error =
+            resolve_active_key_id(&serde_jcs::to_vec(&expired).unwrap(), FIXED_NOW).unwrap_err();
         assert!(error.contains("no active signing key"), "error: {error}");
 
-        let mut dual = krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
-        dual.keys.push(krw_agent_release_authorization::ReleaseTrustKeyV1 {
-            key_id: "second-key".to_owned(),
-            ed25519_public_key_hex: "44".repeat(32),
-            not_before_unix_seconds: 0,
-            not_after_unix_seconds: 4_102_444_800,
-            revoked: false,
-        });
-        let error = resolve_active_key_id(&serde_jcs::to_vec(&dual).unwrap(), FIXED_NOW).unwrap_err();
+        let mut dual =
+            krw_agent_release_authorization::parse_canonical_trust_registry(&bytes).unwrap();
+        dual.keys
+            .push(krw_agent_release_authorization::ReleaseTrustKeyV1 {
+                key_id: "second-key".to_owned(),
+                ed25519_public_key_hex: "44".repeat(32),
+                not_before_unix_seconds: 0,
+                not_after_unix_seconds: 4_102_444_800,
+                revoked: false,
+            });
+        let error =
+            resolve_active_key_id(&serde_jcs::to_vec(&dual).unwrap(), FIXED_NOW).unwrap_err();
         assert!(error.contains("2 active signing keys"), "error: {error}");
     }
 
@@ -3760,7 +4223,10 @@ mod tests {
 
         upsert_env_value(&env_file, "KRW_AGENT_ADMISSION_MODE", "closed").unwrap();
         let text = std::fs::read_to_string(&env_file).unwrap();
-        assert!(text.contains("KRW_AGENT_ADMISSION_MODE=closed\n"), "text: {text}");
+        assert!(
+            text.contains("KRW_AGENT_ADMISSION_MODE=closed\n"),
+            "text: {text}"
+        );
         assert_eq!(runtime_env_value(&env_file, "A").unwrap(), "second");
 
         // First occurrence replaced in place, duplicates dropped, order kept.
@@ -3776,7 +4242,10 @@ mod tests {
         let stdout = "Searching for migration files...\nApplying migration 0001_agent_v1...\nApplying migration 0022_daemon_mcp_readiness ...\n";
         assert_eq!(
             parse_applied_migrations(stdout),
-            ["0001_agent_v1".to_owned(), "0022_daemon_mcp_readiness".to_owned()]
+            [
+                "0001_agent_v1".to_owned(),
+                "0022_daemon_mcp_readiness".to_owned()
+            ]
         );
         assert!(parse_applied_migrations("no migrations to apply").is_empty());
     }
@@ -3809,7 +4278,11 @@ mod tests {
         assert_eq!(abi.table, "agent_v1_daemon_heartbeats");
         assert_eq!(abi.column, "mcp_ready");
         assert_eq!(abi.expected_output(), "1");
-        assert!(abi.sql().contains("table_schema = 'public'"), "sql: {}", abi.sql());
+        assert!(
+            abi.sql().contains("table_schema = 'public'"),
+            "sql: {}",
+            abi.sql()
+        );
 
         let explicit = parse_column_entry("agent_store.mutations.id").unwrap();
         assert_eq!(explicit.schema, "agent_store");
@@ -3843,7 +4316,10 @@ mod tests {
 
     /// `gcp_transport = true` selects the production gcloud transport (gcp
     /// block); otherwise the target declares plain ssh without a gcp block.
-    fn deps_for_transport(provider_cfg: bool, gcp_transport: bool) -> (TempDirGuard, Box<PipelineDeps<'static>>) {
+    fn deps_for_transport(
+        provider_cfg: bool,
+        gcp_transport: bool,
+    ) -> (TempDirGuard, Box<PipelineDeps<'static>>) {
         let root = std::env::temp_dir().join(format!(
             "krw-pipeline-deps-{}-{}",
             std::process::id(),
@@ -3867,7 +4343,11 @@ mod tests {
             std::fs::create_dir_all(&config_dir).unwrap();
             std::fs::write(config_dir.join("deployment-binding.yaml"), "b: 1\n").unwrap();
             std::fs::write(config_dir.join("endpoint-registry.yaml"), "e: 1\n").unwrap();
-            std::fs::write(config_dir.join("release-trust-registry.json"), trust_registry("deps-key")).unwrap();
+            std::fs::write(
+                config_dir.join("release-trust-registry.json"),
+                trust_registry("deps-key"),
+            )
+            .unwrap();
         }
         std::fs::write(
             root.join("operator/ops/agent-v1-deployment-contract.json"),
@@ -3975,7 +4455,11 @@ mod tests {
             ]
         );
         assert!(specs.iter().all(|spec| spec.stage == "seal"));
-        assert!(specs.iter().all(|spec| spec.env_keys_used == [RUNTIME_ENV_ALL.to_owned()]));
+        assert!(
+            specs
+                .iter()
+                .all(|spec| spec.env_keys_used == [RUNTIME_ENV_ALL.to_owned()])
+        );
 
         let prepare = &specs[3];
         assert_eq!(
@@ -3985,40 +4469,94 @@ mod tests {
                 "--provider".to_owned(),
                 "deepseek".to_owned(),
                 "--bundle".to_owned(),
-                deps.context.output_dir.join("deepseek").display().to_string(),
+                deps.context
+                    .output_dir
+                    .join("deepseek")
+                    .display()
+                    .to_string(),
                 "--binding".to_owned(),
-                deps.config.operator_root.join("config/deepseek/deployment-binding.yaml").display().to_string(),
+                deps.config
+                    .operator_root
+                    .join("config/deepseek/deployment-binding.yaml")
+                    .display()
+                    .to_string(),
                 "--endpoints".to_owned(),
-                deps.config.operator_root.join("config/deepseek/endpoint-registry.yaml").display().to_string(),
+                deps.config
+                    .operator_root
+                    .join("config/deepseek/endpoint-registry.yaml")
+                    .display()
+                    .to_string(),
             ]
         );
 
         let sign = &specs[4];
-        assert_eq!(sign.argv[0], deps.context.output_dir.join("deepseek/bin/krw-agent").display().to_string());
-        assert_eq!(&sign.argv[1..5], &["release", "sign", "--descriptor", &deps.context.output_dir.join("deepseek/public-release.json").display().to_string()]);
+        assert_eq!(
+            sign.argv[0],
+            deps.context
+                .output_dir
+                .join("deepseek/bin/krw-agent")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            &sign.argv[1..5],
+            &[
+                "release",
+                "sign",
+                "--descriptor",
+                &deps
+                    .context
+                    .output_dir
+                    .join("deepseek/public-release.json")
+                    .display()
+                    .to_string()
+            ]
+        );
         // [5..7] --private-key <operator key>; [7..9] --key-id <active key>.
         assert_eq!(sign.argv[8], "the-active-key");
         assert_eq!(sign.argv[9], "--sequence");
         assert_eq!(sign.argv[10], FIXED_NOW.to_string());
         assert_eq!(sign.argv[12], FIXED_NOW.to_string());
-        assert_eq!(sign.argv[14], (FIXED_NOW + AUTHORIZATION_TTL_SECONDS).to_string());
+        assert_eq!(
+            sign.argv[14],
+            (FIXED_NOW + AUTHORIZATION_TTL_SECONDS).to_string()
+        );
         assert_eq!(sign.argv[15], "--runtime-version");
         assert_eq!(sign.argv[16], RUNTIME_VERSION);
         assert_eq!(sign.argv[17], "--kernel-version");
         assert_eq!(sign.argv[18], KERNEL_VERSION);
         assert_eq!(sign.argv[19], "--out");
-        assert_eq!(sign.argv[20], deps.config.operator_root.join("signing/releases/20260816T012000Z-abcd1234/release-authorization-deepseek.json").display().to_string());
+        assert_eq!(
+            sign.argv[20],
+            deps.config
+                .operator_root
+                .join(
+                    "signing/releases/20260816T012000Z-abcd1234/release-authorization-deepseek.json"
+                )
+                .display()
+                .to_string()
+        );
 
         let seal = &specs[5];
         assert_eq!(
             seal.argv[1..3],
-            [
-                "--provider".to_owned(),
-                "deepseek".to_owned(),
+            ["--provider".to_owned(), "deepseek".to_owned(),]
+        );
+        assert_eq!(
+            seal.argv[seal.argv.len() - 1],
+            deps.config
+                .operator_root
+                .join("config/deepseek/release-trust-registry.json")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            &specs[6].argv[1..],
+            &[
+                "--release-root",
+                &deps.context.output_dir.display().to_string()
             ]
         );
-        assert_eq!(seal.argv[seal.argv.len() - 1], deps.config.operator_root.join("config/deepseek/release-trust-registry.json").display().to_string());
-        assert_eq!(&specs[6].argv[1..], &["--release-root", &deps.context.output_dir.display().to_string()]);
     }
 
     #[test]
@@ -4028,9 +4566,19 @@ mod tests {
 
         let resolve = build_stage5_resolve_commit(&deps);
         assert_eq!(resolve.id, "frontend-image.resolve-commit");
-        assert_eq!(resolve.argv, vec!["git".to_owned(), "-C".to_owned(), deps.config.frontend_source_root.display().to_string(), "rev-parse".to_owned(), "HEAD".to_owned()]);
+        assert_eq!(
+            resolve.argv,
+            vec![
+                "git".to_owned(),
+                "-C".to_owned(),
+                deps.config.frontend_source_root.display().to_string(),
+                "rev-parse".to_owned(),
+                "HEAD".to_owned()
+            ]
+        );
 
-        let archive = build_stage5_archive_source_command(&deps, "0123456789abcdef0123456789abcdef01234567");
+        let archive =
+            build_stage5_archive_source_command(&deps, "0123456789abcdef0123456789abcdef01234567");
         assert_eq!(archive.id, "frontend-image.archive-source");
         assert_eq!(archive.stage, "frontend_image_prepare");
         assert_eq!(&archive.argv[0..2], &["/bin/sh", "-c"]);
@@ -4048,14 +4596,26 @@ mod tests {
         let descriptor = build_stage5_descriptor_copy_command(&deps);
         assert_eq!(descriptor.id, "frontend-image.descriptor-copy");
         let descriptor_script = &descriptor.argv[2];
-        assert!(descriptor_script.contains(&format!("cp '{}' '{}/public-release.json'", deps.provider_bundle().join("public-release.json").display(), ship_dir.display())), "script: {descriptor_script}");
-        assert!(descriptor_script.contains("chmod 0644"), "script: {descriptor_script}");
+        assert!(
+            descriptor_script.contains(&format!(
+                "cp '{}' '{}/public-release.json'",
+                deps.provider_bundle().join("public-release.json").display(),
+                ship_dir.display()
+            )),
+            "script: {descriptor_script}"
+        );
+        assert!(
+            descriptor_script.contains("chmod 0644"),
+            "script: {descriptor_script}"
+        );
     }
 
     #[test]
     fn parse_candidate_image_id_reads_the_remote_prepare_report() {
         assert_eq!(
-            parse_candidate_image_id("building...\nCANDIDATE_IMAGE=sha256:abc\nPrepared fast VM candidate: r1\n"),
+            parse_candidate_image_id(
+                "building...\nCANDIDATE_IMAGE=sha256:abc\nPrepared fast VM candidate: r1\n"
+            ),
             Some("sha256:abc".to_owned())
         );
         assert_eq!(parse_candidate_image_id("CANDIDATE_IMAGE=  "), None);
@@ -4075,16 +4635,32 @@ mod tests {
         assert_eq!(dry_run.id, "migrations.db-push-dry-run");
         assert_eq!(&dry_run.argv[0..2], &["/bin/sh", "-c"]);
         let dry_run_script = &dry_run.argv[2];
-        assert!(dry_run_script.contains("db push --dry-run"), "script: {dry_run_script}");
+        assert!(
+            dry_run_script.contains("db push --dry-run"),
+            "script: {dry_run_script}"
+        );
         // Legacy IPv6 pooler fallback is baked into the wrapper.
-        assert!(dry_run_script.contains("IPv6 is not supported on your current network"), "script: {dry_run_script}");
-        assert!(dry_run_script.contains("KRW_AGENT_DATABASE_URL:-${AGENT_V1_DATABASE_URL"), "script: {dry_run_script}");
-        assert!(dry_run_script.contains("db push --db-url \"$pooler\""), "script: {dry_run_script}");
+        assert!(
+            dry_run_script.contains("IPv6 is not supported on your current network"),
+            "script: {dry_run_script}"
+        );
+        assert!(
+            dry_run_script.contains("KRW_AGENT_DATABASE_URL:-${AGENT_V1_DATABASE_URL"),
+            "script: {dry_run_script}"
+        );
+        assert!(
+            dry_run_script.contains("db push --db-url \"$pooler\""),
+            "script: {dry_run_script}"
+        );
         assert_eq!(dry_run.env_keys_used, [RUNTIME_ENV_ALL.to_owned()]);
 
         let include_all = build_stage6_dry_run_command(&deps, true);
         assert_eq!(include_all.id, "migrations.db-push-dry-run-include-all");
-        assert!(include_all.argv[2].contains("db push --include-all --dry-run"), "script: {}", include_all.argv[2]);
+        assert!(
+            include_all.argv[2].contains("db push --include-all --dry-run"),
+            "script: {}",
+            include_all.argv[2]
+        );
 
         let push = build_db_push_command(&deps, false);
         assert_eq!(push.stage, "admission_close"); // applied after admission close per 05 ordering
@@ -4092,7 +4668,11 @@ mod tests {
         assert!(push.argv[2].contains("db push"), "script: {}", push.argv[2]);
         let push_all = build_db_push_command(&deps, true);
         assert_eq!(push_all.id, "migrations.db-push-include-all");
-        assert!(push_all.argv[2].contains("db push --include-all"), "script: {}", push_all.argv[2]);
+        assert!(
+            push_all.argv[2].contains("db push --include-all"),
+            "script: {}",
+            push_all.argv[2]
+        );
 
         let abi = build_abi_command(&deps, "migrations.abi-verify-procedure-0", "select 1");
         assert_eq!(abi.stage, "admission_close");
@@ -4118,11 +4698,23 @@ mod tests {
         // The URL is resolved INSIDE the sourced shell (the runtime env may
         // compute it dynamically), so no static `<env:...>` placeholder may
         // appear anywhere in the script.
-        assert!(apply_script.contains("KRW_AGENT_DATABASE_URL:-${AGENT_V1_DATABASE_URL"), "script: {apply_script}");
-        assert!(apply_script.contains("AGENT_V1_DATABASE_URL=\"$agent_database_url\""), "script: {apply_script}");
-        assert!(apply_script.contains("AGENT_V1_PSQL_URL=\"$agent_database_url\""), "script: {apply_script}");
+        assert!(
+            apply_script.contains("KRW_AGENT_DATABASE_URL:-${AGENT_V1_DATABASE_URL"),
+            "script: {apply_script}"
+        );
+        assert!(
+            apply_script.contains("AGENT_V1_DATABASE_URL=\"$agent_database_url\""),
+            "script: {apply_script}"
+        );
+        assert!(
+            apply_script.contains("AGENT_V1_PSQL_URL=\"$agent_database_url\""),
+            "script: {apply_script}"
+        );
         assert!(!apply_script.contains("<env:"), "script: {apply_script}");
-        assert!(apply_script.contains("supabase-root-2021-ca.crt"), "script: {apply_script}");
+        assert!(
+            apply_script.contains("supabase-root-2021-ca.crt"),
+            "script: {apply_script}"
+        );
         assert_eq!(apply.argv[3], "apply-agent-v1-migrations");
         assert!(apply.argv[4].ends_with("scripts/apply-agent-v1-production-migrations.sh"));
         assert_eq!(apply.argv[5], "--agent-release");
@@ -4133,16 +4725,36 @@ mod tests {
         let smoke = build_schema_smoke_command(&deps);
         assert_eq!(smoke.id, "migrations.schema-smoke");
         let smoke_script = &smoke.argv[2];
-        assert!(smoke_script.contains("supabase-schema-smoke.mjs"), "script: {smoke_script}");
-        assert!(smoke_script.contains("verify-agent-v1-compatibility.mjs"), "script: {smoke_script}");
-        assert!(smoke_script.contains("AGENT_V1_DATABASE_CA_FILE="), "script: {smoke_script}");
+        assert!(
+            smoke_script.contains("supabase-schema-smoke.mjs"),
+            "script: {smoke_script}"
+        );
+        assert!(
+            smoke_script.contains("verify-agent-v1-compatibility.mjs"),
+            "script: {smoke_script}"
+        );
+        assert!(
+            smoke_script.contains("AGENT_V1_DATABASE_CA_FILE="),
+            "script: {smoke_script}"
+        );
 
-        let (check_dir, overlay) = prepare_sealed_check_overlay(&deps, "sealed-release-database-check").unwrap();
-        assert!(overlay.starts_with(check_dir.clone()), "overlay {overlay:?} under {check_dir:?}");
+        let (check_dir, overlay) =
+            prepare_sealed_check_overlay(&deps, "sealed-release-database-check").unwrap();
+        assert!(
+            overlay.starts_with(check_dir.clone()),
+            "overlay {overlay:?} under {check_dir:?}"
+        );
         let overlay_text = std::fs::read_to_string(&overlay).unwrap();
-        assert!(overlay_text.contains("KRW_AGENT_WORKER_ID=sealed-release-database-check"), "overlay: {overlay_text}");
-        assert!(overlay_text.contains("KRW_AGENT_PROVIDER=deepseek"), "overlay: {overlay_text}");
-        let database_check = build_sealed_abi_command(&deps, SealedAbiMode::Database, &overlay).unwrap();
+        assert!(
+            overlay_text.contains("KRW_AGENT_WORKER_ID=sealed-release-database-check"),
+            "overlay: {overlay_text}"
+        );
+        assert!(
+            overlay_text.contains("KRW_AGENT_PROVIDER=deepseek"),
+            "overlay: {overlay_text}"
+        );
+        let database_check =
+            build_sealed_abi_command(&deps, SealedAbiMode::Database, &overlay).unwrap();
         assert_eq!(database_check.id, "migrations.sealed-database-abi");
         assert_eq!(database_check.stage, "admission_close");
         assert!(database_check.argv[0].ends_with("packaging/launchd/krw-agentd-start-local"));
@@ -4161,21 +4773,44 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let commands = build_admission_commands_remote(&deps, &topology);
         let ids: Vec<&str> = commands.iter().map(|command| command.id.as_str()).collect();
-        assert_eq!(ids, ["admission.read-previous", "admission.close", "admission.verify-closed"]);
+        assert_eq!(
+            ids,
+            [
+                "admission.read-previous",
+                "admission.close",
+                "admission.verify-closed"
+            ]
+        );
         for command in &commands {
             assert_eq!(&command.argv[0..2], &["ssh", "-o"]);
             assert_eq!(command.argv[2], "BatchMode=yes");
-            assert_eq!(command.argv[4], format!("ConnectTimeout={}", (deps.config.timeouts.ssh_ms / 1000).max(1)));
+            assert_eq!(
+                command.argv[4],
+                format!(
+                    "ConnectTimeout={}",
+                    (deps.config.timeouts.ssh_ms / 1000).max(1)
+                )
+            );
             assert_eq!(command.argv[5], "deploy@127.0.0.1");
             assert!(command.env_keys_used.is_empty());
         }
         let read_previous = &commands[0];
-        assert!(read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", read_previous.argv[6]);
+        assert!(
+            read_previous.argv[6].contains("KRW_AGENT_ADMISSION_MODE"),
+            "payload: {}",
+            read_previous.argv[6]
+        );
         assert!(read_previous.argv[6].contains(".simple-deploy/current/runtime.env"));
         assert!(read_previous.argv[6].contains("tail -n 1"));
         let close = &commands[1];
-        assert!(close.argv[6].contains("-v value=closed"), "payload: {}", close.argv[6]);
-        assert!(close.argv[6].contains("up -d --no-deps --force-recreate --wait web agent-v1-outbox"));
+        assert!(
+            close.argv[6].contains("-v value=closed"),
+            "payload: {}",
+            close.argv[6]
+        );
+        assert!(
+            close.argv[6].contains("up -d --no-deps --force-recreate --wait web agent-v1-outbox")
+        );
         let verify = &commands[2];
         assert!(verify.argv[6].contains("/api/healthz"));
     }
@@ -4205,7 +4840,12 @@ mod tests {
         );
         assert_eq!(commands[1].id, "admission.verify-closed-local");
         assert_eq!(commands[1].argv[0], "curl");
-        assert!(commands[1].argv.iter().any(|element| element.contains("/api/healthz")));
+        assert!(
+            commands[1]
+                .argv
+                .iter()
+                .any(|element| element.contains("/api/healthz"))
+        );
     }
 
     #[test]
@@ -4240,7 +4880,9 @@ mod tests {
             "activation.agentd-start",
         ] {
             assert!(
-                specs.iter().any(|spec| spec.id == id && spec.env_keys_used.is_empty()),
+                specs
+                    .iter()
+                    .any(|spec| spec.id == id && spec.env_keys_used.is_empty()),
                 "{id} must not require KRW_AGENT_LOCAL_INSTALL_ROOT when the operator env omits it (installer default)"
             );
         }
@@ -4248,7 +4890,10 @@ mod tests {
         assert_eq!(
             agentd_stage.argv,
             vec![
-                deps.provider_bundle().join("packaging/launchd/install-local-mac-agentd-release.sh").display().to_string(),
+                deps.provider_bundle()
+                    .join("packaging/launchd/install-local-mac-agentd-release.sh")
+                    .display()
+                    .to_string(),
                 "--mode".to_owned(),
                 "stage".to_owned(),
                 "--release-root".to_owned(),
@@ -4263,18 +4908,33 @@ mod tests {
         // every MCP dependency is ready.
         let agentd_activate = &specs[1];
         assert!(agentd_activate.argv.contains(&"--defer-start".to_owned()));
-        assert!(agentd_activate.argv.contains(&deps.config.runtime_env.display().to_string()));
+        assert!(
+            agentd_activate
+                .argv
+                .contains(&deps.config.runtime_env.display().to_string())
+        );
         // No KRW_AGENT_METRICS_PORT in the fixture runtime env: no placeholder
         // on activate, literal default on start.
         assert!(!agentd_activate.argv.contains(&"--metrics-port".to_owned()));
         let gateways_prepare = &specs[3];
         assert_eq!(gateways_prepare.argv[0], "node");
-        assert!(gateways_prepare.argv[1].ends_with("scripts/install-krw-agent-local-mcp-gateways.mjs"));
-        assert_eq!(&gateways_prepare.argv[2..4], &["--mode".to_owned(), "prepare".to_owned()]);
+        assert!(
+            gateways_prepare.argv[1].ends_with("scripts/install-krw-agent-local-mcp-gateways.mjs")
+        );
+        assert_eq!(
+            &gateways_prepare.argv[2..4],
+            &["--mode".to_owned(), "prepare".to_owned()]
+        );
         assert_eq!(gateways_prepare.argv[4], "--agent-bundle");
-        assert_eq!(gateways_prepare.argv[5], deps.provider_bundle().display().to_string());
+        assert_eq!(
+            gateways_prepare.argv[5],
+            deps.provider_bundle().display().to_string()
+        );
         assert_eq!(gateways_prepare.argv[6], "--operator-root");
-        assert_eq!(gateways_prepare.argv[7], deps.config.operator_root.display().to_string());
+        assert_eq!(
+            gateways_prepare.argv[7],
+            deps.config.operator_root.display().to_string()
+        );
         assert_eq!(&specs[4].argv[3], &"activate");
         let sealed_mcp = &specs[5];
         assert!(sealed_mcp.argv.contains(&overlay.display().to_string()));
@@ -4294,7 +4954,10 @@ mod tests {
             .into_iter()
             .map(|spec| spec.id)
             .collect::<Vec<_>>();
-        assert!(!ids.contains(&"activation.runtime-env-candidate".to_owned()), "ids: {ids:?}");
+        assert!(
+            !ids.contains(&"activation.runtime-env-candidate".to_owned()),
+            "ids: {ids:?}"
+        );
 
         // Declaring both keys materializes the legacy forward activation.
         let (guard, deps) = deps_for(false);
@@ -4309,11 +4972,29 @@ mod tests {
             .find(|spec| spec.id == "activation.runtime-env-candidate")
             .expect("runtime env candidate command");
         assert!(candidate.argv[1].ends_with("scripts/activate-forward-runtime-env.sh"));
-        assert_eq!(&candidate.argv[2..], &["--candidate", "<env:KRW_AGENT_RUNTIME_ENV_CANDIDATE>", "--destination", "<env:KRW_AGENT_RUNTIME_ENV_FILE>"]);
+        assert_eq!(
+            &candidate.argv[2..],
+            &[
+                "--candidate",
+                "<env:KRW_AGENT_RUNTIME_ENV_CANDIDATE>",
+                "--destination",
+                "<env:KRW_AGENT_RUNTIME_ENV_FILE>"
+            ]
+        );
         // The daemon env file follows the operator envelope pointer.
-        let agentd_activate = specs.iter().find(|spec| spec.id == "activation.agentd-activate").unwrap();
-        let env_position = agentd_activate.argv.iter().position(|flag| flag == "--env-file").unwrap();
-        assert_eq!(agentd_activate.argv[env_position + 1], "<env:KRW_AGENT_RUNTIME_ENV_FILE>");
+        let agentd_activate = specs
+            .iter()
+            .find(|spec| spec.id == "activation.agentd-activate")
+            .unwrap();
+        let env_position = agentd_activate
+            .argv
+            .iter()
+            .position(|flag| flag == "--env-file")
+            .unwrap();
+        assert_eq!(
+            agentd_activate.argv[env_position + 1],
+            "<env:KRW_AGENT_RUNTIME_ENV_FILE>"
+        );
         drop(guard);
     }
 
@@ -4327,8 +5008,15 @@ mod tests {
         .unwrap();
         let overlay = deps.context.output_dir.join("overlay.env");
         let specs = build_stage8_commands(&deps, &overlay);
-        let activate = specs.iter().find(|spec| spec.id == "activation.agentd-activate").unwrap();
-        let position = activate.argv.iter().position(|flag| flag == "--metrics-port").unwrap();
+        let activate = specs
+            .iter()
+            .find(|spec| spec.id == "activation.agentd-activate")
+            .unwrap();
+        let position = activate
+            .argv
+            .iter()
+            .position(|flag| flag == "--metrics-port")
+            .unwrap();
         assert_eq!(activate.argv[position + 1], "<env:KRW_AGENT_METRICS_PORT>");
 
         let metrics = build_daemon_metrics_command(&deps);
@@ -4370,49 +5058,112 @@ mod tests {
             &topology,
         );
         assert_eq!(descriptor_scp.id, "ship.scp-agent-descriptor");
-        assert!(descriptor_scp.argv[5].ends_with("ship/public-release.json"), "argv: {:?}", descriptor_scp.argv);
-
-        let prepare = build_remote_prepare_command(
-            &deps,
-            &topology,
-            "sha256:abcd",
-            "sha256:eff0",
+        assert!(
+            descriptor_scp.argv[5].ends_with("ship/public-release.json"),
+            "argv: {:?}",
+            descriptor_scp.argv
         );
+
+        let prepare = build_remote_prepare_command(&deps, &topology, "sha256:abcd", "sha256:eff0");
         assert_eq!(prepare.id, "ship.remote-prepare");
         let payload = &prepare.argv[6];
-        assert!(payload.contains(&format!("REMOTE_STAGE='{stage}'", stage = remote_stage_dir(&topology, &release_id))), "payload: {payload}");
-        assert!(payload.contains("test ! -e \"$REMOTE_STAGE\""), "payload: {payload}");
+        assert!(
+            payload.contains(&format!(
+                "REMOTE_STAGE='{stage}'",
+                stage = remote_stage_dir(&topology, &release_id)
+            )),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("test ! -e \"$REMOTE_STAGE\""),
+            "payload: {payload}"
+        );
         // NO image is shipped or loaded: the VM builds inside the shipped
         // immutable context (legacy run_remote_prepare verbatim).
-        assert!(!payload.contains("docker load"), "payload must not load an image: {payload}");
+        assert!(
+            !payload.contains("docker load"),
+            "payload must not load an image: {payload}"
+        );
         assert!(payload.contains("install -m 0644 \"$REMOTE_AGENT_DESCRIPTOR\" \"$REMOTE_STAGE/agent-release/public-release.json\""), "payload: {payload}");
-        assert!(payload.contains("test \"$observed_descriptor_hash\" = \"$AGENT_DESCRIPTOR_HASH\""), "payload: {payload}");
-        assert!(payload.contains("KRW_AGENT_RELEASE_SET_HASH"), "payload: {payload}");
-        assert!(payload.contains("KRW_AGENT_BACKEND_MODE rust"), "payload: {payload}");
-        assert!(payload.contains("KRW_AGENT_ADMISSION_MODE closed"), "payload: {payload}");
+        assert!(
+            payload.contains("test \"$observed_descriptor_hash\" = \"$AGENT_DESCRIPTOR_HASH\""),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("KRW_AGENT_RELEASE_SET_HASH"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("KRW_AGENT_BACKEND_MODE rust"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("KRW_AGENT_ADMISSION_MODE closed"),
+            "payload: {payload}"
+        );
         // The remote build sequence: OLD_IMAGE capture is present, the stage
         // compose builds the web image, the candidate is tagged from :local,
         // and the in-container candidate preflight runs in the same payload.
         assert!(payload.contains("OLD_WEB=$(docker compose --project-name \"$COMPOSE_PROJECT\" --project-directory \"$REMOTE_FRONT_DIR\""), "payload: {payload}");
-        assert!(payload.contains("compose_stage build web"), "payload: {payload}");
-        assert!(payload.contains("CANDIDATE_TAG=\"krw-ontology-front-web:candidate-$RELEASE_ID\""), "payload: {payload}");
+        assert!(
+            payload.contains("compose_stage build web"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("CANDIDATE_TAG=\"krw-ontology-front-web:candidate-$RELEASE_ID\""),
+            "payload: {payload}"
+        );
         assert!(payload.contains("CANDIDATE_IMAGE=$(docker image inspect --format '{{.Id}}' krw-ontology-front-web:local)"), "payload: {payload}");
-        assert!(payload.contains("docker tag \"$CANDIDATE_IMAGE\" \"$CANDIDATE_TAG\""), "payload: {payload}");
-        assert!(payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'"), "payload: {payload}");
-        assert!(payload.contains("gcp_agent_v1_candidate_preflight"), "payload: {payload}");
-        assert!(payload.contains("select 1 as supabase_tls"), "payload: {payload}");
-        assert!(payload.contains("descriptor.entries.every"), "payload: {payload}");
+        assert!(
+            payload.contains("docker tag \"$CANDIDATE_IMAGE\" \"$CANDIDATE_TAG\""),
+            "payload: {payload}"
+        );
+        assert!(
+            payload
+                .contains("compose_stage run --rm --no-deps -T --entrypoint node web - <<'NODE'"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("gcp_agent_v1_candidate_preflight"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("select 1 as supabase_tls"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("descriptor.entries.every"),
+            "payload: {payload}"
+        );
         assert!(payload.contains("NODE\n"), "payload: {payload}");
         // The old image is pinned under prev-<release> before the stage
         // build (BuildKit GC) and restored to the stable local tag after.
-        assert!(payload.contains("OLD_TAG=\"krw-ontology-front-web:prev-$RELEASE_ID\""), "payload: {payload}");
-        assert!(payload.contains("docker tag \"$OLD_IMAGE\" \"$OLD_TAG\""), "payload: {payload}");
-        assert!(payload.contains("docker tag \"$OLD_TAG\" krw-ontology-front-web:local"), "payload: {payload}");
-        assert!(payload.contains("forward-activation.env"), "payload: {payload}");
-        assert!(payload.contains("printf 'CANDIDATE_IMAGE=%s\\n' \"$CANDIDATE_IMAGE\""), "payload: {payload}");
+        assert!(
+            payload.contains("OLD_TAG=\"krw-ontology-front-web:prev-$RELEASE_ID\""),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("docker tag \"$OLD_IMAGE\" \"$OLD_TAG\""),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("docker tag \"$OLD_TAG\" krw-ontology-front-web:local"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("forward-activation.env"),
+            "payload: {payload}"
+        );
+        assert!(
+            payload.contains("printf 'CANDIDATE_IMAGE=%s\\n' \"$CANDIDATE_IMAGE\""),
+            "payload: {payload}"
+        );
         // No unresolved render tokens.
         for token in ["@IMAGE_ARCHIVE@", "@PREFLIGHT_JS@", "@HELPERS@", "@TENANT@"] {
-            assert!(!payload.contains(token), "unresolved token {token}: {payload}");
+            assert!(
+                !payload.contains(token),
+                "unresolved token {token}: {payload}"
+            );
         }
     }
 
@@ -4427,13 +5178,21 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let release_id = deps.release_id();
         for (name, payload, attempts) in [
-            ("healthz", payload_remote_web_healthz(&topology, &release_id), 20),
+            (
+                "healthz",
+                payload_remote_web_healthz(&topology, &release_id),
+                20,
+            ),
             // The web container's cold start (Next.js boot + release id
             // propagation) can exceed the healthz settling window, so the
             // deep probe carries the wider budget (production run
             // 20260818T145351Z failed deep readiness on the settling race).
             ("deep", payload_remote_web_deep(&topology, &release_id), 36),
-            ("verify_admission", payload_verify_admission(&topology, &release_id, "open"), 30),
+            (
+                "verify_admission",
+                payload_verify_admission(&topology, &release_id, "open"),
+                30,
+            ),
         ] {
             assert!(
                 payload.contains("--env-file \"$REMOTE_STAGE/runtime.env\""),
@@ -4449,7 +5208,8 @@ mod tests {
         // top-level summary parses to None and fails stage 11 outright
         // (production runs 20260816T113245Z..120301Z failed exactly there
         // while the probes themselves passed).
-        let full_body = r#"{"status":"ok","deployment_id":"r","checks":{"agent_v1":{"admission":"open"}}}"#;
+        let full_body =
+            r#"{"status":"ok","deployment_id":"r","checks":{"agent_v1":{"admission":"open"}}}"#;
         assert_eq!(
             parse_deep_health(full_body).and_then(|observation| observation.admission),
             Some("open".to_owned())
@@ -4471,8 +5231,13 @@ mod tests {
     fn remote_prepare_payload_takes_the_declared_tenant_over_the_default() {
         let (_guard, deps) = deps_for(false);
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
-        let default_prepare = build_remote_prepare_command(&deps, &topology, "sha256:abcd", "sha256:eff0");
-        assert!(default_prepare.argv[6].contains("agent_tenant_id='krw-ontology-prod'"), "payload: {}", default_prepare.argv[6]);
+        let default_prepare =
+            build_remote_prepare_command(&deps, &topology, "sha256:abcd", "sha256:eff0");
+        assert!(
+            default_prepare.argv[6].contains("agent_tenant_id='krw-ontology-prod'"),
+            "payload: {}",
+            default_prepare.argv[6]
+        );
 
         let (guard, deps) = deps_for(false);
         std::fs::write(
@@ -4481,7 +5246,11 @@ mod tests {
         )
         .unwrap();
         let custom = build_remote_prepare_command(&deps, &topology, "sha256:abcd", "sha256:eff0");
-        assert!(custom.argv[6].contains("agent_tenant_id='custom-tenant'"), "payload: {}", custom.argv[6]);
+        assert!(
+            custom.argv[6].contains("agent_tenant_id='custom-tenant'"),
+            "payload: {}",
+            custom.argv[6]
+        );
         drop(guard);
     }
 
@@ -4491,34 +5260,85 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let specs = build_stage9_commands(&deps, &topology);
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["remote.candidate-abi", "remote.web-up", "readiness.remote-web-healthz"]);
+        assert_eq!(
+            ids,
+            [
+                "remote.candidate-abi",
+                "remote.web-up",
+                "readiness.remote-web-healthz"
+            ]
+        );
 
         let candidate_abi = &specs[0];
         let abi_payload = &candidate_abi.argv[6];
-        assert!(abi_payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web -e"), "payload: {abi_payload}");
-        assert!(abi_payload.contains("agent_v1.enqueue_run(jsonb)"), "payload: {abi_payload}");
-        assert!(abi_payload.contains("agent_v1_daemon_heartbeats"), "payload: {abi_payload}");
-        assert!(abi_payload.contains("agent_v1_product_outbox_receipts"), "payload: {abi_payload}");
-        assert!(abi_payload.contains("gcp_agent_v1_candidate_abi"), "payload: {abi_payload}");
+        assert!(
+            abi_payload.contains("compose_stage run --rm --no-deps -T --entrypoint node web -e"),
+            "payload: {abi_payload}"
+        );
+        assert!(
+            abi_payload.contains("agent_v1.enqueue_run(jsonb)"),
+            "payload: {abi_payload}"
+        );
+        assert!(
+            abi_payload.contains("agent_v1_daemon_heartbeats"),
+            "payload: {abi_payload}"
+        );
+        assert!(
+            abi_payload.contains("agent_v1_product_outbox_receipts"),
+            "payload: {abi_payload}"
+        );
+        assert!(
+            abi_payload.contains("gcp_agent_v1_candidate_abi"),
+            "payload: {abi_payload}"
+        );
 
         let web_up = &specs[1];
         let up_payload = &web_up.argv[6];
-        assert!(up_payload.contains("forward-activation.env"), "payload: {up_payload}");
+        assert!(
+            up_payload.contains("forward-activation.env"),
+            "payload: {up_payload}"
+        );
         assert!(up_payload.contains("SERVICES=\"web reverse-proxy agent-v1-outbox llm-gateway filings-mcp document-worker document-outbox-dispatcher filing-notification-worker filing-brief-worker billing-worker\""), "payload: {up_payload}");
-        assert!(up_payload.contains("docker tag \"$CANDIDATE_IMAGE\" krw-ontology-front-web:local"), "payload: {up_payload}");
-        assert!(up_payload.contains("label=com.docker.compose.service=ontology-mcp"), "payload: {up_payload}");
-        assert!(!up_payload.contains("@ORIGIN_ONE@") && !up_payload.contains("@RELEASE_ID@"), "unresolved tokens: {up_payload}");
-        assert!(up_payload.contains("'https://one.example.com' 'https://two.example.com'"), "payload: {up_payload}");
-        assert!(up_payload.contains("market-web-source-worker"), "payload: {up_payload}");
-        assert!(up_payload.contains("MARKET_ISSUE_X_INGESTION_ENABLED"), "payload: {up_payload}");
-        assert!(up_payload.contains("ln -s \"$REMOTE_STAGE\" \"$REMOTE_FRONT_DIR/.simple-deploy/current\""), "payload: {up_payload}");
+        assert!(
+            up_payload.contains("docker tag \"$CANDIDATE_IMAGE\" krw-ontology-front-web:local"),
+            "payload: {up_payload}"
+        );
+        assert!(
+            up_payload.contains("label=com.docker.compose.service=ontology-mcp"),
+            "payload: {up_payload}"
+        );
+        assert!(
+            !up_payload.contains("@ORIGIN_ONE@") && !up_payload.contains("@RELEASE_ID@"),
+            "unresolved tokens: {up_payload}"
+        );
+        assert!(
+            up_payload.contains("'https://one.example.com' 'https://two.example.com'"),
+            "payload: {up_payload}"
+        );
+        assert!(
+            up_payload.contains("market-web-source-worker"),
+            "payload: {up_payload}"
+        );
+        assert!(
+            up_payload.contains("MARKET_ISSUE_X_INGESTION_ENABLED"),
+            "payload: {up_payload}"
+        );
+        assert!(
+            up_payload
+                .contains("ln -s \"$REMOTE_STAGE\" \"$REMOTE_FRONT_DIR/.simple-deploy/current\""),
+            "payload: {up_payload}"
+        );
 
         let healthz = &specs[2];
         assert_eq!(healthz.id, "readiness.remote-web-healthz");
         assert!(healthz.argv[6].contains("RELEASE_ID='20260816T012000Z-abcd1234'"));
         assert!(healthz.argv[6].contains("-e EXPECTED_RELEASE_ID=\"$RELEASE_ID\""));
         assert!(healthz.argv[6].contains("deployment_id"));
-        assert!(healthz.argv[6].contains(&remote_stage_dir(&topology, "20260816T012000Z-abcd1234")), "payload: {}", healthz.argv[6]);
+        assert!(
+            healthz.argv[6].contains(&remote_stage_dir(&topology, "20260816T012000Z-abcd1234")),
+            "payload: {}",
+            healthz.argv[6]
+        );
     }
 
     #[test]
@@ -4554,9 +5374,17 @@ mod tests {
         assert!(deep.argv[6].contains("NEXT_PUBLIC_APP_VERSION"));
 
         let local_deep = build_web_deep_command_local(&deps);
-        assert_eq!(local_deep.env_keys_used, [INTERNAL_API_KEY_ENV_KEY.to_owned()]);
+        assert_eq!(
+            local_deep.env_keys_used,
+            [INTERNAL_API_KEY_ENV_KEY.to_owned()]
+        );
         assert_eq!(local_deep.argv[3], "120"); // public_ready_ms -> seconds
-        assert!(local_deep.argv.iter().any(|element| element.starts_with("x-internal-key: <env:")));
+        assert!(
+            local_deep
+                .argv
+                .iter()
+                .any(|element| element.starts_with("x-internal-key: <env:"))
+        );
 
         let heartbeat = build_db_heartbeat_command(&deps).unwrap();
         assert_eq!(heartbeat.id, "readiness.db-heartbeat");
@@ -4572,20 +5400,43 @@ mod tests {
         let commands = build_admission_open_commands_remote(&deps, &topology);
         assert_eq!(commands[0].id, "admission.open");
         let open_payload = &commands[0].argv[6];
-        assert!(open_payload.contains("test \"$(value_of \"$e\" KRW_AGENT_ADMISSION_MODE)\" = \"closed\""), "payload: {open_payload}");
-        assert!(open_payload.contains("verify_deep_admission closed"), "payload: {open_payload}");
-        assert!(open_payload.contains("upsert_env_value \"$e\" KRW_AGENT_ADMISSION_MODE open"), "payload: {open_payload}");
+        assert!(
+            open_payload
+                .contains("test \"$(value_of \"$e\" KRW_AGENT_ADMISSION_MODE)\" = \"closed\""),
+            "payload: {open_payload}"
+        );
+        assert!(
+            open_payload.contains("verify_deep_admission closed"),
+            "payload: {open_payload}"
+        );
+        assert!(
+            open_payload.contains("upsert_env_value \"$e\" KRW_AGENT_ADMISSION_MODE open"),
+            "payload: {open_payload}"
+        );
         assert!(open_payload.contains("re_close"), "payload: {open_payload}");
-        assert!(open_payload.contains("verify_deep_admission open"), "payload: {open_payload}");
+        assert!(
+            open_payload.contains("verify_deep_admission open"),
+            "payload: {open_payload}"
+        );
         // The opener works on the STAGE runtime env, not the previous release.
-        assert!(open_payload.contains(&remote_stage_dir(&topology, &deps.release_id())), "payload: {open_payload}");
+        assert!(
+            open_payload.contains(&remote_stage_dir(&topology, &deps.release_id())),
+            "payload: {open_payload}"
+        );
         assert_eq!(commands[1].id, "readiness.admission-open-verify");
-        assert!(commands[1].argv[6].contains("'open'"), "payload: {}", commands[1].argv[6]);
+        assert!(
+            commands[1].argv[6].contains("'open'"),
+            "payload: {}",
+            commands[1].argv[6]
+        );
 
         let local = build_admission_open_commands_local(&deps);
         assert_eq!(local[0].id, "admission.open-local");
         assert_eq!(local[1].id, "readiness.admission-open-verify-local");
-        assert_eq!(local[1].env_keys_used, [INTERNAL_API_KEY_ENV_KEY.to_owned()]);
+        assert_eq!(
+            local[1].env_keys_used,
+            [INTERNAL_API_KEY_ENV_KEY.to_owned()]
+        );
     }
 
     #[test]
@@ -4594,20 +5445,54 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let commands = build_stage12_cleanup_commands(&deps, &topology);
         assert_eq!(
-            commands.iter().map(|command| command.id.as_str()).collect::<Vec<_>>(),
-            ["cleanup.remote-prune-stale", "cleanup.remote-prune-post-activation"]
+            commands
+                .iter()
+                .map(|command| command.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "cleanup.remote-prune-stale",
+                "cleanup.remote-prune-post-activation"
+            ]
         );
-        assert!(commands.iter().all(|command| command.stage == "terminal_success_receipt"));
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.stage == "terminal_success_receipt")
+        );
         let stale = &commands[0].argv[6];
-        assert!(stale.contains("Refusing to prune an unexpected deployment path"), "payload: {stale}");
-        assert!(stale.contains("[ \"$candidate\" = \"$active_release\" ] && continue"), "payload: {stale}");
-        assert!(stale.contains("rm -rf -- \"$candidate\""), "payload: {stale}");
-        assert!(stale.contains("candidate-*|release-*|prev-*|rollback-*"), "payload: {stale}");
-        assert!(stale.contains("[ \"$repository\" = \"krw-ontology-front-web\" ]"), "payload: {stale}");
-        assert!(stale.contains("[ \"$repository\" = \"caddy\" ]"), "payload: {stale}");
+        assert!(
+            stale.contains("Refusing to prune an unexpected deployment path"),
+            "payload: {stale}"
+        );
+        assert!(
+            stale.contains("[ \"$candidate\" = \"$active_release\" ] && continue"),
+            "payload: {stale}"
+        );
+        assert!(
+            stale.contains("rm -rf -- \"$candidate\""),
+            "payload: {stale}"
+        );
+        assert!(
+            stale.contains("candidate-*|release-*|prev-*|rollback-*"),
+            "payload: {stale}"
+        );
+        assert!(
+            stale.contains("[ \"$repository\" = \"krw-ontology-front-web\" ]"),
+            "payload: {stale}"
+        );
+        assert!(
+            stale.contains("[ \"$repository\" = \"caddy\" ]"),
+            "payload: {stale}"
+        );
         let post = &commands[1].argv[6];
-        assert!(post.contains("docker image rm \"krw-ontology-front-web:candidate-$RELEASE_ID\""), "payload: {post}");
-        assert!(post.contains("docker builder prune --all --force --max-used-space 12GB"), "payload: {post}");
+        assert!(
+            post.contains("docker image rm \"krw-ontology-front-web:candidate-$RELEASE_ID\""),
+            "payload: {post}"
+        );
+        assert!(
+            post.contains("docker builder prune --all --force --max-used-space 12GB"),
+            "payload: {post}"
+        );
     }
 
     #[test]
@@ -4616,7 +5501,9 @@ mod tests {
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         assert_eq!(
             topology.transport,
-            RemoteTransport::Ssh { host: "deploy@127.0.0.1".to_owned() }
+            RemoteTransport::Ssh {
+                host: "deploy@127.0.0.1".to_owned()
+            }
         );
         assert_eq!(topology.compose_project, "krw-ontology-front");
 
@@ -4661,7 +5548,10 @@ mod tests {
             instance_id: None,
         });
         let error = resolve_remote_topology(&local).unwrap_err();
-        assert!(error.contains("non-empty project, zone, and instance"), "error: {error}");
+        assert!(
+            error.contains("non-empty project, zone, and instance"),
+            "error: {error}"
+        );
 
         local.gcp.as_mut().unwrap().project = "krw-prod".to_owned();
         local.remote_front_dir = Some("/srv/some-front".to_owned());
@@ -4687,19 +5577,46 @@ mod tests {
         ];
         let commands = build_admission_commands_remote(&deps, &topology);
         assert_eq!(&commands[0].argv[..9], &expected_prefix[..]);
-        assert!(commands[0].argv[9].contains("KRW_AGENT_ADMISSION_MODE"), "payload: {}", commands[0].argv[9]);
+        assert!(
+            commands[0].argv[9].contains("KRW_AGENT_ADMISSION_MODE"),
+            "payload: {}",
+            commands[0].argv[9]
+        );
         assert!(commands[0].argv[9].contains(".simple-deploy/current/runtime.env"));
-        assert!(commands[1].argv[9].contains("-v value=closed"), "payload: {}", commands[1].argv[9]);
-        assert_eq!(commands[1].argv.len(), 10, "one payload element after the gcloud prefix");
+        assert!(
+            commands[1].argv[9].contains("-v value=closed"),
+            "payload: {}",
+            commands[1].argv[9]
+        );
+        assert_eq!(
+            commands[1].argv.len(),
+            10,
+            "one payload element after the gcloud prefix"
+        );
 
         let stage9 = build_stage9_commands(&deps, &topology);
         for command in &stage9 {
-            assert_eq!(&command.argv[..9], &expected_prefix[..], "command {}", command.id);
-            assert_eq!(command.argv.len(), 10, "one payload element: {}", command.id);
+            assert_eq!(
+                &command.argv[..9],
+                &expected_prefix[..],
+                "command {}",
+                command.id
+            );
+            assert_eq!(
+                command.argv.len(),
+                10,
+                "one payload element: {}",
+                command.id
+            );
         }
         assert!(stage9[1].argv[9].contains("up -d --force-recreate --wait $SERVICES"));
-        let web_up = stage9.iter().find(|command| command.id == "remote.web-up").unwrap();
-        assert!(web_up.argv[9].contains("docker tag \"$CANDIDATE_IMAGE\" krw-ontology-front-web:local"));
+        let web_up = stage9
+            .iter()
+            .find(|command| command.id == "remote.web-up")
+            .unwrap();
+        assert!(
+            web_up.argv[9].contains("docker tag \"$CANDIDATE_IMAGE\" krw-ontology-front-web:local")
+        );
 
         // Uploads ride the legacy gcloud scp flags.
         let scp = build_ship_scp_command(
@@ -4722,7 +5639,10 @@ mod tests {
                 "--scp-flag=-oServerAliveInterval=15".to_owned(),
                 "--scp-flag=-oServerAliveCountMax=8".to_owned(),
                 deps.ship_dir().join("front.tar.gz").display().to_string(),
-                format!("krw-agent-prod-dummy:/tmp/krw-front-{}.tar.gz", deps.release_id()),
+                format!(
+                    "krw-agent-prod-dummy:/tmp/krw-front-{}.tar.gz",
+                    deps.release_id()
+                ),
             ]
         );
 
@@ -4732,11 +5652,20 @@ mod tests {
 
         let open = build_admission_open_commands_remote(&deps, &topology);
         assert_eq!(&open[1].argv[..9], &expected_prefix[..]);
-        assert!(open[1].argv[9].contains("'open'"), "payload: {}", open[1].argv[9]);
+        assert!(
+            open[1].argv[9].contains("'open'"),
+            "payload: {}",
+            open[1].argv[9]
+        );
         // No ssh-style options leak into the gcloud transport.
         for command in commands.iter().chain(stage9.iter()).chain(open.iter()) {
             assert!(!command.argv.contains(&"BatchMode=yes".to_owned()));
-            assert!(!command.argv.iter().any(|element| element.starts_with("ConnectTimeout=")));
+            assert!(
+                !command
+                    .argv
+                    .iter()
+                    .any(|element| element.starts_with("ConnectTimeout="))
+            );
         }
     }
 
@@ -4773,20 +5702,32 @@ mod tests {
     fn fixture_executor_records_specs_and_simulates_build_side_effects() {
         let (guard, deps) = deps_for(false);
         let mut fixture = FixtureStageExecutor::passing();
-        fixture.failures.insert("seal.prepare-production-candidate".to_owned(), "injected".to_owned());
+        fixture.failures.insert(
+            "seal.prepare-production-candidate".to_owned(),
+            "injected".to_owned(),
+        );
         let build = build_stage3_command(&deps);
         let outcome = fixture.execute(&deps.config.runtime_env, &build).unwrap();
         assert!(outcome.stdout.is_empty());
         assert!(
-            deps.context.output_dir.join("glm/release-manifest.json").is_file(),
+            deps.context
+                .output_dir
+                .join("glm/release-manifest.json")
+                .is_file(),
             "fixture must simulate the built bundles"
         );
         assert!(
-            deps.context.output_dir.join("deepseek/release-manifest.json").is_file(),
+            deps.context
+                .output_dir
+                .join("deepseek/release-manifest.json")
+                .is_file(),
             "fixture must simulate the built bundles"
         );
         assert!(
-            deps.context.output_dir.join("dual-release-index.json").is_file(),
+            deps.context
+                .output_dir
+                .join("dual-release-index.json")
+                .is_file(),
             "fixture must simulate the dual release index"
         );
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
@@ -4794,12 +5735,23 @@ mod tests {
             .into_iter()
             .find(|spec| spec.id == "seal.prepare-production-candidate")
             .expect("selected provider prepare command");
-        let error = fixture.execute(&deps.config.runtime_env, &prepare).unwrap_err();
+        let error = fixture
+            .execute(&deps.config.runtime_env, &prepare)
+            .unwrap_err();
         assert_eq!(error, "injected");
         let read_previous = build_admission_commands_remote(&deps, &topology).remove(0);
-        let outcome = fixture.execute(&deps.config.runtime_env, &read_previous).unwrap();
+        let outcome = fixture
+            .execute(&deps.config.runtime_env, &read_previous)
+            .unwrap();
         assert_eq!(outcome.stdout, "open");
-        assert_eq!(fixture.command_ids(), vec!["build.dual-provider-bundles", "seal.prepare-production-candidate", "admission.read-previous"]);
+        assert_eq!(
+            fixture.command_ids(),
+            vec![
+                "build.dual-provider-bundles",
+                "seal.prepare-production-candidate",
+                "admission.read-previous"
+            ]
+        );
         drop(guard);
     }
 }

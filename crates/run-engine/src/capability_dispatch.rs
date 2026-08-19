@@ -1333,9 +1333,7 @@ pub(crate) fn prepare_calls(
             state.research_planner.projection(),
             &mut arguments,
         ) {
-            krw_agent_persistence::metrics::record_targeted_query_attribution(
-                attribution.as_str(),
-            );
+            krw_agent_persistence::metrics::record_targeted_query_attribution(attribution.as_str());
         }
         normalize_physical_capability_arguments(&capability.id, &mut arguments);
         if !arguments.is_object() {

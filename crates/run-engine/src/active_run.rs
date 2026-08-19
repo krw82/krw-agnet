@@ -328,11 +328,17 @@ impl ActiveRun {
     /// it to the provider. The typed interpreter remains the mutation
     /// authority; this is only a non-mutating admission check that prevents
     /// impossible actions and workflow events from entering the prompt.
-    pub(crate) fn state_has_remaining_visit(&self, state: &CompiledState) -> Result<bool, EngineError> {
+    pub(crate) fn state_has_remaining_visit(
+        &self,
+        state: &CompiledState,
+    ) -> Result<bool, EngineError> {
         Ok(self.interpreter.remaining_visits(&state.stable_id)? > 0)
     }
 
-    pub(crate) fn capability_has_remaining_visit(&self, capability_id: &str) -> Result<bool, EngineError> {
+    pub(crate) fn capability_has_remaining_visit(
+        &self,
+        capability_id: &str,
+    ) -> Result<bool, EngineError> {
         let state = self.program.capability_state(capability_id)?;
         self.state_has_remaining_visit(state)
     }
@@ -450,7 +456,11 @@ impl ActiveRun {
     /// target at this exact checkpoint. This checks only statechart capacity;
     /// provider-visible tool availability is enforced separately by the
     /// dynamic tool frontier.
-    pub(crate) fn event_has_remaining_target(&self, event: &str, facts: &Value) -> Result<bool, EngineError> {
+    pub(crate) fn event_has_remaining_target(
+        &self,
+        event: &str,
+        facts: &Value,
+    ) -> Result<bool, EngineError> {
         let current = self.current_state()?;
         let mut matching = 0_usize;
         let mut available = 0_usize;
@@ -542,7 +552,9 @@ impl ActiveRun {
         ))
     }
 
-    pub(crate) fn lifecycle_stage_for_checkpoint(&self) -> Result<Option<RunLifecycleStage>, EngineError> {
+    pub(crate) fn lifecycle_stage_for_checkpoint(
+        &self,
+    ) -> Result<Option<RunLifecycleStage>, EngineError> {
         let is_answer_operation = matches!(
             self.interpreter.current_operation()?,
             StateOperation::ModelDecision {
@@ -1339,7 +1351,10 @@ impl ActiveRun {
         })?)
     }
 
-    pub(crate) fn can_acknowledge_recovery_with_tool_results(&self, episode: &ProviderEpisodeV1) -> bool {
+    pub(crate) fn can_acknowledge_recovery_with_tool_results(
+        &self,
+        episode: &ProviderEpisodeV1,
+    ) -> bool {
         let mut call_ids = BTreeSet::new();
         !episode.assistant.tool_calls.is_empty()
             && episode.assistant.tool_calls.iter().all(|call| {
@@ -1353,7 +1368,10 @@ impl ActiveRun {
             })
     }
 
-    pub(crate) fn apply_answer_repair(&mut self, issue_code: &'static str) -> Result<bool, EngineError> {
+    pub(crate) fn apply_answer_repair(
+        &mut self,
+        issue_code: &'static str,
+    ) -> Result<bool, EngineError> {
         let handler = match self.interpreter.current_operation()? {
             StateOperation::Builtin { handler, .. }
                 if matches!(
@@ -1853,7 +1871,10 @@ impl ActiveRun {
         })
     }
 
-    pub(crate) fn record_provider_usage(&mut self, episode: &ProviderEpisodeV1) -> Result<(), EngineError> {
+    pub(crate) fn record_provider_usage(
+        &mut self,
+        episode: &ProviderEpisodeV1,
+    ) -> Result<(), EngineError> {
         self.usage.input_tokens = self
             .usage
             .input_tokens
@@ -1927,7 +1948,10 @@ impl ActiveRun {
         self.check_budget()
     }
 
-    pub(crate) fn record_accepted_action(&mut self, call: &PreparedCall) -> Result<(), EngineError> {
+    pub(crate) fn record_accepted_action(
+        &mut self,
+        call: &PreparedCall,
+    ) -> Result<(), EngineError> {
         let retain_input = call.capability.retain_canonical_input;
         if let Some(existing) = self
             .accepted_actions

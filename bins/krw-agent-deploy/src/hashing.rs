@@ -30,7 +30,8 @@ mod tests {
 
     #[test]
     fn sha256_file_matches_known_digest() {
-        let path = std::env::temp_dir().join(format!("krw-agent-deploy-hash-test-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("krw-agent-deploy-hash-test-{}", std::process::id()));
         std::fs::write(&path, b"krw-agent-deploy").unwrap();
         let digest = sha256_file(&path).unwrap();
         // Cross-checked: python3 -c 'import hashlib; print(hashlib.sha256(b"krw-agent-deploy").hexdigest())'
@@ -43,6 +44,9 @@ mod tests {
 
     #[test]
     fn missing_file_is_unavailable() {
-        assert_eq!(sha256_file_or_unavailable(Path::new("/nonexistent/krw-agent-deploy/nope")), UNAVAILABLE_HASH);
+        assert_eq!(
+            sha256_file_or_unavailable(Path::new("/nonexistent/krw-agent-deploy/nope")),
+            UNAVAILABLE_HASH
+        );
     }
 }

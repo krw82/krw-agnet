@@ -17,11 +17,11 @@ use krw_agent_contracts::{
     ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
     RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
+use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
     CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
     DependencyFailure, ResultTruncationReceipt, deterministic_action_key,
 };
-use krw_agent_evidence::EvidenceScope;
 use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilitySpec, IdempotencyPolicy, InputDerivation,
     Permission, ResolvedCapabilityContracts,
@@ -1701,11 +1701,7 @@ fn select_bounded_value(value: &mut Value, budget: usize) -> (usize, bool) {
         let mut kept_bytes = 0_usize;
         let mut kept = Vec::new();
         for (bytes, item) in &ranked {
-            if fixed
-                .saturating_add(kept_bytes)
-                .saturating_add(bytes.len())
-                > budget
-            {
+            if fixed.saturating_add(kept_bytes).saturating_add(bytes.len()) > budget {
                 break;
             }
             kept_bytes += bytes.len();
@@ -1901,8 +1897,7 @@ fn extract_json_tool_payload(
             // A successfully received oversized payload is deterministically
             // bounded instead of failed: rank its array items by canonical
             // bytes and keep the largest prefix that fits the budget.
-            let (omitted, over_budget) =
-                select_bounded_value(&mut payload, MAX_MCP_PAYLOAD_BYTES);
+            let (omitted, over_budget) = select_bounded_value(&mut payload, MAX_MCP_PAYLOAD_BYTES);
             if over_budget {
                 scrub_json(&mut payload);
                 return Err(reject(
@@ -2044,8 +2039,10 @@ fn apply_result_size_budget(
             .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?
             .len();
         let overhead = result_len.saturating_sub(provider_len);
-        let (omitted, _) =
-            select_bounded_value(&mut result.provider_content, target_budget.saturating_sub(overhead));
+        let (omitted, _) = select_bounded_value(
+            &mut result.provider_content,
+            target_budget.saturating_sub(overhead),
+        );
         let omitted_evidence = if canonical_result_len(result)? > target_budget {
             trim_evidence_to_budget(result, target_budget)?
         } else {
@@ -2111,9 +2108,8 @@ fn trim_evidence_to_budget(
     let mut ranked: Vec<(String, usize)> = Vec::with_capacity(result.evidence.len());
     let mut evidence_total = 0_usize;
     for record in &result.evidence {
-        let bytes = serde_jcs::to_vec(record).map_err(|error| {
-            reject("normalized_result_serialization", format!("{error:?}"))
-        })?;
+        let bytes = serde_jcs::to_vec(record)
+            .map_err(|error| reject("normalized_result_serialization", format!("{error:?}")))?;
         evidence_total += bytes.len();
         ranked.push((record.evidence_id.clone(), bytes.len()));
     }
@@ -3462,13 +3458,9 @@ mod tests {
             "response_detail": "compact"
         });
         let payload = oversized_targeted_payload(60);
-        let transport = FakeTransport::new([
-            envelope(&payload, false),
-            envelope(&payload, false),
-        ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let transport = FakeTransport::new([envelope(&payload, false), envelope(&payload, false)]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let result = runtime
             .invoke(&invocation(&catalog, "ontology.query", arguments))
@@ -3479,7 +3471,10 @@ mod tests {
             receipt.omitted_provider_items > 0,
             "provider payload items were deterministically omitted"
         );
-        assert_eq!(receipt.omitted_evidence, 0, "the evidence ledger stays complete");
+        assert_eq!(
+            receipt.omitted_evidence, 0,
+            "the evidence ledger stays complete"
+        );
         assert!(receipt.original_payload_bytes > 0);
         assert!(
             receipt.selected_result_bytes > 0
@@ -3494,8 +3489,7 @@ mod tests {
                 .is_some_and(|results| results.len() < 60),
             "the provider-visible selection is smaller than the retrieved set"
         );
-        let bounded =
-            serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
+        let bounded = serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
         assert!(bounded.len() <= MAX_MCP_PAYLOAD_BYTES);
         assert!(!result.evidence.is_empty());
 
@@ -3535,9 +3529,8 @@ mod tests {
         // fixed 8 MiB capability-envelope bound.
         let payload = oversized_targeted_payload(72);
         let transport = FakeTransport::new([envelope(&payload, false)]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let result = runtime
             .invoke(&invocation(&catalog, "ontology.query", arguments))
@@ -3552,8 +3545,7 @@ mod tests {
                 .and_then(Value::as_array)
                 .is_some_and(|results| results.len() < 72)
         );
-        let bounded =
-            serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
+        let bounded = serde_jcs::to_vec(&result).expect("canonical bounded normalized result");
         assert!(bounded.len() <= MAX_MCP_PAYLOAD_BYTES);
     }
 
@@ -3578,9 +3570,8 @@ mod tests {
                 false,
             ),
         ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let empty = runtime
             .invoke(&invocation(&catalog, "ontology.query", arguments.clone()))
@@ -3592,7 +3583,10 @@ mod tests {
         let empty_status =
             krw_ontology_adapter::supplemental_status_for_targeted_payload(&empty.provider_content)
                 .expect("bounded query status is preserved on the result");
-        assert_eq!(empty_status.kind, krw_ontology_adapter::SupplementalReadKind::Empty);
+        assert_eq!(
+            empty_status.kind,
+            krw_ontology_adapter::SupplementalReadKind::Empty
+        );
 
         // A tool application error payload is a different outcome: the same
         // success-class envelope carries an ApplicationError status that the
@@ -3602,11 +3596,10 @@ mod tests {
             .await
             .expect("an application error payload is still a delivered result");
         assert!(unavailable.evidence.is_empty());
-        let unavailable_status =
-            krw_ontology_adapter::supplemental_status_for_targeted_payload(
-                &unavailable.provider_content,
-            )
-            .expect("bounded query status is preserved on the result");
+        let unavailable_status = krw_ontology_adapter::supplemental_status_for_targeted_payload(
+            &unavailable.provider_content,
+        )
+        .expect("bounded query status is preserved on the result");
         assert_eq!(
             unavailable_status.kind,
             krw_ontology_adapter::SupplementalReadKind::ApplicationError
@@ -3637,9 +3630,8 @@ mod tests {
                 .is_some_and(|violations| !violations.is_empty())
         );
         let transport = FakeTransport::new([envelope(&correction, true)]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
 
         let result = runtime
             .invoke(&invocation(&catalog, "ontology.query_context", plan))

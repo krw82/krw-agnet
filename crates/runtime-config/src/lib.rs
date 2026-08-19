@@ -13,7 +13,7 @@ use krw_agent_protocol::{
     ALLOWED_PROFILE_IDS, AuthScope, BudgetLimits, CapabilityBinding, ContentHash,
     DEEPSEEK_MODEL_ID, DeploymentBinding, EntrypointScope, GLM_DIRECT_PROFILE_ID,
     GLM_HIGH_PROFILE_ID, GLM_MAX_PROFILE_ID, GLM_MODEL_ID, McpToolSessionReuse, ModelDescriptor,
-    ModelExecutionProfile, ModelRegistry, PROVIDER_KINDS, PROTOCOL_VERSION,
+    ModelExecutionProfile, ModelRegistry, PROTOCOL_VERSION, PROVIDER_KINDS,
     PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION, PinnedExecutionContract, ProviderKind,
     ProviderWireCapabilities, PublicReleaseDescriptor, PublicReleaseEntrypoint, ReasoningEffort,
     ResolvedExecutionSnapshot, RunRequest, ScopeCardinalityKind, ThinkingMode,
@@ -2216,7 +2216,11 @@ mod tests {
             ValidationMode::ProductionDescriptor,
         )
         .expect("descriptor validation must not construct a GLM provider client");
-        assert!(descriptor_only.provider_api_key(ProviderKind::Glm).is_empty());
+        assert!(
+            descriptor_only
+                .provider_api_key(ProviderKind::Glm)
+                .is_empty()
+        );
 
         assert!(matches!(
             resolve_release_set(

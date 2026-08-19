@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::{Parser, Subcommand};
 use krw_agent_deploy::executor::RealCommandExecutor;
 use krw_agent_deploy::pipeline::RealStageExecutor;
-use krw_agent_deploy::stages::{run_command, CommandMode};
+use krw_agent_deploy::stages::{CommandMode, run_command};
 
 #[derive(Debug, Parser)]
 #[command(

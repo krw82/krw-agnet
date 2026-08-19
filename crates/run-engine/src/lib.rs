@@ -23,35 +23,37 @@ mod transcript;
 mod validation;
 
 pub use active_run::active_run_checkpoint_schema_hash;
-pub use capability_dispatch::{ModelProposalRejection, deterministic_action_key};
-pub use krw_agent_execution_contracts::{
-    ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
-    DependencyFailure, DurableActionObservation, DurableEpisode, DurableFinal,
-    DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous, Persistence,
-    Provider, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, ResearchCompletion,
-    RecoverySnapshot, RunControl, RunIdentity, RunLifecycleStage, RuntimeStageTimingSnapshot,
-    RuntimeStageTimings,
-};
-pub use recovery::recovery_budget_usage;
-pub use validation::{CanonicalContractGuard, CanonicalGuardError, StructuralContractGuard};
 use active_run::{
     ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION, ActiveRun, ActiveRunCheckpoint, DerivedTickerScope,
 };
 use capability_dispatch::{
     ActionExecutionContext, PreparedCall, ResearchDispatchDecision, ResearchStopReason,
     capability_invocation, capability_result_cacheable, capability_result_completes_prerequisite,
-    is_append_context_plan_capacity_rejection, is_input_correction, model_visible_capability_result,
-    prepare_calls, rejection_reason_code, research_candidate, research_fingerprint,
-    violation_to_detail,
+    is_append_context_plan_capacity_rejection, is_input_correction,
+    model_visible_capability_result, prepare_calls, rejection_reason_code, research_candidate,
+    research_fingerprint, violation_to_detail,
 };
+pub use capability_dispatch::{ModelProposalRejection, deterministic_action_key};
 use finalization::{
     derive_result_scope_projection, error_allows_ledger_fallback,
     finalize_after_exhausted_ingest_successor, presentation_pack_matches_result,
 };
+pub use krw_agent_execution_contracts::{
+    ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
+    DependencyFailure, DurableActionObservation, DurableEpisode, DurableFinal,
+    DurableRecoverySnapshot, DurableRunState, FinalStatus, MarkActionAmbiguous, Persistence,
+    Provider, RecoveredAction, RecoveredEpisode, RecoveredStateCheckpoint, RecoverySnapshot,
+    ResearchCompletion, RunControl, RunIdentity, RunLifecycleStage, RuntimeStageTimingSnapshot,
+    RuntimeStageTimings,
+};
+pub use recovery::recovery_budget_usage;
 use recovery::{
     ModelRecoveryDirective, RecoveryDetailV1, RecoveryEnvelopeV1, model_recovery_directive,
 };
 use transcript::RunEngineMessage;
+#[cfg(test)]
+use validation::validate_product_context;
+pub use validation::{CanonicalContractGuard, CanonicalGuardError, StructuralContractGuard};
 use validation::{
     accepted_action_receipt_hash, action_mutation_id, action_rule_input, answer_policy,
     ensure_before, ensure_size, evaluate_admission_rules, evaluate_rules, issue_codes,
@@ -61,31 +63,30 @@ use validation::{
     validate_finalized_receipt, validate_fixed_guru_author_payload, validate_input,
     validate_observed_receipt,
 };
-#[cfg(test)]
-use validation::validate_product_context;
 
 #[cfg(test)]
 use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
+#[cfg(test)]
+use capability_dispatch::{
+    TargetedQueryAttribution, assemble_company_context_request,
+    canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
+    model_research_gap_hint, normalize_physical_capability_arguments,
+    normalize_provider_model_input, selected_targeted_response_detail,
+};
 #[cfg(test)]
 use finalization::{
     fallback_answer_from_ledger, parse_typed_json_content, run_outcome_after_commit,
     sanitize_answer, validate_product_output_linkage,
 };
 #[cfg(test)]
-use capability_dispatch::{
-    assemble_company_context_request, canonicalize_required_gap_targeted_query,
-    exact_required_gap_arguments, model_research_gap_hint, normalize_physical_capability_arguments,
-    normalize_provider_model_input, selected_targeted_response_detail, TargetedQueryAttribution,
-};
-#[cfg(test)]
 use provider::{
     classify_deepseek_failure, classify_glm_failure, deepseek_failure_code, glm_failure_code,
 };
 use provider_request::{
-    BuiltProviderRequest, ProviderConstraintMode, ProviderOutputDisposition, WorkflowTransitionCall,
-    WIRE_TRUSTED_PREFIX_MESSAGE_COUNT, WORKFLOW_TRANSITION_TOOL_NAME, build_provider_request,
-    capability_has_deployment_binding, classify_provider_output, parse_workflow_transition_call,
-    thinking_turn_is_below_provider_minimum,
+    BuiltProviderRequest, ProviderConstraintMode, ProviderOutputDisposition,
+    WIRE_TRUSTED_PREFIX_MESSAGE_COUNT, WORKFLOW_TRANSITION_TOOL_NAME, WorkflowTransitionCall,
+    build_provider_request, capability_has_deployment_binding, classify_provider_output,
+    parse_workflow_transition_call, thinking_turn_is_below_provider_minimum,
 };
 #[cfg(test)]
 use provider_request::{
@@ -100,31 +101,30 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use krw_agent_bounded_child::ChildExecutionReceipt;
 #[cfg(test)]
 use async_trait::async_trait;
+use krw_agent_bounded_child::ChildExecutionReceipt;
 #[cfg(test)]
 use krw_agent_bounded_child::{
     CancelChildMutation, CompleteChildMutation, InvokeChildMutation, ReserveChildMutation,
 };
 use krw_agent_contracts::{
-    ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, FINAL_MARKDOWN_V1, CanonicalDisplaySourceV1,
-    DISPLAY_PLAN_V2, DisplayPlanV2, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult,
+    ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1, DISPLAY_PLAN_V2,
+    DisplayPlanV2, FINAL_MARKDOWN_V1, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult,
     KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1,
     KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1,
     KRW_FILING_READ_DOCUMENT_RESULT_V1, KRW_FILING_READ_SECTION_RESULT_V1,
     KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1, KRW_FORM4_TRANSACTIONS_RESULT_V1,
     KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1,
     NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2,
-    NotebookTransformInputV1,
-    NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_PROPOSAL_V4,
-    RESEARCH_STATE_V2, ROUTING_DECISION_V2, ROUTING_REQUEST_V1, ResearchProposalRepairDirective,
-    ResearchProposalViolation, RoutingDecisionV2, RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1,
-    build_company_brief_input, build_company_research_context, build_evidence_review_input,
-    compile_guru_research_frame, contract as canonical_contract,
-    enrich_guru_query_input_with_result_context, normalize_guru_agent_evidence_analysis,
-    research_proposal_v4_repair_directive, validate_display_plan_linkage,
-    validate_notebook_linkage, validate_routing_linkage,
+    NotebookTransformInputV1, NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1,
+    RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2, ROUTING_DECISION_V2, ROUTING_REQUEST_V1,
+    ResearchProposalRepairDirective, ResearchProposalViolation, RoutingDecisionV2,
+    RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1, build_company_brief_input,
+    build_company_research_context, build_evidence_review_input, compile_guru_research_frame,
+    contract as canonical_contract, enrich_guru_query_input_with_result_context,
+    normalize_guru_agent_evidence_analysis, research_proposal_v4_repair_directive,
+    validate_display_plan_linkage, validate_notebook_linkage, validate_routing_linkage,
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
 use krw_agent_evidence::{
@@ -162,8 +162,8 @@ use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
     InitialPlanError, InitialPlanScope, NoPositiveReason, PlannerDecision, ResearchActionKind,
     ResearchIntentReceipt, ResearchPlanRequester, ResearchPlanner, ResearchPlannerError,
-    ScoringWeights, SelectionReason,
-    canonicalize_normalized_plan_exchange, compile_research_proposal,
+    ScoringWeights, SelectionReason, canonicalize_normalized_plan_exchange,
+    compile_research_proposal,
 };
 use krw_agent_state_artifact::{
     ArtifactError, ArtifactLineageRef, ArtifactProducer, ArtifactValidator, BuiltinHandler,
@@ -191,8 +191,7 @@ use krw_policy_runtime::{
 };
 use krw_session_memory::{
     CompletedMarkdownTurnInputV3, CompletedTurnInputV3, MAX_SESSION_MEMORY_VIEW_BYTES,
-    SessionMemoryViewV3, completed_markdown_turn_delta, completed_turn_delta,
-    empty_frontier_hash,
+    SessionMemoryViewV3, completed_markdown_turn_delta, completed_turn_delta, empty_frontier_hash,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -2240,8 +2239,7 @@ mod tests {
             "full"
         );
         assert_eq!(
-            exact_required_gap_arguments(&candidate, canonical_topic, "compact")
-                ["response_detail"],
+            exact_required_gap_arguments(&candidate, canonical_topic, "compact")["response_detail"],
             "compact"
         );
 
@@ -4167,7 +4165,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "krw-guru-cache-hit-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test").replace('/', "-")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace('/', "-")
         ));
         if root.exists() {
             std::fs::remove_dir_all(&root).unwrap();
@@ -4194,10 +4195,7 @@ mod tests {
     }
 
     fn guru_fixture_at(root: &Path) -> Fixture {
-        let image = compile_agent_dir(root)
-            .unwrap()
-            .into_loaded()
-            .unwrap();
+        let image = compile_agent_dir(root).unwrap().into_loaded().unwrap();
         let capability_call_limits = BTreeMap::from([
             ("guru.query_context".into(), 1),
             ("guru.company_brief".into(), 2),
@@ -5082,7 +5080,8 @@ mod tests {
 
     #[tokio::test]
     async fn answer_quality_defects_downgrade_to_accepted_with_warnings_instead_of_failing() {
-        let (fixture, rig) = guru_rig_beyond_repair(guru_final_answer_with_unadmitted_evidence(), Vec::new());
+        let (fixture, rig) =
+            guru_rig_beyond_repair(guru_final_answer_with_unadmitted_evidence(), Vec::new());
         let outcome = rig
             .engine
             .run(fixture.input())
@@ -5096,34 +5095,45 @@ mod tests {
         );
         // The unadmitted claim was dropped; the grounded claim still commits.
         let committed_ir = outcome.answer_bundle.answer_ir.as_ref().unwrap();
-        assert!(committed_ir
-            .claims
-            .iter()
-            .all(|claim| claim.claim_id != "claim-unadmitted"));
-        assert!(committed_ir
-            .sections
-            .iter()
-            .all(|section| !section.claim_ids.contains(&"claim-unadmitted".to_owned())));
-        assert!(!outcome
-            .answer_bundle
-            .rendered_markdown
-            .contains("존재하지 않는 근거를 인용한 주장입니다."));
-        assert!(outcome
-            .answer_bundle
-            .rendered_markdown
-            .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다."));
+        assert!(
+            committed_ir
+                .claims
+                .iter()
+                .all(|claim| claim.claim_id != "claim-unadmitted")
+        );
+        assert!(
+            committed_ir
+                .sections
+                .iter()
+                .all(|section| !section.claim_ids.contains(&"claim-unadmitted".to_owned()))
+        );
+        assert!(
+            !outcome
+                .answer_bundle
+                .rendered_markdown
+                .contains("존재하지 않는 근거를 인용한 주장입니다.")
+        );
+        assert!(
+            outcome
+                .answer_bundle
+                .rendered_markdown
+                .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다.")
+        );
         assert_eq!(outcome.answer_bundle.usage.repairs, 0);
         // The degraded class is part of the durable bundle; a legacy bundle
         // without the field still deserializes as `accepted`.
         let bundle_json = serde_json::to_value(&outcome.answer_bundle).unwrap();
-        assert_eq!(bundle_json["completion"], serde_json::json!("accepted_with_warnings"));
+        assert_eq!(
+            bundle_json["completion"],
+            serde_json::json!("accepted_with_warnings")
+        );
         let restored: AnswerBundle = serde_json::from_value(bundle_json).unwrap();
-        assert_eq!(restored.completion, ResearchCompletion::AcceptedWithWarnings);
+        assert_eq!(
+            restored.completion,
+            ResearchCompletion::AcceptedWithWarnings
+        );
         let mut legacy = serde_json::to_value(&restored).unwrap();
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("completion");
+        legacy.as_object_mut().unwrap().remove("completion");
         let legacy_bundle: AnswerBundle = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy_bundle.completion, ResearchCompletion::Accepted);
     }
@@ -5134,7 +5144,12 @@ mod tests {
         // The committed calculation rides the fourth scripted capability
         // call (guru.review_company_evidence), after evidence-3 was ingested
         // by the third call.
-        let batches = vec![Vec::new(), Vec::new(), Vec::new(), vec![calculation.clone()]];
+        let batches = vec![
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![calculation.clone()],
+        ];
         let (fixture, rig) = guru_rig_beyond_repair(
             guru_final_answer_with_tampered_calculation(&calculation),
             batches,
@@ -5145,7 +5160,9 @@ mod tests {
                 codes.contains(&"number_not_equal_to_calculation".to_owned()),
                 "expected the calculation-lineage integrity code, got {codes:?}"
             ),
-            other => panic!("calculation-lineage tampering must stay a hard failure, got {other:?}"),
+            other => {
+                panic!("calculation-lineage tampering must stay a hard failure, got {other:?}")
+            }
         }
         assert!(rig.persistence.state.lock().unwrap().final_hash.is_none());
     }
@@ -5175,10 +5192,12 @@ mod tests {
             ResearchCompletion::Accepted
         );
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
-        assert!(outcome
-            .answer_bundle
-            .rendered_markdown
-            .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다."));
+        assert!(
+            outcome
+                .answer_bundle
+                .rendered_markdown
+                .contains("애플의 서비스 사업은 회사가 직접 공시한 핵심 성장 동력입니다.")
+        );
         assert_eq!(outcome.answer_bundle.usage.repairs, 0);
         assert!(rig.persistence.state.lock().unwrap().final_hash.is_some());
         // Non-degraded bundles stay byte-compatible with the pre-completion
@@ -5239,7 +5258,12 @@ mod tests {
             outcome.answer_bundle.completion,
             ResearchCompletion::UnavailableButAnswerable
         );
-        assert!(rig.log.lock().unwrap().contains(&"final_committed".to_owned()));
+        assert!(
+            rig.log
+                .lock()
+                .unwrap()
+                .contains(&"final_committed".to_owned())
+        );
         {
             let state = rig.persistence.state.lock().unwrap();
             assert_eq!(state.final_hash.as_ref(), Some(&outcome.answer_bundle_hash));
@@ -5255,8 +5279,7 @@ mod tests {
             "ledger fallback Markdown must be a pure function of the ledger"
         );
         // The fallback cites only evidence that is actually in the ledger.
-        let allowed: BTreeSet<String> =
-            ["evidence-1".to_owned(), "evidence-2".to_owned()].into();
+        let allowed: BTreeSet<String> = ["evidence-1".to_owned(), "evidence-2".to_owned()].into();
         assert!(!outcome.answer_bundle.evidence_ids.is_empty());
         assert!(
             outcome
@@ -5293,10 +5316,15 @@ mod tests {
         // The provider dies on the very first turn: no capability call ever
         // ran, so the ledger is empty and the reason must be the dependency
         // outage, never company non-disclosure or an empty retrieval.
-        let rig = engine_with_script_and_results(VecDeque::new(), VecDeque::new(), true, None, false);
-        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
-            panic!("empty-ledger dependency death must commit a notice, got {error:?}")
-        });
+        let rig =
+            engine_with_script_and_results(VecDeque::new(), VecDeque::new(), true, None, false);
+        let outcome = rig
+            .engine
+            .run(fixture.input())
+            .await
+            .unwrap_or_else(|error| {
+                panic!("empty-ledger dependency death must commit a notice, got {error:?}")
+            });
         assert_eq!(outcome.final_status, FinalStatus::Committed);
         assert_eq!(
             outcome.answer_bundle.completion,
@@ -5432,9 +5460,8 @@ mod tests {
     #[test]
     fn workflow_edge_failure_after_durable_commit_does_not_flip_the_final_outcome() {
         let fixture = fixture();
-        let program = Arc::new(
-            ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap(),
-        );
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
         let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
         let mut state = ActiveRun::new(
             fixture.request.budget.clone(),
@@ -5502,9 +5529,9 @@ mod tests {
         assert!(error_allows_ledger_fallback(&dependency(
             "persistence.checkpoint_run_state"
         )));
-        assert!(error_allows_ledger_fallback(&EngineError::DeadlineExceeded(
-            "provider"
-        )));
+        assert!(error_allows_ledger_fallback(
+            &EngineError::DeadlineExceeded("provider")
+        ));
         assert!(error_allows_ledger_fallback(
             &EngineError::NoRemainingOutputBudget
         ));
@@ -5524,20 +5551,22 @@ mod tests {
             "persistence.commit_final"
         )));
         assert!(!error_allows_ledger_fallback(&EngineError::Cancelled));
-        assert!(!error_allows_ledger_fallback(&EngineError::AlreadyFinalized));
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::AlreadyFinalized
+        ));
         assert!(!error_allows_ledger_fallback(&EngineError::StaleFence {
             expected: 7,
             observed: 8
         }));
-        assert!(!error_allows_ledger_fallback(&EngineError::RecoveryArtifactMismatch(
-            "episode hash"
-        )));
-        assert!(!error_allows_ledger_fallback(&EngineError::FinalCommitAmbiguous(
-            ContentHash::sha256("bundle")
-        )));
-        assert!(!error_allows_ledger_fallback(&EngineError::AnswerValidation(
-            vec!["untrusted_calculation".into()]
-        )));
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::RecoveryArtifactMismatch("episode hash")
+        ));
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::FinalCommitAmbiguous(ContentHash::sha256("bundle"))
+        ));
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::AnswerValidation(vec!["untrusted_calculation".into()])
+        ));
         assert!(!error_allows_ledger_fallback(
             &EngineError::InvalidProviderEpisode("final episode has no content")
         ));
@@ -5571,11 +5600,9 @@ mod tests {
         }
         // Only budget exhaustion is eligible: other contract violations keep
         // the terminal failure path.
-        assert!(!error_allows_ledger_fallback(
-            &EngineError::Contract(krw_agent_protocol::ContractError::InvalidHash(
-                "hash".into()
-            ))
-        ));
+        assert!(!error_allows_ledger_fallback(&EngineError::Contract(
+            krw_agent_protocol::ContractError::InvalidHash("hash".into())
+        )));
     }
 
     #[test]
@@ -5628,7 +5655,11 @@ mod tests {
             claims: vec![
                 claim("c-strong", ClaimKind::Fact, ClaimStrength::Strong),
                 claim("c-number", ClaimKind::Number, ClaimStrength::Qualified),
-                claim("c-view", ClaimKind::Interpretation, ClaimStrength::Qualified),
+                claim(
+                    "c-view",
+                    ClaimKind::Interpretation,
+                    ClaimStrength::Qualified,
+                ),
                 claim("c-orphan", ClaimKind::Fact, ClaimStrength::Qualified),
             ],
             calculations: Vec::new(),
@@ -5648,7 +5679,12 @@ mod tests {
         assert_eq!(by_id("c-strong").strength, ClaimStrength::Qualified);
         assert_eq!(by_id("c-number").kind, ClaimKind::Fact);
         assert_eq!(by_id("c-view").kind, ClaimKind::Fact);
-        assert!(sanitized.claims.iter().all(|claim| claim.claim_id != "c-orphan"));
+        assert!(
+            sanitized
+                .claims
+                .iter()
+                .all(|claim| claim.claim_id != "c-orphan")
+        );
         assert_eq!(sanitized.follow_up_questions.len(), 1);
         // A clean answer is returned untouched with the Accepted class.
         let clean = sanitize_answer(&sanitized, &ledger, &policy).expect("clean answer");
@@ -6164,7 +6200,10 @@ mod tests {
         );
         assert_eq!(attribution, Some(TargetedQueryAttribution::Unmatched));
         // Nothing was selected, so the model's own arguments survive.
-        assert_eq!(arguments, targeted_query_arguments("unrelated acquisition rumor"));
+        assert_eq!(
+            arguments,
+            targeted_query_arguments("unrelated acquisition rumor")
+        );
     }
 
     #[test]
@@ -6174,7 +6213,11 @@ mod tests {
         let empty = attribution_projection(Vec::<Value>::new());
         let mut arguments = targeted_query_arguments("VG cash generation");
         assert_eq!(
-            canonicalize_required_gap_targeted_query("ontology.query", Some(&empty), &mut arguments),
+            canonicalize_required_gap_targeted_query(
+                "ontology.query",
+                Some(&empty),
+                &mut arguments
+            ),
             None
         );
         assert_eq!(arguments, targeted_query_arguments("VG cash generation"));
@@ -6243,8 +6286,7 @@ mod tests {
                 .values()
                 .find(|intent| intent.tool_call_id == "verbatim-gap")
                 .expect("verbatim candidate copy must be dispatched");
-            let physical: Value =
-                serde_json::from_slice(&exact_read.canonical_arguments).unwrap();
+            let physical: Value = serde_json::from_slice(&exact_read.canonical_arguments).unwrap();
             assert_eq!(physical["ticker"], "VG");
             assert_eq!(physical["topic"], "cash generation");
         }

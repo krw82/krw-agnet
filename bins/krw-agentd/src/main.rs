@@ -355,10 +355,8 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // immutable configuration. Provider credentials are deliberately needed
     // only when this process can execute a live claim; otherwise a missing
     // inactive-provider key would block sealing the other provider's release.
-    let providers = ProviderCatalog::compile_release_set_with_idle(
-        &releases,
-        args.provider_max_idle_per_host,
-    )?;
+    let providers =
+        ProviderCatalog::compile_release_set_with_idle(&releases, args.provider_max_idle_per_host)?;
     let release_catalog = ProductionReleaseCatalog::compile(&releases)?;
 
     if args.max_active_runs == 0 || args.max_active_runs > MAX_ACTIVE_RUNS {

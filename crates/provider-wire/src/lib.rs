@@ -1443,9 +1443,10 @@ mod http_client {
             // model of a different provider fails closed here at construction
             // instead of routing a foreign model through this client mid-turn.
             if config.allowed_models.is_empty()
-                || !config.allowed_models.iter().all(|model| {
-                    ProviderKind::for_model_id(model) == Some(config.provider_kind)
-                })
+                || !config
+                    .allowed_models
+                    .iter()
+                    .all(|model| ProviderKind::for_model_id(model) == Some(config.provider_kind))
             {
                 return Err(WireError::InvalidAllowedModel);
             }

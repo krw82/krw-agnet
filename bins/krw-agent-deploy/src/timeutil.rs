@@ -28,11 +28,17 @@ pub fn unix_seconds_from_compact(compact: &str) -> Option<u64> {
     if !compact.get(15..16)?.eq_ignore_ascii_case("z") {
         return None;
     }
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
     let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + i64::try_from(hour * 3_600 + minute * 60 + second).expect("time of day fits i64");
+    let seconds = days * 86_400
+        + i64::try_from(hour * 3_600 + minute * 60 + second).expect("time of day fits i64");
     u64::try_from(seconds).ok()
 }
 
@@ -51,7 +57,11 @@ fn days_from_seconds(unix_seconds: u64) -> i64 {
 
 fn hms_from_seconds(unix_seconds: u64) -> (u64, u64, u64) {
     let day_seconds = unix_seconds % 86_400;
-    (day_seconds / 3_600, (day_seconds % 3_600) / 60, day_seconds % 60)
+    (
+        day_seconds / 3_600,
+        (day_seconds % 3_600) / 60,
+        day_seconds % 60,
+    )
 }
 
 /// Convert days since 1970-01-01 to a proleptic Gregorian date.
@@ -115,9 +125,19 @@ mod tests {
 
     #[test]
     fn compact_timestamp_round_trips_through_unix_seconds() {
-        for seconds in [0u64, 1_765_000_000, 1_786_843_200, 1_709_251_199, 4_102_444_800] {
+        for seconds in [
+            0u64,
+            1_765_000_000,
+            1_786_843_200,
+            1_709_251_199,
+            4_102_444_800,
+        ] {
             let compact = format_utc_compact(seconds);
-            assert_eq!(unix_seconds_from_compact(&compact), Some(seconds), "round trip {compact}");
+            assert_eq!(
+                unix_seconds_from_compact(&compact),
+                Some(seconds),
+                "round trip {compact}"
+            );
         }
     }
 

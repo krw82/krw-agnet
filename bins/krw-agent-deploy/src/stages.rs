@@ -19,8 +19,8 @@ use crate::executor::PreflightExecutor;
 use crate::hashing::sha256_bytes;
 use crate::pipeline::{PipelineDeps, PipelineOutcome, StageExecutor};
 use crate::receipts::{
-    write_preflight_receipt, write_terminal_receipt, PreflightReceipt, ReceiptError, TerminalAdmission,
-    TerminalReceipt,
+    PreflightReceipt, ReceiptError, TerminalAdmission, TerminalReceipt, write_preflight_receipt,
+    write_terminal_receipt,
 };
 use crate::target::TargetFile;
 use crate::timeutil;
@@ -52,18 +52,54 @@ pub struct StageEntry {
 /// The 05-doc stage list, in forward-only order. Every stage is implemented:
 /// 3-12 run through the stage executor in `crate::pipeline`.
 pub const STAGE_TABLE: [StageEntry; 12] = [
-    StageEntry { id: STAGE_PREFLIGHT, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_PREFLIGHT_RECEIPT, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_BUILD, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_SEAL, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_FRONTEND_IMAGE_PREPARE, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_MIGRATIONS, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_ADMISSION_CLOSE, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_LOCAL_ACTIVATION, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_REMOTE_ACTIVATION, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_DEEP_READINESS, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_ADMISSION_OPEN, status: StageStatus::Implemented },
-    StageEntry { id: STAGE_TERMINAL_SUCCESS_RECEIPT, status: StageStatus::Implemented },
+    StageEntry {
+        id: STAGE_PREFLIGHT,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_PREFLIGHT_RECEIPT,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_BUILD,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_SEAL,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_FRONTEND_IMAGE_PREPARE,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_MIGRATIONS,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_ADMISSION_CLOSE,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_LOCAL_ACTIVATION,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_REMOTE_ACTIVATION,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_DEEP_READINESS,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_ADMISSION_OPEN,
+        status: StageStatus::Implemented,
+    },
+    StageEntry {
+        id: STAGE_TERMINAL_SUCCESS_RECEIPT,
+        status: StageStatus::Implemented,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +155,12 @@ pub enum ControllerError {
 /// Build the run context: `<run_ts>-<run_id>` names both the receipt dir and
 /// the (future) release output dir, where `run_id` is the 8-hex prefix of the
 /// config file sha256.
-pub fn prepare_run(config: &DeployConfig, config_sha256: &str, now_unix_seconds: u64, mode: CommandMode) -> RunContext {
+pub fn prepare_run(
+    config: &DeployConfig,
+    config_sha256: &str,
+    now_unix_seconds: u64,
+    mode: CommandMode,
+) -> RunContext {
     let run_ts = timeutil::format_utc_compact(now_unix_seconds);
     let run_id = crate::receipts::run_id_from_config_sha256(config_sha256);
     let run_name = format!("{run_ts}-{run_id}");
@@ -146,8 +187,9 @@ pub fn run_command(
     executor: &dyn PreflightExecutor,
     stage_executor: &dyn StageExecutor,
 ) -> Result<RunOutcome, ControllerError> {
-    let config_bytes = std::fs::read(config_path)
-        .map_err(|error| ControllerError::ConfigRead(format!("{}: {error}", config_path.display())))?;
+    let config_bytes = std::fs::read(config_path).map_err(|error| {
+        ControllerError::ConfigRead(format!("{}: {error}", config_path.display()))
+    })?;
     let config_sha256 = sha256_bytes(&config_bytes);
     let config = DeployConfig::from_json_bytes(&config_bytes)?;
     let context = prepare_run(&config, &config_sha256, now_unix_seconds, mode);
@@ -182,7 +224,13 @@ pub fn run_command(
             terminal_receipt_path: None,
             message: verdict_message(&outcome),
         }),
-        CommandMode::DryRun => Ok(run_dry_run(&config, &context, &outcome, &preflight_path_string, executor)),
+        CommandMode::DryRun => Ok(run_dry_run(
+            &config,
+            &context,
+            &outcome,
+            &preflight_path_string,
+            executor,
+        )),
         CommandMode::Deploy => Ok(run_deploy(
             &config,
             config_path,
@@ -220,12 +268,19 @@ fn run_dry_run(
             None,
             Vec::new(),
         );
-        return finish_with_terminal(context, &receipt, 1, format!("preflight failed: {failed_ids}"));
+        return finish_with_terminal(
+            context,
+            &receipt,
+            1,
+            format!("preflight failed: {failed_ids}"),
+        );
     }
 
     // Validate that build/seal inputs resolve. No build is executed.
     let validations = dry_run_validations(config, executor);
-    let all_ok = validations.iter().all(|validation| validation.status == "pass");
+    let all_ok = validations
+        .iter()
+        .all(|validation| validation.status == "pass");
 
     if all_ok {
         let receipt = TerminalReceipt::dry_run_ok(
@@ -235,7 +290,12 @@ fn run_dry_run(
             validations,
             Some(preflight_path.to_owned()),
         );
-        return finish_with_terminal(context, &receipt, 0, "dry-run ok; read-only receipt complete".to_owned());
+        return finish_with_terminal(
+            context,
+            &receipt,
+            0,
+            "dry-run ok; read-only receipt complete".to_owned(),
+        );
     }
 
     let failed = validations
@@ -256,7 +316,12 @@ fn run_dry_run(
         None,
         Vec::new(),
     );
-    finish_with_terminal(context, &receipt, 1, format!("dry-run validation failed: {failed}"))
+    finish_with_terminal(
+        context,
+        &receipt,
+        1,
+        format!("dry-run validation failed: {failed}"),
+    )
 }
 
 fn dry_run_validations(
@@ -266,13 +331,18 @@ fn dry_run_validations(
     let mut validations = Vec::new();
 
     // agent workspace resolvable (source root + Cargo.toml manifest).
-    let agent_ok = config.agent_source_root.is_dir() && config.agent_source_root.join("Cargo.toml").is_file();
+    let agent_ok =
+        config.agent_source_root.is_dir() && config.agent_source_root.join("Cargo.toml").is_file();
     validations.push(crate::receipts::DryRunValidation {
         id: "agent-workspace-resolvable".to_owned(),
         status: if agent_ok { "pass" } else { "fail" }.to_owned(),
         detail: format!(
             "agent_source_root {}",
-            if agent_ok { "resolves with Cargo.toml" } else { "missing or has no Cargo.toml" }
+            if agent_ok {
+                "resolves with Cargo.toml"
+            } else {
+                "missing or has no Cargo.toml"
+            }
         ),
     });
 
@@ -289,10 +359,14 @@ fn dry_run_validations(
 
     // cargo workspace metadata readable (read-only `cargo metadata --no-deps`).
     let metadata_detail = match executor.cargo_metadata(&config.agent_source_root) {
-        Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => {
-            ("pass".to_owned(), "cargo metadata --no-deps readable".to_owned())
-        }
-        Ok(_) => ("fail".to_owned(), "cargo metadata output is not valid JSON".to_owned()),
+        Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => (
+            "pass".to_owned(),
+            "cargo metadata --no-deps readable".to_owned(),
+        ),
+        Ok(_) => (
+            "fail".to_owned(),
+            "cargo metadata output is not valid JSON".to_owned(),
+        ),
         Err(error) => ("fail".to_owned(), format!("cargo metadata failed: {error}")),
     };
     validations.push(crate::receipts::DryRunValidation {
@@ -324,14 +398,21 @@ fn run_deploy(
             &context.created_at_utc,
             context.mode.as_str(),
             STAGE_PREFLIGHT,
-            format!("preflight failed; failing checks: {failed_ids}; admission left closed; fix-forward"),
+            format!(
+                "preflight failed; failing checks: {failed_ids}; admission left closed; fix-forward"
+            ),
             TerminalAdmission::Closed,
             Some(preflight_path.to_owned()),
             Vec::new(),
             None,
             Vec::new(),
         );
-        return finish_with_terminal(context, &receipt, 1, format!("deploy aborted: preflight failed: {failed_ids}"));
+        return finish_with_terminal(
+            context,
+            &receipt,
+            1,
+            format!("deploy aborted: preflight failed: {failed_ids}"),
+        );
     }
 
     // Stages 1-2 are complete (preflight + immutable receipt). Re-load the
@@ -356,7 +437,9 @@ fn run_deploy(
                 context,
                 &receipt,
                 1,
-                format!("deploy stopped before stage `{STAGE_BUILD}`: target file unreadable: {error}"),
+                format!(
+                    "deploy stopped before stage `{STAGE_BUILD}`: target file unreadable: {error}"
+                ),
             );
         }
     };
@@ -388,16 +471,24 @@ fn now_unix_seconds_for(context: &RunContext) -> u64 {
     timeutil::unix_seconds_from_compact(&context.run_ts).unwrap_or_default()
 }
 
-fn finish_pipeline(context: &RunContext, preflight_path: &str, pipeline: PipelineOutcome) -> RunOutcome {
+fn finish_pipeline(
+    context: &RunContext,
+    preflight_path: &str,
+    pipeline: PipelineOutcome,
+) -> RunOutcome {
     if pipeline.success {
-        let artifacts = pipeline.artifacts.clone().unwrap_or_else(|| crate::receipts::DeployArtifacts {
-            release_dir: context.output_dir.display().to_string(),
-            release_id: format!("{}-{}", context.run_ts, context.run_id),
-            descriptor_sha256: crate::hashing::UNAVAILABLE_HASH.to_owned(),
-            frontend_image_digest: "<unavailable>".to_owned(),
-            applied_migrations: Vec::new(),
-            previous_admission: "unknown".to_owned(),
-        });
+        let artifacts =
+            pipeline
+                .artifacts
+                .clone()
+                .unwrap_or_else(|| crate::receipts::DeployArtifacts {
+                    release_dir: context.output_dir.display().to_string(),
+                    release_id: format!("{}-{}", context.run_ts, context.run_id),
+                    descriptor_sha256: crate::hashing::UNAVAILABLE_HASH.to_owned(),
+                    frontend_image_digest: "<unavailable>".to_owned(),
+                    applied_migrations: Vec::new(),
+                    previous_admission: "unknown".to_owned(),
+                });
         let release_id = artifacts.release_id.clone();
         let receipt = TerminalReceipt::success(
             &context.run_id,
@@ -413,7 +504,9 @@ fn finish_pipeline(context: &RunContext, preflight_path: &str, pipeline: Pipelin
         );
         return finish_with_terminal(context, &receipt, 0, message);
     }
-    let failed_stage = pipeline.failed_stage.unwrap_or(STAGE_TERMINAL_SUCCESS_RECEIPT);
+    let failed_stage = pipeline
+        .failed_stage
+        .unwrap_or(STAGE_TERMINAL_SUCCESS_RECEIPT);
     let reason = pipeline
         .reason
         .clone()
@@ -435,11 +528,18 @@ fn finish_pipeline(context: &RunContext, preflight_path: &str, pipeline: Pipelin
         pipeline.artifacts.clone(),
         pipeline.skipped.clone(),
     );
-    let message = format!("deploy failed at stage `{failed_stage}`: {reason} (admission {admission_label}; fix-forward)");
+    let message = format!(
+        "deploy failed at stage `{failed_stage}`: {reason} (admission {admission_label}; fix-forward)"
+    );
     finish_with_terminal(context, &receipt, 1, message)
 }
 
-fn finish_with_terminal(context: &RunContext, receipt: &TerminalReceipt, exit_code: i32, message: String) -> RunOutcome {
+fn finish_with_terminal(
+    context: &RunContext,
+    receipt: &TerminalReceipt,
+    exit_code: i32,
+    message: String,
+) -> RunOutcome {
     let outcome_label = receipt.outcome.clone();
     match write_terminal_receipt(&context.receipt_dir, receipt) {
         Ok(path) => RunOutcome {
@@ -475,7 +575,10 @@ fn verdict_message(outcome: &PreflightOutcome) -> String {
             .join("; ");
         format!("preflight FAIL: {failed}")
     } else {
-        format!("preflight PASS: {} checks passed or skipped", outcome.checks.len())
+        format!(
+            "preflight PASS: {} checks passed or skipped",
+            outcome.checks.len()
+        )
     }
 }
 
@@ -524,12 +627,20 @@ mod tests {
         let frontend_root = root.join("front");
         let operator_root = root.join("operator");
         std::fs::create_dir_all(agent_root.join("src")).unwrap();
-        std::fs::write(agent_root.join("Cargo.toml"), "[package]\nname = \"dummy-agent\"\n").unwrap();
+        std::fs::write(
+            agent_root.join("Cargo.toml"),
+            "[package]\nname = \"dummy-agent\"\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(&frontend_root).unwrap();
         std::fs::create_dir_all(operator_root.join("signing")).unwrap();
         std::fs::create_dir_all(operator_root.join("ops")).unwrap();
         std::fs::create_dir_all(operator_root.join("runtime")).unwrap();
-        std::fs::write(operator_root.join("signing/release-private.pk8"), b"dummy-pkcs8").unwrap();
+        std::fs::write(
+            operator_root.join("signing/release-private.pk8"),
+            b"dummy-pkcs8",
+        )
+        .unwrap();
         std::fs::write(
             operator_root.join("runtime/krw-agent-deploy.env"),
             "# fixture env: dummy values only\nKRW_AGENT_DB_URL=postgresql://fixture-dummy\nKRW_AGENT_DATABASE_URL=postgresql://fixture-dummy-agent\n",
@@ -552,8 +663,16 @@ mod tests {
         for seal_provider in ["deepseek", "glm"] {
             let provider_config = operator_root.join("config").join(seal_provider);
             std::fs::create_dir_all(&provider_config).unwrap();
-            std::fs::write(provider_config.join("deployment-binding.yaml"), format!("provider: {seal_provider}\n")).unwrap();
-            std::fs::write(provider_config.join("endpoint-registry.yaml"), "endpoints: []\n").unwrap();
+            std::fs::write(
+                provider_config.join("deployment-binding.yaml"),
+                format!("provider: {seal_provider}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                provider_config.join("endpoint-registry.yaml"),
+                "endpoints: []\n",
+            )
+            .unwrap();
             std::fs::write(
                 provider_config.join("release-trust-registry.json"),
                 serde_jcs::to_vec(&registry).unwrap(),
@@ -612,7 +731,11 @@ mod tests {
                 "terminal_success_receipt"
             ]
         );
-        assert!(STAGE_TABLE.iter().all(|entry| entry.status == StageStatus::Implemented));
+        assert!(
+            STAGE_TABLE
+                .iter()
+                .all(|entry| entry.status == StageStatus::Implemented)
+        );
     }
 
     #[test]
@@ -631,7 +754,8 @@ mod tests {
         let run_dir = fixture.single_run_dir();
         let run_dir_name = run_dir.file_name().unwrap().to_str().unwrap();
         assert!(
-            run_dir_name.starts_with("20260816T012000Z-") && run_dir_name.len() == "20260816T012000Z-".len() + 8,
+            run_dir_name.starts_with("20260816T012000Z-")
+                && run_dir_name.len() == "20260816T012000Z-".len() + 8,
             "run dir: {}",
             run_dir.display()
         );
@@ -656,7 +780,11 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.exit_code, 1);
         assert_eq!(outcome.outcome, "fail");
-        assert!(outcome.message.contains("signing-trust-validity"), "message: {}", outcome.message);
+        assert!(
+            outcome.message.contains("signing-trust-validity"),
+            "message: {}",
+            outcome.message
+        );
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
 
@@ -674,14 +802,25 @@ mod tests {
         assert_eq!(outcome.exit_code, 0, "message: {}", outcome.message);
         assert_eq!(outcome.outcome, "dry-run-ok");
         let run_dir = fixture.single_run_dir();
-        let terminal: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
+        let terminal: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(terminal["outcome"], "dry-run-ok");
         assert_eq!(terminal["reached_stage"], "dry_run");
         assert_eq!(terminal["admission"], "not-touched");
         let validations = terminal["validations"].as_array().unwrap();
-        assert!(validations.iter().any(|value| value["id"] == "cargo-metadata-readable"));
-        assert!(terminal["receipt_path"].as_str().unwrap().ends_with("preflight.json"));
+        assert!(
+            validations
+                .iter()
+                .any(|value| value["id"] == "cargo-metadata-readable")
+        );
+        assert!(
+            terminal["receipt_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("preflight.json")
+        );
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
 
@@ -699,8 +838,10 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.exit_code, 1);
         let run_dir = fixture.single_run_dir();
-        let terminal: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
+        let terminal: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(terminal["outcome"], "failure");
         assert_eq!(terminal["failed_stage"], "preflight");
         assert_eq!(terminal["admission"], "not-touched");
@@ -736,13 +877,17 @@ mod tests {
             (12, "terminal_success_receipt"),
         ] {
             assert!(
-                run_dir.join(format!("stage-{index}-{stage}.json")).is_file(),
+                run_dir
+                    .join(format!("stage-{index}-{stage}.json"))
+                    .is_file(),
                 "missing stage-{index}-{stage}.json in {}",
                 run_dir.display()
             );
         }
-        let terminal: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
+        let terminal: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(terminal["outcome"], "success");
         assert_eq!(terminal["admission"], "open");
         assert_eq!(terminal["reached_stage"], "terminal_success_receipt");
@@ -755,8 +900,19 @@ mod tests {
             "artifacts: {}",
             terminal["artifacts"]
         );
-        assert!(terminal["artifacts"]["descriptor_sha256"].as_str().unwrap().starts_with("sha256:"));
-        assert!(terminal["skipped"].as_array().unwrap().iter().any(|skip| skip["stage"] == "remote_activation"));
+        assert!(
+            terminal["artifacts"]["descriptor_sha256"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert!(
+            terminal["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|skip| skip["stage"] == "remote_activation")
+        );
         let remote_stage: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("stage-9-remote_activation.json")).unwrap(),
         )
@@ -779,8 +935,10 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.exit_code, 1);
         let run_dir = fixture.single_run_dir();
-        let terminal: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap()).unwrap();
+        let terminal: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join(TERMINAL_RECEIPT_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(terminal["failed_stage"], "preflight");
         assert_eq!(terminal["admission"], "closed");
         // No stage receipts: the walk never started.
@@ -800,7 +958,10 @@ mod tests {
             &FixtureStageExecutor::passing(),
         )
         .unwrap_err();
-        assert!(matches!(error, ControllerError::Config(_)), "unexpected error: {error}");
+        assert!(
+            matches!(error, ControllerError::Config(_)),
+            "unexpected error: {error}"
+        );
         assert!(!fixture.receipt_root().exists());
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
@@ -819,7 +980,11 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.exit_code, 1, "message: {}", outcome.message);
         assert_eq!(outcome.outcome, "failure");
-        assert!(outcome.message.contains("agent-workspace-resolvable"), "message: {}", outcome.message);
+        assert!(
+            outcome.message.contains("agent-workspace-resolvable"),
+            "message: {}",
+            outcome.message
+        );
         let _ = std::fs::remove_dir_all(&fixture.root);
     }
 }

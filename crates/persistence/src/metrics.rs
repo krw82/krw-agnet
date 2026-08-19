@@ -262,15 +262,11 @@ mod tests {
             .get()
             .expect("registry initializes TARGETED_QUERY_ATTRIBUTION_TOTAL");
         let before = [
-            counter
-                .with_label_values(&[ATTRIBUTION_VERBATIM])
-                .get(),
+            counter.with_label_values(&[ATTRIBUTION_VERBATIM]).get(),
             counter
                 .with_label_values(&[ATTRIBUTION_CANONICALIZED])
                 .get(),
-            counter
-                .with_label_values(&[ATTRIBUTION_UNMATCHED])
-                .get(),
+            counter.with_label_values(&[ATTRIBUTION_UNMATCHED]).get(),
         ];
 
         record_targeted_query_attribution(ATTRIBUTION_VERBATIM);
@@ -278,9 +274,7 @@ mod tests {
         record_targeted_query_attribution(ATTRIBUTION_UNMATCHED);
 
         assert_eq!(
-            counter
-                .with_label_values(&[ATTRIBUTION_VERBATIM])
-                .get(),
+            counter.with_label_values(&[ATTRIBUTION_VERBATIM]).get(),
             before[0] + 1,
             "one verbatim attribution increments exactly once"
         );
@@ -292,9 +286,7 @@ mod tests {
             "one canonicalized attribution increments exactly once"
         );
         assert_eq!(
-            counter
-                .with_label_values(&[ATTRIBUTION_UNMATCHED])
-                .get(),
+            counter.with_label_values(&[ATTRIBUTION_UNMATCHED]).get(),
             before[2] + 1,
             "one unmatched attribution increments exactly once"
         );

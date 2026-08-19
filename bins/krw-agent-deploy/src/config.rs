@@ -14,7 +14,9 @@ use serde_json::Value;
 pub const DEPLOY_CONFIG_SCHEMA_VERSION: u64 = 1;
 
 /// Required local toolchain commands checked during preflight.
-pub const REQUIRED_COMMANDS: [&str; 8] = ["git", "cargo", "python3", "node", "npm", "gcloud", "ssh", "docker"];
+pub const REQUIRED_COMMANDS: [&str; 8] = [
+    "git", "cargo", "python3", "node", "npm", "gcloud", "ssh", "docker",
+];
 
 const KNOWN_TOP_LEVEL_FIELDS: [&str; 9] = [
     "schema_version",
@@ -55,11 +57,23 @@ pub struct DeployTimeouts {
 pub enum ConfigError {
     InvalidJson(String),
     RootNotObject,
-    UnknownField { field: String },
-    MissingField { field: String },
-    TypeMismatch { field: String, expected: &'static str },
-    SchemaVersionUnsupported { found: u64 },
-    InvalidField { field: String, reason: String },
+    UnknownField {
+        field: String,
+    },
+    MissingField {
+        field: String,
+    },
+    TypeMismatch {
+        field: String,
+        expected: &'static str,
+    },
+    SchemaVersionUnsupported {
+        found: u64,
+    },
+    InvalidField {
+        field: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -67,8 +81,12 @@ impl fmt::Display for ConfigError {
         match self {
             Self::InvalidJson(message) => write!(formatter, "config JSON invalid: {message}"),
             Self::RootNotObject => write!(formatter, "config JSON root must be an object"),
-            Self::UnknownField { field } => write!(formatter, "unknown config field `{field}` rejected"),
-            Self::MissingField { field } => write!(formatter, "required config field `{field}` is missing"),
+            Self::UnknownField { field } => {
+                write!(formatter, "unknown config field `{field}` rejected")
+            }
+            Self::MissingField { field } => {
+                write!(formatter, "required config field `{field}` is missing")
+            }
             Self::TypeMismatch { field, expected } => {
                 write!(formatter, "config field `{field}` must be {expected}")
             }
@@ -76,7 +94,9 @@ impl fmt::Display for ConfigError {
                 formatter,
                 "config schema_version {found} unsupported (expected {DEPLOY_CONFIG_SCHEMA_VERSION})"
             ),
-            Self::InvalidField { field, reason } => write!(formatter, "config field `{field}` invalid: {reason}"),
+            Self::InvalidField { field, reason } => {
+                write!(formatter, "config field `{field}` invalid: {reason}")
+            }
         }
     }
 }
@@ -86,7 +106,8 @@ impl std::error::Error for ConfigError {}
 impl DeployConfig {
     /// Parse config bytes with full fail-closed validation.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, ConfigError> {
-        let value: Value = serde_json::from_slice(bytes).map_err(|error| ConfigError::InvalidJson(error.to_string()))?;
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| ConfigError::InvalidJson(error.to_string()))?;
         Self::from_value(&value)
     }
 
@@ -96,8 +117,12 @@ impl DeployConfig {
     }
 
     pub fn from_path(path: &Path) -> Result<Self, ConfigError> {
-        let bytes = std::fs::read(path)
-            .map_err(|error| ConfigError::InvalidJson(format!("cannot read config file {}: {error}", path.display())))?;
+        let bytes = std::fs::read(path).map_err(|error| {
+            ConfigError::InvalidJson(format!(
+                "cannot read config file {}: {error}",
+                path.display()
+            ))
+        })?;
         Self::from_json_bytes(&bytes)
     }
 
@@ -105,20 +130,25 @@ impl DeployConfig {
         let object = value.as_object().ok_or(ConfigError::RootNotObject)?;
         for field in object.keys() {
             if !KNOWN_TOP_LEVEL_FIELDS.contains(&field.as_str()) {
-                return Err(ConfigError::UnknownField { field: field.clone() });
+                return Err(ConfigError::UnknownField {
+                    field: field.clone(),
+                });
             }
         }
 
         let schema_version = required_u64(object, "schema_version")?;
         if schema_version != DEPLOY_CONFIG_SCHEMA_VERSION {
-            return Err(ConfigError::SchemaVersionUnsupported { found: schema_version });
+            return Err(ConfigError::SchemaVersionUnsupported {
+                found: schema_version,
+            });
         }
 
         let provider = required_string(object, "provider")?;
         if provider.trim().is_empty() {
             return Err(ConfigError::InvalidField {
                 field: "provider".to_owned(),
-                reason: "must be an explicit non-empty provider id (no default selection)".to_owned(),
+                reason: "must be an explicit non-empty provider id (no default selection)"
+                    .to_owned(),
             });
         }
 
@@ -135,19 +165,30 @@ impl DeployConfig {
         })
     }
 
-    fn parse_timeouts(object: &serde_json::Map<String, Value>) -> Result<DeployTimeouts, ConfigError> {
-        let timeouts_value = object.get("timeouts").ok_or(ConfigError::MissingField { field: "timeouts".to_owned() })?;
+    fn parse_timeouts(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<DeployTimeouts, ConfigError> {
+        let timeouts_value = object.get("timeouts").ok_or(ConfigError::MissingField {
+            field: "timeouts".to_owned(),
+        })?;
         let timeouts = timeouts_value
             .as_object()
-            .ok_or(ConfigError::TypeMismatch { field: "timeouts".to_owned(), expected: "an object" })?;
+            .ok_or(ConfigError::TypeMismatch {
+                field: "timeouts".to_owned(),
+                expected: "an object",
+            })?;
         for field in timeouts.keys() {
             if !KNOWN_TIMEOUT_FIELDS.contains(&field.as_str()) {
-                return Err(ConfigError::UnknownField { field: format!("timeouts.{field}") });
+                return Err(ConfigError::UnknownField {
+                    field: format!("timeouts.{field}"),
+                });
             }
         }
         let parse = |field: &'static str| -> Result<u64, ConfigError> {
             let millis = required_u64(timeouts, field).map_err(|error| match error {
-                ConfigError::MissingField { .. } => ConfigError::MissingField { field: format!("timeouts.{field}") },
+                ConfigError::MissingField { .. } => ConfigError::MissingField {
+                    field: format!("timeouts.{field}"),
+                },
                 ConfigError::TypeMismatch { .. } => ConfigError::TypeMismatch {
                     field: format!("timeouts.{field}"),
                     expected: "a positive integer",
@@ -176,22 +217,36 @@ impl DeployConfig {
     }
 }
 
-fn required_string(object: &serde_json::Map<String, Value>, field: &str) -> Result<String, ConfigError> {
-    let value = object.get(field).ok_or(ConfigError::MissingField { field: field.to_owned() })?;
+fn required_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<String, ConfigError> {
+    let value = object.get(field).ok_or(ConfigError::MissingField {
+        field: field.to_owned(),
+    })?;
     value
         .as_str()
         .map(str::to_owned)
-        .ok_or(ConfigError::TypeMismatch { field: field.to_owned(), expected: "a string" })
+        .ok_or(ConfigError::TypeMismatch {
+            field: field.to_owned(),
+            expected: "a string",
+        })
 }
 
 fn required_u64(object: &serde_json::Map<String, Value>, field: &str) -> Result<u64, ConfigError> {
-    let value = object.get(field).ok_or(ConfigError::MissingField { field: field.to_owned() })?;
-    value
-        .as_u64()
-        .ok_or(ConfigError::TypeMismatch { field: field.to_owned(), expected: "a positive integer" })
+    let value = object.get(field).ok_or(ConfigError::MissingField {
+        field: field.to_owned(),
+    })?;
+    value.as_u64().ok_or(ConfigError::TypeMismatch {
+        field: field.to_owned(),
+        expected: "a positive integer",
+    })
 }
 
-fn required_absolute_path(object: &serde_json::Map<String, Value>, field: &str) -> Result<PathBuf, ConfigError> {
+fn required_absolute_path(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<PathBuf, ConfigError> {
     let text = required_string(object, field)?;
     let path = PathBuf::from(&text);
     if !path.is_absolute() {
@@ -232,7 +287,10 @@ mod tests {
         let config = DeployConfig::from_json_str(&minimal_config_json()).unwrap();
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.provider, "deepseek");
-        assert_eq!(config.agent_source_root, PathBuf::from("/tmp/krw-agent-deploy-test/agent"));
+        assert_eq!(
+            config.agent_source_root,
+            PathBuf::from("/tmp/krw-agent-deploy-test/agent")
+        );
         assert_eq!(config.timeouts.ssh_ms, 5000);
         assert_eq!(config.timeouts.daemon_ready_ms, 90000);
     }
@@ -262,7 +320,8 @@ mod tests {
 
     #[test]
     fn empty_provider_is_rejected() {
-        let text = minimal_config_json().replace("\"provider\": \"deepseek\"", "\"provider\": \"\"");
+        let text =
+            minimal_config_json().replace("\"provider\": \"deepseek\"", "\"provider\": \"\"");
         let error = DeployConfig::from_json_str(&text).unwrap_err();
         assert!(
             matches!(error, ConfigError::InvalidField { ref field, .. } if field == "provider"),
@@ -295,7 +354,8 @@ mod tests {
 
     #[test]
     fn unknown_timeout_field_is_rejected() {
-        let text = minimal_config_json().replace("\"ssh_ms\": 5000", "\"ssh_ms\": 5000, \"http_ms\": 1000");
+        let text = minimal_config_json()
+            .replace("\"ssh_ms\": 5000", "\"ssh_ms\": 5000, \"http_ms\": 1000");
         let error = DeployConfig::from_json_str(&text).unwrap_err();
         assert!(
             matches!(error, ConfigError::UnknownField { ref field } if field == "timeouts.http_ms"),
@@ -328,20 +388,28 @@ mod tests {
     #[test]
     fn non_object_root_is_rejected() {
         let error = DeployConfig::from_json_str("[]").unwrap_err();
-        assert!(matches!(error, ConfigError::RootNotObject), "unexpected error: {error}");
+        assert!(
+            matches!(error, ConfigError::RootNotObject),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn invalid_json_is_rejected() {
         let error = DeployConfig::from_json_str("{ not json").unwrap_err();
-        assert!(matches!(error, ConfigError::InvalidJson(_)), "unexpected error: {error}");
+        assert!(
+            matches!(error, ConfigError::InvalidJson(_)),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn required_commands_match_the_05_doc_toolchain_list() {
         assert_eq!(
             REQUIRED_COMMANDS,
-            ["git", "cargo", "python3", "node", "npm", "gcloud", "ssh", "docker"]
+            [
+                "git", "cargo", "python3", "node", "npm", "gcloud", "ssh", "docker"
+            ]
         );
     }
 }
