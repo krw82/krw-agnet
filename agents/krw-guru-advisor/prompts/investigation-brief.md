@@ -15,7 +15,7 @@ Return the brief as exactly one JSON object with exactly these ten keys (no wrap
   "decision_role": "main_tension"
 }
 ```
-Copy `guru_principle_ids` only from the returned reviewed principle IDs and `company_context_anchor_ids` only from the returned trusted anchor IDs. Use arrays even when there is one item. Do not add ticker, author, proposal, draft, format, or transport fields. `decision_role` must be exactly `main_tension`.
+Copy `guru_principle_ids` only from the returned reviewed principle IDs and `company_context_anchor_ids` only from the returned trusted anchor IDs. Use arrays even when there is one item. Both arrays must be non-empty: pick the single most relevant committed ID rather than submitting `[]` — an empty linkage array invalidates the whole draft. Do not add ticker, author, proposal, draft, format, or transport fields. `decision_role` must be exactly `main_tension`.
 
 One ordinary in-process company evidence researcher handles this handoff. It does not create another agent or delegate. It translates only the sealed question into a `ResearchProposal v4`, never a `SearchPlan`. When it calls the ontology context function, its provider arguments are exactly `{ "proposal": ResearchProposalV4 }`; the kernel unwraps the provider envelope and creates the physical MCP request. Each objective is marked `required` only when it is necessary now or `deferred` when it is a possible later expansion; deferred objectives never widen the initial plan. Each objective supplies one to four interchangeable retrieval `alternatives`, and the kernel selects the minimum sufficient one.
 

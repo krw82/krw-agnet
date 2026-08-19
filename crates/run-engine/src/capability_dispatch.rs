@@ -1244,6 +1244,40 @@ pub(crate) fn prepare_calls(
         model_capability.model_input_contract = None;
         model_capability.provider_input_codec = krw_agent_image::ProviderInputCodec::default();
         model_capability.input_derivation = InputDerivation::Identity;
+        // GLM authors the investigation-question draft with the linkage ID
+        // arrays empty. The assemble-side deterministic repair exists for
+        // exactly that shape, but the strict model-input guard below rejects
+        // the draft BEFORE the repair can run, and the generic rejection code
+        // leaves the model nothing actionable — the next episode answers in
+        // prose and the run dies terminally (production 2026-08-19: 4 of 5
+        // guru lenses failed this way). Pre-link the draft the same way the
+        // assemble path would, so empty linkage never reaches the guard.
+        if capability.id == "guru.company_brief"
+            && let InputDerivation::SealedGuruCompanyBriefV1 {
+                query_context_capability,
+            } = &capability.input_derivation
+        {
+            if let Ok((query_input, query_result)) =
+                committed_retained_capability_input(state, query_context_capability, &capability.id)
+                && let Ok(enriched) = enrich_guru_query_input_with_result_context(
+                    &query_input,
+                    &query_result.provider_content,
+                )
+                && let (Some(research_pack), Some(context)) = (
+                    query_result.provider_content.get("research_pack"),
+                    enriched.get("company_context"),
+                )
+                && let Some(repaired) =
+                    repair_guru_draft_linkage(&proposed_arguments, research_pack, context)
+                && repaired != proposed_arguments
+            {
+                tracing::warn!(
+                    capability = %capability.id,
+                    "pre-linked empty Guru draft IDs before the model-input guard"
+                );
+                proposed_arguments = repaired;
+            }
+        }
         if let Err(failure) =
             contract_guard.validate_arguments(&model_capability, binding, &proposed_arguments)
         {
