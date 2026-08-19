@@ -4763,11 +4763,12 @@ mod tests {
             .find(|role| role.id == "company_evidence_researcher")
             .expect("company-evidence research role");
         assert!(role.bounded_child.is_none());
-        assert_eq!(role.execution.reasoning, RoleReasoningMode::Deep);
-        // Must mirror the ordinary company analyst's 16,384 ceiling: GLM
-        // bills private thinking and the capability decision against one
-        // output ceiling, and 8,192 truncated the evidence-analysis tool
-        // call mid-JSON in production (finish_reason=length).
+        // Must mirror the ordinary company analyst: thinking enabled at the
+        // High effort tier (Standard), with the 16,384-token ceiling. The
+        // earlier Max-effort (Deep) configuration consumed the whole output
+        // ceiling as private thinking on rich evidence sets before the
+        // analysis JSON started (finish_reason=length in production).
+        assert_eq!(role.execution.reasoning, RoleReasoningMode::Standard);
         assert_eq!(role.execution.max_output_tokens, Some(16384));
     }
 

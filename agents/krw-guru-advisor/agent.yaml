@@ -92,12 +92,12 @@ roles:
     # parent run's normal budget and state context; it is not a bounded child.
     # Evidence selection, countercase comparison, and chain interpretation are
     # analyst work, so keep GLM thinking enabled with the same bounded ceiling
-    # as the ordinary company analyst. GLM bills private thinking and the
-    # capability decision against one output ceiling, and 8,192 cut the
-    # evidence-analysis tool call off mid-JSON (finish_reason=length, then a
-    # terminal "capability state requires a tool call" / dependency escape,
-    # production 2026-08-19) — mirror the company analyst's 16,384.
-    execution: { reasoning: deep, max_output_tokens: 16384 }
+    # and the same High effort tier as the ordinary company analyst
+    # (Standard). Max-effort thinking on a rich evidence set consumed the
+    # whole 16384-token output ceiling before the analysis JSON started
+    # (finish_reason=length, dependency escape; production OXY 2026-08-19)
+    # while the Standard analyst handles the same evidence volume fine.
+    execution: { reasoning: standard, max_output_tokens: 16384 }
   - id: guru_composer
     prompt_segments: [security_boundary, kernel_runtime, guru_analysis, guru_answer, author_style]
     deterministic: false
