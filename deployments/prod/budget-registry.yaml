@@ -80,11 +80,16 @@ profiles:
       max_provider_turns: 20
       max_capability_calls: 12
       max_replans: 1
-      max_repairs: 1
+      # Two repair chances: the plan lane (proposal contract violations)
+      # shares this counter with the compose lane, and production failures
+      # showed a single QualitativePredicateMissing rejection killing the
+      # run at 0.4min with the compose lane never reached.
+      max_repairs: 2
       max_input_tokens: 120000
-      # Must exceed the compose retry reserve threshold (34816): see
-      # earnings_deep_dive above.
-      max_output_tokens: 36864
+      # 45056 keeps the mandatory compose-reserve threshold (34816) covered
+      # with real cumulative headroom: one extra 8192-token repair turn must
+      # not convert a fast rejection into OutputBudgetExceeded.
+      max_output_tokens: 45056
       max_evidence_bytes: 8388608
       deadline_ms: 1200000
       capability_call_limits:

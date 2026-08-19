@@ -85,10 +85,14 @@ profiles:
       max_provider_turns: 20
       max_capability_calls: 12
       max_replans: 1
-      max_repairs: 1
+      # Two repair chances: the plan lane shares this counter with the
+      # compose lane, and production showed a single proposal rejection
+      # killing the run with the compose lane never reached.
+      max_repairs: 2
       max_input_tokens: 120000
-      # Must exceed the compose retry reserve threshold (34816).
-      max_output_tokens: 36864
+      # 45056 keeps the compose-reserve threshold (34816) covered with real
+      # cumulative headroom for one extra repair turn.
+      max_output_tokens: 45056
       max_evidence_bytes: 8388608
       deadline_ms: 1200000
       capability_call_limits:

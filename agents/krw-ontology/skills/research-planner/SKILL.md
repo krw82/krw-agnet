@@ -93,9 +93,12 @@ phrase. Put wording variants in separate alternatives. Each objective allows
 **1–6 alternatives**; prefer 1–3 genuinely distinct filing phrases and keep
 only the six most useful ones. Put the phrase most likely to appear in the
 issuer's filing first: the runtime uses that order as the deterministic
-first-pass preference. `predicates` holds one relationship wording
-when needed (for example `"due to"`), not a list of synonyms that must all
-appear in one sentence. The trusted company ticker is passed separately as
+first-pass preference. `predicates` holds exactly one relationship wording
+(for example `"due to"`), not a list of synonyms that must all appear in one
+sentence — and it is REQUIRED (never empty) whenever the objective lists two
+or more concepts: a multi-concept objective without a predicate is rejected
+at proposal compilation. A single-concept objective may leave it empty. The
+trusted company ticker is passed separately as
 scope, so do not put a ticker symbol into `terms` as filler: filing quotes and
 tables often contain the company name but not its market symbol.
 
@@ -303,7 +306,10 @@ Use when the question asks "why?" or "what caused?".
 ```
 
 - `concepts`: topics to find (1–4 items)
-- `predicates`: one relationship wording when 2+ concepts need a causal link
+- `predicates`: REQUIRED and non-empty whenever `concepts` lists 2 or more
+  items — the compiler rejects a multi-concept qualitative objective with an
+  empty `predicates`. Use exactly one relationship wording (for example
+  `"due to"`). A single-concept objective may use `predicates: []`.
 
 ## Canonical metric identifiers
 

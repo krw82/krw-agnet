@@ -697,7 +697,12 @@ workflows:
     initial: accepted
     states:
       - { id: accepted, kind: start, max_visits: 1 }
-      - { id: classify_screen, kind: validate, max_visits: 1 }
+      # Assess, not validate: the engine requires the state right after
+      # initialization to be a ModelDecision (require_model_state), and a
+      # validate-kind first state killed every idea run at start with
+      # WorkflowResolution "model decision state" (2026-08-19). idea_analyst
+      # already carries the proceed/clarify policy (idea_screen segment).
+      - { id: classify_screen, kind: assess, role_id: idea_analyst, max_visits: 1 }
       - { id: compose_clarification, kind: compose, role_id: idea_composer, max_visits: 1 }
       - { id: author_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 2 }
       - { id: validate_discovery_plan, kind: validate, max_visits: 2 }
@@ -718,6 +723,7 @@ workflows:
       - { from: accepted, on: begin, to: classify_screen }
       - { from: classify_screen, on: clarification_required, to: compose_clarification }
       - { from: classify_screen, on: screen_ready, to: author_discovery_plan }
+      - { from: classify_screen, on: output_budget_reserved, to: compose_ir }
       - { from: compose_clarification, on: draft_ready, to: verify_ir }
       - { from: author_discovery_plan, on: plan_ready, to: validate_discovery_plan }
       - { from: author_discovery_plan, on: proposal_contract_invalid, to: repair_discovery_plan }

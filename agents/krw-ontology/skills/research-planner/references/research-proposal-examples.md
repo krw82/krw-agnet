@@ -171,6 +171,11 @@ company give?”
 Never put a metric and qualitative concepts/predicates inside one objective.
 They need different evidence and are independently verified.
 
+Every multi-concept qualitative objective in these examples carries a
+non-empty `predicates` entry — that is mandatory, not stylistic: the proposal
+compiler rejects a qualitative objective whose `concepts` list has two or
+more items while `predicates` is empty.
+
 ## 5. Preserve focus with a deferred extension
 
 Question meaning: “Give the revenue trend; discuss geographic mix only if it
