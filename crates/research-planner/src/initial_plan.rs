@@ -28,6 +28,15 @@ const RESULT_SLOTS_PER_REQUIRED_CLAUSE: usize = 3;
 const MAX_CONTEXT_RESULT_LIMIT: usize = 50;
 const MAX_EXACT_SEARCH_NODES: usize = 65_536;
 const RESEARCH_INTENT_RECEIPT_SCHEMA_VERSION: u16 = 1;
+/// Kernel default substituted when a proposal leaves `document_types` empty
+/// (the v4 contract permits that, and live GLM proposals use it). It mirrors
+/// the agent image's period-policy driver order — `latest_confirmed_10q` then
+/// `latest_confirmed_10k` in `agents/krw-ontology/agent.yaml` — which reaches
+/// the model as prompt guidance but is not plumbed into this crate as data.
+/// A plan without any filing type cannot retrieve the annual disclosure the
+/// fixture gate and cash/debt research assume, so the canonical filing set is
+/// the safe lowering-time floor. Model-named types always pass through.
+const DEFAULT_DOCUMENT_TYPES: [&str; 2] = ["10-K", "10-Q"];
 
 /// Trusted inputs that a model is not allowed to restate or widen in its
 /// `ResearchProposal`. The owner is the run engine, not this planner.
@@ -621,7 +630,18 @@ fn lower_research_proposal(
         intent: proposal.intent,
         answer_scope: proposal.answer_scope,
         uncertainty: proposal.uncertainty,
-        document_types: proposal.document_types,
+        // An empty proposal `document_types` is a legal "no explicit filing
+        // preference" answer, not a request for a type-less plan: substitute
+        // the canonical filing set (see `DEFAULT_DOCUMENT_TYPES`). Values the
+        // model actually named pass through verbatim.
+        document_types: if proposal.document_types.is_empty() {
+            DEFAULT_DOCUMENT_TYPES
+                .iter()
+                .map(|document_type| (*document_type).to_owned())
+                .collect()
+        } else {
+            proposal.document_types
+        },
         periods: proposal.periods,
         comparison_axes: comparison_axes.into_iter().collect(),
         // Model authors never set execution resource limits. These are a
@@ -1743,6 +1763,45 @@ mod tests {
             compiled.receipt.anchor_hash,
             ContentHash::sha256(question.as_bytes())
         );
+    }
+
+    #[test]
+    fn empty_proposal_document_types_default_to_the_canonical_filing_set() {
+        // Measured live failure (2026-08-19): the v4 proposal contract
+        // legitimately permits an empty `document_types`, and GLM live
+        // proposals use it. Passing it through verbatim left the lowered
+        // SearchPlan without any document type, so the fixture plan gate's
+        // `required_document_type_present` ("10-K") failed and the run ended
+        // with an empty evidence ledger. Lowering must substitute the
+        // canonical filing set when — and only when — the model names none.
+        let question = "How durable is AAPL services growth?";
+        let mut proposal = proposal();
+        proposal["document_types"] = json!([]);
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        let document_types = plan["document_types"].as_array().unwrap();
+        assert!(!document_types.is_empty());
+        assert!(
+            document_types
+                .iter()
+                .any(|document_type| document_type.as_str() == Some("10-K"))
+        );
+    }
+
+    #[test]
+    fn model_specified_document_types_pass_through_unchanged() {
+        let question = "How durable is AAPL services growth?";
+        let mut proposal = proposal();
+        proposal["document_types"] = json!(["10-Q", "8-K"]);
+
+        let plan = compile_research_proposal(&proposal, company_scope(question))
+            .unwrap()
+            .search_plan;
+
+        assert_eq!(plan["document_types"], json!(["10-Q", "8-K"]));
     }
 
     #[test]
