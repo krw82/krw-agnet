@@ -10,7 +10,7 @@ mod initial_plan;
 
 pub use initial_plan::{
     InitialPlanError, InitialPlanScope, ResearchIntentCompilation, ResearchIntentReceipt,
-    compile_research_proposal,
+    ResearchPlanRequester, compile_research_proposal,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2041,6 +2041,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .unwrap()
@@ -2064,6 +2065,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .unwrap()
@@ -2674,6 +2676,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .unwrap()

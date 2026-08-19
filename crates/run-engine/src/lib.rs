@@ -161,7 +161,8 @@ use krw_agent_provider_wire::{
 use krw_agent_research_planner::{
     ActionConcurrency, ActionEffect, AuthIsolation, CandidateEstimate, CandidateProposal,
     InitialPlanError, InitialPlanScope, NoPositiveReason, PlannerDecision, ResearchActionKind,
-    ResearchIntentReceipt, ResearchPlanner, ResearchPlannerError, ScoringWeights, SelectionReason,
+    ResearchIntentReceipt, ResearchPlanRequester, ResearchPlanner, ResearchPlannerError,
+    ScoringWeights, SelectionReason,
     canonicalize_normalized_plan_exchange, compile_research_proposal,
 };
 use krw_agent_state_artifact::{
@@ -2646,6 +2647,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .expect("compiled V4 fixture proposal")
@@ -4123,6 +4125,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .expect("compiled Guru V4 fixture proposal")

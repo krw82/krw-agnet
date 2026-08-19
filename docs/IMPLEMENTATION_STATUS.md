@@ -266,8 +266,12 @@ descriptor를 요구하며, 실제 network acceptance는 운영 자격증명과 
   planner가 이를 축자로 강등된 SearchPlan에 통과(`research-planner` lowering) → fixture 게이트
   `required_document_type_present`(10-K 요구) 실패로 `quality_fixture_plan_rejected` → 증거
   원장이 비어 `retrieval_empty` 폴백 답변. 수정: lowering 시점에 제안의 `document_types`가
-  공란일 때만 커널가 표준 공시 세트 `["10-K","10-Q"]`를 기본값으로 적용한다(모델 명시값은
-  그대로 통과). 이는 기간 정책 driver 순서(`agent.yaml`의 `latest_confirmed_10q/10k`)와
+  공란일 때만 커널이 표준 공시 세트 `["10-K","10-Q"]`를 기본값으로 적용한다(모델 명시값은
+  그대로 통과). 이 기본값은 회사 리서치 경로(`ontology.query_context`)에만 적용된다 — 동일
+  강등 파생은 `ontology.query_context_universe`(wide_research/idea_generation)도 사용하며,
+  universe 스캔에서 공란 document_types는 모델 facing 스펙상 "사용자가 요청한 필터 없음"의
+  문서화된 기본값이라 축자 통과를 유지한다(플래너가 요청 capability 신원을 받아 구분).
+  기본값 세트는 기간 정책 driver들(`agent.yaml`의 `latest_confirmed_10q/10k`)과
   정합하지만 해당 정책은 모델용 프롬프트로만 전달되고 planner에 데이터로 plumbed되지 않아
   문서화된 상수로 반영했다. 계약/스키마/해시는 불변(강등 시점 커널 기본값이며 제안 계약
   변경이 아님). 수정 후 동일 dual-claim 케이스 라이브 1회가 score 100으로 통과했다

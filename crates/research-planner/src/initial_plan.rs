@@ -28,15 +28,44 @@ const RESULT_SLOTS_PER_REQUIRED_CLAUSE: usize = 3;
 const MAX_CONTEXT_RESULT_LIMIT: usize = 50;
 const MAX_EXACT_SEARCH_NODES: usize = 65_536;
 const RESEARCH_INTENT_RECEIPT_SCHEMA_VERSION: u16 = 1;
-/// Kernel default substituted when a proposal leaves `document_types` empty
-/// (the v4 contract permits that, and live GLM proposals use it). It mirrors
-/// the agent image's period-policy driver order — `latest_confirmed_10q` then
-/// `latest_confirmed_10k` in `agents/krw-ontology/agent.yaml` — which reaches
-/// the model as prompt guidance but is not plumbed into this crate as data.
-/// A plan without any filing type cannot retrieve the annual disclosure the
-/// fixture gate and cash/debt research assume, so the canonical filing set is
-/// the safe lowering-time floor. Model-named types always pass through.
+/// Kernel default substituted when a company-research proposal leaves
+/// `document_types` empty (the v4 contract permits that, and live GLM
+/// proposals use it). It mirrors the filing set behind the agent image's
+/// period-policy drivers (`latest_confirmed_10q` and `latest_confirmed_10k`
+/// in `agents/krw-ontology/agent.yaml`), which reach the model as prompt
+/// guidance but are not plumbed into this crate as data. A company plan
+/// without any filing type cannot retrieve the annual disclosure the fixture
+/// gate and cash/debt research assume, so the canonical filing set is the
+/// safe lowering-time floor. Model-named types always pass through, and
+/// universe scans keep an empty list as "no user-requested filter".
 const DEFAULT_DOCUMENT_TYPES: [&str; 2] = ["10-K", "10-Q"];
+
+/// Which canonical capability requested the plan lowering. The
+/// `research_proposal_to_search_plan_v4` derivation serves both the company
+/// `ontology.query_context` and the universe `ontology.query_context_universe`
+/// capability (wide research, idea generation). Only the company path applies
+/// the canonical filing-type default to an empty proposal `document_types`;
+/// universe scans document an empty list as "no user-requested filter"
+/// (model-facing spec `research-query-context-contract`) and must keep
+/// pass-through semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResearchPlanRequester {
+    CompanyQueryContext,
+    UniverseQueryContext,
+}
+
+impl ResearchPlanRequester {
+    /// Maps a canonical capability id to its lowering semantics. Unknown
+    /// future capabilities fall back to pass-through: the filing-type default
+    /// is the company-research exception, not the general rule.
+    pub fn from_capability_id(id: &str) -> Self {
+        if id == "ontology.query_context" {
+            Self::CompanyQueryContext
+        } else {
+            Self::UniverseQueryContext
+        }
+    }
+}
 
 /// Trusted inputs that a model is not allowed to restate or widen in its
 /// `ResearchProposal`. The owner is the run engine, not this planner.
@@ -57,6 +86,9 @@ pub struct InitialPlanScope<'a> {
     /// or rewrites this state: the compiler preserves it and appends only
     /// genuinely selected new clauses.
     pub prior_plan: Option<&'a Value>,
+    /// Identity of the capability requesting the lowering; see
+    /// [`ResearchPlanRequester`].
+    pub requester: ResearchPlanRequester,
 }
 
 /// The deterministic boundary receipt between a model-authored proposal and
@@ -631,10 +663,15 @@ fn lower_research_proposal(
         answer_scope: proposal.answer_scope,
         uncertainty: proposal.uncertainty,
         // An empty proposal `document_types` is a legal "no explicit filing
-        // preference" answer, not a request for a type-less plan: substitute
-        // the canonical filing set (see `DEFAULT_DOCUMENT_TYPES`). Values the
-        // model actually named pass through verbatim.
-        document_types: if proposal.document_types.is_empty() {
+        // preference" answer. For company research that must not become a
+        // type-less plan: substitute the canonical filing set (see
+        // `DEFAULT_DOCUMENT_TYPES`). Universe scans instead treat the empty
+        // list as their documented "no user-requested filter" default, so
+        // their lowering keeps pass-through semantics. Values the model
+        // actually named always pass through verbatim.
+        document_types: if proposal.document_types.is_empty()
+            && scope.requester == ResearchPlanRequester::CompanyQueryContext
+        {
             DEFAULT_DOCUMENT_TYPES
                 .iter()
                 .map(|document_type| (*document_type).to_owned())
@@ -1716,6 +1753,7 @@ mod tests {
             derived_tickers: None,
             max_discovery_tickers: 1,
             prior_plan: None,
+            requester: ResearchPlanRequester::CompanyQueryContext,
         }
     }
 
@@ -1772,8 +1810,9 @@ mod tests {
         // proposals use it. Passing it through verbatim left the lowered
         // SearchPlan without any document type, so the fixture plan gate's
         // `required_document_type_present` ("10-K") failed and the run ended
-        // with an empty evidence ledger. Lowering must substitute the
-        // canonical filing set when — and only when — the model names none.
+        // with an empty evidence ledger. Company-research lowering must
+        // substitute the canonical filing set when — and only when — the
+        // model names no type.
         let question = "How durable is AAPL services growth?";
         let mut proposal = proposal();
         proposal["document_types"] = json!([]);
@@ -1782,13 +1821,39 @@ mod tests {
             .unwrap()
             .search_plan;
 
-        let document_types = plan["document_types"].as_array().unwrap();
-        assert!(!document_types.is_empty());
-        assert!(
-            document_types
-                .iter()
-                .any(|document_type| document_type.as_str() == Some("10-K"))
-        );
+        assert_eq!(plan["document_types"], json!(["10-K", "10-Q"]));
+    }
+
+    #[test]
+    fn empty_document_types_stay_empty_for_universe_scans() {
+        // The same `research_proposal_to_search_plan_v4` derivation also
+        // serves `ontology.query_context_universe` (wide research, idea
+        // generation). There an empty `document_types` is the documented
+        // "no user-requested filter" default, so lowering must keep
+        // pass-through semantics — the filing-type default is a company
+        // query_context behavior only.
+        let question = "Which companies show durable services growth?";
+        let mut proposal = proposal();
+        proposal["document_types"] = json!([]);
+
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["AAPL".into()],
+        };
+        let plan = compile_research_proposal(
+            &proposal,
+            InitialPlanScope {
+                question,
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 1,
+                prior_plan: None,
+                requester: ResearchPlanRequester::UniverseQueryContext,
+            },
+        )
+        .unwrap()
+        .search_plan;
+
+        assert_eq!(plan["document_types"], json!([]));
     }
 
     #[test]
@@ -2281,6 +2346,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: Some(&prior_plan),
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .expect("a raw metric can be appended to a valid temporal plan")
@@ -2341,6 +2407,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 1,
                 prior_plan: Some(&prior_plan),
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         );
 
@@ -2435,6 +2502,7 @@ mod tests {
                 derived_tickers: None,
                 max_discovery_tickers: 7,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .unwrap()
@@ -2461,6 +2529,7 @@ mod tests {
                 derived_tickers: Some(&derived),
                 max_discovery_tickers: 5,
                 prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
             },
         )
         .unwrap()

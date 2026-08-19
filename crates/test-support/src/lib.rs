@@ -13,7 +13,9 @@ use krw_agent_persistence::{
 };
 use krw_agent_protocol::{AuthScope, ContentHash, RunRequest, provider_tool_name};
 use krw_agent_provider_wire::{AssistantMessage, ProviderEpisodeV1, TokenUsage};
-use krw_agent_research_planner::{InitialPlanScope, compile_research_proposal};
+use krw_agent_research_planner::{
+    InitialPlanScope, ResearchPlanRequester, compile_research_proposal,
+};
 use krw_ontology_adapter::{MappingContext, map_research_state, parse_research_state};
 use serde::Serialize;
 use serde_json::Value;
@@ -124,6 +126,7 @@ pub fn run_vertical_slice(
             derived_tickers: None,
             max_discovery_tickers: entrypoint.scope.cardinality.value(),
             prior_plan: None,
+            requester: ResearchPlanRequester::CompanyQueryContext,
         },
     )
     .map_err(QuickstartError::ResearchPlanner)?

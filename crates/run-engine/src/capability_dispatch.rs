@@ -981,6 +981,7 @@ fn assemble_capability_arguments(
                         .map(|scope| scope.tickers.as_slice()),
                     max_discovery_tickers: entrypoint.scope.cardinality.value(),
                     prior_plan: state.research_planner.confirmed_context_plan(),
+                    requester: ResearchPlanRequester::from_capability_id(&capability.id),
                 },
             )
             .map(|compiled| AssembledCapabilityArguments {

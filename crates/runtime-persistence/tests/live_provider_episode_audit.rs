@@ -15,7 +15,9 @@ use krw_agent_artifact_store::{
 use krw_agent_image::compile_agent_dir;
 use krw_agent_protocol::{RunContextV1, provider_tool_name};
 use krw_agent_provider_wire::ProviderEpisodeV1;
-use krw_agent_research_planner::{InitialPlanError, InitialPlanScope, compile_research_proposal};
+use krw_agent_research_planner::{
+    InitialPlanError, InitialPlanScope, ResearchPlanRequester, compile_research_proposal,
+};
 use serde_json::Value;
 
 const ENABLE_ENV: &str = "KRW_LIVE_E2E_EPISODE_AUDIT";
@@ -228,6 +230,7 @@ async fn audit_retained_live_provider_episode_without_exposing_content() {
             derived_tickers: None,
             max_discovery_tickers: 1,
             prior_plan: None,
+            requester: ResearchPlanRequester::CompanyQueryContext,
         },
     );
     let compile_code = match compilation {
