@@ -86,25 +86,26 @@
 - [ ] **Step 5**: 테스트 통과 + workspace check.
 - [ ] **Step 6**: `git commit -m "fix(capability): canonicalize focused candidate topics to their clause binding"` (+ 두 번째 커밋으로 B 분리 가능).
 
-### Task 5: 플래너 관대화 — Task 1 결과에 따른 분기
+### Task 5: 라이브 게이트 녹색화 — 빈 document_types의 기본값 강등 (개정: Task 1 실측 반영)
+
+> 개정 사유: Task 1 실측(2회 라이브) 결과 **어떤 제안/컴파일 거절도 발생하지 않는다**(다중 objective 3~5개가 무수리·무재계획으로 정상 컴파일, engine_error None). 실제 실패 사슬: 제안의 `document_types` 공란 허용(`krw-contracts/src/lib.rs:852`) → 강등된 SearchPlan에 document_types 없음(`initial_plan.rs:624` 통과) → fixture 게이트 `required_document_type_present`(10-K, `research-quality/src/lib.rs:1638`) 실패 + 증거 원장 공란(`retrieval_empty` 폴백 답변). 원래의 auto-Narrow(5a)·컴파일 상세(5b)는 원인이 아니므로 폐기(YAGNI).
 
 **Files:**
-- Modify: `crates/research-planner/src/initial_plan.rs` (`select_minimum_sufficient` ~:1388-1415, 에러 매핑)
-- Modify: `crates/run-engine/src/capability_dispatch.rs:1032-1062` (`research_proposal_compilation_error`)
-- Test: `crates/research-planner/src/initial_plan.rs` 테스트(1683-2412 근처), `crates/run-engine/src/lib.rs` recovery-envelope 테스트
+- Modify: `crates/research-planner/src/initial_plan.rs` (~:624, `lower_research_proposal`의 document_types 통과 지점)
+- Modify: `docs/IMPLEMENTATION_STATUS.md` (not-green 단락을 실측 원인으로 갱신)
+- Test: `crates/research-planner/src/initial_plan.rs` 테스트(1683-2412 근처)
 
 **Interfaces:**
-- Consumes: Task 1의 실제 에러 코드.
-- Produces: (공통 5b) 컴파일 단계 거절의 복구 엔벨로프에 `detail`(초과 절 수, 관련 objective 인덱스 등) 추가 — reason_code 집합은 불변. (조건부 5a) 원인이 `PlanTooLarge`이면: 12절 초과 시 에러 대신 **최저우선순위 required objective를 deferred로 자동 강등**해 12절 이내로 축소, 단일 objective만으로 12절 초과 시에만 에러 유지.
-- Task 1이 BLOCKED면: 5b만 구현하고 5a는 보고서에 "원인 미확정으로 보류" 명시.
+- Consumes: Task 1 실측 — 원인 코드 `quality_fixture_plan_rejected`/`required_document_type_present=false` + `retrieval_empty`.
+- Produces: 제안의 `document_types`가 **공란일 때만** 커널이 모드 표준 공시 세트로 기본값 적용(모델이 명시한 값은 그대로). 우선 소스: 기존 기간 정책(`agent.yaml:834-839` `latest_confirmed_10q/10k`)이 플래너에 전달되면 그 값을 재사용; 전달되지 않으면 문서화된 상수 `["10-K","10-Q"]`(기간 정책과의 정합 주석 포함). 계약/스키마/해시 불변 — 이것은 강등 시점의 커널 기본값이며 제안 계약 변경이 아님.
 
-- [ ] **Step 1**: Task 1 보고서의 에러 코드 확인(컨트롤러가 전달).
-- [ ] **Step 2: 실패 테스트(5b)** — 컴파일 거절 엔벨로프에 detail이 존재하고 원 코드와 일치함을 주장.
-- [ ] **Step 3**: 구현 5b — `InitialPlanError`에 이미 있는 정보로 detail 구성 (스키마 변경 없이 detail 맵 확장).
-- [ ] **Step 4 (원인=PlanTooLarge인 경우): 실패 테스트(5a)** — 13+절을 요구하는 다중 required objective 제안이 강등 후 컴파일 성공, deferred 기록 확인; 기존 `append_that_exceeds_the_canonical_clause_limit...` 테스트(append 경로)는 여전히 통과해야 함.
-- [ ] **Step 5**: 구현 5a — `select_minimum_sufficient`에서 강등 로직 (우선순wise: Deferred 유지 → Required 중 낮은 가중치부터).
-- [ ] **Step 6**: 테스트 통과 + workspace check + `evals` fixture 회귀: `cargo run --bin krw-agent --features dev-tools -- quality replay --suite evals/krw-research-quality/v4` 3케이스 전부 통과.
-- [ ] **Step 7**: `git commit -m "fix(planner): demote overflowing objectives instead of rejecting the proposal"` / `"fix(capability): add actionable detail to plan-compilation rejections"`.
+- [ ] **Step 1: 실패 테스트** — `document_types` 공란 제안이 강등 후 비어 있지 않은 document_types(10-K 포함)를 가지는지 주장. 모델 명시값은 수정 없이 통과하는 대응 테스트도 추가.
+- [ ] **Step 2**: 실패 확인 (`cargo test -p krw-research-planner initial_plan`).
+- [ ] **Step 3**: 구현 — 기본값 적용 지점과 근거 주석. 기본값이 intent receipt/계획 어디에 기록되는지 확인(투명성).
+- [ ] **Step 4**: 테스트 통과 + workspace check + `cargo run --bin krw-agent --features dev-tools -- quality replay --suite evals/krw-research-quality/v4` 3케이스 통과.
+- [ ] **Step 5**: 라이브 확인 최대 2회(`set -a; source .env.local; set +a` 후 `quality run --case company-research-independent-cash-and-debt`) — `fixture_plan_accepted`가 통과로 바뀌는지, 증거 커밋(`minimum_evidence`, `required_evidence_is_committed`)이 회복되는지 검증. document_types 수정 후에도 `retrieval_empty`가 남으면 그 증거를 보고 (추측 없이).
+- [ ] **Step 6**: `docs/IMPLEMENTATION_STATUS.md`의 not-green 기술을 새 원인·해결으로 갱신.
+- [ ] **Step 7**: `git commit -m "fix(planner): default empty document_types to the canonical filing set"`.
 
 ### Task 6: company_context 어휘의 플래닝 투영 주입
 
