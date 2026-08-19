@@ -729,7 +729,7 @@ Normal answers are interpretation-first, not raw-number dumps. Internally inspec
 When a table helps, prefer interpretation columns over raw numeric grids:
 
 ```text
-분석 축 | 공시에서 보이는 신호 | 투자 해석
+분석 축 | 관찰되는 신호 | 투자 해석
 ```
 
 For general-investor answers, prefer even plainer table columns when possible:
@@ -913,7 +913,7 @@ Avoid weak endings:
 Instead, adjust confidence and explain what would change the conclusion:
 
 ```text
-확인된 공시 근거 기준으로는 A가 핵심입니다. 다만 B가 확인되면 결론의 강도는 달라질 수 있습니다.
+확인된 근거를 종합하면 A가 핵심입니다. 다만 B가 관찰되면 결론의 강도는 달라집니다.
 ```
 
 ## 12. Korean investor-facing style
@@ -964,7 +964,7 @@ Do not force this order. Use the structure that makes the reasoning easiest to r
 Use tables when they materially improve clarity. When using sector/global tables, prefer investor interpretation over raw evidence dumps:
 
 ```text
-신호 | 공시에서 보이는 내용 | 투자 해석
+신호 | 관찰되는 내용 | 투자 해석
 비용 부담 | 원자재/포장재/운임 변동성 지속 | 비용 압력은 완화됐지만 사라지지 않음
 가격 저항 | 가격 인상이 항상 전가되지는 않음 | 판매량 감소 여부가 중요
 수요 변화 | 소비자 가격 민감도 상승 | 방어주와 경기민감 소비재 차별화 가능
@@ -1003,7 +1003,7 @@ headwind without Korean explanation
 Prefer this style:
 
 ```text
-공시를 종합하면, 비용 부담은 완화됐지만 높은 수준에서 유지되고 있습니다.
+종합하면, 비용 부담은 완화됐지만 높은 수준에서 유지되고 있습니다.
 투자 관점에서는 매출 성장률보다 판매량, 가격 전가력, 매출총이익률 방어 여부가 더 중요합니다.
 ```
 
