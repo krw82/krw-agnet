@@ -73,9 +73,9 @@ use finalization::{
 };
 #[cfg(test)]
 use capability_dispatch::{
-    assemble_company_context_request, exact_required_gap_arguments, model_research_gap_hint,
-    normalize_physical_capability_arguments, normalize_provider_model_input,
-    selected_targeted_response_detail,
+    assemble_company_context_request, canonicalize_required_gap_targeted_query,
+    exact_required_gap_arguments, model_research_gap_hint, normalize_physical_capability_arguments,
+    normalize_provider_model_input, selected_targeted_response_detail, TargetedQueryAttribution,
 };
 #[cfg(test)]
 use provider::{
@@ -181,9 +181,9 @@ use krw_context_planner::{
     ProviderOutputSchemaRef,
 };
 use krw_ontology_adapter::{
-    ExactTargetedQueryCandidate, SupplementalReadKind, SupplementalReadStatus,
-    company_orientation_vocabulary, parse_research_state, supplemental_status_for_targeted_payload,
-    supplemental_status_for_trace_payload,
+    ExactTargetedQueryCandidate, ResearchPlanningProjection, SupplementalReadKind,
+    SupplementalReadStatus, company_orientation_vocabulary, parse_research_state,
+    supplemental_status_for_targeted_payload, supplemental_status_for_trace_payload,
 };
 use krw_policy_runtime::{
     PolicyAccumulator, PolicyAuthority, PolicyCeiling, PolicyDecision, PolicyEffect, PolicyPhase,
@@ -6065,6 +6065,299 @@ mod tests {
         assert_eq!(physical["response_detail"], "compact");
         assert_eq!(physical["answer_candidate_only"], true);
         assert_eq!(physical["limit"], 20);
+    }
+
+    /// A planning projection whose single missing clause advertises exactly
+    /// one exact targeted-query candidate. The clause's canonical
+    /// `retrieval_query` is `VG cash generation`; `candidates` controls the
+    /// advertised display topics (and may be empty).
+    fn attribution_projection(candidates: Vec<Value>) -> ResearchPlanningProjection {
+        serde_json::from_value(serde_json::json!({
+            "graph": {"version": 1, "goals": {}, "original_order": []},
+            "clauses": [
+                {"clause_id": "cash_generation", "retrieval_query": "VG cash generation"}
+            ],
+            "missing_parts": [{
+                "code": "direct_lineage_gap",
+                "detail": "trace the filing claim",
+                "clause_id": "cash_generation",
+                "ticker": "VG"
+            }],
+            "recommended_actions": [],
+            "exact_precise_query_candidates": candidates
+        }))
+        .expect("attribution projection fixture")
+    }
+
+    fn advertised_candidate(ticker: &str, topic: &str) -> Value {
+        serde_json::json!({
+            "clause_id": "cash_generation",
+            "ticker": ticker,
+            "topic": topic,
+            "response_detail": "compact",
+            "limit": 20
+        })
+    }
+
+    fn targeted_query_arguments(topic: &str) -> Value {
+        serde_json::json!({"ticker": "VG", "topic": topic})
+    }
+
+    #[test]
+    fn verbatim_candidate_copy_attributes_as_verbatim() {
+        let projection =
+            attribution_projection(vec![advertised_candidate("VG", "VG cash generation")]);
+        let mut arguments = targeted_query_arguments("VG cash generation");
+        let attribution = canonicalize_required_gap_targeted_query(
+            "ontology.query",
+            Some(&projection),
+            &mut arguments,
+        );
+        assert_eq!(attribution, Some(TargetedQueryAttribution::Verbatim));
+        // The verbatim copy still dispatches the clause's canonical binding.
+        assert_eq!(arguments["topic"], "VG cash generation");
+        assert_eq!(arguments["ticker"], "VG");
+        assert_eq!(arguments["response_detail"], "compact");
+    }
+
+    #[test]
+    fn focused_candidate_copy_attributes_as_verbatim_and_dispatches_the_clause_binding() {
+        // The advertised topic is the focused filing phrase, while the
+        // clause's `retrieval_query` is longer. A model that copies the
+        // advertised topic exactly is verbatim even though the dispatched
+        // topic is rewritten to the clause binding (Task 4 semantics).
+        let projection =
+            attribution_projection(vec![advertised_candidate("VG", "research and development")]);
+        let mut arguments = targeted_query_arguments("research and development");
+        let attribution = canonicalize_required_gap_targeted_query(
+            "ontology.query",
+            Some(&projection),
+            &mut arguments,
+        );
+        assert_eq!(attribution, Some(TargetedQueryAttribution::Verbatim));
+        assert_eq!(arguments["topic"], "VG cash generation");
+    }
+
+    #[test]
+    fn token_subset_paraphrase_attributes_as_canonicalized() {
+        let projection =
+            attribution_projection(vec![advertised_candidate("VG", "VG cash generation")]);
+        let mut arguments = targeted_query_arguments("VG cash");
+        let attribution = canonicalize_required_gap_targeted_query(
+            "ontology.query",
+            Some(&projection),
+            &mut arguments,
+        );
+        assert_eq!(attribution, Some(TargetedQueryAttribution::Canonicalized));
+        assert_eq!(arguments["topic"], "VG cash generation");
+    }
+
+    #[test]
+    fn off_topic_query_with_candidates_attributes_as_unmatched_unchanged() {
+        let projection =
+            attribution_projection(vec![advertised_candidate("VG", "VG cash generation")]);
+        let mut arguments = targeted_query_arguments("unrelated acquisition rumor");
+        let attribution = canonicalize_required_gap_targeted_query(
+            "ontology.query",
+            Some(&projection),
+            &mut arguments,
+        );
+        assert_eq!(attribution, Some(TargetedQueryAttribution::Unmatched));
+        // Nothing was selected, so the model's own arguments survive.
+        assert_eq!(arguments, targeted_query_arguments("unrelated acquisition rumor"));
+    }
+
+    #[test]
+    fn query_without_an_advertised_candidate_is_not_an_attribution_event() {
+        // No candidate at all: the projection has no missing-clause reads to
+        // copy, so the call must not move any outcome counter.
+        let empty = attribution_projection(Vec::<Value>::new());
+        let mut arguments = targeted_query_arguments("VG cash generation");
+        assert_eq!(
+            canonicalize_required_gap_targeted_query("ontology.query", Some(&empty), &mut arguments),
+            None
+        );
+        assert_eq!(arguments, targeted_query_arguments("VG cash generation"));
+
+        // A candidate advertised for a different ticker is equally absent
+        // for this call's scope.
+        let other_ticker =
+            attribution_projection(vec![advertised_candidate("MSFT", "MSFT cloud margin")]);
+        let mut arguments = targeted_query_arguments("VG cash generation");
+        assert_eq!(
+            canonicalize_required_gap_targeted_query(
+                "ontology.query",
+                Some(&other_ticker),
+                &mut arguments
+            ),
+            None
+        );
+
+        // No committed projection at all: nothing to attribute against.
+        let mut arguments = targeted_query_arguments("VG cash generation");
+        assert_eq!(
+            canonicalize_required_gap_targeted_query("ontology.query", None, &mut arguments),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn targeted_query_dispatch_records_its_attribution_outcome_metric() {
+        let fixture = fixture_with_followups();
+
+        // Verbatim: the model copies the advertised candidate topic exactly.
+        // The compiled clause query is `cash generation` (the ticker is a
+        // separate physical scope constraint), and that is the advertised
+        // display topic the model copies.
+        let verbatim = engine_with_script_and_results(
+            VecDeque::from([
+                company_context_tool_call("company-context"),
+                query_context_tool_call("context-1", &fixture_research_state()["plan"]),
+                research_tool_call(
+                    "verbatim-gap",
+                    "ontology.query",
+                    &serde_json::json!({"ticker": "VG", "topic": "cash generation"}),
+                ),
+                evidence_sufficient_message(),
+                final_answer_message(),
+            ]),
+            VecDeque::from([
+                fixture_company_context(),
+                partial_research_state(),
+                serde_json::json!({
+                    "contract_version": "research-state/v2",
+                    "status": "ok",
+                    "new_clue": "exact cash-generation evidence"
+                }),
+            ]),
+            true,
+            None,
+            false,
+        );
+        verbatim.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(verbatim.capability.calls.load(Ordering::SeqCst), 3);
+        {
+            let persisted = verbatim.persistence.state.lock().unwrap();
+            let exact_read = persisted
+                .intents
+                .values()
+                .find(|intent| intent.tool_call_id == "verbatim-gap")
+                .expect("verbatim candidate copy must be dispatched");
+            let physical: Value =
+                serde_json::from_slice(&exact_read.canonical_arguments).unwrap();
+            assert_eq!(physical["ticker"], "VG");
+            assert_eq!(physical["topic"], "cash generation");
+        }
+
+        // Canonicalized: the model shortens the advertised topic.
+        let paraphrased = engine_with_script_and_results(
+            VecDeque::from([
+                company_context_tool_call("company-context"),
+                query_context_tool_call("context-1", &fixture_research_state()["plan"]),
+                research_tool_call(
+                    "paraphrased-gap",
+                    "ontology.query",
+                    &serde_json::json!({"ticker": "VG", "topic": "VG cash"}),
+                ),
+                evidence_sufficient_message(),
+                final_answer_message(),
+            ]),
+            VecDeque::from([
+                fixture_company_context(),
+                partial_research_state(),
+                serde_json::json!({
+                    "contract_version": "research-state/v2",
+                    "status": "ok",
+                    "new_clue": "exact cash-generation evidence"
+                }),
+            ]),
+            true,
+            None,
+            false,
+        );
+        paraphrased.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(paraphrased.capability.calls.load(Ordering::SeqCst), 3);
+
+        // Unmatched: a candidate was advertised for the queried ticker's
+        // missing clause, but the off-topic call matched none. Canonicalize
+        // (and therefore the counter) runs before the downstream proposal
+        // rejection, so the outcome is still recorded.
+        let unmatched = engine_with_script_and_results(
+            VecDeque::from([
+                query_context_tool_call("context-1", &fixture_research_state()["plan"]),
+                research_tool_call_batch(vec![
+                    (
+                        "wrong-topic",
+                        "ontology.query",
+                        serde_json::json!({
+                            "topic": "unrelated acquisition rumor",
+                            "ticker": "VG"
+                        }),
+                    ),
+                    (
+                        "trace-1",
+                        "ontology.trace",
+                        serde_json::json!({
+                            "object_id": "claim:vg:cash-generation:2025",
+                            "ticker": "VG"
+                        }),
+                    ),
+                ]),
+                append_context_tool_call(
+                    "context-2",
+                    &fixture_research_state()["plan"],
+                    &appended_context_plan(),
+                ),
+                evidence_sufficient_message(),
+                final_answer_message(),
+            ]),
+            VecDeque::from([
+                partial_research_state(),
+                serde_json::json!({
+                    "contract_version": "research-state/v2",
+                    "status": "ok",
+                    "new_clue": "supplier concentration risk"
+                }),
+                completed_appended_research_state(),
+            ]),
+            true,
+            None,
+            false,
+        );
+        unmatched.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(unmatched.capability.calls.load(Ordering::SeqCst), 4);
+
+        // The three closed outcome labels are exposed on the shared
+        // persistence registry the run engine already records into. The
+        // series set is only ever appended to, so these assertions are
+        // stable even though other attribution-triggering tests may run
+        // concurrently in this binary.
+        let outcomes = krw_agent_persistence::metrics::registry()
+            .gather()
+            .into_iter()
+            .filter(|family| family.get_name() == "krw_targeted_query_attribution_total")
+            .flat_map(|family| {
+                family
+                    .get_metric()
+                    .iter()
+                    .map(|metric| {
+                        metric
+                            .get_label()
+                            .iter()
+                            .map(|pair| pair.get_value().to_owned())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes.len(), 3, "one series per closed outcome");
+        for expected in ["verbatim", "canonicalized", "unmatched"] {
+            assert!(
+                outcomes.iter().any(|outcome| outcome == expected),
+                "attribution outcome {expected} must be recorded"
+            );
+        }
     }
 
     #[tokio::test]

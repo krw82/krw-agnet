@@ -1324,7 +1324,19 @@ pub(crate) fn prepare_calls(
             entrypoint,
         )?;
         let mut arguments = assembled.arguments;
-        canonicalize_required_gap_targeted_query(&capability.id, state, &mut arguments);
+        // Counted at canonicalization time — before scope validation and the
+        // interpreter's admission decision — so the copy-verbatim signal
+        // records the model's behavior even when this dispatch is rejected
+        // downstream.
+        if let Some(attribution) = canonicalize_required_gap_targeted_query(
+            &capability.id,
+            state.research_planner.projection(),
+            &mut arguments,
+        ) {
+            krw_agent_persistence::metrics::record_targeted_query_attribution(
+                attribution.as_str(),
+            );
+        }
         normalize_physical_capability_arguments(&capability.id, &mut arguments);
         if !arguments.is_object() {
             return Err(EngineError::ToolArgumentsMustBeObject(
@@ -1550,8 +1562,38 @@ pub(crate) fn normalize_physical_capability_arguments(capability_id: &str, value
     object.remove("response_format");
 }
 
+/// Copy-verbatim attribution for one model-authored targeted query, judged
+/// at the unique point where the model's original topic and the advertised
+/// exact candidate coexist: kernel canonicalization inside
+/// [`prepare_calls`]. The outcome is judged on the model's topic versus the
+/// candidate's advertised topic, never on the final emitted arguments (the
+/// dispatched topic is always the clause's canonical binding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetedQueryAttribution {
+    /// The model's topic equals the advertised candidate topic exactly.
+    Verbatim,
+    /// The model's topic was a token-subset rewrite of exactly one
+    /// advertised candidate.
+    Canonicalized,
+    /// Candidates were advertised for the queried ticker's currently missing
+    /// clauses, but the call matched none of them (including the cases where
+    /// canonicalization declines: zero or ambiguous topic matches).
+    Unmatched,
+}
+
+impl TargetedQueryAttribution {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Verbatim => krw_agent_persistence::metrics::ATTRIBUTION_VERBATIM,
+            Self::Canonicalized => krw_agent_persistence::metrics::ATTRIBUTION_CANONICALIZED,
+            Self::Unmatched => krw_agent_persistence::metrics::ATTRIBUTION_UNMATCHED,
+        }
+    }
+}
+
 /// Resolve a model-selected targeted query back to the exact query input that
-/// the committed `ResearchState` supplied for a missing required clause.
+/// the committed `ResearchState` supplied for a missing required clause, and
+/// report how the model's own call attributed to the advertised candidates.
 ///
 /// The analyst is still choosing *whether* to issue `ontology.query`; this
 /// only avoids treating a harmless wording change as a different research
@@ -1567,42 +1609,49 @@ pub(crate) fn normalize_physical_capability_arguments(capability_id: &str, value
 /// paraphrase. The model controls only the compact/full evidence depth. That
 /// keeps goal mapping, action idempotency, restart replay, and evidence scope
 /// on one canonical input without adding a model turn.
-fn canonicalize_required_gap_targeted_query(
+///
+/// The returned [`TargetedQueryAttribution`] is the copy-verbatim
+/// measurement signal (`krw_targeted_query_attribution_total`): `None` means
+/// the call is not an attribution event — either it is not an ordinary
+/// targeted query, it carries no topic/ticker to attribute, or no candidate
+/// was advertised for the queried ticker's missing clauses. Attribution is
+/// computed here, before any downstream admission or rejection, so the
+/// counter records the model's behavior even when the dispatch is later
+/// declined.
+pub(crate) fn canonicalize_required_gap_targeted_query(
     capability_id: &str,
-    state: &ActiveRun,
+    projection: Option<&ResearchPlanningProjection>,
     arguments: &mut Value,
-) {
+) -> Option<TargetedQueryAttribution> {
     if capability_id != "ontology.query" {
-        return;
+        return None;
     }
     let Some(object) = arguments.as_object() else {
-        return;
+        return None;
     };
     let selected_response_detail = selected_targeted_response_detail(object);
     let Some(ticker) = object.get("ticker").and_then(Value::as_str) else {
-        return;
+        return None;
     };
     let Some(topic) = object.get("topic").and_then(Value::as_str) else {
-        return;
+        return None;
     };
-    let Some(projection) = state.research_planner.projection() else {
-        return;
+    let Some(projection) = projection else {
+        return None;
     };
     let requested_tokens = normalized_retrieval_topic_tokens(topic);
-    if requested_tokens.is_empty() {
-        return;
-    }
     let ticker_token = ticker.to_lowercase();
     let requested_non_ticker = requested_tokens
         .iter()
         .filter(|token| token.as_str() != ticker_token.as_str())
         .cloned()
         .collect::<BTreeSet<_>>();
-    if requested_non_ticker.is_empty() {
-        return;
-    }
 
-    let matches = projection
+    // Eligibility is the match filter minus the topic check: candidates
+    // advertised for this ticker whose clause is still missing. With none
+    // present the model was never offered a candidate for this call's scope,
+    // so the call is not an attribution event.
+    let eligible = projection
         .exact_precise_query_candidates
         .iter()
         .filter(|candidate| {
@@ -1610,26 +1659,52 @@ fn canonicalize_required_gap_targeted_query(
                 && projection.missing_parts.iter().any(|missing| {
                     missing.clause_id.as_deref() == Some(candidate.clause_id.as_str())
                 })
+        })
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return None;
+    }
+
+    // An empty non-ticker token set (ticker-only or over-long topic) would
+    // be a subset of every candidate, so it selects nothing: the call is
+    // counted as unmatched rather than silently rewriten to an arbitrary
+    // candidate.
+    let matches = eligible
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            !requested_non_ticker.is_empty()
                 && requested_non_ticker
                     .is_subset(&normalized_retrieval_topic_tokens(&candidate.topic))
         })
         .collect::<Vec<_>>();
-    if let [candidate] = matches.as_slice() {
-        // The advertised candidate may carry a focused filing phrase as its
-        // display topic (adapter `focused_targeted_query_topic`), but
-        // `map_goals` binds a targeted query to a clause by exact string
-        // equality against the clause's `retrieval_query`. Dispatch the
-        // canonical binding target, never the display phrase, so a verbatim
-        // copy of an advertised candidate reaches the server and the planner
-        // as the exact gap read the kernel itself derived.
-        let canonical_topic = projection
-            .clauses
-            .iter()
-            .find(|clause| clause.clause_id == candidate.clause_id)
-            .map(|clause| clause.retrieval_query.as_str())
-            .unwrap_or(candidate.topic.as_str());
-        *arguments =
-            exact_required_gap_arguments(candidate, canonical_topic, selected_response_detail);
+    match matches.as_slice() {
+        [candidate] => {
+            let verbatim = topic == candidate.topic;
+            // The advertised candidate may carry a focused filing phrase as its
+            // display topic (adapter `focused_targeted_query_topic`), but
+            // `map_goals` binds a targeted query to a clause by exact string
+            // equality against the clause's `retrieval_query`. Dispatch the
+            // canonical binding target, never the display phrase, so a verbatim
+            // copy of an advertised candidate reaches the server and the planner
+            // as the exact gap read the kernel itself derived.
+            let canonical_topic = projection
+                .clauses
+                .iter()
+                .find(|clause| clause.clause_id == candidate.clause_id)
+                .map(|clause| clause.retrieval_query.as_str())
+                .unwrap_or(candidate.topic.as_str());
+            *arguments =
+                exact_required_gap_arguments(candidate, canonical_topic, selected_response_detail);
+            Some(if verbatim {
+                TargetedQueryAttribution::Verbatim
+            } else {
+                TargetedQueryAttribution::Canonicalized
+            })
+        }
+        // Zero matches, or an ambiguous multi-match the canonicalizer must
+        // decline: candidates existed, but this call attributed to none.
+        _ => Some(TargetedQueryAttribution::Unmatched),
     }
 }
 

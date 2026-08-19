@@ -16,6 +16,15 @@ pub const OUTCOME_FINAL: &str = "final";
 pub const OUTCOME_CANCELLED: &str = "cancelled";
 /// Terminal failure label.
 pub const OUTCOME_FAILED: &str = "failed";
+/// Targeted-query attribution label: the model copied the advertised
+/// candidate topic exactly.
+pub const ATTRIBUTION_VERBATIM: &str = "verbatim";
+/// Targeted-query attribution label: the model's topic was a token-subset
+/// rewrite of exactly one advertised candidate.
+pub const ATTRIBUTION_CANONICALIZED: &str = "canonicalized";
+/// Targeted-query attribution label: candidates were advertised for the
+/// queried ticker's missing clauses but the call matched none of them.
+pub const ATTRIBUTION_UNMATCHED: &str = "unmatched";
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 static RUNS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
@@ -24,6 +33,7 @@ static ACTIVE_RUNS: OnceLock<IntGauge> = OnceLock::new();
 static CAPABILITY_CALLS_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 static CAPABILITY_DURATION: OnceLock<HistogramVec> = OnceLock::new();
 static PROVIDER_TURN_DURATION: OnceLock<HistogramVec> = OnceLock::new();
+static TARGETED_QUERY_ATTRIBUTION_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 
 /// Lazily initialize and return the shared Prometheus [`Registry`].
 ///
@@ -87,6 +97,20 @@ pub fn registry() -> &'static Registry {
         )
         .expect("krw_provider_turn_duration_seconds collector is unique");
 
+        // Copy-verbatim measurement signal for targeted queries: how often a
+        // model-authored `ontology.query` is an exact copy of the advertised
+        // candidate, a paraphrase the kernel canonicalized back, or a call
+        // that matched no advertised candidate. The only label is the closed
+        // outcome string, so cardinality is fixed at three.
+        let targeted_query_attribution = IntCounterVec::new(
+            prometheus::Opts::new(
+                "krw_targeted_query_attribution_total",
+                "Model-authored targeted queries attributed to advertised exact candidates",
+            ),
+            &["outcome"],
+        )
+        .expect("krw_targeted_query_attribution_total collector is unique");
+
         registry
             .register(Box::new(runs.clone()))
             .expect("krw_runs_total registers");
@@ -105,6 +129,9 @@ pub fn registry() -> &'static Registry {
         registry
             .register(Box::new(provider_turn_duration.clone()))
             .expect("krw_provider_turn_duration_seconds registers");
+        registry
+            .register(Box::new(targeted_query_attribution.clone()))
+            .expect("krw_targeted_query_attribution_total registers");
 
         let _ = RUNS_TOTAL.set(runs);
         let _ = RUN_DURATION.set(duration);
@@ -112,6 +139,7 @@ pub fn registry() -> &'static Registry {
         let _ = CAPABILITY_CALLS_TOTAL.set(cap_calls);
         let _ = CAPABILITY_DURATION.set(cap_duration);
         let _ = PROVIDER_TURN_DURATION.set(provider_turn_duration);
+        let _ = TARGETED_QUERY_ATTRIBUTION_TOTAL.set(targeted_query_attribution);
 
         registry
     })
@@ -192,6 +220,22 @@ pub fn record_provider_turn_duration_seconds(ms: u64) {
         .observe(milliseconds_to_seconds(ms));
 }
 
+/// Record one attribution outcome for a model-authored targeted query.
+///
+/// `outcome` must be one of the closed label set [`ATTRIBUTION_VERBATIM`],
+/// [`ATTRIBUTION_CANONICALIZED`], or [`ATTRIBUTION_UNMATCHED`]. The only
+/// caller (run-engine targeted-query canonicalization) derives the value
+/// from a closed enum, so the exposed label cardinality is fixed at three
+/// regardless of tickers, clauses, or topics.
+pub fn record_targeted_query_attribution(outcome: &str) {
+    let _ = registry();
+    TARGETED_QUERY_ATTRIBUTION_TOTAL
+        .get()
+        .expect("registry initializes TARGETED_QUERY_ATTRIBUTION_TOTAL")
+        .with_label_values(&[outcome])
+        .inc();
+}
+
 /// Convert a millisecond `u64` measurement into seconds for histogram
 /// observation. Sub-millisecond precision is irrelevant for the bucket layout
 /// in use here, so the clippy `cast_precision_loss` lint is intentionally
@@ -206,6 +250,78 @@ fn milliseconds_to_seconds(ms: u64) -> f64 {
 mod tests {
     use super::*;
     use prometheus::TextEncoder;
+
+    #[test]
+    fn targeted_query_attribution_counter_records_the_closed_outcome_set() {
+        // Counters are process-global and cumulative, so the exactness
+        // assertion is a before/after delta. This is the only test in the
+        // crate that touches the attribution counter, keeping the delta
+        // deterministic under the default parallel test runner.
+        let _ = registry();
+        let counter = TARGETED_QUERY_ATTRIBUTION_TOTAL
+            .get()
+            .expect("registry initializes TARGETED_QUERY_ATTRIBUTION_TOTAL");
+        let before = [
+            counter
+                .with_label_values(&[ATTRIBUTION_VERBATIM])
+                .get(),
+            counter
+                .with_label_values(&[ATTRIBUTION_CANONICALIZED])
+                .get(),
+            counter
+                .with_label_values(&[ATTRIBUTION_UNMATCHED])
+                .get(),
+        ];
+
+        record_targeted_query_attribution(ATTRIBUTION_VERBATIM);
+        record_targeted_query_attribution(ATTRIBUTION_CANONICALIZED);
+        record_targeted_query_attribution(ATTRIBUTION_UNMATCHED);
+
+        assert_eq!(
+            counter
+                .with_label_values(&[ATTRIBUTION_VERBATIM])
+                .get(),
+            before[0] + 1,
+            "one verbatim attribution increments exactly once"
+        );
+        assert_eq!(
+            counter
+                .with_label_values(&[ATTRIBUTION_CANONICALIZED])
+                .get(),
+            before[1] + 1,
+            "one canonicalized attribution increments exactly once"
+        );
+        assert_eq!(
+            counter
+                .with_label_values(&[ATTRIBUTION_UNMATCHED])
+                .get(),
+            before[2] + 1,
+            "one unmatched attribution increments exactly once"
+        );
+
+        // The exposed label space is exactly the three closed outcome
+        // strings: no capability ids, tickers, or topics ride along.
+        let family = registry()
+            .gather()
+            .into_iter()
+            .find(|family| family.get_name() == "krw_targeted_query_attribution_total")
+            .expect("attribution counter family is registered");
+        let mut outcomes = family
+            .get_metric()
+            .iter()
+            .map(|metric| {
+                assert_eq!(metric.get_label().len(), 1, "outcome is the only label");
+                metric
+                    .get_label()
+                    .iter()
+                    .map(|pair| pair.get_value().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .collect::<Vec<_>>();
+        outcomes.sort_unstable();
+        assert_eq!(outcomes, vec!["canonicalized", "unmatched", "verbatim"]);
+    }
 
     #[test]
     fn registry_is_idempotent_and_records_lifecycle() {
