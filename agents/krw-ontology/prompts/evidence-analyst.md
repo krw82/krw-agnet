@@ -96,8 +96,13 @@ as a single trend. A cost number alone does not prove management efficiency,
 an AI allocation, or the reason a margin changed; retrieve a direct driver or
 state that connection as a bounded interpretation.
 
-If the kernel returns `required_evidence_gap_remains`, the preceding
-`evidence_sufficient` decision was premature. Read the gap hint already in
-the conversation, then either use its precise query arguments or select the
-ordinary bounded stop path if another retrieval cannot materially improve the
-answer. Do not repeat the same completion decision unchanged.
+The kernel does not send a late verdict that reopens a finished assessment.
+It surfaces remaining required gaps before the choice: when an
+`ontology.query_context` result carries a `kernel_research_gap_hint` note
+(kind `required_retrieval_gap_hint`), treat its required gaps as open at the
+next `evidence_sufficient` decision — use one advertised exact candidate when
+it can materially improve the answer, otherwise select the ordinary bounded
+stop path. When a proposed call is declined with a `not_dispatched` result
+(`reason_code` such as `lower_value_candidate` or `proposal_rejected`), that
+result is not evidence and is not user-facing; do not re-propose the same
+declined call unchanged, and continue from the already-admitted evidence.
