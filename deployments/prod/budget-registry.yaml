@@ -204,9 +204,13 @@ profiles:
       max_replans: 1
       max_repairs: 2
       max_input_tokens: 120000
-      # The parent envelope covers the ordinary filing researcher plus the
-      # final evidence review/composer turns.
-      max_output_tokens: 28000
+      # The parent envelope covers the ordinary filing researcher (GLM
+      # thinking + the capability decision share one 16384-token output
+      # ceiling, mirroring the company analyst), the evidence review, and the
+      # final Korean composition: mirror company_research_glm's 60000 tail so
+      # three deep research turns plus the composer never trip the cumulative
+      # output budget mid-run.
+      max_output_tokens: 60000
       max_evidence_bytes: 8388608
       # Guru uses several normal GLM turns; keep the same ten-minute
       # envelope as company_research_glm so a slow but valid turn is not

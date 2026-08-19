@@ -4764,7 +4764,11 @@ mod tests {
             .expect("company-evidence research role");
         assert!(role.bounded_child.is_none());
         assert_eq!(role.execution.reasoning, RoleReasoningMode::Deep);
-        assert_eq!(role.execution.max_output_tokens, Some(8192));
+        // Must mirror the ordinary company analyst's 16,384 ceiling: GLM
+        // bills private thinking and the capability decision against one
+        // output ceiling, and 8,192 truncated the evidence-analysis tool
+        // call mid-JSON in production (finish_reason=length).
+        assert_eq!(role.execution.max_output_tokens, Some(16384));
     }
 
     #[test]
