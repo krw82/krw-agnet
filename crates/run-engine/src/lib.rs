@@ -7812,6 +7812,37 @@ mod tests {
         assert_eq!(policy.reasoning_effort, None);
     }
 
+    /// A provider may report completion tokens just above the declared output
+    /// allowance (provider-side token accounting). `remaining_output_tokens`
+    /// must then behave exactly like being at the limit — zero remaining, the
+    /// existing `NoRemainingOutputBudget` path — instead of surfacing a
+    /// `CounterOverflow` that bypasses the answer-always ledger fallback.
+    #[test]
+    fn over_reported_output_usage_saturates_remaining_output_tokens() {
+        let fixture = fixture();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+
+        state.usage.output_tokens = fixture.request.budget.max_output_tokens;
+        assert_eq!(state.remaining_output_tokens().unwrap(), 0);
+
+        state.usage.output_tokens = fixture.request.budget.max_output_tokens + 1;
+        assert_eq!(
+            state.remaining_output_tokens().unwrap(),
+            0,
+            "over-reported usage must saturate to zero remaining, not overflow"
+        );
+    }
+
     #[test]
     fn semantic_decision_and_glm_wire_encoding_are_separate() {
         let capabilities = ProviderWireCapabilities::glm_5_3();

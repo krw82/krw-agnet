@@ -564,10 +564,16 @@ impl ActiveRun {
     }
 
     pub(crate) fn remaining_output_tokens(&self) -> Result<u32, EngineError> {
-        self.limits
+        // A provider may report completion tokens slightly above the declared
+        // allowance (see `record_provider_usage`). Saturate so an over-report
+        // behaves exactly like being at the limit — zero remaining, i.e. the
+        // existing `NoRemainingOutputBudget` path — instead of a
+        // `CounterOverflow` that would bypass the answer-always ledger
+        // fallback after the response itself was already accepted.
+        Ok(self
+            .limits
             .max_output_tokens
-            .checked_sub(self.usage.output_tokens)
-            .ok_or(EngineError::CounterOverflow("output_tokens"))
+            .saturating_sub(self.usage.output_tokens))
     }
 
     /// Preserve the answer-producing turn before cumulative prompt reuse can
