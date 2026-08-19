@@ -1497,7 +1497,11 @@ fn validate_projection(
             || candidate.ticker.len() > 32
             || candidate.topic.is_empty()
             || candidate.topic.len() > 512
-            || candidate.response_detail != "full"
+            // `compact` is the advertised default depth of both candidate
+            // emitters (the adapter projection and the run-engine gap hint);
+            // the analyst may raise the dispatched read to `full`. Any other
+            // value is not a depth this contract ever publishes.
+            || !matches!(candidate.response_detail.as_str(), "full" | "compact")
             || candidate.limit == 0
             || candidate.limit > 50
             || candidate.document_types.len() > 16
@@ -2818,6 +2822,71 @@ mod tests {
             Err(ResearchPlannerError::Planning(
                 krw_agent_planning::PlanningError::InvalidRecoveredGraph
             ))
+        ));
+    }
+
+    #[test]
+    fn checkpoint_restore_accepts_compact_exact_query_candidates() {
+        let weights = ScoringWeights::default();
+        let mut state = partial_fixture();
+        let clause_id = state.plan["clauses"][0]["clause_id"]
+            .as_str()
+            .expect("fixture clause id")
+            .to_owned();
+        // Both candidate emitters (the adapter projection and the run-engine
+        // gap hint) advertise `response_detail: "compact"` as the safe
+        // default depth; the analyst may raise a dispatched read to `full`.
+        // A checkpoint holding such a projection must restore instead of
+        // failing `InvalidCheckpoint` and killing the recovered run.
+        state.missing_parts.push(MissingPart {
+            code: "direct_lineage_gap".into(),
+            detail: "trace the filing claim".into(),
+            clause_id: Some(clause_id),
+            ticker: Some("VG".into()),
+        });
+
+        let mut planner = ResearchPlanner::new(weights).unwrap();
+        planner.ingest_research_state(&state).unwrap();
+        let candidates = &planner
+            .projection()
+            .expect("projection")
+            .exact_precise_query_candidates;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].response_detail, "compact");
+
+        let expected_hash = planner.checkpoint_hash().unwrap();
+        let bytes = serde_jcs::to_vec(&planner.checkpoint()).unwrap();
+        let checkpoint: ResearchPlannerCheckpointV4 = serde_json::from_slice(&bytes).unwrap();
+        let recovered = ResearchPlanner::restore(checkpoint, weights).unwrap();
+        assert_eq!(recovered.checkpoint_hash().unwrap(), expected_hash);
+        assert_eq!(
+            recovered
+                .projection()
+                .unwrap()
+                .exact_precise_query_candidates[0]
+                .response_detail,
+            "compact"
+        );
+
+        // `full` remains valid and any other depth is still rejected.
+        let mut full = planner.checkpoint();
+        full.projection
+            .as_mut()
+            .unwrap()
+            .exact_precise_query_candidates[0]
+            .response_detail = "full".into();
+        assert!(ResearchPlanner::restore(full, weights).is_ok());
+
+        let mut unbounded = planner.checkpoint();
+        unbounded
+            .projection
+            .as_mut()
+            .unwrap()
+            .exact_precise_query_candidates[0]
+            .response_detail = "unbounded".into();
+        assert!(matches!(
+            ResearchPlanner::restore(unbounded, weights),
+            Err(ResearchPlannerError::InvalidCheckpoint)
         ));
     }
 }
