@@ -258,11 +258,24 @@ descriptor를 요구하며, 실제 network acceptance는 운영 자격증명과 
 - quality fixture는 이제 objective/clause 개수를 단일 값으로 고정하지 않고 최대 12개까지 허용하며,
   각 dispatched clause를 의미가 맞는 fixture evidence에 연결한다. 연결되지 않는 objective는
   근거 부족으로 남긴다.
-- 세 deterministic replay는 모두 score 100이다. GLM live quality도 provider identity/wire와
-  fixture plan gate까지 통과했지만, 현재 GLM proposal이 다중 objective를 만든 뒤 kernel의
-  canonical research-plan contract에서 거절되어 live gate는 아직 green이 아니다. 이는
-  Structured Outputs wire 실패나 clause 개수 고정 문제가 아니라, GLM proposal 품질/계약 적합성
-  문제로 기록한다.
+- (2026-08-19 실측 정정) 이전에 기록된 "GLM proposal이 다중 objective를 만든 뒤 canonical
+  research-plan contract에서 거절되어 live gate가 아직 green이 아니다"는 실측으로 부정되었다.
+  2회 라이브 측정에서 제안/컴파일 거절은 한 번도 발생하지 않았다(3~5개 objective가 무수리·
+  무재계획으로 정상 컴파일, engine_error None). 실제 실패 사슬은: v4 제안 계약이
+  `document_types` 공란을 허용(`krw-contracts`)하고 라이브 GLM 제안이 실제로 공란으로 제출 →
+  planner가 이를 축자로 강등된 SearchPlan에 통과(`research-planner` lowering) → fixture 게이트
+  `required_document_type_present`(10-K 요구) 실패로 `quality_fixture_plan_rejected` → 증거
+  원장이 비어 `retrieval_empty` 폴백 답변. 수정: lowering 시점에 제안의 `document_types`가
+  공란일 때만 커널가 표준 공시 세트 `["10-K","10-Q"]`를 기본값으로 적용한다(모델 명시값은
+  그대로 통과). 이는 기간 정책 driver 순서(`agent.yaml`의 `latest_confirmed_10q/10k`)와
+  정합하지만 해당 정책은 모델용 프롬프트로만 전달되고 planner에 데이터로 plumbed되지 않아
+  문서화된 상수로 반영했다. 계약/스키마/해시는 불변(강등 시점 커널 기본값이며 제안 계약
+  변경이 아님). 수정 후 동일 dual-claim 케이스 라이브 1회가 score 100으로 통과했다
+  (`fixture_plan_accepted`·`minimum_evidence`·`required_evidence_is_committed` 모두 통과,
+  engine_error null, 재계획 0/수리 0, 증거 2건 커밋, `retrieval_empty` 소멸). 남은 한계:
+  라이브 확인은 이 케이스 1회뿐이고(나머지는 deterministic replay로만 검증), 기본값이
+  planner 내 상수라 향후 기간 정책을 planner에 데이터로 전달하면 단일 진실 공급원으로
+  통일해야 한다.
 
 - `cargo test --workspace --no-fail-fast`, strict workspace clippy, rustfmt
 - `krw-agent quality replay`는 credential/network 없이 recorded provider turn을 GLM-5.3 snapshot으로
