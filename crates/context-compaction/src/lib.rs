@@ -1740,6 +1740,70 @@ mod tests {
     }
 
     #[test]
+    fn orientation_vocabulary_survives_into_the_planner_and_analyst_views() {
+        let (artifact, boundary) = artifact_and_boundary();
+        let projection: ResearchPlanningProjection = serde_json::from_value(json!({
+            "graph": {
+                "version": 1,
+                "goals": {
+                    "goal-coverage": {
+                        "goal_id": "goal-coverage",
+                        "required": true,
+                        "weight": 100,
+                        "dependencies": [],
+                        "directness": "direct",
+                        "calculation_required": false,
+                        "status": "unresolved",
+                        "coverage_ppm": 0,
+                        "evidence_ids": [],
+                        "calculation_ids": []
+                    }
+                },
+                "original_order": ["goal-coverage"]
+            },
+            "clauses": [],
+            "missing_parts": [],
+            "recommended_actions": [],
+            "orientation_vocabulary": [
+                {
+                    "term": "Component Procurement",
+                    "document_type": "10-K",
+                    "period": "2026년"
+                },
+                {"term": "Services Growth"}
+            ]
+        }))
+        .unwrap();
+
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &EvidenceLedger::default(),
+            calculations: &BTreeMap::new(),
+            research_projection: Some(&projection),
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+
+        // The analyst keeps the full research projection, so the advisory
+        // orientation wording reaches the model exactly when it is planning
+        // the next evidence query; the planner (an unrecognized role here)
+        // gets the full canonical view.
+        let analyst = output.context.view_for_role(ROLE_ANALYST).unwrap();
+        assert!(analyst.canonical.contains("Component Procurement"));
+        assert!(analyst.canonical.contains("orientation_vocabulary"));
+        let planner = output.context.view_for_role("planner").unwrap();
+        assert!(planner.canonical.contains("Component Procurement"));
+        // The composer and repair views intentionally drop the whole research
+        // projection, vocabulary included.
+        let composer = output.context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert!(!composer.canonical.contains("Component Procurement"));
+        let repair = output.context.view_for_role(ROLE_REPAIR).unwrap();
+        assert!(!repair.canonical.contains("Component Procurement"));
+    }
+
+    #[test]
     fn more_than_512_active_evidence_records_degrade_to_a_bounded_view_with_receipt() {
         let (artifact, boundary) = artifact_and_boundary();
         let mut ledger = EvidenceLedger::default();

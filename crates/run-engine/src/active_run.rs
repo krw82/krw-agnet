@@ -1742,10 +1742,26 @@ impl ActiveRun {
                     } else {
                         next.record_completed(fingerprint)?;
                     }
+                    // The evidence ledger is the single source of truth for
+                    // company orientation: `ontology.company_context` commits
+                    // its advisory records there before the canonical
+                    // `query_context` read, so distilling the vocabulary here
+                    // promotes exactly the trusted facts — never the raw
+                    // capability payload — into the planning projection.
+                    let ledger_records = self
+                        .ledger
+                        .iter()
+                        .map(|(_, record)| record.clone())
+                        .collect::<Vec<_>>();
+                    let orientation = company_orientation_vocabulary(&ledger_records);
                     if let Some(receipt) = &call.research_intent_receipt {
-                        next.ingest_research_state_for_intent(&research_state, receipt)?;
+                        next.ingest_research_state_for_intent(
+                            &research_state,
+                            receipt,
+                            &orientation,
+                        )?;
                     } else {
-                        next.ingest_research_state(&research_state)?;
+                        next.ingest_research_state(&research_state, &orientation)?;
                     }
                 }
             }

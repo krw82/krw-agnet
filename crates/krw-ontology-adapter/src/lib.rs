@@ -35,6 +35,13 @@ const MAX_PLANNING_GAPS: usize = 256;
 // hidden merely by clause order.
 const MAX_EXACT_TARGETED_QUERY_CANDIDATES: usize = 12;
 const MAX_EXACT_TARGETED_QUERY_FILTERS: usize = 16;
+// The advisory orientation vocabulary must stay small enough to ride inside
+// every compacted planner/analyst turn without crowding out goal state, while
+// still covering the per-company topic cap across a small multi-ticker scope.
+pub const MAX_ORIENTATION_VOCABULARY: usize = 12;
+/// Evidence predicate of a `company_context` orientation fact. The fact value
+/// is the sanitized topic label; the record itself stays `Unverified`.
+pub const COMPANY_TOPIC_ORIENTATION_PREDICATE: &str = "company_topic_orientation";
 const MAX_SOURCE_ANCHORS: usize = 32;
 const MAX_RESEARCH_WARNINGS: usize = 32;
 pub const MAX_SUPPLEMENTAL_READ_STATUSES: usize = 4;
@@ -366,6 +373,78 @@ const fn exact_targeted_query_answer_candidate_only() -> bool {
     true
 }
 
+/// One advisory company-orientation term distilled from a committed
+/// `company_topic_orientation` ledger fact (`term` is the topic label). This is
+/// vocabulary, not evidence: it may steer the wording of a later evidence
+/// query, and never upgrades directness or strong-claim eligibility.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrientationTerm {
+    pub term: String,
+    #[serde(default)]
+    pub document_type: Option<String>,
+    #[serde(default)]
+    pub period: Option<String>,
+}
+
+/// Distill the advisory orientation vocabulary from committed ledger records.
+/// The ledger stays the single source of truth: only records carrying the
+/// `company_topic_orientation` predicate contribute, and their `Unverified`
+/// advisory-only semantics are preserved by never touching the records
+/// themselves.
+pub fn company_orientation_vocabulary(records: &[EvidenceRecord]) -> Vec<OrientationTerm> {
+    records
+        .iter()
+        .filter(|record| {
+            record
+                .facts
+                .iter()
+                .any(|fact| fact.predicate == COMPANY_TOPIC_ORIENTATION_PREDICATE)
+        })
+        .filter_map(|record| {
+            let fact = record
+                .facts
+                .iter()
+                .find(|fact| fact.predicate == COMPANY_TOPIC_ORIENTATION_PREDICATE)?;
+            Some(OrientationTerm {
+                term: fact.value.as_str()?.to_owned(),
+                document_type: record.citation.document_type.clone(),
+                period: record.period.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Bound, deduplicate, and order the advisory vocabulary so the projection —
+/// and therefore every checkpoint and compacted role view derived from it —
+/// stays deterministic. Malformed entries are omitted rather than failing a
+/// valid research state, mirroring the exact-candidate policy.
+fn normalize_orientation_vocabulary(terms: &[OrientationTerm]) -> Vec<OrientationTerm> {
+    let mut bounded = BTreeSet::new();
+    for term in terms {
+        let valid = |value: &str, max_bytes: usize| {
+            !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+        };
+        if !valid(&term.term, 256)
+            || term
+                .document_type
+                .as_deref()
+                .is_some_and(|value| !valid(value, 128))
+            || term
+                .period
+                .as_deref()
+                .is_some_and(|value| !valid(value, 128))
+        {
+            continue;
+        }
+        bounded.insert(term.clone());
+    }
+    bounded
+        .into_iter()
+        .take(MAX_ORIENTATION_VOCABULARY)
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchPlanningProjection {
@@ -378,6 +457,14 @@ pub struct ResearchPlanningProjection {
     /// compaction boundary and remains copyable by the analyst.
     #[serde(default)]
     pub exact_precise_query_candidates: Vec<ExactTargetedQueryCandidate>,
+    /// Advisory company-orientation terms distilled from committed
+    /// `company_topic_orientation` ledger facts. Like the exact candidates
+    /// above, this rides the projection across the trusted compaction
+    /// boundary; unlike evidence, it only suggests canonical filing
+    /// vocabulary for later queries and never upgrades directness or
+    /// strong-claim eligibility (the source records stay `Unverified`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orientation_vocabulary: Vec<OrientationTerm>,
     #[serde(default)]
     pub retrieval_status: ResearchRetrievalStatus,
 }
@@ -530,8 +617,15 @@ pub fn derive_clause_coverage_progress(
     Ok(observations)
 }
 
+/// Build the planning projection for a committed research state. The
+/// `orientation_vocabulary` input is the advisory company-orientation
+/// vocabulary distilled from the evidence ledger (see
+/// [`company_orientation_vocabulary`]); passing an empty slice yields a
+/// projection without orientation terms, which is exactly the pre-orientation
+/// shape.
 pub fn derive_research_planning_projection(
     state: &ResearchStateV2,
+    orientation_vocabulary: &[OrientationTerm],
 ) -> Result<ResearchPlanningProjection, AdapterError> {
     if state.missing_parts.len() > MAX_PLANNING_GAPS
         || state.recommended_actions.len() > MAX_PLANNING_GAPS
@@ -567,6 +661,7 @@ pub fn derive_research_planning_projection(
         missing_parts: state.missing_parts.clone(),
         recommended_actions: state.recommended_actions.clone(),
         exact_precise_query_candidates: exact_precise_query_candidates(state),
+        orientation_vocabulary: normalize_orientation_vocabulary(orientation_vocabulary),
         retrieval_status: research_retrieval_status(state),
     })
 }
@@ -2251,7 +2346,7 @@ fn company_context_record(
         },
         facts: vec![NormalizedFact {
             subject: expected_ticker.to_owned(),
-            predicate: "company_topic_orientation".into(),
+            predicate: COMPANY_TOPIC_ORIENTATION_PREDICATE.into(),
             value: Value::String(topic.topic_label.clone()),
             unit: None,
             period: topic.period.clone(),
@@ -2826,7 +2921,7 @@ mod tests {
     #[test]
     fn canonical_coverage_compiles_to_a_satisfied_goal() {
         let state = answerable_fixture();
-        let projection = derive_research_planning_projection(&state).unwrap();
+        let projection = derive_research_planning_projection(&state, &[]).unwrap();
         assert_eq!(projection.clauses.len(), 1);
         assert_eq!(projection.clauses[0].clause_id, "cash_generation");
         assert_eq!(projection.clauses[0].retrieval_query, "VG cash generation");
@@ -2878,7 +2973,7 @@ mod tests {
             omitted_evidence_count: 17,
             reason: Some("response evidence limit reached".into()),
         });
-        let projection = derive_research_planning_projection(&state).unwrap();
+        let projection = derive_research_planning_projection(&state, &[]).unwrap();
 
         assert_eq!(projection.exact_precise_query_candidates.len(), 1);
         assert_eq!(
@@ -2992,7 +3087,7 @@ mod tests {
             })
             .collect();
         assert!(matches!(
-            derive_research_planning_projection(&state),
+            derive_research_planning_projection(&state, &[]),
             Err(AdapterError::InvalidPlanningProjection(
                 "planning gap limit"
             ))
@@ -3227,6 +3322,119 @@ mod tests {
             map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
         assert_eq!(delta.provider_content["status"], "unavailable");
         assert!(delta.records.is_empty());
+    }
+
+    #[test]
+    fn planning_projection_surfaces_company_orientation_vocabulary() {
+        let payload = serde_json::json!({
+            "ticker": "AAPL",
+            "company_topics": [
+                {
+                    "ticker": "AAPL",
+                    "topic_label": "Component Procurement",
+                    "period": "CY2026Q1",
+                    "document_type": "10-K",
+                    "trace_status": "traceable"
+                },
+                {
+                    "ticker": "AAPL",
+                    "topic_label": "Services Growth"
+                }
+            ]
+        });
+
+        let delta =
+            map_company_context(&payload, "AAPL", &context("ontology.company_context")).unwrap();
+        // The vocabulary is promoted from ledger facts, so the advisory-only
+        // record semantics must survive the promotion unchanged.
+        assert!(
+            delta
+                .records
+                .iter()
+                .all(|record| record.directness == Directness::Unverified
+                    && !record.strong_claim_allowed)
+        );
+        // Two committed reads of the same orientation must not double-report a
+        // term: dedup happens on the (term, document_type, period) triple.
+        let mut records = delta.records.clone();
+        records.extend(delta.records);
+        let vocabulary = company_orientation_vocabulary(&records);
+
+        let state = answerable_fixture();
+        let projection =
+            derive_research_planning_projection(&state, &vocabulary).expect("valid projection");
+
+        assert_eq!(projection.orientation_vocabulary.len(), 2);
+        assert_eq!(
+            projection.orientation_vocabulary[0],
+            OrientationTerm {
+                term: "Component Procurement".into(),
+                document_type: Some("10-K".into()),
+                period: Some("2026년".into()),
+            }
+        );
+        assert_eq!(
+            projection.orientation_vocabulary[1],
+            OrientationTerm {
+                term: "Services Growth".into(),
+                document_type: None,
+                period: None,
+            }
+        );
+    }
+
+    #[test]
+    fn orientation_vocabulary_is_capped_at_a_bounded_deterministic_front() {
+        let topic_payload = |ticker: &str, offset: usize| {
+            serde_json::json!({
+                "ticker": ticker,
+                "company_topics": (0..8)
+                    .map(|index| {
+                        serde_json::json!({
+                            "ticker": ticker,
+                            "topic_label": format!("Topic {:02}", offset + index),
+                            "document_type": "10-K",
+                            "period": "CY2025"
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let first = map_company_context(
+            &topic_payload("AAPL", 0),
+            "AAPL",
+            &context("ontology.company_context"),
+        )
+        .unwrap();
+        let second = map_company_context(
+            &topic_payload("MSFT", 8),
+            "MSFT",
+            &context("ontology.company_context"),
+        )
+        .unwrap();
+        assert_eq!(first.records.len() + second.records.len(), 16);
+
+        let mut records = first.records;
+        records.extend(second.records);
+        let vocabulary = company_orientation_vocabulary(&records);
+        let state = answerable_fixture();
+        let projection = derive_research_planning_projection(&state, &vocabulary).unwrap();
+
+        assert_eq!(
+            projection.orientation_vocabulary.len(),
+            MAX_ORIENTATION_VOCABULARY
+        );
+        let terms = projection
+            .orientation_vocabulary
+            .iter()
+            .map(|term| term.term.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terms,
+            (0..MAX_ORIENTATION_VOCABULARY)
+                .map(|index| format!("Topic {index:02}"))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

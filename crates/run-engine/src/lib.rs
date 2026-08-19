@@ -182,7 +182,7 @@ use krw_context_planner::{
 };
 use krw_ontology_adapter::{
     ExactTargetedQueryCandidate, SupplementalReadKind, SupplementalReadStatus,
-    parse_research_state, supplemental_status_for_targeted_payload,
+    company_orientation_vocabulary, parse_research_state, supplemental_status_for_targeted_payload,
     supplemental_status_for_trace_payload,
 };
 use krw_policy_runtime::{

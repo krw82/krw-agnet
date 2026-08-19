@@ -22,9 +22,9 @@ use krw_agent_planning::{
 pub use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation, ScoringWeights};
 use krw_agent_protocol::ContentHash;
 use krw_ontology_adapter::{
-    ClauseCoverageProgress, ClausePlanningBinding, MAX_SUPPLEMENTAL_READ_STATUSES,
-    ResearchPlanningProjection, ResearchStateV2, SupplementalReadStatus,
-    derive_clause_coverage_progress, derive_research_planning_projection,
+    ClauseCoverageProgress, ClausePlanningBinding, MAX_ORIENTATION_VOCABULARY,
+    MAX_SUPPLEMENTAL_READ_STATUSES, OrientationTerm, ResearchPlanningProjection, ResearchStateV2,
+    SupplementalReadStatus, derive_clause_coverage_progress, derive_research_planning_projection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -285,12 +285,16 @@ impl ResearchPlanner {
     }
 
     /// Ingest a new canonical `ResearchState`. Existing goal definitions may
-    /// not disappear or change; progress is merged monotonically.
+    /// not disappear or change; progress is merged monotonically. The
+    /// `orientation_vocabulary` is the advisory company-orientation terms
+    /// distilled from the committed evidence ledger; it is unioned into the
+    /// projection so the wording bridge survives later bounded snapshots.
     pub fn ingest_research_state(
         &mut self,
         state: &ResearchStateV2,
+        orientation_vocabulary: &[OrientationTerm],
     ) -> Result<(), ResearchPlannerError> {
-        self.ingest_research_state_inner(state)?;
+        self.ingest_research_state_inner(state, orientation_vocabulary)?;
         Ok(())
     }
 
@@ -302,10 +306,11 @@ impl ResearchPlanner {
         &mut self,
         state: &ResearchStateV2,
         receipt: &ResearchIntentReceipt,
+        orientation_vocabulary: &[OrientationTerm],
     ) -> Result<(), ResearchPlannerError> {
         let mut next = self.clone();
         next.merge_intent_receipt(receipt)?;
-        next.ingest_research_state_inner(state)?;
+        next.ingest_research_state_inner(state, orientation_vocabulary)?;
         next.apply_intent_progress(state)?;
         *self = next;
         Ok(())
@@ -314,8 +319,9 @@ impl ResearchPlanner {
     fn ingest_research_state_inner(
         &mut self,
         state: &ResearchStateV2,
+        orientation_vocabulary: &[OrientationTerm],
     ) -> Result<(), ResearchPlannerError> {
-        let observed = derive_research_planning_projection(state)?;
+        let observed = derive_research_planning_projection(state, orientation_vocabulary)?;
         validate_plan_shape(&state.plan)?;
         if let Some(current) = &self.confirmed_context_plan {
             validate_append_only_plan(current, &state.plan, false)?;
@@ -1432,6 +1438,7 @@ fn validate_projection(
         || projection.missing_parts.len() > 256
         || projection.recommended_actions.len() > 256
         || projection.exact_precise_query_candidates.len() > 12
+        || projection.orientation_vocabulary.len() > MAX_ORIENTATION_VOCABULARY
     {
         return Err(ResearchPlannerError::InvalidCheckpoint);
     }
@@ -1520,6 +1527,32 @@ fn validate_projection(
                 candidate.clause_id.as_str(),
                 candidate.ticker.as_str(),
                 candidate.topic.as_str(),
+            ))
+        {
+            return Err(ResearchPlannerError::InvalidCheckpoint);
+        }
+    }
+    // The orientation vocabulary is advisory only, but a restored checkpoint
+    // is still a trust boundary: it must carry the same bounded, duplicate-free
+    // shape the adapter derives from the ledger.
+    let mut orientation_terms = BTreeSet::new();
+    for term in &projection.orientation_vocabulary {
+        let valid = |value: &str, max_bytes: usize| {
+            !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+        };
+        if !valid(&term.term, 256)
+            || term
+                .document_type
+                .as_deref()
+                .is_some_and(|value| !valid(value, 128))
+            || term
+                .period
+                .as_deref()
+                .is_some_and(|value| !valid(value, 128))
+            || !orientation_terms.insert((
+                term.term.as_str(),
+                term.document_type.as_deref(),
+                term.period.as_deref(),
             ))
         {
             return Err(ResearchPlannerError::InvalidCheckpoint);
@@ -1678,6 +1711,18 @@ fn merge_projection(
     current.missing_parts = observed.missing_parts;
     current.recommended_actions = observed.recommended_actions;
     current.exact_precise_query_candidates = observed.exact_precise_query_candidates;
+    // The orientation vocabulary is advisory wording distilled from the
+    // committed ledger, which only grows. A later bounded research snapshot
+    // that was derived without orientation records must not erase terms a
+    // restored checkpoint or an earlier commit already carried, so join the
+    // two deduplicated sets instead of replacing them.
+    let mut orientation_vocabulary: BTreeSet<_> =
+        current.orientation_vocabulary.drain(..).collect();
+    orientation_vocabulary.extend(observed.orientation_vocabulary);
+    current.orientation_vocabulary = orientation_vocabulary
+        .into_iter()
+        .take(MAX_ORIENTATION_VOCABULARY)
+        .collect();
     // `ResearchState` is a bounded retrieval snapshot. A later context query
     // may legitimately contain fewer rows than an earlier one, while its
     // diagnostics (pagination, current-document anchors, input warnings) are
@@ -2179,7 +2224,11 @@ mod tests {
     fn answerable_context_closes_the_trusted_research_frontier() {
         let mut planner = ResearchPlanner::default();
         planner
-            .ingest_research_state_for_intent(&fixture_for_proposal(), &fixture_intent_receipt())
+            .ingest_research_state_for_intent(
+                &fixture_for_proposal(),
+                &fixture_intent_receipt(),
+                &[],
+            )
             .unwrap();
 
         assert_eq!(planner.objective_frontier_is_exhausted(), Some(true));
@@ -2188,7 +2237,9 @@ mod tests {
     #[test]
     fn partial_context_keeps_the_trusted_research_frontier_open() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
 
         assert_eq!(planner.objective_frontier_is_exhausted(), Some(false));
     }
@@ -2196,7 +2247,9 @@ mod tests {
     #[test]
     fn trusted_server_recommendation_beats_costly_broad_query() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
         let broad = proposal(
             "broad",
             "ontology.query",
@@ -2271,7 +2324,7 @@ mod tests {
         state.recommended_actions[0].reason = "expand causal mechanism".into();
 
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&state).unwrap();
+        planner.ingest_research_state(&state, &[]).unwrap();
         let chain = proposal(
             "chain",
             "ontology.chain",
@@ -2296,7 +2349,7 @@ mod tests {
     #[test]
     fn satisfied_graph_stops_even_when_the_model_requests_more() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&fixture()).unwrap();
+        planner.ingest_research_state(&fixture(), &[]).unwrap();
         let query = proposal(
             "query",
             "ontology.query",
@@ -2429,14 +2482,16 @@ mod tests {
     #[test]
     fn replanning_is_monotonic_and_rejects_definition_drift() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
-        planner.ingest_research_state(&fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
+        planner.ingest_research_state(&fixture(), &[]).unwrap();
 
         // A context response is a bounded page of the same release-pinned
         // corpus. Its omission of an earlier row must not retract progress
         // already observed by this run.
         let regressed = partial_fixture();
-        planner.ingest_research_state(&regressed).unwrap();
+        planner.ingest_research_state(&regressed, &[]).unwrap();
         let goal = planner
             .projection()
             .and_then(|projection| projection.graph.goal("clause:cash_generation"))
@@ -2447,7 +2502,7 @@ mod tests {
         let mut regressed = fixture();
         regressed.plan["clauses"][0]["retrieval_query"] = Value::String("changed query".into());
         assert!(matches!(
-            planner.ingest_research_state(&regressed),
+            planner.ingest_research_state(&regressed, &[]),
             Err(ResearchPlannerError::ContextPlanDrift)
         ));
     }
@@ -2461,11 +2516,11 @@ mod tests {
         let mut planner = ResearchPlanner::default();
         let mut initial = partial_fixture();
         initial.warnings = vec!["supplemental_targeted_query_not_found".into()];
-        planner.ingest_research_state(&initial).unwrap();
+        planner.ingest_research_state(&initial, &[]).unwrap();
 
         let mut later = partial_fixture();
         later.warnings = vec!["planned_evidence_truncated".into()];
-        planner.ingest_research_state(&later).unwrap();
+        planner.ingest_research_state(&later, &[]).unwrap();
 
         assert_eq!(
             planner.projection().unwrap().retrieval_status.warnings,
@@ -2479,7 +2534,9 @@ mod tests {
     #[test]
     fn replanning_keeps_bounded_typed_supplemental_statuses() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
         for offset in 0..6 {
             planner.record_supplemental_retrieval_status(SupplementalReadStatus {
                 kind: SupplementalReadKind::Retrieved,
@@ -2517,7 +2574,7 @@ mod tests {
         });
 
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&initial).unwrap();
+        planner.ingest_research_state(&initial, &[]).unwrap();
         let calculation_id = planner
             .projection()
             .unwrap()
@@ -2535,7 +2592,7 @@ mod tests {
         calculation.status = "missing".into();
         calculation.covered_tickers.clear();
         calculation.calculation_ids.clear();
-        planner.ingest_research_state(&later).unwrap();
+        planner.ingest_research_state(&later, &[]).unwrap();
 
         let goal = planner
             .projection()
@@ -2549,7 +2606,9 @@ mod tests {
     #[test]
     fn context_replan_is_strictly_append_only_and_scope_immutable() {
         let mut planner = ResearchPlanner::default();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
         let mut appended = fixture().plan;
         appended["clauses"]
             .as_array_mut()
@@ -2611,7 +2670,7 @@ mod tests {
             .record_initial_context(ContentHash::sha256("fixture-context"))
             .unwrap();
         planner
-            .ingest_research_state_for_intent(&fixture_for_proposal(), &receipt)
+            .ingest_research_state_for_intent(&fixture_for_proposal(), &receipt, &[])
             .unwrap();
         let intent = planner.intent_projection().expect("intent projection");
         let goal = intent.graph.goal(&goal_id).unwrap();
@@ -2649,13 +2708,99 @@ mod tests {
             .record_initial_context(ContentHash::sha256("fixture-context"))
             .unwrap();
         assert!(matches!(
-            planner.ingest_research_state_for_intent(&state, &receipt),
+            planner.ingest_research_state_for_intent(&state, &receipt, &[]),
             Err(ResearchPlannerError::IntentCoverageProvenanceMissing)
         ));
         assert!(
             planner.intent_projection().is_none(),
             "failed ingest is atomic"
         );
+    }
+
+    #[test]
+    fn orientation_vocabulary_survives_checkpoints_and_old_projections_still_validate() {
+        let weights = ScoringWeights::default();
+        let mut planner = ResearchPlanner::new(weights).unwrap();
+        planner
+            .record_initial_context(ContentHash::sha256("fixture-context"))
+            .unwrap();
+        let terms = vec![
+            OrientationTerm {
+                term: "Component Procurement".into(),
+                document_type: Some("10-K".into()),
+                period: Some("2026년".into()),
+            },
+            OrientationTerm {
+                term: "Services Growth".into(),
+                document_type: None,
+                period: None,
+            },
+        ];
+        planner.ingest_research_state(&fixture(), &terms).unwrap();
+        assert_eq!(planner.projection().unwrap().orientation_vocabulary, terms);
+
+        // A later bounded research snapshot derived without orientation
+        // records must not erase the committed advisory vocabulary.
+        planner.ingest_research_state(&fixture(), &[]).unwrap();
+        assert_eq!(planner.projection().unwrap().orientation_vocabulary, terms);
+
+        let checkpoint = planner.checkpoint();
+        let bytes = serde_jcs::to_vec(&checkpoint).unwrap();
+        let restored = ResearchPlanner::restore(
+            serde_json::from_slice::<ResearchPlannerCheckpointV4>(&bytes).unwrap(),
+            weights,
+        )
+        .unwrap();
+        assert_eq!(restored.projection().unwrap().orientation_vocabulary, terms);
+
+        // Checkpoints serialized before the field existed still validate and
+        // restore with an empty vocabulary.
+        let mut old = serde_json::from_slice::<Value>(&bytes).unwrap();
+        old.get_mut("projection")
+            .expect("checkpoint carries a projection")
+            .as_object_mut()
+            .expect("projection is an object")
+            .remove("orientation_vocabulary");
+        let restored_old = ResearchPlanner::restore(
+            serde_json::from_value::<ResearchPlannerCheckpointV4>(old).unwrap(),
+            weights,
+        )
+        .unwrap();
+        assert!(
+            restored_old
+                .projection()
+                .unwrap()
+                .orientation_vocabulary
+                .is_empty()
+        );
+
+        // The checkpoint trust boundary keeps the vocabulary bounded and
+        // duplicate-free.
+        let mut oversized = serde_json::from_slice::<Value>(&bytes).unwrap();
+        let vocabulary = oversized
+            .get_mut("projection")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .get_mut("orientation_vocabulary")
+            .unwrap()
+            .as_array_mut()
+            .unwrap();
+        vocabulary.clear();
+        for index in 0..=MAX_ORIENTATION_VOCABULARY {
+            vocabulary.push(serde_json::json!({
+                "term": format!("Topic {index:02}"),
+                "document_type": "10-K",
+                "period": "2026년"
+            }));
+        }
+        assert!(matches!(
+            ResearchPlanner::restore(
+                serde_json::from_value::<ResearchPlannerCheckpointV4>(oversized).unwrap(),
+                weights,
+            ),
+            Err(ResearchPlannerError::InvalidCheckpoint)
+        ));
     }
 
     #[test]
@@ -2700,7 +2845,7 @@ mod tests {
             .record_initial_context(ContentHash::sha256("fixture-context"))
             .unwrap();
         planner
-            .ingest_research_state_for_intent(&fixture_for_proposal(), &receipt)
+            .ingest_research_state_for_intent(&fixture_for_proposal(), &receipt, &[])
             .unwrap();
 
         // This is deliberately a direct planner test: a real run additionally
@@ -2734,7 +2879,7 @@ mod tests {
         coverage.missing_tickers = vec!["VG".into()];
         with_unmapped_gap.clause_coverage.push(coverage);
         planner
-            .ingest_research_state_for_intent(&with_unmapped_gap, &receipt)
+            .ingest_research_state_for_intent(&with_unmapped_gap, &receipt, &[])
             .unwrap();
 
         let query = proposal(
@@ -2780,7 +2925,7 @@ mod tests {
             .record_initial_context(ContentHash::sha256("fixture-context"))
             .unwrap();
         planner
-            .ingest_research_state_for_intent(&state, &receipt)
+            .ingest_research_state_for_intent(&state, &receipt, &[])
             .unwrap();
 
         let query = proposal(
@@ -2804,7 +2949,9 @@ mod tests {
     fn planner_checkpoint_round_trips_and_rejects_private_state_tamper() {
         let weights = ScoringWeights::default();
         let mut planner = ResearchPlanner::new(weights).unwrap();
-        planner.ingest_research_state(&partial_fixture()).unwrap();
+        planner
+            .ingest_research_state(&partial_fixture(), &[])
+            .unwrap();
         planner
             .record_completed(ContentHash::sha256("completed"))
             .unwrap();
@@ -2849,7 +2996,7 @@ mod tests {
         });
 
         let mut planner = ResearchPlanner::new(weights).unwrap();
-        planner.ingest_research_state(&state).unwrap();
+        planner.ingest_research_state(&state, &[]).unwrap();
         let candidates = &planner
             .projection()
             .expect("projection")
