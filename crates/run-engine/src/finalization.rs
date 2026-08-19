@@ -1034,8 +1034,11 @@ pub(crate) fn fallback_answer_from_ledger(
 
 /// Terminal error classes that may take the deterministic ledger fallback
 /// instead of failing the run: provider/MCP/dependency outages and budget
-/// exhaustion. Everything else — integrity violations, cancellation, stale
-/// fences, ambiguous commits, and provider-output contract violations — keeps
+/// exhaustion — including the global budget classes enforced by
+/// `BudgetUsage::ensure_within`, which escape as
+/// `EngineError::Contract(ContractError::BudgetExceeded)`. Everything else —
+/// integrity violations, cancellation, stale fences, ambiguous commits, and
+/// provider-output contract violations — keeps
 /// today's terminal failure. A dependency failure on `persistence.commit_final`
 /// itself is deliberately excluded: the real answer composition already
 /// succeeded there, and replacing it with a notice commit would destroy a
@@ -1047,6 +1050,7 @@ pub(crate) fn error_allows_ledger_fallback(error: &EngineError) -> bool {
         EngineError::NoRemainingOutputBudget
         | EngineError::FinalOutputReserveReached
         | EngineError::CapabilityBudgetExceeded { .. } => true,
+        EngineError::Contract(krw_agent_protocol::ContractError::BudgetExceeded { .. }) => true,
         _ => false,
     }
 }

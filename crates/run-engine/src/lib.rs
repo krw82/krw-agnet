@@ -5336,6 +5336,41 @@ mod tests {
         ));
     }
 
+    /// Global budget enforcement (`BudgetUsage::ensure_within`) escapes as
+    /// `EngineError::Contract(ContractError::BudgetExceeded)` for every
+    /// resource class. All of them are budget exhaustion and must reach the
+    /// deterministic ledger fallback like the engine-local budget edges do;
+    /// otherwise a run whose evidence ledger is fully assembled still fails
+    /// with no user answer.
+    #[test]
+    fn global_budget_exceeded_escapes_allow_the_ledger_fallback() {
+        for resource in [
+            "provider_turns",
+            "capability_calls",
+            "output_tokens",
+            "input_tokens",
+            "evidence_bytes",
+        ] {
+            assert!(
+                error_allows_ledger_fallback(&EngineError::Contract(
+                    krw_agent_protocol::ContractError::BudgetExceeded {
+                        resource,
+                        used: 2,
+                        limit: 1,
+                    }
+                )),
+                "resource {resource} must allow the ledger fallback"
+            );
+        }
+        // Only budget exhaustion is eligible: other contract violations keep
+        // the terminal failure path.
+        assert!(!error_allows_ledger_fallback(
+            &EngineError::Contract(krw_agent_protocol::ContractError::InvalidHash(
+                "hash".into()
+            ))
+        ));
+    }
+
     #[test]
     fn sanitizer_softens_and_downgrades_without_inventing() {
         let mut ledger = EvidenceLedger::default();
