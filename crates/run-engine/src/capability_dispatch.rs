@@ -1614,7 +1614,21 @@ fn canonicalize_required_gap_targeted_query(
         })
         .collect::<Vec<_>>();
     if let [candidate] = matches.as_slice() {
-        *arguments = exact_required_gap_arguments(candidate, selected_response_detail);
+        // The advertised candidate may carry a focused filing phrase as its
+        // display topic (adapter `focused_targeted_query_topic`), but
+        // `map_goals` binds a targeted query to a clause by exact string
+        // equality against the clause's `retrieval_query`. Dispatch the
+        // canonical binding target, never the display phrase, so a verbatim
+        // copy of an advertised candidate reaches the server and the planner
+        // as the exact gap read the kernel itself derived.
+        let canonical_topic = projection
+            .clauses
+            .iter()
+            .find(|clause| clause.clause_id == candidate.clause_id)
+            .map(|clause| clause.retrieval_query.as_str())
+            .unwrap_or(candidate.topic.as_str());
+        *arguments =
+            exact_required_gap_arguments(candidate, canonical_topic, selected_response_detail);
     }
 }
 
@@ -1666,11 +1680,12 @@ fn normalized_retrieval_topic_tokens(value: &str) -> BTreeSet<String> {
 
 pub(crate) fn exact_required_gap_arguments(
     candidate: &ExactTargetedQueryCandidate,
+    canonical_topic: &str,
     selected_response_detail: &str,
 ) -> Value {
     let mut arguments = serde_json::Map::from_iter([
         ("ticker".into(), Value::String(candidate.ticker.clone())),
-        ("topic".into(), Value::String(candidate.topic.clone())),
+        ("topic".into(), Value::String(canonical_topic.to_owned())),
         (
             "response_detail".into(),
             Value::String(

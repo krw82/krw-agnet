@@ -2233,12 +2233,14 @@ mod tests {
             response_detail: "compact".into(),
             limit: 20,
         };
+        let canonical_topic = candidate.topic.as_str();
         assert_eq!(
-            exact_required_gap_arguments(&candidate, "full")["response_detail"],
+            exact_required_gap_arguments(&candidate, canonical_topic, "full")["response_detail"],
             "full"
         );
         assert_eq!(
-            exact_required_gap_arguments(&candidate, "compact")["response_detail"],
+            exact_required_gap_arguments(&candidate, canonical_topic, "compact")
+                ["response_detail"],
             "compact"
         );
 
@@ -2723,6 +2725,29 @@ mod tests {
         plan["clauses"][0]["required_concepts"] =
             serde_json::json!(["cash generation", "competitive moat"]);
         plan["clauses"][0]["required_predicates"] = serde_json::json!(["drives"]);
+        plan
+    }
+
+    /// A single-metric company-total clause compiles to a long canonical
+    /// `retrieval_query`, while the advertised exact candidate carries the
+    /// focused filing phrase (adapter `focused_targeted_query_topic`, for
+    /// example `research and development`).
+    fn rd_metric_context_plan() -> Value {
+        let mut plan = fixture_research_state()["plan"].clone();
+        plan["clauses"][0] = serde_json::json!({
+            "clause_id": "rd_expense",
+            "retrieval_query": "VG R&D expense research and development rd_expense",
+            "required_concepts": ["VG R&D expense"],
+            "required_predicates": [],
+            "required": true,
+            "tickers": ["VG"],
+            "directness": "direct_required",
+            "object_types": [],
+            "metrics": ["research_and_development"],
+            "metric_dimensions": [],
+            "metric_scope": "company_total",
+            "calculation_window": null
+        });
         plan
     }
 
@@ -5967,6 +5992,73 @@ mod tests {
         // the exact follow-up topic as filing text: a quote is not required
         // to repeat the issuer's ticker symbol.
         assert_eq!(physical["topic"], "cash generation");
+        assert_eq!(physical["response_detail"], "compact");
+        assert_eq!(physical["answer_candidate_only"], true);
+        assert_eq!(physical["limit"], 20);
+    }
+
+    #[tokio::test]
+    async fn focused_required_gap_candidate_copy_dispatches_its_clause_binding() {
+        let fixture = fixture_with_followups();
+        // The adapter advertises a focused filing phrase (`research and
+        // development`) as the candidate topic for a single-metric
+        // company-total clause whose canonical `retrieval_query` is much
+        // longer. A model that copies that advertised candidate verbatim must
+        // still dispatch: the kernel rewrites the physical topic to the
+        // clause's `retrieval_query`, which is the string `map_goals` binds
+        // by exact equality. Otherwise the copy is classified as an unmapped
+        // proposal and the run burns a replan on a decision the kernel
+        // itself advertised.
+        let script = VecDeque::from([
+            company_context_tool_call("company-context"),
+            query_context_tool_call("context-1", &rd_metric_context_plan()),
+            research_tool_call(
+                "focused-gap",
+                "ontology.query",
+                &serde_json::json!({"ticker": "VG", "topic": "research and development"}),
+            ),
+            evidence_sufficient_message(),
+            final_answer_message(),
+        ]);
+        let rig = engine_with_script_and_results(
+            script,
+            VecDeque::from([
+                fixture_company_context(),
+                partial_research_state(),
+                serde_json::json!({
+                    "contract_version": "research-state/v2",
+                    "status": "ok",
+                    "new_clue": "exact research and development evidence"
+                }),
+            ]),
+            true,
+            None,
+            false,
+        );
+
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+
+        // No extra provider turn: the analyst's own tool decision remains the
+        // durable source of the read.
+        assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(outcome.answer_bundle.usage.capability_calls, 3);
+        assert_eq!(outcome.answer_bundle.usage.provider_turns, 5);
+
+        let persisted = rig.persistence.state.lock().unwrap();
+        let exact_read = persisted
+            .intents
+            .values()
+            .find(|intent| intent.tool_call_id == "focused-gap")
+            .expect("focused candidate copy must be dispatched");
+        let physical: Value = serde_json::from_slice(&exact_read.canonical_arguments).unwrap();
+        assert_eq!(physical["ticker"], "VG");
+        // The physical topic is the clause's canonical `retrieval_query`
+        // (model terms plus the compiler-appended metric filing phrases), not
+        // the focused display phrase the model copied.
+        assert_eq!(
+            physical["topic"],
+            "VG R&D expense research and development rd_expense"
+        );
         assert_eq!(physical["response_detail"], "compact");
         assert_eq!(physical["answer_candidate_only"], true);
         assert_eq!(physical["limit"], 20);
