@@ -1965,6 +1965,61 @@ impl ActiveRun {
         Ok(())
     }
 
+    /// Shared cache-hit detection for a prepared call: the canonical action
+    /// key (computed identically on the live and recovery paths by
+    /// `prepare_calls`) was already executed — it is charged in
+    /// `logical_action_keys` — and its committed result is resident in the
+    /// action cache. The live orchestrator branch and the recovery replay of
+    /// a committed episode must agree on this predicate, so it lives here
+    /// once instead of being duplicated at both call sites.
+    pub(crate) fn cached_action_result(&self, call: &PreparedCall) -> Option<CapabilityResult> {
+        if self.logical_action_keys.contains(&call.action_key) {
+            self.action_cache.get(&call.action_key).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Settle a prepared call from its cached committed result. This is the
+    /// single body shared by the live cache-hit branch and recovery replay of
+    /// a cache-hit episode: the cached result is re-projected and the
+    /// capability is completed exactly as the first execution left it, with
+    /// no fresh dispatch, no evidence re-ingestion, no new accepted-action
+    /// reference, and no new logical action key.
+    pub(crate) fn complete_cached_capability(
+        &mut self,
+        image: &AgentImageManifest,
+        call: &PreparedCall,
+        cached: &CapabilityResult,
+        episode_hash: ContentHash,
+        max_compacted_context_bytes: usize,
+        append_transcript: bool,
+    ) -> Result<(), EngineError> {
+        self.ensure_accepted_action(call)?;
+        self.ingest_scope_projection(call, cached)?;
+        if append_transcript {
+            self.append_capability_tool_result(call, cached)?;
+        }
+        if capability_result_completes_prerequisite(cached) {
+            self.completed_capabilities
+                .insert(call.capability.id.clone());
+        }
+        self.complete_capability(
+            image,
+            call,
+            cached,
+            accepted_action_receipt_hash(call, cached)?,
+        )?;
+        if append_transcript && capability_result_completes_prerequisite(cached) {
+            // Every admitted external read is a settled provider boundary.
+            // Rebuild the next turn from kernel-owned evidence rather than
+            // replaying a raw direct-mode tool call into a thinking-mode
+            // request.
+            self.compact_settled_phase(episode_hash, max_compacted_context_bytes)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn preflight_capability_calls(
         &self,
         image: &AgentImageManifest,

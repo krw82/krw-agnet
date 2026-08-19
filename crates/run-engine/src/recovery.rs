@@ -667,6 +667,34 @@ where
             state.append_unselected_research_results(&prepared)?;
         }
         for call in [selected] {
+            // Mirror the live cache-hit branch: when the replayed episode's
+            // action was already executed (its canonical action key is
+            // charged in `logical_action_keys`) and its committed result is
+            // resident in the action cache, the live path settled this
+            // episode from the cache and never created an action receipt.
+            // Replaying it must reuse the cached result the same way — the
+            // shared `cached_action_result` / `complete_cached_capability`
+            // helpers keep the live and recovery predicates identical —
+            // instead of demanding a receipt that was correctly never
+            // persisted. When the cache entry is absent (for example an
+            // episode that was a cache hit in a previous incarnation whose
+            // entry no longer reconstructs), this falls through to the
+            // receipt requirement below and fails closed.
+            if let Some(cached) = state.cached_action_result(&call) {
+                state.complete_cached_capability(
+                    input.image,
+                    &call,
+                    &cached,
+                    recovered.episode_hash.clone(),
+                    self.config.max_compacted_context_bytes,
+                    child_policy.is_none(),
+                )?;
+                // The action key was already consumed by the replay of the
+                // earlier episode that first executed it; a cache-hit replay
+                // creates no additional durable action.
+                state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                continue;
+            }
             let mut matching = actions.iter().filter(|action| {
                 action.action_key == call.action_key
                     && action.episode_hash == recovered.episode_hash

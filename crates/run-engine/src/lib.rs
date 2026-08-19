@@ -4111,7 +4111,62 @@ mod tests {
     }
 
     fn guru_fixture() -> Fixture {
-        let image = compile_agent_dir(guru_root())
+        guru_fixture_at(&guru_root())
+    }
+
+    fn copy_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let target = destination.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_dir_recursive(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), target)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A Guru image variant that tolerates one extra correction round-trip
+    /// on the sealed investigation brief. The shipped statechart allows only
+    /// a single correction before the second (cached) correction has no
+    /// remaining repair target, which prevents a resubmitted byte-identical
+    /// draft from ever settling into a durable checkpoint. Widening the two
+    /// visit budgets lets the live cache-hit branch complete normally so a
+    /// committed cache-hit episode can be captured for recovery tests.
+    fn guru_cache_hit_fixture() -> (Fixture, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "krw-guru-cache-hit-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test").replace('/', "-")
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        copy_dir_recursive(&guru_root(), &root).unwrap();
+        let spec_path = root.join("agent.yaml");
+        let spec = std::fs::read_to_string(&spec_path).unwrap();
+        let spec = spec
+            .replace(
+                "{ id: repair_key_question, kind: plan, role_id: investigation_author, max_visits: 1 }",
+                "{ id: repair_key_question, kind: plan, role_id: investigation_author, max_visits: 2 }",
+            )
+            .replace(
+                "{ id: seal_investigation_brief, kind: capability, capability_id: guru.company_brief, max_visits: 2 }",
+                "{ id: seal_investigation_brief, kind: capability, capability_id: guru.company_brief, max_visits: 3 }",
+            );
+        assert!(
+            spec.contains("id: repair_key_question, kind: plan, role_id: investigation_author, max_visits: 2")
+                && spec.contains("id: seal_investigation_brief, kind: capability, capability_id: guru.company_brief, max_visits: 3"),
+            "cache-hit fixture must widen both brief correction visit budgets"
+        );
+        std::fs::write(&spec_path, spec).unwrap();
+        (guru_fixture_at(&root), root)
+    }
+
+    fn guru_fixture_at(root: &Path) -> Fixture {
+        let image = compile_agent_dir(root)
             .unwrap()
             .into_loaded()
             .unwrap();
@@ -4748,6 +4803,130 @@ mod tests {
             assert_eq!(physical["ticker"], "AAPL");
         }
         drop(persisted);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_episode_restores_without_an_action_receipt() {
+        let (fixture, image_root) = guru_cache_hit_fixture();
+        let draft = guru_contract_value("krw-guru-investigation-question-draft/v1");
+        // First incarnation: the investigation brief is corrected once, then
+        // the model resubmits byte-identical arguments. The resubmission is
+        // served from the action cache — no capability dispatch, no durable
+        // action receipt — and its episode is committed as settled state
+        // before the provider outage interrupts the run.
+        let interrupted = engine_with_script_and_results(
+            VecDeque::from([
+                research_tool_call("guru-query", "guru.query_context", &serde_json::json!({})),
+                research_tool_call("brief-1", "guru.company_brief", &draft),
+                research_tool_call("brief-2", "guru.company_brief", &draft),
+            ]),
+            VecDeque::from([
+                guru_query_context_result(),
+                serde_json::json!({
+                    "schema_version": 1,
+                    "status": "input_correction_required",
+                    "violations": [{
+                        "field": "hypothesis",
+                        "message": "sharpen the central tension"
+                    }],
+                }),
+            ]),
+            true,
+            None,
+            false,
+        );
+        interrupted
+            .persistence
+            .final_commit_faults
+            .store(1, Ordering::SeqCst);
+        let error = interrupted.engine.run(fixture.input()).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                EngineError::Dependency {
+                    component: "provider",
+                    ..
+                }
+            ),
+            "expected the scripted provider outage, got {error:?}"
+        );
+        assert_eq!(interrupted.capability.calls.load(Ordering::SeqCst), 2);
+        {
+            let state = interrupted.persistence.state.lock().unwrap();
+            assert_eq!(state.episodes.len(), 3);
+            // The resubmitted brief has no action receipt: two receipts for
+            // three committed episodes.
+            assert_eq!(state.actions.len(), 2);
+            assert_eq!(state.run_state_provider_checkpoint_seq, 3);
+            let checkpoint: ActiveRunCheckpoint =
+                serde_json::from_slice(&state.run_state.as_ref().unwrap().state_bytes).unwrap();
+            assert_eq!(
+                checkpoint.logical_action_keys.len(),
+                2,
+                "a cache-hit replay must not charge a new logical action key"
+            );
+        }
+        let recovery = captured_recovery(&interrupted.persistence);
+
+        // Second incarnation: recovery replays all three committed episodes —
+        // including the receipt-less cache-hit episode — reconstructing the
+        // action cache, logical keys, and ledger exactly as the live path
+        // left them, and the run continues to a full commit.
+        let mut corrected = draft.clone();
+        corrected["hypothesis"] =
+            Value::String("Services improves durable owner earnings across device cycles.".into());
+        let resumed_log = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ScriptedProvider::with_script(
+            Arc::clone(&resumed_log),
+            VecDeque::from([
+                research_tool_call("brief-3", "guru.company_brief", &corrected),
+                query_context_tool_call("company-context", &guru_research_state()["plan"]),
+                workflow_event("context_ready"),
+                research_tool_call(
+                    "child-return",
+                    "guru.review_company_evidence",
+                    &guru_contract_value("krw-guru-agent-evidence-analysis/v1"),
+                ),
+                guru_final_answer_message(),
+            ]),
+        ));
+        let capability = Arc::new(ScriptedCapability {
+            log: Arc::clone(&resumed_log),
+            calls: AtomicUsize::new(0),
+            provider_results: Mutex::new(VecDeque::from([
+                guru_contract_value("krw-guru-company-brief-result/v1"),
+                guru_research_state(),
+                guru_contract_value("krw-guru-evidence-review-result/v1"),
+            ])),
+            echo_context_plan: true,
+            cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
+            should_cancel: false,
+            presentation_packs: Vec::new(),
+            calculation_batches: Mutex::new(VecDeque::new()),
+        });
+        let resumed = RunEngine::new(
+            Arc::clone(&provider),
+            Arc::clone(&capability),
+            Arc::clone(&interrupted.persistence),
+            EngineConfig::default(),
+        );
+        *interrupted.persistence.recovery.lock().unwrap() = recovery;
+        let outcome = resumed
+            .run(fixture.input())
+            .await
+            .unwrap_or_else(|error| panic!("cache-hit recovery failed: {error:?}"));
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        // Only the corrected brief, the company plan, and the typed child
+        // return dispatch fresh capabilities; the replayed cache hit and the
+        // replayed first incarnation dispatch none.
+        assert_eq!(capability.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 5);
+        {
+            let state = interrupted.persistence.state.lock().unwrap();
+            assert_eq!(state.episodes.len(), 8);
+            assert_eq!(state.actions.len(), 5);
+        }
+        std::fs::remove_dir_all(&image_root).ok();
     }
 
     /// A Guru run whose typed composer emits `final_message` with the repair

@@ -684,33 +684,15 @@ where
 
             for call in [selected] {
                 self.guard_control(&identity, deadline).await?;
-                if let Some(cached) = state.action_cache.get(&call.action_key).cloned() {
-                    state.ensure_accepted_action(&call)?;
-                    state.ingest_scope_projection(&call, &cached)?;
-                    if child_policy.is_none() {
-                        state.append_capability_tool_result(&call, &cached)?;
-                    }
-                    if capability_result_completes_prerequisite(&cached) {
-                        state
-                            .completed_capabilities
-                            .insert(call.capability.id.clone());
-                    }
-                    state.complete_capability(
+                if let Some(cached) = state.cached_action_result(&call) {
+                    state.complete_cached_capability(
                         input.image,
                         &call,
                         &cached,
-                        accepted_action_receipt_hash(&call, &cached)?,
+                        episode_hash.clone(),
+                        self.config.max_compacted_context_bytes,
+                        child_policy.is_none(),
                     )?;
-                    if child_policy.is_none() && capability_result_completes_prerequisite(&cached) {
-                        // Every admitted external read is a settled provider
-                        // boundary. Rebuild the next turn from kernel-owned
-                        // evidence rather than replaying a raw direct-mode
-                        // tool call into a thinking-mode request.
-                        state.compact_settled_phase(
-                            episode_hash.clone(),
-                            self.config.max_compacted_context_bytes,
-                        )?;
-                    }
                     if let Some(mutation) = pending_child_completion.as_ref()
                         && bounded_child::return_was_accepted(
                             input.image,
