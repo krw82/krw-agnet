@@ -2126,12 +2126,18 @@ pub fn build_company_research_context(
                 continue;
             }
             // Keep every projected unit linked to the bounded source-ID set.
-            // A context result can contain many XBRL lineage IDs per unit;
-            // previously we capped `source_object_ids` at 24 but copied all
-            // IDs into each unit, making the deterministic projection fail
-            // its own provenance validator as soon as the cap was reached.
-            // Trim only newly unseen IDs after the cap; already admitted IDs
-            // remain usable for later duplicate evidence units.
+            // A unit dropped by the evidence-unit cap must not contribute
+            // source IDs either: the provenance validator requires the
+            // declared source set to be exactly the union referenced by the
+            // projected units. Admitting IDs for a dropped unit orphans them,
+            // so the deterministic projection fails its own validator
+            // whenever the observed evidence is rich enough (production run
+            // c630b10b failed review_company_evidence exactly here: 40
+            // candidate units produced 24 declared sources with only 13
+            // referenced by the 12 projected units).
+            if evidence_units.len() >= 12 {
+                continue;
+            }
             let linked_object_ids = object_ids
                 .into_iter()
                 .filter(|object_id| {
@@ -2147,9 +2153,6 @@ pub fn build_company_research_context(
                 })
                 .collect::<Vec<_>>();
             if linked_object_ids.is_empty() {
-                continue;
-            }
-            if evidence_units.len() >= 12 {
                 continue;
             }
             let mut projected = serde_json::Map::new();
@@ -2902,5 +2905,69 @@ mod tests {
             }]
         });
         assert!(build_company_research_context(&brief, &[foreign]).is_err());
+    }
+
+    #[test]
+    fn rich_evidence_keeps_source_ids_linked_to_projected_units() {
+        // Regression (production run c630b10b): a unit dropped by the
+        // 12-unit evidence cap must not contribute source IDs. With 40
+        // candidate units the projection once declared 24 sources of which
+        // only 13 were referenced, so the deterministic context failed its
+        // own provenance validator and every rich-evidence Guru run died at
+        // guru.review_company_evidence.
+        let brief = fixture(KRW_GURU_INVESTIGATION_BRIEF_V1);
+        let expected = fixture(KRW_GURU_COMPANY_RESEARCH_CONTEXT_V1);
+        let ticker = expected["evidence_units"][0]["ticker"]
+            .as_str()
+            .expect("fixture ticker")
+            .to_owned();
+        let units: Vec<Value> = (0..40u32)
+            .map(|index| {
+                let id = format!("claim:{ticker}:rich-{index:02}");
+                serde_json::json!({
+                    "evidence_id": format!("ev:{ticker}:rich-{index:02}"),
+                    "object_id": id,
+                    "object_type": "ResearchClaim",
+                    "ticker": ticker,
+                    "source": {"object_ids": [id]},
+                })
+            })
+            .collect();
+        let observed = serde_json::json!({
+            "contract_version": "research-state/v2",
+            "evidence_units": units,
+        });
+        let built = build_company_research_context(&brief, std::slice::from_ref(&observed))
+            .expect("rich evidence must still project");
+        assert_eq!(built["evidence_units"].as_array().map(Vec::len), Some(12));
+        let mut referenced: Vec<String> = built["evidence_units"]
+            .as_array()
+            .expect("units")
+            .iter()
+            .flat_map(|unit| {
+                unit["source"]["object_ids"]
+                    .as_array()
+                    .expect("unit source ids")
+                    .iter()
+                    .map(|id| id.as_str().expect("id").to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        referenced.sort();
+        referenced.dedup();
+        let mut declared: Vec<String> = built["source_object_ids"]
+            .as_array()
+            .expect("declared ids")
+            .iter()
+            .map(|id| id.as_str().expect("id").to_owned())
+            .collect();
+        declared.sort();
+        declared.dedup();
+        assert_eq!(
+            referenced, declared,
+            "every declared source id must be referenced by a projected unit"
+        );
+        validate_company_research_context_provenance(&brief, &[observed], &built)
+            .expect("provenance");
     }
 }
