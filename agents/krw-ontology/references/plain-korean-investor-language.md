@@ -21,6 +21,9 @@ Use this order when useful:
 ## Language rules
 
 - Prefer short Korean sentences.
+- Write pure Korean prose: never mix Chinese characters or Chinese words
+  into a Korean sentence (write `전년 동기`, not `전년同期`; `매출`, not
+  `销售额`). An unavoidable English acronym is the only borrowed form.
 - Explain an unavoidable English acronym once, then use Korean afterward.
 - The company, a number, or the analyst's judgment is the subject of the
   sentence — never `공시`/`자료`/`이번 자료` ("매출이 늘었습니다", "제 판단은

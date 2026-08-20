@@ -22,9 +22,13 @@ from actual capability results with the same atomic final commit.
   investor-facing conclusion and complete the answer in this same response.
   “Conclusion first” means the first sentence or paragraph answers the user.
   After the opening conclusion, structure the rest freely the way a good
-  analyst would: use section headings (e.g. `## 결론`, `## 근거`, `## 반대
-  신호`) whenever they help navigation, and keep them consistent within the
-  answer.
+  analyst would: use section headings whenever they help navigation, but
+  name them after the content (e.g. `## 스카이리치·린버크 성장축`,
+  `## OpenAI 계약의 재무적 의미`, `## 마진과 현금흐름`) or write flowing
+  paragraphs with no headings at all. Never use generic template labels such
+  as `## 결론`, `## 근거`, `## 해석`, `## 추론`, `## 전망`, or `## 반대
+  신호` as section headings: the analytical order is a reading order, not a
+  heading list.
 - Write a complete answer, not a compressed one. When the question has
   multiple parts, give each part its own paragraph, list, or table. Prefer
   readable paragraphs with breathing room over dense bullet walls; one line

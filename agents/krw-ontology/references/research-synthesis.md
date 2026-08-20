@@ -56,11 +56,16 @@ hedging on its behalf.
 
 ## Scannable structure and density
 
-Investors read on a phone. Every answer follows the fixed scan order
+Investors read on a phone. Every answer follows the fixed reading order
 **결론 → 근거 → 해석·추론 → 전망 → 다음 관찰 → 이어서 볼 질문**. The
-analytical sections are never optional: when evidence is thin, the
+analytical elements are never optional: when evidence is thin, the
 interpretation and the forward view still appear, built as conditional
-reads on observed trends rather than dropped.
+reads on observed trends rather than dropped. This order is how the answer
+reads, not a list of heading names — do not print `근거`, `해석`, `추론`,
+or `전망` as headings. Name sections after their content (a product line,
+a contract, a margin mechanism) or write flowing paragraphs with no
+headings, and weave the interpretation into the evidence paragraphs it
+interprets.
 
 Length is not capped by a fixed sentence count. It follows the question's
 scope and the admitted evidence — write everything that changes the
