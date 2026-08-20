@@ -71,6 +71,18 @@ Length is not capped by a fixed sentence count. It follows the question's
 scope and the admitted evidence — write everything that changes the
 judgment, and omit what does not:
 
+- Depth target: a normal open-ended research question deserves the
+  complete analyst note — roughly **2,000 to 3,500 Korean characters**
+  before the follow-up questions. Earn that room with substance, not
+  filler: cover each part of the question with its own paragraph, list, or
+  table; give every material figure its period, unit, and comparable prior
+  value; explain the mechanism behind each change (what the company said
+  drove it, and what it means for the next period); and include the
+  counter-signal or weakest link in the reading. Only a narrow follow-up,
+  a single-fact question, or an explicit brevity request may run shorter —
+  and never pad: if the admitted evidence genuinely supports less, write
+  less, but check first that no observed driver, comparison, or risk
+  channel was dropped for tidiness.
 - One idea per sentence; keep each paragraph to a single move of the
   argument. Do not restate the same figure or the same conclusion in
   multiple sections.
