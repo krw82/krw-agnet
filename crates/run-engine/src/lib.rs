@@ -1914,6 +1914,103 @@ mod tests {
     }
 
     #[test]
+    fn glm_multi_concept_qualitative_objective_without_predicate_is_split() {
+        // The deterministic QualitativePredicateMissing repair: production
+        // scenario runs died at the planner because GLM listed two concepts
+        // with no linking predicate and then failed the model repair turn.
+        let mut proposal = serde_json::json!({
+            "intent": "margin",
+            "answer_scope": "direct",
+            "uncertainty": "medium",
+            "document_types": ["10-K"],
+            "periods": ["FY2025"],
+            "objectives": [
+                {
+                    "priority": "required",
+                    "alternatives": [{"terms": ["gross margin", "product mix"]}],
+                    "directness": "direct_required",
+                    "object_types": ["NarrativeEvidence"],
+                    "goal": {
+                        "kind": "qualitative_evidence",
+                        "concepts": ["gross margin", "product mix"],
+                        "predicates": []
+                    }
+                },
+                {
+                    "priority": "required",
+                    "alternatives": [{"terms": ["revenue"]}],
+                    "directness": "any",
+                    "object_types": [],
+                    "goal": {
+                        "kind": "qualitative_evidence",
+                        "concepts": ["revenue"],
+                        "predicates": ["pressures"]
+                    }
+                }
+            ]
+        });
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut proposal);
+        let objectives = proposal["objectives"].as_array().expect("objectives");
+        assert_eq!(objectives.len(), 3, "two concepts split into two objectives");
+        for (index, concept) in ["gross margin", "product mix"].iter().enumerate() {
+            assert_eq!(
+                objectives[index]["goal"]["concepts"],
+                serde_json::json!([concept])
+            );
+            assert_eq!(objectives[index]["priority"], serde_json::json!("required"));
+            assert_eq!(
+                objectives[index]["alternatives"],
+                serde_json::json!([{"terms": ["gross margin", "product mix"]}])
+            );
+        }
+        assert_eq!(
+            objectives[2]["goal"]["concepts"],
+            serde_json::json!(["revenue"])
+        );
+        assert!(
+            krw_agent_contracts::research_proposal_v4_repair_directive(&proposal).is_none(),
+            "the split proposal must satisfy the contract validator"
+        );
+
+        // A linked multi-concept objective is untouched.
+        let mut linked = proposal.clone();
+        linked["objectives"][0]["goal"]["predicates"] = serde_json::json!(["due to"]);
+        linked["objectives"].as_array_mut().expect("objectives").truncate(1);
+        let before = linked.clone();
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut linked);
+        assert_eq!(linked["objectives"], before["objectives"]);
+
+        // A split that would exceed the 12-objective bound is left for the
+        // ordinary repair path.
+        let mut bounded = serde_json::json!({
+            "intent": "margin",
+            "answer_scope": "direct",
+            "uncertainty": "medium",
+            "document_types": [],
+            "periods": [],
+            "objectives": []
+        });
+        let mut objectives = Vec::new();
+        for index in 0..11 {
+            objectives.push(serde_json::json!({
+                "priority": "required",
+                "alternatives": [{"terms": [format!("topic {index}")]}],
+                "directness": "any",
+                "object_types": [],
+                "goal": {
+                    "kind": "qualitative_evidence",
+                    "concepts": ["gross margin", "product mix"],
+                    "predicates": []
+                }
+            }));
+        }
+        bounded["objectives"] = serde_json::json!(objectives);
+        let before = bounded.clone();
+        normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut bounded);
+        assert_eq!(bounded["objectives"], before["objectives"]);
+    }
+
+    #[test]
     fn glm_untagged_metric_goal_gets_a_tag_only_for_an_exact_field_set() {
         let mut observation = serde_json::json!({
             "intent": "revenue",
@@ -6861,13 +6958,35 @@ mod tests {
         // that the kernel does not turn every missing relation into a terminal
         // failure or a question-specific prompt patch: the contract emits a
         // generic `split` directive, then Flash submits a fresh valid goal.
+        // The proposal is padded to the 12-objective bound on purpose: the
+        // deterministic pre-guard auto-split repairs the ordinary
+        // multi-concept/no-predicate shape in place, so the directive path
+        // is only reachable when a split would exceed the bound (13 here).
         let fixture = fixture();
         let mut invalid = research_proposal_from_plan(&fixture_research_state()["plan"]);
-        invalid["objectives"][0]["goal"] = serde_json::json!({
+        let mut violating = invalid["objectives"][0].clone();
+        violating["goal"] = serde_json::json!({
             "kind": "qualitative_evidence",
             "concepts": ["cash generation", "debt burden"],
             "predicates": []
         });
+        let mut padded = Vec::new();
+        for index in 0..11 {
+            let topic = format!("padded topic {index}");
+            padded.push(serde_json::json!({
+                "priority": "required",
+                "alternatives": [{"terms": [topic.clone()]}],
+                "directness": "any",
+                "object_types": [],
+                "goal": {
+                    "kind": "qualitative_evidence",
+                    "concepts": [topic],
+                    "predicates": []
+                }
+            }));
+        }
+        padded.push(violating);
+        invalid["objectives"] = serde_json::json!(padded);
         let script = VecDeque::from([
             research_tool_call(
                 "ambiguous-qualitative-proposal",

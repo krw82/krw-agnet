@@ -1511,7 +1511,7 @@ pub(crate) fn normalize_provider_model_input(contract_id: &str, value: &mut Valu
     else {
         return;
     };
-    for objective in objectives {
+    for objective in objectives.iter_mut() {
         let Some(goal) = objective.get_mut("goal").and_then(Value::as_object_mut) else {
             continue;
         };
@@ -1537,6 +1537,63 @@ pub(crate) fn normalize_provider_model_input(contract_id: &str, value: &mut Valu
         };
         if let Some(kind) = inferred_kind {
             goal.insert("kind".to_string(), Value::String(kind.to_string()));
+        }
+    }
+    // A qualitative objective that lists several concepts without a linking
+    // predicate is the most common GLM proposal rejection
+    // (`QualitativePredicateMissing`, repair mode Split). The Split repair it
+    // asks for is purely mechanical — one objective per concept — so apply it
+    // deterministically instead of spending a scarce repair turn that
+    // production showed the model failing again (scenario run died at
+    // 0.4min after exhausting its single repair). Each split objective keeps
+    // the original priority, alternatives, and filters; a single-concept
+    // goal needs no predicate. Stay inside the 12-objective contract bound
+    // or leave the proposal to the ordinary repair path.
+    let qualitative_without_predicate = |objective: &Value| {
+        let Some(goal) = objective.get("goal").and_then(Value::as_object) else {
+            return None;
+        };
+        if goal.get("kind").and_then(Value::as_str) != Some("qualitative_evidence") {
+            return None;
+        }
+        let predicates_empty = goal
+            .get("predicates")
+            .and_then(Value::as_array)
+            .is_none_or(|predicates| predicates.is_empty());
+        let concepts = goal.get("concepts")?.as_array()?;
+        (predicates_empty && concepts.len() > 1).then(|| concepts.clone())
+    };
+    let projected = objectives
+        .iter()
+        .map(|objective| qualitative_without_predicate(objective).map_or(1, |concepts| concepts.len()))
+        .sum::<usize>();
+    if projected <= 12 {
+        let mut rebuilt = Vec::with_capacity(projected);
+        let mut split_any = false;
+        for objective in objectives.iter() {
+            if let Some(concepts) = qualitative_without_predicate(objective) {
+                split_any = true;
+                for concept in concepts {
+                    let mut split_objective = objective.clone();
+                    if let Some(goal) = split_objective
+                        .get_mut("goal")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|goal| goal.get_mut("concepts"))
+                    {
+                        *goal = Value::Array(vec![concept]);
+                    }
+                    rebuilt.push(split_objective);
+                }
+            } else {
+                rebuilt.push(objective.clone());
+            }
+        }
+        if split_any {
+            tracing::warn!(
+                "split multi-concept qualitative objectives without predicates \
+                 (deterministic QualitativePredicateMissing repair)"
+            );
+            *objectives = rebuilt;
         }
     }
 }
