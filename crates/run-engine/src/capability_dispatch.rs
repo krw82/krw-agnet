@@ -1565,7 +1565,9 @@ pub(crate) fn normalize_provider_model_input(contract_id: &str, value: &mut Valu
     };
     let projected = objectives
         .iter()
-        .map(|objective| qualitative_without_predicate(objective).map_or(1, |concepts| concepts.len()))
+        .map(|objective| {
+            qualitative_without_predicate(objective).map_or(1, |concepts| concepts.len())
+        })
         .sum::<usize>();
     if projected <= 12 {
         let mut rebuilt = Vec::with_capacity(projected);

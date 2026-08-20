@@ -316,9 +316,15 @@ workflows:
       - { from: ingest_feed_anchor, on: ingested, to: author_event_plan }
       - { from: author_event_plan, on: plan_ready, to: validate_plan }
       - { from: author_event_plan, on: proposal_contract_invalid, to: repair_plan }
+      # Kernel-owned escape for a plan lane whose proposals stay rejected
+      # after the repair budget is exhausted (e.g. the event's company is not
+      # in the covered corpus). Never advertised to the model; the kernel
+      # fires it so the run still reaches the bounded-answer compose path.
+      - { from: author_event_plan, on: proposal_unrecoverable, to: assess_event_company_path }
       - { from: validate_plan, on: plan_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_valid, to: query_context }
       - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: repair_plan, on: proposal_unrecoverable, to: assess_event_company_path }
       - { from: query_context, on: correction_required, to: repair_plan }
       - { from: query_context, on: correction_unresolved, to: assess_event_company_path }
       - { from: query_context, on: evidence_observed, to: ingest_company_evidence }
@@ -375,9 +381,14 @@ workflows:
       - { from: decide_filing_followup, on: durable_thesis_question, to: author_event_plan }
       - { from: author_event_plan, on: plan_ready, to: validate_plan }
       - { from: author_event_plan, on: proposal_contract_invalid, to: repair_plan }
+      # Kernel-owned escape, identical to the news workflow: preserves the
+      # bounded-answer path when proposals stay rejected past the repair
+      # budget.
+      - { from: author_event_plan, on: proposal_unrecoverable, to: assess_durable_impact }
       - { from: validate_plan, on: plan_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_valid, to: query_context }
       - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: repair_plan, on: proposal_unrecoverable, to: assess_durable_impact }
       - { from: query_context, on: correction_required, to: repair_plan }
       - { from: query_context, on: correction_unresolved, to: assess_durable_impact }
       - { from: query_context, on: evidence_observed, to: ingest_company_evidence }

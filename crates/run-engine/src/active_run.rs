@@ -432,13 +432,15 @@ impl ActiveRun {
             {
                 continue;
             }
-            // This edge is entirely kernel-owned budget recovery, never a
-            // model choice. Advertising it let a planner skip from orientation
+            // These edges are entirely kernel-owned budget recovery, never a
+            // model choice. Advertising them let a planner skip from orientation
             // to Markdown before a substantive filing read, producing a
             // polished but evidence-free "not found" answer. The kernel
-            // invokes the edge only after it has admitted substantive evidence
-            // and needs to preserve the final composition turn.
-            if transition.event == "output_budget_reserved" {
+            // invokes each edge only after it has admitted substantive evidence
+            // or exhausted the bounded repair budget.
+            if transition.event == "output_budget_reserved"
+                || transition.event == "proposal_unrecoverable"
+            {
                 continue;
             }
             let facts = kernel_workflow_facts(image, request, &transition.event)?;
@@ -1225,6 +1227,69 @@ impl ActiveRun {
         Ok(true)
     }
 
+    /// Terminal-shape companion to `stop_at_append_context_plan_capacity`.
+    /// When the bounded repair budget is exhausted while the planner keeps
+    /// producing rejected decisions — for example a feed event whose company
+    /// sits outside the covered corpus, so every proposal is scope-rejected —
+    /// a workflow that declares a `proposal_unrecoverable` edge stays alive:
+    /// the kernel moves to the assessment lane, which owns the qualified
+    /// stop edges into composition and the feed premise the run already
+    /// ingested.
+    pub(crate) fn stop_at_proposal_repair_exhaustion(
+        &mut self,
+        episode: &ProviderEpisodeV1,
+        provider_episode_hash: ContentHash,
+    ) -> Result<bool, EngineError> {
+        if !matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision { .. }
+        ) {
+            return Ok(false);
+        }
+        // A multi-call episode cannot be acknowledged with one receipt; keep
+        // the original failure for those.
+        if episode.assistant.tool_calls.len() > 1 {
+            return Ok(false);
+        }
+        let facts = serde_json::json!({
+            "stop_reason": "proposal_repair_budget_exhausted",
+            "admitted_evidence_available": !self.ledger.is_empty(),
+        });
+        if !self.event_has_remaining_target("proposal_unrecoverable", &facts)? {
+            return Ok(false);
+        }
+        let event = match self.unique_available_transition_event(
+            Some("proposal_unrecoverable"),
+            &facts,
+            |state| matches!(&state.operation, StateOperation::ModelDecision { .. }),
+            "proposal repair exhaustion stop",
+        ) {
+            Ok(event) => event,
+            Err(EngineError::WorkflowResolution { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        self.append_assistant(episode);
+        if let Some(call) = episode.assistant.tool_calls.first() {
+            self.append_tool_result(
+                &call.id,
+                &serde_json::json!({
+                    "schema_version": 1,
+                    "status": "not_dispatched",
+                    "reason_code": "proposal_repair_budget_exhausted",
+                    "contains_evidence": false,
+                }),
+            )?;
+        }
+        self.apply_kernel_artifact(
+            KernelArtifactReason::RejectedModelCapabilityProposal,
+            &event,
+            &facts,
+            provider_episode_hash,
+        )?;
+        self.require_model_state()?;
+        Ok(true)
+    }
+
     /// Reserve one globally bounded model-output repair. Both final-output
     /// repair and model-visible recovery consume the same execution budget, so a
     /// model cannot turn independent recovery lanes into an unbounded dialogue.
@@ -1259,9 +1324,14 @@ impl ActiveRun {
         if !matches!(
             self.interpreter.current_operation()?,
             StateOperation::ModelDecision { .. }
-        ) || !self.reserve_repair()?
-        {
+        ) {
             return Ok(false);
+        }
+        if !self.reserve_repair()? {
+            // The bounded repair budget is exhausted. A workflow that
+            // declares a kernel-owned `proposal_unrecoverable` edge can still
+            // keep this run on its bounded-answer path instead of failing.
+            return self.stop_at_proposal_repair_exhaustion(episode, episode_hash);
         }
 
         let envelope = self.model_recovery_envelope(directive)?;

@@ -1951,7 +1951,11 @@ mod tests {
         });
         normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut proposal);
         let objectives = proposal["objectives"].as_array().expect("objectives");
-        assert_eq!(objectives.len(), 3, "two concepts split into two objectives");
+        assert_eq!(
+            objectives.len(),
+            3,
+            "two concepts split into two objectives"
+        );
         for (index, concept) in ["gross margin", "product mix"].iter().enumerate() {
             assert_eq!(
                 objectives[index]["goal"]["concepts"],
@@ -1975,7 +1979,10 @@ mod tests {
         // A linked multi-concept objective is untouched.
         let mut linked = proposal.clone();
         linked["objectives"][0]["goal"]["predicates"] = serde_json::json!(["due to"]);
-        linked["objectives"].as_array_mut().expect("objectives").truncate(1);
+        linked["objectives"]
+            .as_array_mut()
+            .expect("objectives")
+            .truncate(1);
         let before = linked.clone();
         normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut linked);
         assert_eq!(linked["objectives"], before["objectives"]);
@@ -7422,6 +7429,28 @@ mod tests {
                         "planner assess state {audit_id} lacks its context-replan edge"
                     );
                     assert!(audited.insert(audit_id));
+                }
+                // Feed events reference arbitrary companies, so their plan
+                // lanes can exhaust the repair budget on scope-rejected
+                // proposals. The kernel-owned escape keeps those runs on the
+                // bounded-answer path; guard it structurally.
+                if workflow
+                    .states
+                    .iter()
+                    .any(|state| state.stable_id == "author_event_plan")
+                {
+                    for plan_state in ["author_event_plan", "repair_plan"] {
+                        assert!(
+                            workflow.transitions.iter().any(|transition| {
+                                workflow.states.iter().any(|state| {
+                                    state.numeric_id == transition.from
+                                        && state.stable_id == plan_state
+                                }) && transition.event == "proposal_unrecoverable"
+                            }),
+                            "feed workflow {} lacks the kernel proposal_unrecoverable escape from {plan_state}",
+                            workflow.id
+                        );
+                    }
                 }
             }
         }

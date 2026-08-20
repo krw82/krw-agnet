@@ -1472,6 +1472,17 @@ where
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
+                    // A contract-shaped mistake inside the compose state has
+                    // no verify-state repair transition; give it the same
+                    // bounded conversational retry used for canonical
+                    // violations instead of failing the run terminally.
+                    Err(error) if state.reserve_repair()? => {
+                        state.append_assistant(episode);
+                        state
+                            .append_repair_feedback(&output_contract.id, answer_error_code(&error));
+                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                        return Ok(None);
+                    }
                     Err(error) => return Err(error),
                 };
                 let rendered_content = render_typed_output(
