@@ -33,9 +33,11 @@ Use this order when useful:
   Land the judgment, mark an estimate once, and do not re-hedge every
   sentence.
 - Keep the answer scannable: conclusion sentence in bold first, then short
-  support, then the forward view, then one change-observation line and
-  follow-up questions. Each section stays within three sentences or three
-  bullets; at most one bold phrase per section.
+  support, then the interpretation and the forward view, then one
+  change-observation line and follow-up questions. Length follows the
+  question's scope and the admitted evidence — write everything that
+  changes the judgment, omit what does not, and never drop the
+  interpretation or the forward view.
 - End the analysis with a forward view built from observed trends as
   conditional scenarios (`~가 계속되면 ~ 방향`, with triggers). Quote
   company-disclosed guidance as fact with its period; write analyst
