@@ -163,12 +163,19 @@ impl EpisodeAssembler {
             SseEvent::MessageDelta {
                 stop_reason,
                 output_tokens,
+                input_tokens,
             } => {
                 if let Some(reason) = stop_reason {
                     self.finish_reason = Some(map_stop_reason(&reason));
                 }
                 if let Some(output) = output_tokens {
                     self.usage_output_tokens = output;
+                }
+                // Z.AI reports `message_start.usage.input_tokens: 0` and the
+                // real input count only in this final frame, so a present
+                // value here is the authoritative input usage.
+                if let Some(input) = input_tokens {
+                    self.usage_input_tokens = input;
                 }
             }
             SseEvent::MessageStop => {
@@ -501,6 +508,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(7),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -513,6 +521,49 @@ mod tests {
         assert_eq!(episode.usage.prompt_tokens, 12);
         assert_eq!(episode.usage.completion_tokens, 7);
         assert_eq!(episode.usage.total_tokens, 19);
+    }
+
+    #[test]
+    fn final_delta_input_tokens_override_message_start_zero() {
+        // Z.AI's Anthropic-compatible endpoint reports `message_start.usage
+        // .input_tokens: 0` and delivers the real input count only in the
+        // final `message_delta` frame (observed on production glm-5.3,
+        // 2026-08-20). The episode must keep the authoritative delta value,
+        // not the placeholder zero.
+        let mut asm = build_assembler(64 * 1024);
+        asm.push_event(SseEvent::MessageStart {
+            model: GLM_MODEL_ID.to_string(),
+            input_tokens: 0,
+        })
+        .unwrap();
+        asm.push_event(SseEvent::ContentBlockStart {
+            index: 0,
+            block: ContentBlockStart::Text {
+                text: String::new(),
+            },
+        })
+        .unwrap();
+        asm.push_event(SseEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentBlockDelta::TextDelta {
+                text: "1+1은 2".into(),
+            },
+        })
+        .unwrap();
+        asm.push_event(SseEvent::ContentBlockStop { index: 0 })
+            .unwrap();
+        asm.push_event(SseEvent::MessageDelta {
+            stop_reason: Some("end_turn".into()),
+            output_tokens: Some(29),
+            input_tokens: Some(17),
+        })
+        .unwrap();
+        asm.push_event(SseEvent::MessageStop).unwrap();
+
+        let episode = asm.finish().expect("episode assembles");
+        assert_eq!(episode.usage.prompt_tokens, 17);
+        assert_eq!(episode.usage.completion_tokens, 29);
+        assert_eq!(episode.usage.total_tokens, 46);
     }
 
     #[test]
@@ -562,6 +613,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(20),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -629,6 +681,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(3),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -775,6 +828,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(1),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -814,6 +868,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("tool_use".into()),
             output_tokens: Some(1),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -834,6 +889,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("max_tokens".into()),
             output_tokens: None,
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();
@@ -881,6 +937,7 @@ mod tests {
         asm.push_event(SseEvent::MessageDelta {
             stop_reason: Some("end_turn".into()),
             output_tokens: Some(2),
+            input_tokens: None,
         })
         .unwrap();
         asm.push_event(SseEvent::MessageStop).unwrap();

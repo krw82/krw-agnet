@@ -57,10 +57,14 @@ pub enum AnthropicSseEvent {
     /// `event: content_block_stop`.
     ContentBlockStop { index: u32 },
     /// `event: message_delta`. `stop_reason` lives in `delta.stop_reason`;
-    /// `output_tokens` (cumulative) lives in `usage.output_tokens`.
+    /// `output_tokens` (cumulative) lives in `usage.output_tokens`. Z.AI's
+    /// Anthropic-compatible endpoint reports `message_start.usage.input_tokens: 0`
+    /// and delivers the real input count only in this final frame, so
+    /// `input_tokens` here is authoritative when present.
     MessageDelta {
         stop_reason: Option<String>,
         output_tokens: Option<u32>,
+        input_tokens: Option<u32>,
     },
     /// `event: message_stop`. Stream terminator.
     MessageStop,
@@ -99,10 +103,12 @@ impl std::fmt::Debug for AnthropicSseEvent {
             Self::MessageDelta {
                 stop_reason,
                 output_tokens,
+                input_tokens,
             } => formatter
                 .debug_struct("AnthropicSseEvent::MessageDelta")
                 .field("stop_reason", stop_reason)
                 .field("output_tokens", output_tokens)
+                .field("input_tokens", input_tokens)
                 .finish(),
             Self::MessageStop => formatter.write_str("AnthropicSseEvent::MessageStop"),
             Self::Ping => formatter.write_str("AnthropicSseEvent::Ping"),
@@ -274,6 +280,8 @@ struct MessageDeltaInner {
 struct MessageDeltaUsage {
     #[serde(default)]
     output_tokens: Option<u32>,
+    #[serde(default)]
+    input_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +452,7 @@ fn parse_event(discriminator: &str, data: &str) -> Result<Option<AnthropicSseEve
             Ok(Some(AnthropicSseEvent::MessageDelta {
                 stop_reason: envelope.delta.stop_reason,
                 output_tokens: envelope.usage.output_tokens,
+                input_tokens: envelope.usage.input_tokens,
             }))
         }
         "message_stop" => {
@@ -589,6 +598,7 @@ mod tests {
             AnthropicSseEvent::MessageDelta {
                 stop_reason: Some(reason),
                 output_tokens: Some(15),
+                ..
             } if reason == "end_turn"
         ));
         assert!(matches!(&events[5], AnthropicSseEvent::MessageStop));
@@ -780,6 +790,7 @@ mod tests {
             AnthropicSseEvent::MessageDelta {
                 stop_reason,
                 output_tokens,
+                ..
             } => {
                 assert_eq!(stop_reason.as_deref(), Some("max_tokens"));
                 assert!(output_tokens.is_none());
