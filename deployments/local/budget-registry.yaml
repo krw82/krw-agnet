@@ -161,7 +161,9 @@ profiles:
       max_replans: 1
       max_repairs: 2
       max_input_tokens: 120000
-      max_output_tokens: 12000
+      # The news analyst now runs at the 16384-token ceiling; the tail must
+      # hold two analyst turns plus the compose tail.
+      max_output_tokens: 36864
       max_evidence_bytes: 8388608
       # A passing news run needs ~4 minutes; the old 120000ms wall killed
       # every run at exactly 2.0min (production 2026-08-19).
@@ -179,9 +181,9 @@ profiles:
       max_replans: 1
       max_repairs: 2
       max_input_tokens: 120000
-      max_output_tokens: 12000
+      max_output_tokens: 36864
       max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      deadline_ms: 900000
       capability_call_limits:
         feed.get_items: 2
         feed.get_context: 2
@@ -195,9 +197,9 @@ profiles:
       max_replans: 1
       max_repairs: 2
       max_input_tokens: 120000
-      max_output_tokens: 12000
+      max_output_tokens: 36864
       max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      deadline_ms: 900000
       capability_call_limits:
         feed.get_items: 2
         feed.get_context: 2

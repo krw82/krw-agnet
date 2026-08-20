@@ -71,8 +71,14 @@ contracts:
 roles:
   - { id: feed_reader, prompt_segments: [security_boundary, kernel_runtime, feed_source], deterministic: false, execution: { reasoning: direct, max_output_tokens: 4096 } }
   - { id: news_planner, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
-  - { id: news_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
-  - { id: market_move_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, market_move], deterministic: false, execution: { reasoning: standard, max_output_tokens: 8192 } }
+  # GLM bills private thinking and the capability decision against one
+  # output ceiling; 8,192 truncated the evidence-analysis tool call mid-JSON
+  # on rich company paths (finish_reason=length, then a dependency escape
+  # into the degraded deadline answer, production 2026-08-19/20) — the same
+  # failure the company analyst and the guru researcher both abandoned
+  # 8,192 for. Mirror their 16,384.
+  - { id: news_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, news_research], deterministic: false, execution: { reasoning: standard, max_output_tokens: 16384 } }
+  - { id: market_move_analyst, prompt_segments: [security_boundary, kernel_runtime, feed_source, market_move], deterministic: false, execution: { reasoning: standard, max_output_tokens: 16384 } }
   - { id: composer, prompt_segments: [security_boundary, kernel_runtime, feed_source, feed_answer], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
   - { id: verifier, prompt_segments: [], deterministic: true }
 
