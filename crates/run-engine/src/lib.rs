@@ -7392,6 +7392,27 @@ mod tests {
                             .any(|transition| transition.event == "no_positive_value_action"),
                         "planner assess state {audit_id} lacks its qualified stop edge"
                     );
+                    for transition in outgoing.iter().filter(|transition| {
+                        transition.event == "no_positive_value_action"
+                            || transition.event == "evidence_sufficient"
+                    }) {
+                        let target = workflow
+                            .states
+                            .iter()
+                            .find(|state| state.numeric_id == transition.to)
+                            .unwrap();
+                        assert!(
+                            matches!(
+                                target.kind,
+                                StateKind::Assess | StateKind::Plan | StateKind::Compose
+                            ),
+                            "stop edge {} -> {} targets {:?}, which the engine never advertises \
+                             to the model; a research state without a model-selectable stop deadlocks",
+                            audit_id,
+                            target.stable_id,
+                            target.kind
+                        );
+                    }
                     assert!(
                         outgoing.iter().any(|transition| {
                             transition.event == "append_context_plan"

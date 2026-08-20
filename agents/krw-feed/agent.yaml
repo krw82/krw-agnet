@@ -303,7 +303,6 @@ workflows:
       - { id: assess_event_company_path, kind: assess, role_id: news_analyst, max_visits: 5 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query, max_visits: 2 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace, max_visits: 1 }
-      - { id: apply_direct_evidence_gate, kind: verify, max_visits: 1 }
       - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
       - { id: verify_ir, kind: verify, max_visits: 2 }
       - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
@@ -328,11 +327,15 @@ workflows:
       - { from: assess_event_company_path, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_event_company_path, on: append_context_plan, to: query_context }
       - { from: assess_event_company_path, on: proposal_rejected, to: assess_event_company_path }
-      - { from: assess_event_company_path, on: evidence_sufficient, to: apply_direct_evidence_gate }
-      - { from: assess_event_company_path, on: no_positive_value_action, to: apply_direct_evidence_gate }
+      # Stop edges must enter a model-decision (compose) state directly: the
+      # engine only advertises transitions whose target the model can act in,
+      # so the previous verify-gate hop left evidence_sufficient and
+      # no_positive_value_action invisible and deadlocked assess runs whose
+      # queries could not add evidence (production 2026-08-20).
+      - { from: assess_event_company_path, on: evidence_sufficient, to: compose_ir }
+      - { from: assess_event_company_path, on: no_positive_value_action, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_company_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_company_evidence }
-      - { from: apply_direct_evidence_gate, on: checked, to: compose_ir }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
