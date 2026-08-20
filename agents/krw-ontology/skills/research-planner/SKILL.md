@@ -37,6 +37,15 @@ Choose at most one context objective tied to that number (for example, the
 reported driver of the change or the most material counter-signal). For a
 company-introduction question, use the dedicated overview procedure below.
 
+For a broad or multi-part question, coverage decides the plan's value: give
+each named part of the question its own objective, and add two default
+companion objectives when the material admits them — one on the quality of
+the result (cash conversion or margin alongside the headline figures) and
+one on the shrinking side, concentration, or stated risk. A plan that
+answers every part on paper but leaves the analyst nothing on why the
+numbers moved, whether they converted to cash, or what could reverse them
+is incomplete even when it validates.
+
 4. **When rewriting a rejected proposal**, do not change the goal definition
 (metric + kind + dimensions) of an existing objective. If you must change
 the metric or kind, add a new objective instead.

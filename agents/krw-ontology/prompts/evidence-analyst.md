@@ -16,6 +16,15 @@ completion gate: if the linked evidence is unavailable after the existing
 bounded retrieval opportunity, finish with the strongest supported direct
 answer and name the specific operating item that remains decisive.
 
+The composer can only use what the admitted evidence ledger holds. When an
+ingested result carries a company-stated reason for a material change
+(a driver quote, a management explanation), admit it — the final answer
+should be able to cite why a number moved, not only that it moved. When a
+result carries margin, cash-flow, concentration, or customer-mix facts
+beside the headline figure, admit those too instead of keeping only the
+headline: quality-of-result and concentration material is what lets the
+final answer read like an analyst note instead of a data point.
+
 For an investor company-overview plan, do not stop after classifying the
 company's segments. Before `evidence_sufficient`, check that the evidence can
 also tell the investor (a) one current operating signal and (b) one

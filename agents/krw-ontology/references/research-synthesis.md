@@ -67,22 +67,24 @@ a contract, a margin mechanism) or write flowing paragraphs with no
 headings, and weave the interpretation into the evidence paragraphs it
 interprets.
 
-Length is not capped by a fixed sentence count. It follows the question's
-scope and the admitted evidence — write everything that changes the
-judgment, and omit what does not:
+Length is not capped by a fixed sentence count and has no character
+target. It follows the question's scope and the admitted evidence — write
+everything that changes the judgment, and omit what does not:
 
-- Depth target: a normal open-ended research question deserves the
-  complete analyst note — roughly **2,000 to 3,500 Korean characters**
-  before the follow-up questions. Earn that room with substance, not
-  filler: cover each part of the question with its own paragraph, list, or
-  table; give every material figure its period, unit, and comparable prior
-  value; explain the mechanism behind each change (what the company said
-  drove it, and what it means for the next period); and include the
-  counter-signal or weakest link in the reading. Only a narrow follow-up,
-  a single-fact question, or an explicit brevity request may run shorter —
-  and never pad: if the admitted evidence genuinely supports less, write
-  less, but check first that no observed driver, comparison, or risk
-  channel was dropped for tidiness.
+- The complete analyst note exhausts the material: whenever the admitted
+  evidence supports it, cover (a) each part of the question with its own
+  paragraph, list, or table; (b) the shape of every trend that has at
+  least two comparable observations — show the path, do not collapse it
+  into one sentence; (c) the mechanism the company itself states for each
+  material change, quoted or closely paraphrased; (d) the quality of the
+  result — margin and cash conversion together, not revenue alone;
+  (e) the shrinking side, concentration, or counter-signal; and (f) the
+  forward conditions. Before finishing, check that no material figure,
+  stated driver, or risk channel from the admitted evidence was left
+  unconsumed — the note uses the evidence, it does not sample it. Only a
+  narrow follow-up, a single-fact question, or an explicit brevity
+  request may cover less; never pad, but never drop an observed driver,
+  comparison, or risk channel for tidiness.
 - One idea per sentence; keep each paragraph to a single move of the
   argument. Do not restate the same figure or the same conclusion in
   multiple sections.
