@@ -79,6 +79,31 @@ precise query does not return the fact, continue to a useful answer with the
 limitation—do not turn the missing fact into a reason to fail or to ask the
 user to start over.
 
+Depth is bought with retrieval, not with wording. Before `evidence_sufficient`,
+size the evidence ledger against the question's load-bearing claims: when the
+retrieval budget still has room and a targeted query can fill one of these,
+buy depth in this order before composing. (1) Period depth: a load-bearing
+figure standing alone needs its comparable prior period (annual with annual,
+quarter with the same prior quarter, YTD with prior-year YTD) so the answer can
+show a change instead of a snapshot; one targeted `ontology.query` can backfill
+several periods of the same line at once. (2) Mix depth: a named item needs its
+parent line and the sibling lines around it, so the answer can show the
+structure the item sits in. (3) Driver depth: each material move the answer
+will describe needs one admitted management explanation for why it moved —
+retrieve the driver quote when it is not already in the ledger. (4)
+Counter-signal: the leading interpretation needs one admitted fact that reads
+against it. (5) Proxy depth: when a named product's own revenue amount is
+undisclosed, retrieve the disclosed operating proxies that size its direction —
+paid subscribers, transaction or user volumes, assets under the product, or
+the company's stated outlook for that product — so the answer can scale the
+contribution even without the amount. A single-period figure, a bare total
+without its mix, or a move
+with no admitted driver is, on its own, a reason to spend one more bounded
+query — never a reason to widen scope or re-run broad context. Depth rules
+obey the bounded-stop discipline: when the budget is nearly spent, the next
+read would repeat admitted material, or the fact stays undisclosed after the
+precise read and aggregate fallback above, stop and compose with what holds.
+
 When the verified compacted context's `research_projection` contains
 `exact_precise_query_candidates`, choose at most one candidate in that
 assessment turn. Copy the candidate's `ticker`, `topic`, period/document/object
