@@ -14,7 +14,9 @@ use krw_agent_evidence::{
     Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger, NormalizedFact,
     PublicCitation,
 };
-use krw_agent_planning::GoalStatus;
+use krw_agent_planning::{
+    DirectnessRequirement, EvidenceGoal, EvidenceGoalGraph, GoalStatus,
+};
 use krw_agent_protocol::ContentHash;
 use krw_agent_provider_wire::ProviderMessage;
 use krw_agent_state_artifact::{ContractPin, PhaseCompactionBoundaryV1, ValidatedArtifact};
@@ -298,8 +300,15 @@ impl CompactedProviderContext {
         match role_id {
             _ if composer_role => {
                 // Composer assembles the answer from established facts and
-                // calculations; it does not need the open research projection.
-                filtered.research_projection = None;
+                // calculations; the OPEN research projection (tool payloads,
+                // action scoring, orientation vocabulary) stays hidden. What
+                // survives is a sanitized coverage map (release E): each
+                // question clause's retrieval text, its goal status, and the
+                // prose of what stayed missing — enough for a partial-material
+                // answer to frame coverage conditionally without inheriting
+                // any execution vocabulary.
+                filtered.research_projection =
+                    composer_research_projection(filtered.research_projection.take());
                 // The settled state artifact is an analyst/control carrier: it
                 // includes raw server vocabulary such as clause status codes,
                 // ontology calendar buckets, object identifiers, and bounded
@@ -508,11 +517,61 @@ fn composer_retrieval_status(status: ResearchRetrievalStatus) -> ResearchRetriev
                 next_offset: None,
                 warning_codes: Vec::new(),
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect(),
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect(),
     }
+}
+
+/// The composer's slice of the research projection: a coverage map, nothing
+/// else. Clause-level goals keep their status and their calculation links
+/// (the calculation channel the writer already sees); execution-shaped
+/// content — recommended tools, exact query payloads, orientation terms,
+/// evidence ids, directness ceilings, coverage parts-per-million, missing-part
+/// reason codes — is stripped so the writer learns WHAT was established and
+/// misses, never HOW the runtime would chase it.
+fn composer_research_projection(
+    projection: Option<ResearchPlanningProjection>,
+) -> Option<ResearchPlanningProjection> {
+    let mut projection = projection?;
+    let clause_goals: Vec<EvidenceGoal> = projection
+        .graph
+        .goals()
+        .filter(|goal| goal.dependencies.is_empty())
+        .map(|goal| EvidenceGoal {
+            goal_id: goal.goal_id.clone(),
+            required: goal.required,
+            weight: goal.weight,
+            dependencies: Vec::new(),
+            directness: DirectnessRequirement::Related,
+            calculation_required: false,
+            status: goal.status,
+            // Kept status-consistent: the graph validator rejects a
+            // satisfied/partial goal whose coverage was zeroed, and the
+            // number itself carries no execution vocabulary.
+            coverage_ppm: goal.coverage_ppm,
+            evidence_ids: Vec::new(),
+            calculation_ids: goal.calculation_ids.clone(),
+        })
+        .collect();
+    if clause_goals.is_empty() && projection.clauses.is_empty() {
+        return None;
+    }
+    projection.graph = EvidenceGoalGraph::new(clause_goals).ok()?;
+    projection.recommended_actions = Vec::new();
+    projection.exact_precise_query_candidates = Vec::new();
+    projection.orientation_vocabulary = Vec::new();
+    projection.retrieval_status = ResearchRetrievalStatus {
+        source_anchors: Vec::new(),
+        continuation: None,
+        warnings: Vec::new(),
+        supplemental_reads: Vec::new(),
+    };
+    for part in &mut projection.missing_parts {
+        part.code = String::new();
+    }
+    Some(projection)
 }
 
 /// `CY2026Q1` is an ontology routing bucket, not an investor-facing fiscal
@@ -1458,6 +1517,7 @@ mod tests {
         let calculation = Calculation {
             calculation_id: "calc-1".into(),
             expression: "12345678.91 / 2".into(),
+            label: None,
             input_evidence_ids: vec!["evidence-1".into()],
             output: json!(6_172_839.455),
             unit: Some("USD".into()),
@@ -2124,6 +2184,7 @@ mod tests {
         let calculation = Calculation {
             calculation_id: "calc-1".into(),
             expression: "12345678.91 / 2".into(),
+            label: None,
             input_evidence_ids: vec!["evidence-1".into()],
             output: json!(6_172_839.455),
             unit: Some("USD".into()),
@@ -2233,12 +2294,15 @@ mod tests {
         assert!(repair.byte_len() < composer.byte_len());
         assert!(repair.byte_len() < analyst.byte_len());
 
-        // Composer: projection is gone (no unresolved goal text), but the
-        // calculation transcript is still present.
-        assert!(!composer.canonical().contains("goal-coverage"));
+        // Composer: the projection survives only as the sanitized coverage
+        // map — the clause goal's status is visible, its reason codes are
+        // not, and the calculation transcript is still present beside it.
+        assert!(composer.canonical().contains("goal-coverage"));
+        assert!(composer.canonical().contains("unresolved"));
+        assert!(!composer.canonical().contains("missing_counter_evidence"));
         assert!(composer.canonical().contains("6172839.455"));
-        // Analyst: projection (goals + missing parts) is present; the detailed
-        // calculation transcript is gone.
+        // Analyst: projection (goals + missing parts) is present in full; the
+        // detailed calculation transcript is gone.
         assert!(analyst.canonical().contains("goal-coverage"));
         assert!(analyst.canonical().contains("missing_counter_evidence"));
         assert!(!analyst.canonical().contains("6172839.455"));
@@ -2260,5 +2324,100 @@ mod tests {
         let second = context.view_for_role(ROLE_COMPOSER).unwrap();
         assert_eq!(first.canonical(), second.canonical());
         assert_eq!(first.byte_len(), second.byte_len());
+    }
+
+    #[test]
+    fn composer_coverage_map_keeps_clause_queries_and_drops_execution_vocabulary() {
+        // A projection with everything the composer must never see: a
+        // calculation goal hanging off a clause goal, a recommended tool
+        // action, an exact query payload, and orientation vocabulary.
+        let (artifact, boundary) = artifact_and_boundary();
+        let projection: ResearchPlanningProjection = serde_json::from_value(json!({
+            "graph": {
+                "version": 1,
+                "goals": {
+                    "goal-clause-rev": {
+                        "goal_id": "goal-clause-rev",
+                        "required": true,
+                        "weight": 100,
+                        "dependencies": [],
+                        "directness": "metric_lineage",
+                        "calculation_required": true,
+                        "status": "partial",
+                        "coverage_ppm": 400000,
+                        "evidence_ids": ["ev-1"],
+                        "calculation_ids": ["calc-share"]
+                    },
+                    "goal-clause-rev-growth": {
+                        "goal_id": "goal-clause-rev-growth",
+                        "required": true,
+                        "weight": 100,
+                        "dependencies": ["goal-clause-rev"],
+                        "directness": "metric_lineage",
+                        "calculation_required": true,
+                        "status": "satisfied",
+                        "coverage_ppm": 1000000,
+                        "evidence_ids": ["ev-2"],
+                        "calculation_ids": ["calc-growth"]
+                    }
+                },
+                "original_order": ["goal-clause-rev", "goal-clause-rev-growth"]
+            },
+            "clauses": [
+                {"clause_id": "clause-rev", "retrieval_query": "TEST consumer subscription revenue CY2025 vs CY2024"}
+            ],
+            "missing_parts": [
+                {"code": "dimension:product", "detail": "신규 상품 개별 금액은 공시에서 분리되지 않음", "clause_id": "clause-rev", "ticker": "TEST"}
+            ],
+            "recommended_actions": [
+                {"tool": "ontology.query", "reason": "cover missing dimension", "object_id": "obj-9", "clause_id": "clause-rev", "ticker": "TEST"}
+            ],
+            "exact_precise_query_candidates": [
+                {
+                    "clause_id": "clause-rev",
+                    "ticker": "TEST",
+                    "topic": "other revenue detail",
+                    "limit": 5,
+                    "response_detail": "compact"
+                }
+            ],
+            "orientation_vocabulary": [
+                {"term": "Component Procurement"}
+            ]
+        }))
+        .unwrap();
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &EvidenceLedger::default(),
+            calculations: &BTreeMap::new(),
+            research_projection: Some(&projection),
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+
+        let composer = output.context.view_for_role(ROLE_COMPOSER).unwrap();
+        let canonical = composer.canonical();
+        // The map: clause retrieval text, clause-level status, calculation
+        // linkage, and missing-part prose all survive.
+        assert!(canonical.contains("TEST consumer subscription revenue CY2025 vs CY2024"));
+        assert!(canonical.contains("goal-clause-rev"));
+        assert!(canonical.contains("partial"));
+        assert!(canonical.contains("calc-share"));
+        assert!(canonical.contains("신규 상품 개별 금액은 공시에서 분리되지 않음"));
+        // Execution vocabulary and identifiers never reach the writer.
+        assert!(!canonical.contains("goal-clause-rev-growth"));
+        assert!(!canonical.contains("ontology.query"));
+        assert!(!canonical.contains("obj-9"));
+        assert!(!canonical.contains("other revenue detail"));
+        assert!(!canonical.contains("Component Procurement"));
+        assert!(!canonical.contains("dimension:product"));
+        assert!(!canonical.contains("metric_lineage"));
+        assert!(!canonical.contains("ev-1"));
+        // The analyst still sees the full projection, tools and all.
+        let analyst = output.context.view_for_role(ROLE_ANALYST).unwrap();
+        assert!(analyst.canonical().contains("ontology.query"));
+        assert!(analyst.canonical().contains("goal-clause-rev-growth"));
     }
 }
