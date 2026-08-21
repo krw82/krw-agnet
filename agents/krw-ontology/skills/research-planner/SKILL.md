@@ -61,17 +61,21 @@ is incomplete even when it validates.
 the metric or kind, add a new objective instead.
 
 5. **Treat a requested change as a number request.** Korean wording such as
-`최근 매출 변화`, `현금흐름 추이`, `증가/감소`, or `얼마나 바뀌었나` needs a
-separate required metric objective with reported observations. It is not
-satisfied by a narrative that only says "improved" or "weakened". Use
-`metric_time_series` when the user wants the recent path; use
-`metric_change` only when the requested output is an explicit delta or growth
-rate. Words such as `추세`, `흐름`, `트렌드`, or `path` mean a
-`metric_time_series` even when the metric is not prefixed by `최근`.
-If the user says only `현금흐름`, prefer `operating_cash_flow`; add
-`free_cash_flow` only when the user asks for FCF or capex-adjusted cash flow.
-Keep valuation implications, causes, and risks as separate qualitative
-objectives rather than letting them displace the named metric.
+   `최근 매출 변화`, `현금흐름 추이`, `증가/감소`, or `얼마나 바뀌었나` needs a
+   separate required metric objective with reported observations. It is not
+   satisfied by a narrative that only says "improved" or "weakened". Use
+   `metric_time_series` when the user wants the recent path; use
+   `metric_change` only when the requested output is an explicit delta or growth
+   rate. Words such as `추세`, `흐름`, `트렌드`, or `path` mean a
+   `metric_time_series` even when the metric is not prefixed by `최근`.
+   A trend objective's default breadth is the full disclosed path: the
+   current fiscal year's disclosed quarters plus the prior-year comparables,
+   not just the latest two points — two observations answer "what changed",
+   the path answers "늘고 있나요". If the user says only `현금흐름`, prefer
+   `operating_cash_flow`; add `free_cash_flow` only when the user asks for
+   FCF or capex-adjusted cash flow. Keep valuation implications, causes, and
+   risks as separate qualitative
+   objectives rather than letting them displace the named metric.
 
 6. **Keep the question broad without duplicating the plan.** A single user
 question may correctly require several objectives; do not collapse unrelated

@@ -79,30 +79,68 @@ precise query does not return the fact, continue to a useful answer with the
 limitation—do not turn the missing fact into a reason to fail or to ask the
 user to start over.
 
-Depth is bought with retrieval, not with wording. Before `evidence_sufficient`,
-size the evidence ledger against the question's load-bearing claims: when the
-retrieval budget still has room and a targeted query can fill one of these,
-buy depth in this order before composing. (1) Period depth: a load-bearing
-figure standing alone needs its comparable prior period (annual with annual,
-quarter with the same prior quarter, YTD with prior-year YTD) so the answer can
-show a change instead of a snapshot; one targeted `ontology.query` can backfill
-several periods of the same line at once. (2) Mix depth: a named item needs its
-parent line and the sibling lines around it, so the answer can show the
-structure the item sits in. (3) Driver depth: each material move the answer
-will describe needs one admitted management explanation for why it moved —
-retrieve the driver quote when it is not already in the ledger. (4)
-Counter-signal: the leading interpretation needs one admitted fact that reads
-against it. (5) Proxy depth: when a named product's own revenue amount is
-undisclosed, retrieve the disclosed operating proxies that size its direction —
-paid subscribers, transaction or user volumes, assets under the product, or
-the company's stated outlook for that product — so the answer can scale the
-contribution even without the amount. A single-period figure, a bare total
-without its mix, or a move
-with no admitted driver is, on its own, a reason to spend one more bounded
-query — never a reason to widen scope or re-run broad context. Depth rules
-obey the bounded-stop discipline: when the budget is nearly spent, the next
-read would repeat admitted material, or the fact stays undisclosed after the
-precise read and aggregate fallback above, stop and compose with what holds.
+The default evidence pass for a company question has a shape, and the shape
+is concrete: orientation reads (company context and one query context), one
+clause-targeted `ontology.query` per load-bearing claim group, one period
+backfill query, one mix-or-chain read, and one driver-or-quality read. A pass
+that has completed fewer than six capability calls is, by shape, an
+unfinished pass — not a faster pass. Immediately before choosing
+`evidence_sufficient`, walk this private six-slot checklist and fill each
+slot with either admitted material or the specific reason it cannot be
+fetched (never print the checklist):
+
+1. **Period path** — every load-bearing claim rests on period-paired
+   amounts, not on statements alone: the figure stands beside its comparable
+   prior period (annual with annual, quarter with the same prior quarter,
+   YTD with prior-year YTD), and a quote that only describes a direction
+   without its number leaves this slot unfilled. A trend ask
+   (늘고 있나요 / 어떻게 되나요 / 추이) additionally needs every disclosed
+   period of the current fiscal year; a single-quarter read is an unfinished
+   trend. One targeted `ontology.query` can backfill several periods of the
+   same line at once.
+2. **Mix** — the named item sits inside its parent line and sibling lines,
+   with amounts for each side of the mix (for a contribution or share ask —
+   얼마나 기여 / 비중 — the sibling mix, parent, and company total for at
+   least two comparable periods are part of sufficiency itself, not optional
+   depth).
+3. **Driver** — each material move the answer will describe has one admitted
+   management explanation for why it moved.
+4. **Counter-signal** — the leading interpretation has one admitted fact that
+   reads against it.
+5. **Proxy** — when a named product's own amount is undisclosed, the
+   disclosed operating proxies that size its direction (paid subscribers,
+   transaction or user volumes, assets under the product, the company's
+   stated outlook for it) are in the ledger.
+6. **Mechanism (chain)** — the headline move's mechanism has been expanded:
+   pick the load-bearing admitted evidence unit (the one carrying the headline
+   figure or its driver), and call `ontology.chain` on its `object_id` with
+   that unit's ticker — do this directly even when no recommended action
+   advertises it. The chain returns the mechanism neighbors no revenue query
+   returns (BusinessActivity, ChangeEvent, ExternalFactorExposure,
+   TemporalLink), and the answer should be able to explain the
+   driver → activity → reported-line path: a quote says what management
+   said, the chain shows how the mechanism connects to the reported number.
+7. **Quality pair** — any judgment about the direction or quality of revenue
+   and growth (늘고 있나요 / 기여 / 감소) touches earnings power. Author one
+   `ontology.query` that names net income and operating cash flow for the
+   same ticker and the same periods as the headline move, and admit it, so
+   the answer can read the quality of the move, not only its size.
+
+Read clause coverage the right way: a `covered` clause or an `answerable`
+flag marks the question ANSWERABLE — it is the floor for usefulness, not the
+bar for sufficiency. The six slots are the bar. A covered clause whose
+numeric basis is a single period, or whose mix and driver slots are empty,
+is still unfinished depth, and qualitative disclosures frame numeric blocks
+without ever replacing them. Declaring sufficiency over a slot that a
+targeted query could still fill is
+the single most common depth failure: an unfilled, fetchable slot is a
+material gap exactly like a missing named fact. Depth deepens the question's
+own lines — it never widens scope into a generic review, and it never
+re-runs broad context when a targeted read serves. The bounded-stop
+discipline still governs: when the budget is nearly spent, the next read
+would repeat admitted material, or the fact stays undisclosed after the
+precise read and aggregate fallback above, compose with what holds and name
+the unfetchable slot beside the affected claim.
 
 When the verified compacted context's `research_projection` contains
 `exact_precise_query_candidates`, choose at most one candidate in that

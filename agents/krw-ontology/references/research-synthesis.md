@@ -75,16 +75,20 @@ everything that changes the judgment, and omit what does not:
   evidence supports it, cover (a) each part of the question with its own
   paragraph, list, or table; (b) the shape of every trend that has at
   least two comparable observations — show the path, do not collapse it
-  into one sentence; (c) the mechanism the company itself states for each
-  material change, quoted or closely paraphrased; (d) the quality of the
+  into one sentence; (c) the mechanism for each material change — the
+  company's stated reason, quoted or closely paraphrased, and when the
+  ledger holds a traced mechanism path (driver → activity → reported
+  line), write that path as the explanation, not just its endpoint; (d)
+  the quality of the
   result — margin and cash conversion together, not revenue alone;
   (e) the shrinking side, concentration, or counter-signal; and (f) the
   forward conditions. Before finishing, check that no material figure,
-  stated driver, or risk channel from the admitted evidence was left
+  stated driver, traced mechanism, or risk channel from the admitted
+  evidence was left
   unconsumed — the note uses the evidence, it does not sample it. Only a
   narrow follow-up, a single-fact question, or an explicit brevity
   request may cover less; never pad, but never drop an observed driver,
-  comparison, or risk channel for tidiness.
+  comparison, mechanism path, or risk channel for tidiness.
 - One idea per sentence; keep each paragraph to a single move of the
   argument. Do not restate the same figure or the same conclusion in
   multiple sections.
