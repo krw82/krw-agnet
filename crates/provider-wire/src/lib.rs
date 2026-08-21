@@ -1325,7 +1325,14 @@ mod http_client {
             // provider request from being cut off before that outer fence.
             let request_timeout = match provider_kind {
                 ProviderKind::Deepseek => Duration::from_secs(590),
-                ProviderKind::Glm => Duration::from_secs(130),
+                // GLM thinking turns are sequential generation: a research
+                // analyst or composing turn with a bounded thinking budget
+                // legitimately runs 2-4 minutes on large contexts. The old
+                // 130-second fence killed exactly those turns at the HTTP
+                // layer, burned the repair budget on identical retries, and
+                // escaped to the ledger fallback — the run deadline remains
+                // the real outer bound.
+                ProviderKind::Glm => Duration::from_secs(590),
             };
             Self {
                 provider_kind,

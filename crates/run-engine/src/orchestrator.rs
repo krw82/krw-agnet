@@ -448,6 +448,11 @@ where
                     // local acknowledgement so the provider's tool-call chain is
                     // complete before the next provider turn.
                     state.handle_model_event(&transition.event, &facts, episode_hash.clone())?;
+                    // Release B: judgment notes ride only the final
+                    // evidence-sufficient handoff toward composition; a note
+                    // on any mid-research transition is dropped.
+                    let judgment = transition.judgment.clone();
+                    state.capture_analyst_judgment(&transition.event, judgment);
                     if child_policy.is_none() {
                         state.append_workflow_transition_result(&episode, &transition)?;
                         state.compact_settled_phase(

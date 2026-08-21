@@ -115,3 +115,13 @@ stop path. When a proposed call is declined with a `not_dispatched` result
 (`reason_code` such as `lower_value_candidate` or `proposal_rejected`), that
 result is not evidence and is not user-facing; do not re-propose the same
 declined call unchanged, and continue from the already-admitted evidence.
+
+When you finally select `evidence_sufficient`, the transition call accepts an
+optional `judgment` array (up to 4 notes) that is handed to the answer writer
+as advisory framing — the writer still grounds every number in admitted facts
+and calculations. Pass notes when you have formed a position the evidence
+supports: each note names the position, the admitted material it rests on,
+and your confidence (high/medium/low); add `competing_reading` when the same
+material defensibly reads another way. This is where the reading you formed
+during research survives into composition — without a note, the writer must
+re-derive it from facts alone.

@@ -128,8 +128,8 @@ use krw_agent_contracts::{
     validate_value as validate_canonical_value, verify_pin, verify_registry,
 };
 use krw_agent_evidence::{
-    AnswerIr, AnswerPolicy, Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger,
-    ValidationIssue, render_markdown, validate_answer,
+    AnalystJudgmentNote, AnswerIr, AnswerPolicy, Answerability, Calculation, Directness,
+    EvidenceGrade, EvidenceLedger, ValidationIssue, render_markdown, validate_answer,
 };
 use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilityScopeBinding, CapabilitySpec,
@@ -1727,25 +1727,48 @@ mod tests {
     #[test]
     fn thinking_budget_reserves_visible_decision_capacity() {
         assert_eq!(
-            thinking_budget_for_turn(ThinkingMode::Enabled, 4_096).unwrap(),
+            thinking_budget_for_turn(ThinkingMode::Enabled, 4_096, ModelOutputMode::TypedJson)
+                .unwrap(),
             Some(2_048)
         );
         assert_eq!(
-            thinking_budget_for_turn(ThinkingMode::Enabled, 4_096).unwrap(),
+            thinking_budget_for_turn(
+                ThinkingMode::Enabled,
+                4_096,
+                ModelOutputMode::CapabilityOrWorkflowTransition
+            )
+            .unwrap(),
             Some(2_048),
             "analysis/tool turns must retain visible space for their decision payload"
         );
         assert_eq!(
-            thinking_budget_for_turn(ThinkingMode::Enabled, 8_192).unwrap(),
+            thinking_budget_for_turn(
+                ThinkingMode::Enabled,
+                8_192,
+                ModelOutputMode::CapabilityOrWorkflowTransition
+            )
+            .unwrap(),
             Some(4_096),
             "a long analyst turn keeps equal space for reasoning and a capability call"
         );
         assert_eq!(
-            thinking_budget_for_turn(ThinkingMode::Disabled, 4_096).unwrap(),
+            thinking_budget_for_turn(
+                ThinkingMode::Enabled,
+                16_384,
+                ModelOutputMode::Markdown
+            )
+            .unwrap(),
+            Some(4_096),
+            "the final Markdown lane gets bounded scratch so composition cannot outlive the run deadline"
+        );
+        assert_eq!(
+            thinking_budget_for_turn(ThinkingMode::Disabled, 4_096, ModelOutputMode::Markdown)
+                .unwrap(),
             None
         );
         assert_eq!(
-            thinking_budget_for_turn(ThinkingMode::Enabled, 1_025).unwrap(),
+            thinking_budget_for_turn(ThinkingMode::Enabled, 1_025, ModelOutputMode::TypedJson)
+                .unwrap(),
             Some(1_024),
             "small legacy caps preserve the old valid provider shape"
         );
@@ -4787,10 +4810,10 @@ mod tests {
         assert_eq!(requests[2].thinking.kind, ThinkingMode::Enabled);
         assert_eq!(requests[2].max_tokens, 16_384);
         assert_eq!(requests[3].model, GLM_MODEL_ID);
-        // The composer is a bounded visible-output transformation
-        // (`reasoning: direct` in the agent image); it never spends the answer
-        // turn on provider-private reasoning.
-        assert_eq!(requests[3].thinking.kind, ThinkingMode::Disabled);
+        // The composer runs with thinking enabled (release A′): composition
+        // is compute — section structure, arithmetic narration, and
+        // counter-hedging in one pass — inside the unchanged 16,384 cap.
+        assert_eq!(requests[3].thinking.kind, ThinkingMode::Enabled);
         assert_eq!(requests[3].max_tokens, 16_384);
         assert!(requests[3].tools.is_empty());
 
@@ -5942,6 +5965,120 @@ mod tests {
         };
 
         assert_eq!(session_memory_delta_lineage(Some(&memory)), None);
+    }
+
+    #[test]
+    fn transition_judgment_notes_are_bounded_and_smuggle_rejecting() {
+        use krw_agent_provider_wire::{
+            AssistantMessage, FunctionCall, ProviderEpisodeV1, ProviderFunctionName, TokenUsage,
+            ToolCall, ToolCallKind,
+        };
+        use krw_agent_protocol::ContentHash;
+
+        fn episode_with_arguments(arguments: &str) -> ProviderEpisodeV1 {
+            let assistant = AssistantMessage {
+                content: None,
+                reasoning_content: None,
+                reasoning_signature: None,
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    kind: ToolCallKind::Function,
+                    function: FunctionCall {
+                        name: ProviderFunctionName::parse("krw_agent_transition").unwrap(),
+                        arguments: arguments.into(),
+                    },
+                }],
+            };
+            ProviderEpisodeV1 {
+                schema_version: 1,
+                request_hash: ContentHash::sha256("request"),
+                requested_model: "glm-4.7".into(),
+                observed_model: "glm-4.7".into(),
+                api_version: "v1".into(),
+                assistant,
+                tool_results: Vec::new(),
+                tool_schema_hash: ContentHash::sha256("tools"),
+                agent_image_hash: ContentHash::sha256("image"),
+                finish_reason: "tool_calls".into(),
+                usage: TokenUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                    prompt_cache_hit_tokens: 0,
+                    prompt_cache_miss_tokens: 1,
+                },
+                replay_hash: ContentHash::sha256("replay"),
+            }
+        }
+
+        // A well-formed note passes through with caps respected.
+        let call = parse_workflow_transition_call(
+            &episode_with_arguments(
+                r#"{"event":"evidence_sufficient","judgment":[{"position":"축소 흐름","basis":"구독·서비스 감소","confidence":"medium","competing_reading":"분류 변경 효과"}]}"#,
+            ),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(call.event, "evidence_sufficient");
+        assert_eq!(call.judgment.len(), 1);
+        assert_eq!(call.judgment[0].confidence, "medium");
+        assert_eq!(
+            call.judgment[0].competing_reading.as_deref(),
+            Some("분류 변경 효과")
+        );
+
+        // A malformed note degrades to itself — dropped, event kept — so a
+        // note-shape slip can never burn a repair cycle on the transition.
+        let unknown_field = parse_workflow_transition_call(
+            &episode_with_arguments(
+                r#"{"event":"evidence_sufficient","judgment":[{"position":"p","basis":"b","confidence":"high","extra":"answer"},{"position":"온전한 판단","basis":"b","confidence":"low"}]}"#,
+            ),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(unknown_field.event, "evidence_sufficient");
+        assert_eq!(unknown_field.judgment.len(), 1);
+        assert_eq!(unknown_field.judgment[0].position, "온전한 판단");
+
+        let bad_confidence = parse_workflow_transition_call(
+            &episode_with_arguments(
+                r#"{"event":"evidence_sufficient","judgment":[{"position":"p","basis":"b","confidence":"certain"}]}"#,
+            ),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(bad_confidence.event, "evidence_sufficient");
+        assert!(bad_confidence.judgment.is_empty());
+
+        // Oversized positions are dropped per note, and only the first four
+        // valid notes ride.
+        let long = "판단".repeat(400);
+        let oversized = parse_workflow_transition_call(
+            &episode_with_arguments(&format!(
+                r#"{{"event":"evidence_sufficient","judgment":[{{"position":"{long}","basis":"b","confidence":"low"}}]}}"#
+            )),
+            64 * 1024,
+        )
+        .unwrap();
+        assert!(oversized.judgment.is_empty());
+
+        let five = (0..5)
+            .map(|index| {
+                format!(
+                    r#"{{"position":"p{index}","basis":"b","confidence":"low"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let capped = parse_workflow_transition_call(
+            &episode_with_arguments(&format!(
+                r#"{{"event":"evidence_sufficient","judgment":[{five}]}}"#
+            )),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(capped.judgment.len(), 4);
+        assert_eq!(capped.judgment[3].position, "p3");
     }
 
     #[tokio::test]

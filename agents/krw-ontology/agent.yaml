@@ -158,12 +158,16 @@ roles:
     # compacted evidence projection and these answer-writing references.
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract]
     deterministic: false
-    # Evidence selection and gap analysis are complete before this state. The
-    # composer is a bounded visible-output transformation, so it must not
-    # spend the answer turn on provider-private reasoning. This also prevents
-    # DeepSeek from consuming the entire max_tokens ceiling before emitting
-    # Markdown because its Anthropic endpoint ignores thinking.budget_tokens.
-    execution: { reasoning: direct, max_output_tokens: 16384 }
+    # Evidence selection and gap analysis are complete before this state.
+    # Composition is a compute task — section structure, arithmetic
+    # narration, and counter-hedging in one pass — so thinking stays enabled
+    # (release A′). The cap stays 16,384: the kernel's admission math holds
+    # at max(8192, 2x cap) = 32,768 and every budget tail passes, while any
+    # larger cap either fails image compile or collapses the research
+    # runway. GLM bills thinking and visible output against this one
+    # ceiling; a halved visible worst case lands in the bounded direct-retry
+    # lane instead of a truncated answer.
+    execution: { reasoning: standard, max_output_tokens: 16384 }
   - id: earnings_planner
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, planner_skill_catalog, research_planner_skill]
     deterministic: false

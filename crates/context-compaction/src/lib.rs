@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use krw_agent_evidence::{
-    Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger, NormalizedFact,
-    PublicCitation,
+    AnalystJudgmentNote, Answerability, Calculation, Directness, EvidenceGrade, EvidenceLedger,
+    NormalizedFact, PublicCitation,
 };
 use krw_agent_planning::{
     DirectnessRequirement, EvidenceGoal, EvidenceGoalGraph, GoalStatus,
@@ -155,6 +155,11 @@ pub struct CompactedProviderContext {
     pub retained_facts: Vec<CompactedFact>,
     pub omissions: CompactionOmissions,
     pub calculations: Vec<Calculation>,
+    /// Release B: the analyst's bounded judgment notes from the
+    /// evidence-sufficient handoff. Advisory framing for the writer; the
+    /// analyst's own view drops them so research turns cannot loop on them.
+    #[serde(default)]
+    pub analyst_judgment: Vec<AnalystJudgmentNote>,
 }
 
 impl fmt::Debug for CompactedProviderContext {
@@ -348,6 +353,10 @@ impl CompactedProviderContext {
                 // detailed calculation transcript and trim the evidence index
                 // to the top-graded entries so the analyst can scan gaps.
                 filtered.calculations.clear();
+                // Judgment notes are the handoff artifact for the writer.
+                // The analyst authored them; re-reading them each turn only
+                // invites anchoring on its own prior framing.
+                filtered.analyst_judgment.clear();
                 trim_evidence_by_grade(&mut filtered.evidence_index, ANALYST_MAX_EVIDENCE);
                 retain_facts_for_evidence(&mut filtered);
                 // Retain the full research_projection (goals, missing parts,
@@ -356,10 +365,11 @@ impl CompactedProviderContext {
             }
             ROLE_REPAIR => {
                 // Minimal defect-relevant slice: state artifact + small fact
-                // subset. Drop projection, calculations, and almost all
-                // evidence; cap facts.
+                // subset. Drop projection, calculations, judgment notes, and
+                // almost all evidence; cap facts.
                 filtered.research_projection = None;
                 filtered.calculations.clear();
+                filtered.analyst_judgment.clear();
                 trim_evidence_by_grade(&mut filtered.evidence_index, REPAIR_MAX_FACTS);
                 if filtered.retained_facts.len() > REPAIR_MAX_FACTS {
                     let split = filtered.retained_facts.len() - REPAIR_MAX_FACTS;
@@ -693,6 +703,10 @@ pub struct CompactionReceipt {
     pub retained_fact_set_hash: ContentHash,
     pub omission_summary_hash: ContentHash,
     pub calculation_set_hash: ContentHash,
+    /// `None` covers both pre-B receipts and runs whose analyst handed over
+    /// no judgment notes; a non-empty note set is always hashed.
+    #[serde(default)]
+    pub analyst_judgment_hash: Option<ContentHash>,
     pub active_evidence_count: u16,
     pub retained_fact_count: u16,
     pub calculation_count: u16,
@@ -760,6 +774,8 @@ impl CompactionOutput {
             || hash_slice(&self.context.retained_facts)? != self.receipt.retained_fact_set_hash
             || hash_value(&self.context.omissions)? != self.receipt.omission_summary_hash
             || hash_slice(&self.context.calculations)? != self.receipt.calculation_set_hash
+            || hash_optional_slice(&self.context.analyst_judgment)?
+                != self.receipt.analyst_judgment_hash
             || usize::from(self.receipt.active_evidence_count) != self.context.evidence_index.len()
             || usize::from(self.receipt.retained_fact_count) != self.context.retained_facts.len()
             || usize::from(self.receipt.calculation_count) != self.context.calculations.len()
@@ -782,6 +798,7 @@ pub struct CompactionInput<'a> {
     pub source_messages: &'a [ProviderMessage],
     pub ledger: &'a EvidenceLedger,
     pub calculations: &'a BTreeMap<String, Calculation>,
+    pub analyst_judgment: &'a [AnalystJudgmentNote],
     pub research_projection: Option<&'a ResearchPlanningProjection>,
     pub max_context_bytes: usize,
 }
@@ -926,6 +943,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
             .collect(),
         omissions,
         calculations,
+        analyst_judgment: input.analyst_judgment.to_vec(),
     };
     shrink_to_fit(&mut context, input.max_context_bytes)?;
     let canonical = serde_jcs::to_vec(&context)?;
@@ -948,6 +966,7 @@ pub fn compact(input: &CompactionInput<'_>) -> Result<CompactionOutput, Compacti
         retained_fact_set_hash: hash_slice(&context.retained_facts)?,
         omission_summary_hash: hash_value(&context.omissions)?,
         calculation_set_hash: hash_slice(&context.calculations)?,
+        analyst_judgment_hash: hash_optional_slice(&context.analyst_judgment)?,
         active_evidence_count: u16::try_from(context.evidence_index.len())
             .map_err(|_| CompactionError::Limit("active evidence"))?,
         retained_fact_count: u16::try_from(context.retained_facts.len())
@@ -1328,6 +1347,17 @@ fn hash_slice<T: Serialize>(value: &[T]) -> Result<ContentHash, CompactionError>
     Ok(ContentHash::sha256(serde_jcs::to_vec(value)?))
 }
 
+/// `None` for an empty slice so pre-B receipts and note-less runs share one
+/// canonical shape; any actual note set is hashed like every other channel.
+fn hash_optional_slice<T: Serialize>(
+    value: &[T],
+) -> Result<Option<ContentHash>, CompactionError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    hash_slice(value).map(Some)
+}
+
 fn scrub_value(value: &mut Value) {
     match value {
         Value::String(text) => text.zeroize(),
@@ -1537,6 +1567,7 @@ mod tests {
             ledger: &ledger,
             calculations: &calculations,
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -1615,6 +1646,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: Some(&projection),
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -1773,6 +1805,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: 128 * 1024,
         })
         .unwrap();
@@ -1794,6 +1827,7 @@ mod tests {
             ledger: &EvidenceLedger::default(),
             calculations: &BTreeMap::new(),
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: MIN_COMPACTED_CONTEXT_BYTES,
         })
         .expect("oversized auxiliary state payload must not abort the research run");
@@ -1847,6 +1881,7 @@ mod tests {
             ledger: &EvidenceLedger::default(),
             calculations: &BTreeMap::new(),
             research_projection: Some(&projection),
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -1937,6 +1972,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: Some(&projection),
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .expect("an over-count evidence ledger must degrade to a bounded view, not fail the run");
@@ -2017,6 +2053,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .expect("an over-count fact ledger must degrade to a bounded view, not fail the run");
@@ -2063,6 +2100,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: MIN_COMPACTED_CONTEXT_BYTES,
         })
         .expect("pathological volume must produce a bounded essential view, not fail the run");
@@ -2098,6 +2136,7 @@ mod tests {
             ledger: &ledger,
             calculations: &BTreeMap::new(),
             research_projection: None,
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -2136,6 +2175,7 @@ mod tests {
                 ledger: &ledger,
                 calculations: &BTreeMap::new(),
                 research_projection: None,
+                analyst_judgment: &[],
                 max_context_bytes: MIN_COMPACTED_CONTEXT_BYTES,
             })
             .unwrap();
@@ -2233,6 +2273,7 @@ mod tests {
             ledger: &ledger,
             calculations: &calculations,
             research_projection: Some(&projection),
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -2393,6 +2434,7 @@ mod tests {
             ledger: &EvidenceLedger::default(),
             calculations: &BTreeMap::new(),
             research_projection: Some(&projection),
+            analyst_judgment: &[],
             max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
         })
         .unwrap();
@@ -2419,5 +2461,85 @@ mod tests {
         let analyst = output.context.view_for_role(ROLE_ANALYST).unwrap();
         assert!(analyst.canonical().contains("ontology.query"));
         assert!(analyst.canonical().contains("goal-clause-rev-growth"));
+    }
+
+    #[test]
+    fn analyst_judgment_notes_reach_only_the_composer_and_are_receipt_bound() {
+        use krw_agent_evidence::AnalystJudgmentNote;
+        let (artifact, boundary) = artifact_and_boundary();
+        let notes = vec![AnalystJudgmentNote {
+            position: "신규 상품 기여는 아직 미미하고 관련 항목은 축소 중".into(),
+            basis: "구독·서비스 매출 감소와 기타 거래 매출 감소가 함께 관찰됨".into(),
+            confidence: "medium".into(),
+            competing_reading: Some("분류 변경 효과로 일부 감소가 설명될 수 있음".into()),
+        }];
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &EvidenceLedger::default(),
+            calculations: &BTreeMap::new(),
+            research_projection: None,
+            analyst_judgment: &notes,
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+
+        // The writer receives the handoff notes verbatim.
+        let composer = output.context.view_for_role(ROLE_COMPOSER).unwrap();
+        assert!(composer.canonical().contains("신규 상품 기여는 아직 미미하고"));
+        assert!(composer.canonical().contains("competing_reading"));
+        // The analyst and repair views never see them again.
+        let analyst = output.context.view_for_role(ROLE_ANALYST).unwrap();
+        assert!(!analyst.canonical().contains("신규 상품 기여는 아직 미미하고"));
+        let repair = output.context.view_for_role(ROLE_REPAIR).unwrap();
+        assert!(!repair.canonical().contains("신규 상품 기여는 아직 미미하고"));
+        // The receipt pins the note set (Some hash, not None).
+        assert!(output.receipt.analyst_judgment_hash.is_some());
+        output.verify().unwrap();
+        // Tampering with a note breaks the receipt.
+        let mut tampered = output.context.clone();
+        tampered.analyst_judgment[0].position = "완전히 다른 판단".into();
+        let tampered_canonical = serde_jcs::to_vec(&tampered).unwrap();
+        assert_ne!(
+            ContentHash::sha256(&tampered_canonical),
+            output.receipt.compacted_context_hash
+        );
+    }
+
+    #[test]
+    fn noteless_runs_keep_the_pre_b_receipt_shape() {
+        use krw_agent_evidence::AnalystJudgmentNote;
+        let (artifact, boundary) = artifact_and_boundary();
+        let output = compact(&CompactionInput {
+            boundary: &boundary,
+            state_artifact: &artifact,
+            source_messages: &[ProviderMessage::assistant("settled")],
+            ledger: &EvidenceLedger::default(),
+            calculations: &BTreeMap::new(),
+            research_projection: None,
+            analyst_judgment: &[AnalystJudgmentNote {
+                position: "p".into(),
+                basis: "b".into(),
+                confidence: "low".into(),
+                competing_reading: None,
+            }],
+            max_context_bytes: DEFAULT_MAX_COMPACTED_CONTEXT_BYTES,
+        })
+        .unwrap();
+        assert!(output.receipt.analyst_judgment_hash.is_some());
+        // A pre-B receipt JSON (no analyst_judgment_hash key) still
+        // deserializes and verifies against a noteless context.
+        let mut receipt_json = serde_json::to_value(&output.receipt).unwrap();
+        assert!(receipt_json
+            .as_object_mut()
+            .unwrap()
+            .remove("analyst_judgment_hash")
+            .is_some());
+        let legacy_receipt: CompactionReceipt = serde_json::from_value(receipt_json).unwrap();
+        let mut legacy_context = output.context.clone();
+        legacy_context.analyst_judgment.clear();
+        legacy_receipt.verify().unwrap();
+        let _ = legacy_context;
     }
 }

@@ -4514,7 +4514,10 @@ mod tests {
             .iter()
             .find(|role| role.id == "composer")
             .unwrap();
-        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Direct);
+        // Release A′: composition thinking is on inside the unchanged
+        // 16,384 cap — the bounded direct-retry lane absorbs a halved
+        // visible-output worst case.
+        assert_eq!(composer.execution.reasoning, RoleReasoningMode::Standard);
         assert_eq!(composer.execution.max_output_tokens, Some(16384));
         assert!(
             !composer

@@ -342,3 +342,15 @@ numbers sit inside the argument, the source period rides in parentheses or
 the table caption, and the outlook plus its falsifying observation close the
 loop. This is how a buy-side analyst writes when the 10-K does not spell out
 the answer.
+
+The context may carry two handoff layers from the investigator. The research
+projection is a coverage map: each clause's retrieval text and status
+(satisfied / partial / unresolved / blocked) plus missing-part prose — use it
+to frame coverage conditionally (say which parts of the question the
+admitted material answers and which it only bounds), never to name tools or
+query machinery. `analyst_judgment` notes are the investigator's formed
+positions with basis and confidence: treat them as the opening frame for the
+conclusion, adopt a `competing_reading` as the alternative-reading paragraph,
+and outvote a note when the admitted facts and calculations disagree with it —
+every number you print still comes from the displayed facts and calculations,
+not from the note.

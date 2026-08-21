@@ -1610,11 +1610,10 @@ where
                         if constraint_mode != ProviderConstraintMode::JsonSchema
                             && state.reserve_repair()? =>
                     {
+                        let code = answer_error_code(&EngineError::Json(error));
+                        tracing::warn!(%code, "typed answer repair: content parse");
                         state.append_assistant(episode);
-                        state.append_repair_feedback(
-                            &output_contract.id,
-                            answer_error_code(&EngineError::Json(error)),
-                        );
+                        state.append_repair_feedback(&output_contract.id, code);
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
@@ -1632,13 +1631,11 @@ where
                         ));
                     }
                     if state.reserve_repair()? {
+                        let code =
+                            answer_error_code(&EngineError::CanonicalRegistry(format!("{error:?}")));
+                        tracing::warn!(%code, "typed answer repair: canonical validation");
                         state.append_assistant(episode);
-                        state.append_repair_feedback(
-                            &output_contract.id,
-                            answer_error_code(&EngineError::CanonicalRegistry(format!(
-                                "{error:?}"
-                            ))),
-                        );
+                        state.append_repair_feedback(&output_contract.id, code);
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
@@ -1665,9 +1662,10 @@ where
                     // completion class beyond the default.
                     Ok(None) => (None, ResearchCompletion::Accepted),
                     Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
+                        let code = answer_error_code(&error);
+                        tracing::warn!(%code, "typed answer repair: answer validation");
                         state.append_assistant(episode);
-                        state
-                            .append_repair_feedback(&output_contract.id, answer_error_code(&error));
+                        state.append_repair_feedback(&output_contract.id, code);
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }

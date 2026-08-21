@@ -32,6 +32,13 @@ pub(crate) struct ActiveRun {
     pub(crate) accepted_actions: Vec<AcceptedActionRef>,
     pub(crate) ledger: EvidenceLedger,
     pub(crate) calculations: BTreeMap<String, Calculation>,
+    /// Release B: bounded judgment notes captured on the final
+    /// evidence-sufficient transition. Advisory only — they ride the next
+    /// compaction boundary into the composer view and never enter the
+    /// evidence ledger. Deliberately not part of the recovery checkpoint:
+    /// after a crash the writer falls back to re-deriving the judgment from
+    /// retained facts, which is the pre-B behavior.
+    pub(crate) analyst_judgment: Vec<AnalystJudgmentNote>,
     pub(crate) presentation_packs: Vec<Value>,
     pub(crate) program: Arc<ProgramRuntime>,
     pub(crate) interpreter: StateInterpreter,
@@ -227,6 +234,7 @@ impl ActiveRun {
             accepted_actions: Vec::new(),
             ledger: EvidenceLedger::default(),
             calculations: BTreeMap::new(),
+            analyst_judgment: Vec::new(),
             presentation_packs: Vec::new(),
             program,
             interpreter,
@@ -1510,6 +1518,28 @@ impl ActiveRun {
         self.direct_answer_retry_requested
     }
 
+    /// Events whose transition hands research to composition. Judgment notes
+    /// are accepted only here; any other transition discards them so a
+    /// mid-research note cannot linger into a later answer.
+    const JUDGMENT_CARRYING_EVENTS: [&'static str; 3] = [
+        "evidence_sufficient",
+        "no_positive_value_action",
+        "output_budget_reserved",
+    ];
+
+    /// Release B: capture the analyst's bounded judgment notes from the
+    /// evidence-sufficient handoff. The notes are already validated
+    /// (count/length/confidence) by the transition parser.
+    pub(crate) fn capture_analyst_judgment(
+        &mut self,
+        event: &str,
+        judgment: Vec<AnalystJudgmentNote>,
+    ) {
+        if Self::JUDGMENT_CARRYING_EVENTS.contains(&event) {
+            self.analyst_judgment = judgment;
+        }
+    }
+
     pub(crate) fn request_direct_answer_retry(&mut self) {
         self.direct_answer_retry_requested = true;
     }
@@ -1582,6 +1612,7 @@ impl ActiveRun {
                 source_messages: &wire_source_messages,
                 ledger: &self.ledger,
                 calculations: &self.calculations,
+                analyst_judgment: &self.analyst_judgment,
                 research_projection: self.research_planner.projection(),
                 max_context_bytes,
             })?)

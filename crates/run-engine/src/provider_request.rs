@@ -403,7 +403,8 @@ pub(crate) fn build_provider_request(
     // trusted system+user pair is preserved as the first two messages.
     let (system_prompt, wire_messages, transcript) = split_system_and_convert_messages(messages)?;
     let max_tokens = turn_policy.max_output_tokens;
-    let thinking_budget_tokens = thinking_budget_for_turn(turn_policy.thinking, max_tokens)?;
+    let thinking_budget_tokens =
+        thinking_budget_for_turn(turn_policy.thinking, max_tokens, output_mode)?;
     if max_tokens > input.snapshot.provider_max_context_tokens {
         return Err(EngineError::InvalidInput(
             "provider max_tokens exceeds pinned context capacity",
@@ -691,6 +692,7 @@ pub(crate) struct ProviderTurnPolicy {
 pub(crate) fn thinking_budget_for_turn(
     thinking: ThinkingMode,
     max_tokens: u32,
+    output_mode: ModelOutputMode,
 ) -> Result<Option<u32>, EngineError> {
     if thinking != ThinkingMode::Enabled {
         return Ok(None);
@@ -707,6 +709,15 @@ pub(crate) fn thinking_budget_for_turn(
 
     if max_tokens < 2_048 {
         return Ok(Some(normal_budget));
+    }
+
+    // The final Markdown lane needs bounded scratch, not half the ceiling:
+    // generation time scales with thinking tokens, and a composition turn
+    // that burns eight thousand thinking tokens can outlive the run
+    // deadline on slower providers. A quarter keeps a real scratch space
+    // while widening the visible channel the answer itself occupies.
+    if output_mode == ModelOutputMode::Markdown {
+        return Ok(Some((max_tokens / 4).max(1_024)));
     }
 
     // `max_tokens >= 2_048` makes both halves at least the provider's
@@ -777,12 +788,37 @@ pub(crate) const WORKFLOW_TRANSITION_TOOL_NAME: &str = "krw_agent_transition";
 #[serde(deny_unknown_fields)]
 struct WorkflowTransitionArguments {
     event: String,
+    /// Optional bounded judgment notes for the answer writer. Only the
+    /// evidence-sufficient handoff carries them; the kernel still derives
+    /// every state fact from durable evidence, so a note is advisory
+    /// framing, never authority. Parsed as raw values so one malformed
+    /// note degrades to itself — dropping the note — instead of rejecting
+    /// the transition and burning a repair cycle.
+    #[serde(default)]
+    judgment: Vec<Value>,
+}
+
+/// Wire shape of one judgment note. Field caps and the confidence enum are
+/// enforced per note in [`parse_workflow_transition_call`]; an invalid note
+/// is discarded, never fatal.
+const TRANSITION_JUDGMENT_MAX_NOTES: usize = 4;
+const TRANSITION_JUDGMENT_MAX_FIELD_CHARS: usize = 600;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowTransitionJudgment {
+    position: String,
+    basis: String,
+    confidence: String,
+    #[serde(default)]
+    competing_reading: Option<String>,
 }
 
 #[derive(Debug)]
 pub(crate) struct WorkflowTransitionCall {
     pub(crate) tool_call_id: String,
     pub(crate) event: String,
+    pub(crate) judgment: Vec<krw_agent_evidence::AnalystJudgmentNote>,
 }
 
 /// Parse the kernel-owned transition function. Its event enum is generated
@@ -822,9 +858,36 @@ pub(crate) fn parse_workflow_transition_call(
     if transition.event.is_empty() || transition.event.len() > 128 {
         return Err(EngineError::InvalidWorkflowTransitionShape);
     }
+    let mut judgment = Vec::new();
+    for note in transition.judgment {
+        if judgment.len() >= TRANSITION_JUDGMENT_MAX_NOTES {
+            break;
+        }
+        let Ok(note) = serde_json::from_value::<WorkflowTransitionJudgment>(note) else {
+            continue;
+        };
+        let field_within_caps = |text: &str| text.chars().count() <= TRANSITION_JUDGMENT_MAX_FIELD_CHARS;
+        if !field_within_caps(&note.position)
+            || !field_within_caps(&note.basis)
+            || !matches!(note.confidence.as_str(), "high" | "medium" | "low")
+            || note
+                .competing_reading
+                .as_ref()
+                .is_some_and(|reading| !field_within_caps(reading))
+        {
+            continue;
+        }
+        judgment.push(krw_agent_evidence::AnalystJudgmentNote {
+            position: note.position,
+            basis: note.basis,
+            confidence: note.confidence,
+            competing_reading: note.competing_reading,
+        });
+    }
     Ok(WorkflowTransitionCall {
         tool_call_id: call.id.clone(),
         event: transition.event,
+        judgment,
     })
 }
 
@@ -853,7 +916,23 @@ fn workflow_transition_tool_definition(
             "additionalProperties": false,
             "required": ["event"],
             "properties": {
-                "event": {"type": "string", "enum": allowed_events}
+                "event": {"type": "string", "enum": allowed_events},
+                "judgment": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "description": "Optional: up to 4 bounded judgment notes the answer writer receives as advisory framing. Each note needs the formed position, the admitted material it rests on, and confidence (high|medium|low); add competing_reading when a different reading of the same material is defensible. A note never upgrades a claim — every number in the answer must still trace to admitted facts.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["position", "basis", "confidence"],
+                        "properties": {
+                            "position": {"type": "string", "maxLength": 600},
+                            "basis": {"type": "string", "maxLength": 600},
+                            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                            "competing_reading": {"type": "string", "maxLength": 600}
+                        }
+                    }
+                }
             }
         }),
     )

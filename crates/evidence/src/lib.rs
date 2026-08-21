@@ -478,6 +478,25 @@ pub struct Calculation {
     pub currency: Option<String>,
 }
 
+/// One bounded judgment note the analyst hands the answer writer at the
+/// evidence-sufficient boundary (release B). It is advisory: it can frame
+/// the composition, but every number in the final answer must still trace to
+/// retained facts and calculations — a note alone upgrades nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnalystJudgmentNote {
+    /// The formed position, in investor language (≤600 chars, enforced by
+    /// the transition parser).
+    pub position: String,
+    /// Which admitted material carries the position (≤600 chars).
+    pub basis: String,
+    /// "high" | "medium" | "low".
+    pub confidence: String,
+    /// The strongest reading that disagrees, if any (≤600 chars).
+    #[serde(default)]
+    pub competing_reading: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerSection {
