@@ -28,7 +28,11 @@ from actual capability results with the same atomic final commit.
   paragraphs with no headings at all. Never use generic template labels such
   as `## 결론`, `## 근거`, `## 해석`, `## 추론`, `## 전망`, or `## 반대
   신호` as section headings: the analytical order is a reading order, not a
-  heading list.
+  heading list. The same ban covers bolded pseudo-headings: a standalone
+  bold line such as `**해석**`, `**전망**`, `**확인된 사실**`, or
+  `**무엇이 좋아졌나**` is a template label in another costume. Name the
+  section after its content (`**하반기 변수**`, `**수요와 환율의 분해**`)
+  or drop the label and let the paragraph carry itself.
 - Write a complete answer, not a compressed one. When the question has
   multiple parts, give each part its own paragraph, list, or table. Prefer
   readable paragraphs with breathing room over dense bullet walls; one line

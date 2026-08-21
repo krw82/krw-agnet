@@ -41,7 +41,17 @@ For a broad or multi-part question, coverage decides the plan's value: give
 each named part of the question its own objective, and add two default
 companion objectives when the material admits them — one on the quality of
 the result (cash conversion or margin alongside the headline figures) and
-one on the shrinking side, concentration, or stated risk. A plan that
+one on the shrinking side, concentration, or stated risk. When a question
+names a component of a reported total (a product's contribution, a
+segment's share, a line's growth), the companions are not optional: add
+a bounding-aggregate companion objective for the same comparable
+periods — the parent line that contains it, the company total, and the
+sibling lines that reveal the mix — and keep the quality companion
+(net income or operating cash flow of the same periods) beside them.
+The component itself may never be disclosed separately; that aggregate
+block with its quality pair is what lets the answer construct a full
+directional judgment instead of stopping at the missing figure. A plan
+that
 answers every part on paper but leaves the analyst nothing on why the
 numbers moved, whether they converted to cash, or what could reverse them
 is incomplete even when it validates.
