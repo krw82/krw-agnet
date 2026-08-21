@@ -5275,6 +5275,7 @@ mod tests {
         Calculation {
             calculation_id: "calc.fixture.services.revenue".into(),
             expression: "reported_value".into(),
+            label: None,
             input_evidence_ids: vec!["evidence-3".into()],
             output: serde_json::json!(416.2),
             unit: Some("USD millions".into()),
@@ -5324,6 +5325,7 @@ mod tests {
         let calculation = Calculation {
             calculation_id: "calc.fixture.services.revenue".into(),
             expression: "reported_value".into(),
+            label: None,
             input_evidence_ids: vec!["evidence-2".into()],
             output: serde_json::json!(416.2),
             unit: Some("USD millions".into()),
@@ -5504,6 +5506,7 @@ mod tests {
             .extend_calculations([Calculation {
                 calculation_id: "calc.fixture.services.revenue".into(),
                 expression: "reported_value".into(),
+                label: None,
                 input_evidence_ids: vec!["evidence-direct".into()],
                 output: serde_json::json!(416.2),
                 unit: Some("USD millions".into()),

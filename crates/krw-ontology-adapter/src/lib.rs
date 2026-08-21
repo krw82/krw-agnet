@@ -1449,6 +1449,7 @@ pub fn map_research_state(
             Some(Calculation {
                 calculation_id: value.calculation_id.clone(),
                 expression: safe_single_line(&value.kind, 256, "calculation"),
+                label: clean_optional(value.label.as_deref(), 512),
                 input_evidence_ids,
                 output: value.value.clone().unwrap_or(Value::Null),
                 unit: clean_optional(value.unit.as_deref(), 64),

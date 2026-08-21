@@ -459,6 +459,11 @@ pub struct Claim {
 pub struct Calculation {
     pub calculation_id: String,
     pub expression: String,
+    // Human-facing identity ("COIN revenue [Other] share of total CY2025").
+    // The expression stays the machine kind; without the label two
+    // dimensioned shares of one metric are indistinguishable to the writer.
+    #[serde(default)]
+    pub label: Option<String>,
     pub input_evidence_ids: Vec<String>,
     pub output: Value,
     pub unit: Option<String>,
@@ -1427,6 +1432,7 @@ mod tests {
         let calculation = Calculation {
             calculation_id: "calc-1".into(),
             expression: "reported_value".into(),
+            label: None,
             input_evidence_ids: vec!["e1".into()],
             output: serde_json::json!(10),
             unit: Some("USD".into()),

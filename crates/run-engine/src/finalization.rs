@@ -686,6 +686,181 @@ fn section_identifier_is_valid(section_id: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Deterministic content gates for the direct Markdown lane.
+// ---------------------------------------------------------------------------
+
+/// Phrases that, appearing in the opening sentence with no directional or
+/// judgment wording alongside, mean the answer framed itself as an
+/// unavailability instead of taking an analyst position.
+const UNAVAILABILITY_OPENING_PHRASES: [&str; 21] = [
+    "확인할 수 없",
+    "확인할수없",
+    "확인이 불가",
+    "확인할 방법이 없",
+    "파악할 수 없",
+    "알 수 없",
+    "알수없",
+    "공개되지 않",
+    "공개하고 있지 않",
+    "공시되지 않",
+    "공시는 없",
+    "공시가 없",
+    "제공되지 않",
+    "밝히지 않",
+    "나와 있지 않",
+    "단정할 수 없",
+    "내리기 어렵",
+    "불가능합니다",
+    "cannot be determined",
+    "could not be determined",
+    "unable to determine",
+];
+
+/// Directional/judgment wording whose presence in the opening sentence means
+/// a limitation phrase there is subordinate to a stated position, not the
+/// answer's frame.
+const OPENING_JUDGMENT_MARKERS: [&str; 34] = [
+    "가능성", "판단", "보입", "보여", "전망", "추정", "방향", "상승", "하락", "증가", "감소",
+    "성장", "견고", "부진", "개선", "악화", "늘어", "줄어", "커", "작아", "높아", "낮아",
+    "강세", "약세", "우려", "기대", "likely", "suggest", "expect", "estimate", "growth",
+    "decline", "increase", "decrease",
+];
+
+/// The first user-facing sentence: heading-only lines are skipped, decimals
+/// ("6.56B") do not end a sentence, and the scan is bounded so a wall of
+/// unpunctuated text cannot bypass the gate.
+fn first_markdown_sentence(content: &str) -> String {
+    let mut paragraph: Option<&str> = None;
+    for line in content.trim_start().lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('#') && trimmed.trim_start_matches('#').starts_with(' ') {
+            continue;
+        }
+        paragraph = Some(trimmed);
+        break;
+    }
+    let paragraph = paragraph.unwrap_or_default();
+    let mut sentence = String::new();
+    let mut chars = paragraph.chars().peekable();
+    while let Some(character) = chars.next() {
+        sentence.push(character);
+        let ends_sentence = matches!(character, '。' | '！' | '？' | '!' | '?' | '\n')
+            || (character == '.'
+                && !chars.peek().is_some_and(|next| next.is_ascii_digit()));
+        if ends_sentence || sentence.chars().count() >= 200 {
+            break;
+        }
+    }
+    sentence.trim().to_owned()
+}
+
+/// ASCII identifiers match on word boundaries ("chain" must not fire on
+/// "supply chain"); non-ASCII terms match as substrings.
+fn markdown_contains_forbidden_term(lower: &str, term: &str) -> bool {
+    let word_term = !term.is_empty()
+        && term
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_');
+    if !word_term {
+        return lower.contains(term);
+    }
+    let mut search_from = 0usize;
+    while let Some(found) = lower[search_from..].find(term) {
+        let start = search_from + found;
+        let end = start + term.len();
+        let bounded_before = lower[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !(character.is_ascii_alphanumeric() || character == '_'));
+        let bounded_after = lower[end..]
+            .chars()
+            .next()
+            .is_none_or(|character| !(character.is_ascii_alphanumeric() || character == '_'));
+        if bounded_before && bounded_after {
+            return true;
+        }
+        search_from = end;
+    }
+    false
+}
+
+/// Retry feedback text when the direct Markdown draft fails a deterministic
+/// content gate, or `None` when it passes. The gate is deliberately narrow:
+/// internal vocabulary anywhere, and an unavailability phrase in the opening
+/// sentence without a direction stated alongside. Limitations elsewhere in
+/// the answer are required behavior and never gated.
+/// Short lowercase tool names ("chain" = `ontology.chain`, "trace") are also
+/// common English words. The leak this list guards against is the TOOL
+/// reference, so only tool-usage patterns gate (`ontology.chain`, "chain
+/// 호출", "chain call", "chain(") while plain English usage such as "supply
+/// chain" passes.
+fn markdown_contains_tool_reference(lower: &str, term: &str) -> bool {
+    if lower.contains(&format!("ontology.{term}")) {
+        return true;
+    }
+    [
+        " 호출", " 콜", " call", " tool", " 도구", " 사용", " 결과", " 쿼리", " query",
+        "(",
+    ]
+    .iter()
+    .any(|suffix| lower.contains(&format!("{term}{suffix}")))
+}
+
+pub(crate) fn markdown_content_gate_feedback(
+    content: &str,
+    forbidden_terms: &[String],
+) -> Option<String> {
+    let lower = content.to_lowercase();
+    for term in forbidden_terms {
+        let term_lower = term.trim().to_lowercase();
+        if term_lower.is_empty() {
+            continue;
+        }
+        // Short lowercase alphabetic terms are ambiguous between tool names
+        // and common English words; only their tool-reference forms gate.
+        let internal_shape = term
+            .chars()
+            .any(|character| character.is_uppercase() || character == '_')
+            || !term.chars().all(|character| character.is_ascii_alphabetic() || character == ' ');
+        if !internal_shape && term.len() < 6 {
+            if markdown_contains_tool_reference(&lower, &term_lower) {
+                return Some(format!(
+                    "internal tool name \"{term}\" appeared in user-facing prose."
+                ));
+            }
+            continue;
+        }
+        if markdown_contains_forbidden_term(&lower, &term_lower) {
+            return Some(format!(
+                "internal term \"{term}\" appeared in user-facing prose."
+            ));
+        }
+    }
+    let opening = first_markdown_sentence(content);
+    if opening.is_empty() {
+        return None;
+    }
+    let opening_lower = opening.to_lowercase();
+    let limitation = UNAVAILABILITY_OPENING_PHRASES
+        .iter()
+        .find(|phrase| opening_lower.contains(*phrase));
+    if let Some(phrase) = limitation {
+        let has_direction = OPENING_JUDGMENT_MARKERS
+            .iter()
+            .any(|marker| opening_lower.contains(marker));
+        if !has_direction {
+            return Some(format!(
+                "the opening sentence frames the answer as unavailability (\"{phrase}\") without stating a direction."
+            ));
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Ledger fallback (answer-always finalization, policy steps 9 and the
 // `UnavailableButAnswerable` completion class).
 // ---------------------------------------------------------------------------
@@ -916,10 +1091,17 @@ pub(crate) fn fallback_answer_from_ledger(
     let mut calculation_lines = Vec::new();
     for (_, calculation) in calculations.iter().take(LEDGER_FALLBACK_MAX_CALCULATIONS) {
         let metric = calculation
-            .metric
+            .label
             .as_deref()
             .map(fallback_public_inline)
-            .filter(|metric| !metric.is_empty())
+            .filter(|label| !label.is_empty())
+            .or_else(|| {
+                calculation
+                    .metric
+                    .as_deref()
+                    .map(fallback_public_inline)
+                    .filter(|metric| !metric.is_empty())
+            })
             .unwrap_or_else(|| fallback_public_inline(&calculation.calculation_id));
         let mut line = format!("- {metric}");
         if let Some(subject) = calculation
@@ -1395,6 +1577,23 @@ where
                 let output = Value::String(content.to_owned());
                 validate_canonical_value(&output_contract.id, &output)
                     .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
+                // Direct Markdown carries no typed AnswerIR to sanitize, so
+                // two deterministic content gates stand in for it: internal
+                // vocabulary must not surface in user-facing prose, and the
+                // answer may not open by framing itself as an unavailability.
+                // One bounded retry; a second identically framed draft is
+                // accepted rather than looping the run over prose judgment.
+                if !state.direct_answer_retry_requested() {
+                    if let Some(feedback) = markdown_content_gate_feedback(
+                        content,
+                        &input.image.body.answer_policy.forbidden_user_terms,
+                    ) {
+                        state.request_direct_answer_retry();
+                        state.append_answer_content_gate_feedback(&feedback);
+                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                        return Ok(None);
+                    }
+                }
                 // Direct Markdown has no typed AnswerIR to sanitize; the
                 // canonical contract is its own validation.
                 (
@@ -1972,5 +2171,118 @@ pub(crate) fn run_outcome_after_commit(
         final_status,
         logical_action_keys: state.logical_action_keys.iter().cloned().collect(),
         evidence_count: state.ledger.len(),
+    }
+}
+
+#[cfg(test)]
+mod markdown_gate_tests {
+    use super::markdown_content_gate_feedback;
+
+    fn terms() -> Vec<String> {
+        [
+            "ResearchState",
+            "object_id",
+            "chain",
+            "도구 호출",
+            "검색 계획",
+        ]
+        .iter()
+        .map(|term| (*term).to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn unavailability_opening_without_direction_is_gated() {
+        let gated = markdown_content_gate_feedback(
+            "COIN의 신규 상품 매출 기여는 확인할 수 없습니다.\n\n관련 근거를 정리하면 아래와 같습니다.",
+            &terms(),
+        );
+        assert!(gated.is_some_and(|feedback| feedback.contains("unavailability")));
+
+        let english = markdown_content_gate_feedback(
+            "The contribution of the new product cannot be determined from the filings.\n\nRelated figures follow.",
+            &terms(),
+        );
+        assert!(english.is_some_and(|feedback| feedback.contains("unavailability")));
+    }
+
+    #[test]
+    fn judgment_first_partial_evidence_opening_passes() {
+        let passes = markdown_content_gate_feedback(
+            "**신규 상품이 아직 매출을 의미 있게 끌고 있을 가능성은 낮아 보입니다(제 판단) — 직접 공시는 없지만, 전체 구독·서비스 매출이 전년 대비 14% 감소했고 '기타' 항목도 22% 줄었습니다.** 근거는 아래 표와 같습니다.",
+            &terms(),
+        );
+        assert!(passes.is_none());
+    }
+
+    #[test]
+    fn limitation_mid_answer_is_never_gated() {
+        let passes = markdown_content_gate_feedback(
+            "매출은 견고하게 성장했습니다. 다만 신제품 기여는 공개되지 않아 정확한 비중은 확인할 수 없습니다. 전체적으로 상승 방향입니다.",
+            &terms(),
+        );
+        assert!(passes.is_none());
+    }
+
+    #[test]
+    fn internal_terms_are_gated_with_word_boundaries() {
+        let gated = markdown_content_gate_feedback(
+            "매출이 증가했습니다. (object_id: xbrl:COIN)",
+            &terms(),
+        );
+        assert!(gated.is_some_and(|feedback| feedback.contains("object_id")));
+
+        // "chain" is a forbidden internal tool name, but an investor answer
+        // about supply chains must not be retried for it.
+        let passes = markdown_content_gate_feedback(
+            "공급망(supply chain) 부담 때문에 마진이 악화되었습니다.",
+            &terms(),
+        );
+        assert!(passes.is_none());
+
+        let korean_gated = markdown_content_gate_feedback(
+            "이 결과는 도구 호출 예산 소진 후 남은 자료로 판단했습니다.",
+            &terms(),
+        );
+        assert!(korean_gated.is_some());
+    }
+
+    #[test]
+    fn short_tool_names_gate_only_on_tool_references() {
+        // "chain" in the forbidden list names the ontology.chain TOOL. Plain
+        // English usage passes; tool references — including Korean particle
+        // forms that explicitly discuss invoking it — gate.
+        let supply_chain_passes = markdown_content_gate_feedback(
+            "공급망(supply chain) 부담 때문에 마진이 악화되었습니다.",
+            &terms(),
+        );
+        assert!(supply_chain_passes.is_none());
+
+        let tool_call_gated = markdown_content_gate_feedback(
+            "이 차이는 chain 호출 결과에서 확인할 수 있습니다.",
+            &terms(),
+        );
+        assert!(tool_call_gated.is_some_and(|feedback| feedback.contains("chain")));
+
+        let qualified_gated = markdown_content_gate_feedback(
+            "매출 구조는 ontology.chain 조회로 추적했습니다.",
+            &terms(),
+        );
+        assert!(qualified_gated.is_some());
+
+        let tool_english_gated = markdown_content_gate_feedback(
+            "The chain tool traced the revenue movement.",
+            &terms(),
+        );
+        assert!(tool_english_gated.is_some());
+    }
+
+    #[test]
+    fn headings_are_skipped_and_decimals_do_not_end_the_opening() {
+        let passes = markdown_content_gate_feedback(
+            "# COIN 실적 분석\n\n매출 6.56B 달러는 전년 대비 9.4% 증가했습니다. 신규 기여는 공개되지 않았습니다.",
+            &terms(),
+        );
+        assert!(passes.is_none());
     }
 }

@@ -1078,3 +1078,118 @@ def test_explicit_period_disables_document_role_recency_preference() -> None:
     )
 
     assert priorities == {}
+
+
+def test_dimensioned_series_against_company_total_yields_share_of_total() -> None:
+    """A share must be derived whenever both roles of one metric are in evidence.
+
+    The composer previously had to divide a component by the company total
+    unaided; the state now carries the division with full lineage. The
+    derivation is self-gated by the presence of a dimensioned series, so it
+    also fires when the plan declared no numeric axis at all (the analyst's
+    aggregate fallback admits the block for undisclosed components).
+    """
+    from krw_capability_runtime.mcp_server.contracts import _computed_values_from_evidence
+
+    def unit(
+        evidence_id: str,
+        scope: str,
+        dimensions: dict[str, str],
+        period: str,
+        value: float,
+        metric: str = "revenue",
+        unit_name: str = "usd",
+    ) -> EvidenceUnit:
+        return EvidenceUnit(
+            evidence_id=evidence_id,
+            object_id=f"object:{evidence_id}",
+            object_type="MetricObservation",
+            ticker="COIN",
+            period=period,
+            document_type="10-K",
+            title=f"{metric} observation",
+            summary=f"{metric} observation",
+            directness="metric_lineage",
+            evidence_grade="strong",
+            metric=metric,
+            unit=unit_name,
+            dimensions=dimensions,
+            metric_scope=scope,  # type: ignore[arg-type]
+            metric_points=[
+                {
+                    "period": period,
+                    "value": value,
+                    "object_id": f"object:{evidence_id}",
+                    "period_type": "annual",
+                }
+            ],
+            source=EvidenceSource(object_ids=[f"object:{evidence_id}"]),
+        )
+
+    units = [
+        unit("total-2024", "company_total", {}, "CY2024", 360.0),
+        unit("total-2025", "company_total", {}, "CY2025", 400.0),
+        unit("other-2024", "dimensioned", {"Product": "Other"}, "CY2024", 108.0),
+        unit("other-2025", "dimensioned", {"Product": "Other"}, "CY2025", 100.0),
+    ]
+
+    values = _computed_values_from_evidence(units, ["value"])
+    shares = [value for value in values if value.kind == "share_of_total"]
+    assert {(share.period, round(share.value, 6)) for share in shares} == {
+        ("CY2024", 0.3),
+        ("CY2025", 0.25),
+    }
+    share_2025 = next(share for share in shares if share.period == "CY2025")
+    assert share_2025.unit == "ratio"
+    assert share_2025.metric == "revenue"
+    assert share_2025.metric_scope == "dimensioned"
+    assert share_2025.dimensions == {"Product": "Other"}
+    assert (share_2025.numerator, share_2025.denominator) == (100.0, 400.0)
+    assert set(share_2025.source_object_ids) == {"object:other-2025", "object:total-2025"}
+    assert "share of total" in (share_2025.label or "")
+
+    # Self-gated: no numeric axis requested, yet the share still derives.
+    values_without_axes = _computed_values_from_evidence(units, [])
+    assert {
+        (share.period, round(share.value, 6))
+        for share in values_without_axes
+        if share.kind == "share_of_total"
+    } == {("CY2024", 0.3), ("CY2025", 0.25)}
+    assert all(value.kind == "share_of_total" for value in values_without_axes)
+
+    # Pure company-total evidence with no numeric axis yields nothing.
+    assert _computed_values_from_evidence(units[:2], []) == []
+
+    # A conflicting denominator reconciles to nothing and must suppress the
+    # share for that period instead of dividing against an ambiguous total.
+    conflicting_total = unit("total-2025-b", "company_total", {}, "CY2025", 500.0)
+    conflicted = _computed_values_from_evidence([conflicting_total, *units], ["value"])
+    assert {
+        share.period for share in conflicted if share.kind == "share_of_total"
+    } == {"CY2024"}
+
+    # A different canonical metric is not the parent of the numerator.
+    renamed_total = unit(
+        "renamed-2025", "company_total", {}, "CY2025", 400.0, metric="total_revenue"
+    )
+    unmatched = _computed_values_from_evidence(
+        [renamed_total, units[0], *units[2:]], ["value"]
+    )
+    assert {
+        share.period for share in unmatched if share.kind == "share_of_total"
+    } == {"CY2024"}
+
+    # Source-layer casing differs ("usd" on raw facts, "USD" on normalized
+    # observations); one share must still derive across that difference.
+    mixed_case = _computed_values_from_evidence(
+        [
+            unit("total-upper-2025", "company_total", {}, "CY2025", 400.0, unit_name="USD"),
+            unit("other-mixed-2025", "dimensioned", {"Product": "Other"}, "CY2025", 100.0),
+        ],
+        ["value"],
+    )
+    assert [
+        (share.period, round(share.value, 6))
+        for share in mixed_case
+        if share.kind == "share_of_total"
+    ] == [("CY2025", 0.25)]

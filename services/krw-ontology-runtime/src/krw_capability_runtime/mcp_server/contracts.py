@@ -2054,8 +2054,11 @@ def _metric_series_key(unit: EvidenceUnit, point: MetricPoint) -> tuple[Any, ...
     return (
         unit.ticker or "",
         _metric_key(unit.metric),
-        unit.unit or "",
-        unit.currency or "",
+        # Unit and currency spellings differ by source ("usd" on raw facts,
+        # "USD" on normalized observations); one series must not split on
+        # that casing or period pairs and share pairings silently fail.
+        (unit.unit or "").strip().lower(),
+        (unit.currency or "").strip().lower(),
         tuple(sorted((str(key), str(value)) for key, value in unit.dimensions.items())),
         unit.metric_scope or "",
         _period_basis(point.period),
@@ -2072,8 +2075,8 @@ def _metric_comparison_key(unit: EvidenceUnit, point: MetricPoint) -> tuple[Any,
     return (
         _metric_key(unit.metric),
         point.period,
-        unit.unit or "",
-        unit.currency or "",
+        (unit.unit or "").strip().lower(),
+        (unit.currency or "").strip().lower(),
         tuple(sorted((str(key), str(value)) for key, value in unit.dimensions.items())),
         unit.metric_scope or "",
         _period_basis(point.period),
@@ -2842,8 +2845,9 @@ def _computed_values_from_evidence(
     | None = None,
 ) -> list[ComputedValue]:
     requested = set(axes)
-    if not requested.intersection({"value", "absolute_change", "growth_rate", "value_difference"}):
-        return []
+    numeric_requested = bool(
+        requested.intersection({"value", "absolute_change", "growth_rate", "value_difference"})
+    )
 
     series: dict[
         tuple[Any, ...],
@@ -2879,6 +2883,14 @@ def _computed_values_from_evidence(
             ).append((value, point.object_id))
 
     values: list[ComputedValue] = []
+    # Share-of-total survives without a requested numeric axis: a dimensioned
+    # series in complete-lineage evidence already proves the plan needed a
+    # component reading, and the company-total block arrives beside it because
+    # the planner derives a denominator clause for mix questions and the
+    # analyst's aggregate fallback admits the parent block for undisclosed
+    # component questions. Every other axis still requires its request.
+    if not numeric_requested and not any(key[5] == "dimensioned" for key in series):
+        return []
     for series_key, points_by_period in sorted(
         series.items(),
         key=lambda item: repr(item[0]),
@@ -2978,6 +2990,64 @@ def _computed_values_from_evidence(
                                 source_object_ids=source_ids,
                             )
                         )
+
+    # Share-of-total: one canonical metric observed once with a dimension and
+    # once as the same ticker's company total divides into a share the
+    # composer can assert with lineage instead of performing unaided
+    # arithmetic. Pairing requires the same ticker, metric, unit, currency,
+    # period basis, and duration basis — the reconciler drops either side
+    # when observations conflict, so an ambiguous total yields no share.
+    denominator_series = {
+        key: points for key, points in series.items() if key[5] == "company_total"
+    }
+    for num_key, num_points in sorted(series.items(), key=lambda item: repr(item[0])):
+        if num_key[5] != "dimensioned":
+            continue
+        for den_key, den_points in sorted(
+            denominator_series.items(), key=lambda item: repr(item[0])
+        ):
+            if (
+                den_key[0] != num_key[0]
+                or den_key[1] != num_key[1]
+                or den_key[2] != num_key[2]
+                or den_key[3] != num_key[3]
+                or den_key[6] != num_key[6]
+                or den_key[7] != num_key[7]
+            ):
+                continue
+            num_identity = _metric_identity_label(str(num_key[1]), dict(num_key[4]))
+            for period in sorted(num_points):
+                num_reconciled = _reconcile_metric_observations(num_points[period])
+                den_reconciled = _reconcile_metric_observations(den_points.get(period) or [])
+                if num_reconciled is None or den_reconciled is None:
+                    continue
+                num_value, num_ids = num_reconciled
+                den_value, den_ids = den_reconciled
+                if not den_value or den_value <= 0:
+                    continue
+                stable = f"share_of_total:{repr(num_key)}:{repr(den_key)}:{period}"
+                values.append(
+                    ComputedValue(
+                        calculation_id=_stable_id("calc", stable),
+                        kind="share_of_total",
+                        label=f"{num_key[0]} {num_identity} share of total {period}",
+                        metric=str(num_key[1]),
+                        tickers=[str(num_key[0])],
+                        period=period,
+                        unit="ratio",
+                        currency=str(num_key[3]) or None,
+                        dimensions=dict(num_key[4]),
+                        metric_scope="dimensioned",
+                        period_basis=str(num_key[6]) or None,
+                        duration_basis=str(num_key[7]) or None,
+                        value=num_value / den_value,
+                        numerator=num_value,
+                        denominator=den_value,
+                        source_object_ids=_dedupe_strings([*num_ids, *den_ids])[:16],
+                    )
+                )
+                if len(values) >= 40:
+                    return values[:40]
 
     if requested.intersection({"value", "value_difference"}):
         for comparison_key, observations_by_ticker in sorted(

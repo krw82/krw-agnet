@@ -1496,6 +1496,16 @@ impl ActiveRun {
         )));
     }
 
+    /// Follows the same bounded-retry pattern as
+    /// [`Self::append_direct_answer_retry_feedback`], but names the content
+    /// defect the deterministic Markdown gate found so the rewrite targets
+    /// the framing instead of guessing.
+    pub(crate) fn append_answer_content_gate_feedback(&mut self, issue: &str) {
+        self.messages.push(RunEngineMessage::user(format!(
+            "KRW kernel rejected the previous final answer: {issue} Write the complete investor-facing answer again in plain Markdown. Lead with the supported judgment (direction first); walk the arithmetic out loud from the admitted aggregates and calculations; give each competing reading its evidence; state any limitation beside the affected claim, never as the answer's frame; do not name internal systems or tools. Use only the evidence already admitted in this run."
+        )));
+    }
+
     pub(crate) fn direct_answer_retry_requested(&self) -> bool {
         self.direct_answer_retry_requested
     }
