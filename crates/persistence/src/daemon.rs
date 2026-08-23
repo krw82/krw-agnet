@@ -2149,7 +2149,7 @@ mod tests {
         let second = mutation_id("renew", "worker", "run", 9, 12);
         assert_eq!(first, second);
         assert!(first.len() <= 128);
-        assert_ne!(mutation_id("renew", "worker", "run", 10, 12), first);
+        assert_ne!(first, mutation_id("renew", "worker", "run", 10, 12));
     }
 
     #[test]
