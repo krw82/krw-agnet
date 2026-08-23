@@ -24,6 +24,10 @@ def main() -> int:
         ROOT / "packaging/launchd/install-local-mac-agentd-release.sh"
     ).read_text()
     check_plist_source(installer, "agentd installer heredoc", errors)
+    capabilityd_installer = (
+        ROOT / "packaging/launchd/install-local-mac-capabilityd-release.sh"
+    ).read_text()
+    check_plist_source(capabilityd_installer, "capabilityd installer heredoc", errors)
     # plistlib가 체크인 plist를 실제로 파싱하는지 확인 (형식 오류 방지)
     with tempfile.NamedTemporaryFile(suffix=".plist") as tmp:
         tmp.write(checked_in.encode())

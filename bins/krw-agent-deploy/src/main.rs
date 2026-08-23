@@ -37,7 +37,9 @@ enum Command {
     /// Run the read-only preflight and write the immutable preflight receipt.
     Preflight,
     /// Preflight plus build/seal input resolution; writes a dry-run receipt.
-    /// Executes no builds and touches nothing outside the receipt directory.
+    /// Executes no builds; a dirty frontend source is repointed through a
+    /// clean worktree under the operator root plus a temporary side config,
+    /// and the receipt still records the config used.
     DryRun,
     /// Forward-only deployment walk through all twelve stages. Any failure
     /// writes a terminal failure receipt with admission closed (from

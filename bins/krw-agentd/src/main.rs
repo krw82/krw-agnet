@@ -53,7 +53,7 @@ const DAEMON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const DAEMON_HEARTBEAT_TTL_MS: u64 = 90_000;
 const MCP_PREFLIGHT_DEADLINE: Duration = Duration::from_secs(45);
 /// Bounded retry budget for the startup heartbeat. 30 attempts at
-/// 1s doubling to a 60s cap is ~17 minutes — longer than any observed
+/// 1s doubling to a 60s cap is ~24 minutes — longer than any observed
 /// deploy window between the migration stage and local activation, which
 /// is exactly the window whose ABI drift used to crash-loop the daemon
 /// (24,094 fatal exits in the 2026-08 analysis).
