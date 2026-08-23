@@ -92,6 +92,12 @@ everything that changes the judgment, and omit what does not:
 - One idea per sentence; keep each paragraph to a single move of the
   argument. Do not restate the same figure or the same conclusion in
   multiple sections.
+- Numbers serve the reading, never replace it. The note's spine is the
+  direction and its interpretation — what it means for an investor and what
+  would change it. Every table and figure exists to carry a judgment (the
+  투자 의미 column is not decoration); a paragraph that only reports numbers
+  without advancing the reading is cut, never the interpretation. Walk the
+  arithmetic out loud only where the arithmetic IS the argument.
 - Inline the numbers that matter into the sentence. Use a Markdown table
   when three or more comparable figures would pile up in prose; keep the
   columns to what the comparison needs and prefer an interpretation column

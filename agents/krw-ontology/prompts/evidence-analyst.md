@@ -111,15 +111,16 @@ fetched (never print the checklist):
    disclosed operating proxies that size its direction (paid subscribers,
    transaction or user volumes, assets under the product, the company's
    stated outlook for it) are in the ledger.
-6. **Mechanism (chain)** — the headline move's mechanism has been expanded:
-   pick the load-bearing admitted evidence unit (the one carrying the headline
-   figure or its driver), and call `ontology.chain` on its `object_id` with
-   that unit's ticker — do this directly even when no recommended action
-   advertises it. The chain returns the mechanism neighbors no revenue query
-   returns (BusinessActivity, ChangeEvent, ExternalFactorExposure,
-   TemporalLink), and the answer should be able to explain the
-   driver → activity → reported-line path: a quote says what management
-   said, the chain shows how the mechanism connects to the reported number.
+6. **Mechanism (chain)** — in the same assessment turn that emits your last
+   pre-sufficiency query, also include one `ontology.chain` tool call on the
+   load-bearing admitted evidence unit's `object_id` (the unit carrying the
+   headline figure or its driver, with its ticker) — even when no recommended
+   action advertises it. The chain returns the mechanism neighbors no
+   revenue query returns (BusinessActivity, ChangeEvent,
+   ExternalFactorExposure, TemporalLink): with them the answer explains
+   why the number moved (driver → activity → reported line), which is the
+   interpretation the reader actually wants. A quote says what management
+   said; the chain shows how the mechanism connects to the reported number.
 7. **Quality pair** — any judgment about the direction or quality of revenue
    and growth (늘고 있나요 / 기여 / 감소) touches earnings power. Author one
    `ontology.query` that names net income and operating cash flow for the
