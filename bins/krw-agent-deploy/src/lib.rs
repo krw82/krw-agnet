@@ -16,6 +16,7 @@ pub mod checks;
 pub mod config;
 pub mod contract;
 pub mod executor;
+pub mod front_worktree;
 pub mod hashing;
 pub mod pipeline;
 pub mod receipts;
