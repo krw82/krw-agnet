@@ -689,7 +689,7 @@ impl RunSupervisor {
                         reason: "claim response receipt invariant violated".into(),
                     }));
                 }
-                Err(error) if is_transient_database_error(&error) => {
+                Err(error) if is_retryable_claim_error(&error) => {
                     let delay = jittered_backoff(
                         self.config.error_backoff_min,
                         self.config.error_backoff_max,
@@ -699,7 +699,8 @@ impl RunSupervisor {
                     error_attempt = error_attempt.saturating_add(1);
                     warn!(
                         diagnostic_hash = %error_diagnostic_hash(&error),
-                        "transient claim failure"
+                        attempt = error_attempt,
+                        "retryable claim failure (database or response-shape drift)"
                     );
                     wait_for_work_or_shutdown(&mut tasks, &shutdown, delay).await?;
                 }
@@ -1540,6 +1541,19 @@ fn is_transient_database_error(error: &AgentV1Error) -> bool {
     matches!(error, AgentV1Error::Database { .. })
 }
 
+/// Claim-path retry classification. Beyond transport-level `Database`
+/// errors, `InvalidResponse` (response-shape drift after a web-side
+/// migration moved a procedure before the local binary caught up) is
+/// deliberately retryable: the drift self-heals when the deploy
+/// completes, and staying alive preserves metrics/logs instead of the
+/// 2-second launchd crash loop observed 24,535 times in the 2026-08
+/// analysis. `Rejected` stays fatal — a K-code is a contract violation
+/// that retrying cannot fix.
+fn is_retryable_claim_error(error: &AgentV1Error) -> bool {
+    matches!(error, AgentV1Error::Database { .. })
+        || matches!(error, AgentV1Error::InvalidResponse { .. })
+}
+
 fn is_fence_or_lease_loss(error: &AgentV1Error) -> bool {
     matches!(
         error,
@@ -2135,7 +2149,33 @@ mod tests {
         let second = mutation_id("renew", "worker", "run", 9, 12);
         assert_eq!(first, second);
         assert!(first.len() <= 128);
-        assert_ne!(first, mutation_id("renew", "worker", "run", 10, 12));
+        assert_ne!(mutation_id("renew", "worker", "run", 10, 12), first);
+    }
+
+    #[test]
+    fn claim_errors_from_response_shape_drift_are_retryable() {
+        let database = AgentV1Error::Database {
+            procedure: AgentV1Procedure::ClaimRun,
+            diagnostic_hash: ContentHash::sha256("connection reset"),
+        };
+        assert!(is_retryable_claim_error(&database));
+
+        let invalid_response = AgentV1Error::InvalidResponse {
+            procedure: AgentV1Procedure::ClaimRun,
+            reason: "unknown field `mcp_ready`".to_owned(),
+        };
+        assert!(
+            is_retryable_claim_error(&invalid_response),
+            "response-shape drift self-heals when the deploy completes; \
+             the daemon must stay alive and keep retrying"
+        );
+
+        let rejected = AgentV1Error::Rejected {
+            procedure: AgentV1Procedure::ClaimRun,
+            kind: RejectionKind::InvalidRequest,
+            diagnostic_hash: ContentHash::sha256("invalid request"),
+        };
+        assert!(!is_retryable_claim_error(&rejected));
     }
 
     #[test]
