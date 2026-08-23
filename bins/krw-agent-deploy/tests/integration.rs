@@ -196,7 +196,7 @@ fn cleanup(tree: &Tree) {
 }
 
 /// Ordered command ids the remote-target happy path must issue.
-const REMOTE_HAPPY_PATH_COMMANDS: [&str; 45] = [
+const REMOTE_HAPPY_PATH_COMMANDS: [&str; 44] = [
     // stage 3 build
     "build.dual-provider-bundles",
     // stage 4 seal (legacy dual loop: the non-selected provider seals first
@@ -241,9 +241,10 @@ const REMOTE_HAPPY_PATH_COMMANDS: [&str; 45] = [
     "remote.candidate-abi",
     "remote.web-up",
     "readiness.remote-web-healthz",
-    // stage 10 deep readiness
+    // stage 10 deep readiness (MCP readiness is proven by the sealed-mcp-abi
+    // stage, the daemon boot preflight, and the heartbeat's mcp_ready
+    // column — no per-endpoint TCP/readyz probes)
     "readiness.daemon-metrics",
-    "readiness.mcp-ready-0",
     "readiness.web-deep",
     "readiness.public-healthz-0",
     "readiness.public-healthz-1",
@@ -380,20 +381,19 @@ fn deploy_full_walk_on_remote_target_reaches_open_success() {
         );
     }
 
-    // Ordered command records: the exact executor walk. (TCP probes are
-    // recorded separately and asserted below.)
+    // Ordered command records: the exact executor walk.
     let expected = REMOTE_HAPPY_PATH_COMMANDS.to_vec();
     assert_eq!(
         stages.command_ids(),
         expected,
         "ordered command ids diverged"
     );
-    assert_eq!(
-        stages.probes.borrow().len(),
-        1,
-        "one TCP probe for the one mcp endpoint"
+    assert!(
+        stages.probes.borrow().is_empty(),
+        "stage 10 must not issue per-endpoint MCP TCP probes (the \
+         readiness.db-heartbeat mcp_ready column proves the MCP contract): {:?}",
+        stages.probes.borrow()
     );
-    assert_eq!(stages.probes.borrow()[0].id, "readiness.mcp-tcp-0");
     assert_no_rollback_commands(&stages);
 
     // The fixture target declares a gcp block => every remote command rides

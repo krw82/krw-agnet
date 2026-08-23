@@ -22,7 +22,7 @@
 //! | 7 | `admission_close` | `admission.read-previous`, `admission.close`, `admission.verify-closed`, then `migrations.db-push` and `migrations.abi-verify-procedure-N`/`-column-N` |
 //! | 8 | `local_activation` | `activation.agentd-stage`, `activation.capabilityd-activate`, `activation.agentd-activate` |
 //! | 9 | `remote_activation` | `ship.scp-front-archive`, `ship.scp-agent-descriptor`, `ship.remote-prepare` (remote build + candidate preflight), `remote.candidate-abi`, `remote.web-up`, `readiness.remote-web-healthz` (Skipped for local-only targets) |
-//! | 10 | `deep_readiness` | `readiness.daemon-metrics`, `readiness.mcp-tcp-N` (TCP probes), `readiness.mcp-ready-N`, `readiness.web-deep`, `readiness.db-heartbeat` |
+//! | 10 | `deep_readiness` | `readiness.daemon-metrics`, `readiness.web-deep`, `readiness.db-heartbeat` (MCP readiness is proven by the sealed-mcp-abi stage, the daemon boot preflight, and the 30s heartbeat receipt; per-endpoint TCP/readyz probes duplicated those contracts and added deploy-failure surface) |
 //! | 11 | `admission_open` | `admission.open`, `readiness.admission-open-verify` |
 //! | 12 | `terminal_success_receipt` | receipt only |
 //!
@@ -42,7 +42,7 @@ use crate::config::DeployConfig;
 use crate::hashing::{UNAVAILABLE_HASH, sha256_file};
 use crate::receipts::{
     DeployArtifacts, SkippedRecord, StageCommandRecord, StageReceipt, StageReceiptStatus,
-    TcpProbeRecord, TerminalAdmission,
+    TerminalAdmission,
 };
 use crate::stages::{RunContext, STAGE_TABLE};
 use crate::target::TargetFile;
@@ -192,7 +192,10 @@ pub struct StageCommandOutcome {
     pub stdout: String,
 }
 
-/// TCP connectivity probe record (MCP readiness layer 1; never LLM calls).
+/// TCP connectivity probe record (executor capability; never LLM calls).
+/// Stage 10 no longer issues these — MCP readiness is proven by the
+/// sealed-mcp-abi stage, the daemon boot preflight, and the db-heartbeat
+/// `mcp_ready` receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpProbe {
     pub stage: &'static str,
@@ -2914,48 +2917,6 @@ pub fn build_daemon_metrics_command(deps: &PipelineDeps<'_>) -> StageCommand {
     )
 }
 
-pub fn build_mcp_probe(index: usize, endpoint: &str, mcp_ms: u64) -> Result<TcpProbe, String> {
-    let Some((host, port)) = parse_host_port(endpoint) else {
-        return Err(format!("mcp endpoint `{endpoint}` must be `host:port`"));
-    };
-    Ok(TcpProbe {
-        stage: crate::stages::STAGE_DEEP_READINESS,
-        id: format!("readiness.mcp-tcp-{index}"),
-        host,
-        port,
-        timeout_ms: mcp_ms,
-    })
-}
-
-pub fn build_mcp_ready_command(
-    deps: &PipelineDeps<'_>,
-    index: usize,
-    endpoint: &str,
-) -> Result<StageCommand, String> {
-    let Some((host, port)) = parse_host_port(endpoint) else {
-        return Err(format!("mcp endpoint `{endpoint}` must be `host:port`"));
-    };
-    let scheme = if is_loopback_host(&host) {
-        "http"
-    } else {
-        "https"
-    };
-    Ok(StageCommand::new(
-        crate::stages::STAGE_DEEP_READINESS,
-        &format!("readiness.mcp-ready-{index}"),
-        vec![
-            "curl".to_owned(),
-            "-fsS".to_owned(),
-            "--max-time".to_owned(),
-            seconds_from_ms(deps.config.timeouts.mcp_ms),
-            format!("{scheme}://{host}:{port}/readyz"),
-        ],
-        &deps.config.operator_root,
-        Vec::new(),
-        deps.config.timeouts.mcp_ms,
-    ))
-}
-
 pub fn build_web_deep_command_remote(
     deps: &PipelineDeps<'_>,
     topology: &RemoteTopology,
@@ -3081,26 +3042,6 @@ fn seconds_from_ms(millis: u64) -> String {
     (millis / 1000).max(1).to_string()
 }
 
-fn parse_host_port(endpoint: &str) -> Option<(String, u16)> {
-    let endpoint = endpoint.trim();
-    let authority = endpoint
-        .strip_prefix("https://")
-        .or_else(|| endpoint.strip_prefix("http://"))
-        .unwrap_or(endpoint);
-    let authority = authority.split('/').next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    let port: u16 = port.parse().ok()?;
-    if host.is_empty() {
-        None
-    } else {
-        Some((host.to_owned(), port))
-    }
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline driver
 // ---------------------------------------------------------------------------
@@ -3216,20 +3157,6 @@ impl StageCtx<'_> {
                 spec.id
             ));
         }
-    }
-
-    fn probe(&mut self, executor: &dyn StageExecutor, probe: TcpProbe) -> Result<(), String> {
-        let result = executor.tcp_connect(&probe);
-        let outcome = if result.is_ok() { "pass" } else { "fail" };
-        self.receipt.probes.push(TcpProbeRecord {
-            id: probe.id.clone(),
-            stage: probe.stage.to_owned(),
-            host: probe.host,
-            port: probe.port,
-            timeout_ms: probe.timeout_ms,
-            outcome: outcome.to_owned(),
-        });
-        result.map_err(|error| format!("probe `{}` failed: {error}", probe.id))
     }
 
     fn note(&mut self, text: String) {
@@ -4013,18 +3940,11 @@ fn stage_deep_readiness(
     // Process layer: the local daemon's metrics endpoint.
     ctx.command_with_policy(executor, build_daemon_metrics_command(ctx.deps))?;
 
-    // Dependency layer: every MCP endpoint — TCP + readiness endpoint, no
-    // LLM calls.
-    for (index, endpoint) in ctx.deps.target.mcp_endpoints.iter().enumerate() {
-        ctx.probe(
-            executor,
-            build_mcp_probe(index, endpoint, ctx.deps.config.timeouts.mcp_ms)?,
-        )?;
-        ctx.command_with_policy(
-            executor,
-            build_mcp_ready_command(ctx.deps, index, endpoint)?,
-        )?;
-    }
+    // Dependency layer: MCP readiness is NOT probed here. It is proven by
+    // the stage-8e sealed-mcp-abi check, the daemon boot preflight, and the
+    // db-heartbeat's mcp_ready column below (the daemon itself runs a full
+    // MCP preflight every 30s); per-endpoint TCP/readyz probes duplicated
+    // those contracts and added deploy-failure surface.
 
     // Product layer 1: web /api/healthz/deep with internal-key headers.
     let topology = resolve_remote_topology(ctx.deps.target)?;
@@ -5434,18 +5354,67 @@ mod tests {
         assert_eq!(metrics.timeout_ms, deps.config.timeouts.daemon_ready_ms);
         assert!(metrics.argv[4].ends_with("/metrics"));
 
-        let probe = build_mcp_probe(0, "127.0.0.1:18081", deps.config.timeouts.mcp_ms).unwrap();
-        assert_eq!(probe.id, "readiness.mcp-tcp-0");
-        assert_eq!(probe.host, "127.0.0.1");
-        assert_eq!(probe.port, 18081);
-        assert_eq!(probe.timeout_ms, 7_000);
-        assert!(build_mcp_probe(0, "no-port", 1_000).is_err());
-
-        let ready = build_mcp_ready_command(&deps, 0, "127.0.0.1:18081").unwrap();
-        assert_eq!(ready.id, "readiness.mcp-ready-0");
-        assert_eq!(ready.argv[4], "http://127.0.0.1:18081/readyz"); // loopback -> http
-        let tls_ready = build_mcp_ready_command(&deps, 1, "mcp.example.com:9443").unwrap();
-        assert_eq!(tls_ready.argv[4], "https://mcp.example.com:9443/readyz");
+        // Stage 10 issues exactly the three non-MCP readiness layers. MCP
+        // readiness is proven by the sealed-mcp-abi stage, the daemon boot
+        // preflight, and the 30s heartbeat receipt's mcp_ready column;
+        // per-endpoint TCP/readyz probes duplicated those contracts and
+        // added deploy-failure surface.
+        let release_id = deps.release_id();
+        let deep_json = format!(
+            r#"{{"status":"ok","deployment_id":"{release_id}","checks":{{"agent_v1":{{"admission":"closed"}}}}}}"#
+        );
+        let mut fixture = FixtureStageExecutor::passing();
+        fixture
+            .outputs
+            .insert("readiness.web-deep".to_owned(), deep_json.clone());
+        fixture
+            .outputs
+            .insert("readiness.public-healthz-0".to_owned(), deep_json.clone());
+        fixture
+            .outputs
+            .insert("readiness.public-healthz-1".to_owned(), deep_json);
+        let mut state = PipelineState::default();
+        let mut ctx = StageCtx {
+            deps: &deps,
+            state: &mut state,
+            receipt: StageReceipt::new(
+                &deps.context.run_id,
+                &deps.context.created_at_utc,
+                deps.context.mode.as_str(),
+                "fixture",
+                10,
+                crate::stages::STAGE_DEEP_READINESS,
+                StageReceiptStatus::Pass,
+            ),
+        };
+        stage_deep_readiness(&mut ctx, &fixture).expect("stage 10 passes");
+        let stage10 = fixture.command_ids();
+        assert!(
+            stage10.iter().any(|c| c == "readiness.daemon-metrics"),
+            "stage 10 commands: {stage10:?}"
+        );
+        assert!(
+            stage10.iter().any(|c| c == "readiness.web-deep"),
+            "stage 10 commands: {stage10:?}"
+        );
+        assert!(
+            stage10.iter().any(|c| c == "readiness.db-heartbeat"),
+            "stage 10 commands: {stage10:?}"
+        );
+        assert!(
+            !stage10
+                .iter()
+                .any(|c| c.starts_with("readiness.mcp-tcp-")),
+            "TCP probes are redundant with the mcp_ready db-heartbeat check: {stage10:?}"
+        );
+        assert!(
+            !stage10.iter().any(|c| c.starts_with("readiness.mcp-ready-")),
+            "readyz probes are redundant with the boot preflight + heartbeat: {stage10:?}"
+        );
+        assert!(
+            fixture.probes.borrow().is_empty(),
+            "stage 10 must not issue any TCP probe"
+        );
 
         let topology = resolve_remote_topology(deps.target).unwrap().unwrap();
         let deep = build_web_deep_command_remote(&deps, &topology);
