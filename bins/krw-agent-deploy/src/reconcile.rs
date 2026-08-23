@@ -581,6 +581,41 @@ mod classify_tests {
     }
 
     #[test]
+    fn malformed_terminal_receipt_falls_back_to_stage_receipts() {
+        // A corrupt/unparseable terminal.json is the "diagnostic unavailable"
+        // input: it must never read as success, and the stage receipts must
+        // decide deterministically in both directions.
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(
+            tmp.path(),
+            Some(r#"{"outcome": "suc"#), // truncated mid-string: not valid JSON
+            &[(9, "remote_activation", "pass")],
+        );
+        let name = tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            classify_recovery(tmp.path()),
+            RecoveryPlan::Reopen { run_name: name },
+            "garbage terminal with a stage-9 pass receipt must be reopenable"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(
+            tmp.path(),
+            Some("not json at all"),
+            &[(8, "local_activation", "pass")],
+        );
+        assert!(
+            matches!(classify_recovery(tmp.path()), RecoveryPlan::Blocked { .. }),
+            "garbage terminal with only a stage-8 pass receipt must stay blocked"
+        );
+    }
+
+    #[test]
     fn failure_at_remote_activation_itself_is_blocked() {
         // The failed stage writes a `fail` receipt, so the highest `pass` is
         // stage 8: the web pins never fully shipped — re-deploy required.
