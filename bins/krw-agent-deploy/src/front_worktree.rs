@@ -25,12 +25,14 @@ use std::process::Command;
 /// stale registrations in the *source* repo linger until
 /// `git worktree prune` is run there; this function never prunes).
 ///
-/// A fresh worktree has no `node_modules` (it is untracked), yet the
-/// stage-6 RPC contract verifier and other local scripts resolve Node
-/// packages from it (production run 20260823T095142Z failed exactly
-/// there). The source checkout's `node_modules` is therefore symlinked
-/// into the worktree — for new AND reused worktrees, so a run that
-/// crashed between `worktree add` and today still gets backfilled.
+/// A fresh worktree has none of the untracked build artifacts the local
+/// verification scripts need: `node_modules` (stage-6 RPC contract
+/// verify resolved `typescript` from it — production run
+/// 20260823T095142Z), `supabase/.temp` (schema-smoke reads
+/// `.temp/project-ref` — run 20260823T095730Z), and the local env
+/// files. The same set the operator's manual sealed-worktree recipe
+/// symlinked. Each is symlinked from the source checkout for new AND
+/// reused worktrees, so a run that died mid-way still gets backfilled.
 pub fn materialize_clean_front_worktree(
     front_root: &Path,
     dest_root: &Path,
@@ -65,7 +67,7 @@ pub fn materialize_clean_front_worktree(
     let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
     let worktree = dest_root.join(format!("front-{head}"));
     if worktree.exists() {
-        ensure_node_modules_link(front_root, &worktree)?;
+        ensure_artifact_links(front_root, &worktree)?;
         return Ok(worktree);
     }
     std::fs::create_dir_all(dest_root)
@@ -85,32 +87,49 @@ pub fn materialize_clean_front_worktree(
     if !status.success() {
         return Err(format!("git worktree add failed for HEAD {head}"));
     }
-    ensure_node_modules_link(front_root, &worktree)?;
+    ensure_artifact_links(front_root, &worktree)?;
     Ok(worktree)
 }
 
-/// Symlink the source checkout's `node_modules` into a materialized
-/// worktree. No-op when the worktree already resolves one or the source
-/// has none (e.g. a pristine checkout that never ran an install).
-fn ensure_node_modules_link(front_root: &Path, worktree: &Path) -> Result<(), String> {
-    let source_modules = front_root.join("node_modules");
-    let worktree_modules = worktree.join("node_modules");
-    if !source_modules.is_dir() || worktree_modules.exists() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&source_modules, &worktree_modules).map_err(|e| {
-            format!(
-                "cannot link node_modules into {}: {e}",
-                worktree.display()
-            )
-        })?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = source_modules;
-        return Err("node_modules linking is only supported on unix".to_owned());
+/// Untracked artifacts the local deploy scripts resolve from the front
+/// checkout. Linked one-by-one, only when present in the source and
+/// absent in the worktree.
+const LINKED_ARTIFACTS: &[&str] = &[
+    "node_modules",
+    "supabase/.temp",
+    ".env",
+    ".env.production",
+];
+
+/// Symlink each untracked artifact from the source checkout into a
+/// materialized worktree. No-op per artifact when the worktree already
+/// resolves one or the source has none.
+fn ensure_artifact_links(front_root: &Path, worktree: &Path) -> Result<(), String> {
+    for relative in LINKED_ARTIFACTS {
+        let source_artifact = front_root.join(relative);
+        let worktree_artifact = worktree.join(relative);
+        if !source_artifact.exists() || worktree_artifact.exists() {
+            continue;
+        }
+        if let Some(parent) = worktree_artifact.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("cannot create {}: {e}", parent.display())
+            })?;
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&source_artifact, &worktree_artifact).map_err(|e| {
+                format!(
+                    "cannot link {relative} into {}: {e}",
+                    worktree.display()
+                )
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = source_artifact;
+            return Err("artifact linking is only supported on unix".to_owned());
+        }
     }
     Ok(())
 }
@@ -173,11 +192,14 @@ mod worktree_tests {
     }
 
     #[test]
-    fn worktree_reuses_source_node_modules_and_backfills_on_reuse() {
+    fn worktree_reuses_source_artifacts_and_backfills_on_reuse() {
         let src = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
         make_repo(src.path(), true);
         std::fs::create_dir_all(src.path().join("node_modules/typescript")).unwrap();
+        std::fs::create_dir_all(src.path().join("supabase/.temp")).unwrap();
+        std::fs::write(src.path().join("supabase/.temp/project-ref"), "ref-1").unwrap();
+        std::fs::write(src.path().join(".env.production"), "NEXT_PUBLIC_APP_URL=x").unwrap();
         let resolved = materialize_clean_front_worktree(src.path(), dest.path()).unwrap();
         let link = resolved.join("node_modules");
         assert!(
@@ -187,12 +209,16 @@ mod worktree_tests {
             "node_modules must be a symlink to the source checkout's install"
         );
         assert!(link.join("typescript").is_dir());
+        assert!(resolved.join("supabase/.temp/project-ref").is_file());
+        assert!(resolved.join(".env.production").is_file());
 
-        // A run that died between worktree add and the link gets backfilled
-        // on reuse (production run 20260823T095142Z).
+        // A run that died between worktree add and the links gets backfilled
+        // on reuse (production runs 20260823T095142Z / 095730Z).
         std::fs::remove_file(&link).unwrap();
+        std::fs::remove_file(resolved.join("supabase/.temp")).unwrap();
         let reused = materialize_clean_front_worktree(src.path(), dest.path()).unwrap();
         assert_eq!(reused, resolved);
         assert!(reused.join("node_modules/typescript").is_dir());
+        assert!(reused.join("supabase/.temp/project-ref").is_file());
     }
 }
