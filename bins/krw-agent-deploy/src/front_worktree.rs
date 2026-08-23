@@ -24,6 +24,13 @@ use std::process::Command;
 /// runs against the same HEAD do not accumulate new worktrees (note that
 /// stale registrations in the *source* repo linger until
 /// `git worktree prune` is run there; this function never prunes).
+///
+/// A fresh worktree has no `node_modules` (it is untracked), yet the
+/// stage-6 RPC contract verifier and other local scripts resolve Node
+/// packages from it (production run 20260823T095142Z failed exactly
+/// there). The source checkout's `node_modules` is therefore symlinked
+/// into the worktree — for new AND reused worktrees, so a run that
+/// crashed between `worktree add` and today still gets backfilled.
 pub fn materialize_clean_front_worktree(
     front_root: &Path,
     dest_root: &Path,
@@ -58,6 +65,7 @@ pub fn materialize_clean_front_worktree(
     let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
     let worktree = dest_root.join(format!("front-{head}"));
     if worktree.exists() {
+        ensure_node_modules_link(front_root, &worktree)?;
         return Ok(worktree);
     }
     std::fs::create_dir_all(dest_root)
@@ -77,7 +85,34 @@ pub fn materialize_clean_front_worktree(
     if !status.success() {
         return Err(format!("git worktree add failed for HEAD {head}"));
     }
+    ensure_node_modules_link(front_root, &worktree)?;
     Ok(worktree)
+}
+
+/// Symlink the source checkout's `node_modules` into a materialized
+/// worktree. No-op when the worktree already resolves one or the source
+/// has none (e.g. a pristine checkout that never ran an install).
+fn ensure_node_modules_link(front_root: &Path, worktree: &Path) -> Result<(), String> {
+    let source_modules = front_root.join("node_modules");
+    let worktree_modules = worktree.join("node_modules");
+    if !source_modules.is_dir() || worktree_modules.exists() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&source_modules, &worktree_modules).map_err(|e| {
+            format!(
+                "cannot link node_modules into {}: {e}",
+                worktree.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = source_modules;
+        return Err("node_modules linking is only supported on unix".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -100,6 +135,7 @@ mod worktree_tests {
         git(dir, &["init", "-q"]);
         git(dir, &["config", "user.email", "t@t"]);
         git(dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join(".gitignore"), "node_modules\n").unwrap();
         std::fs::write(dir.join("f.txt"), "v1").unwrap();
         git(dir, &["add", "."]);
         git(dir, &["commit", "-q", "-m", "1"]);
@@ -122,6 +158,7 @@ mod worktree_tests {
         let src = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
         make_repo(src.path(), true);
+        std::fs::create_dir_all(src.path().join("node_modules/typescript")).unwrap();
         let resolved = materialize_clean_front_worktree(src.path(), dest.path()).unwrap();
         assert_ne!(resolved, src.path(), "must not build from the dirty tree");
         assert!(resolved.starts_with(dest.path()));
@@ -133,5 +170,29 @@ mod worktree_tests {
             porcelain.stdout.is_empty(),
             "worktree must be clean at HEAD"
         );
+    }
+
+    #[test]
+    fn worktree_reuses_source_node_modules_and_backfills_on_reuse() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        make_repo(src.path(), true);
+        std::fs::create_dir_all(src.path().join("node_modules/typescript")).unwrap();
+        let resolved = materialize_clean_front_worktree(src.path(), dest.path()).unwrap();
+        let link = resolved.join("node_modules");
+        assert!(
+            link.symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+            "node_modules must be a symlink to the source checkout's install"
+        );
+        assert!(link.join("typescript").is_dir());
+
+        // A run that died between worktree add and the link gets backfilled
+        // on reuse (production run 20260823T095142Z).
+        std::fs::remove_file(&link).unwrap();
+        let reused = materialize_clean_front_worktree(src.path(), dest.path()).unwrap();
+        assert_eq!(reused, resolved);
+        assert!(reused.join("node_modules/typescript").is_dir());
     }
 }
