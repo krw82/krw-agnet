@@ -1,8 +1,8 @@
--- 0024_heartbeat_request_backward_compatibility.sql
+-- 0023_heartbeat_request_backward_compatibility.sql
 -- Expand half of an expand/contract pair: `mcp_ready` moves from required
--- to optional so a daemon binary built before 0024 can still publish a
--- receipt while a deploy is between its migration stage and its local
--- activation stage. A pre-0024 daemon passed its own boot MCP preflight
+-- to optional so a daemon binary built before this field existed can still
+-- publish a receipt while a deploy is between its migration stage and its
+-- local activation stage. A pre-field daemon passed its own boot MCP preflight
 -- (main.rs run_mcp_preflight predates this field), so the honest default
 -- for an absent field is true; defaulting false would re-create the exact
 -- multi-hour outage this migration removes (2026-08 analysis: 24,094

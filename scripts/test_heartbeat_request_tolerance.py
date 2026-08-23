@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Contract test: heartbeat_daemon tolerates a pre-0024 request shape.
+"""Contract test: heartbeat_daemon tolerates a pre-0023 request shape.
 
 HERMETIC INVARIANT — this test NEVER durably modifies the shared database.
-Postgres DDL is transactional, so the test loads migration 0024 with its
+Postgres DDL is transactional, so the test loads migration 0023 with its
 standalone BEGIN;/COMMIT; lines stripped and runs ALL of it (the CREATE OR
 REPLACE FUNCTION plus the four contract calls) inside ONE psql session
 wrapped in BEGIN; ... ROLLBACK;. The replaced function exists for the
 duration of that session and vanishes on rollback. Durable application of
-0024 happens only at the next production deploy via the migration
+0023 happens only at the next production deploy via the migration
 pipeline; this script never commits.
 
 Each contract call sits inside its own SAVEPOINT so the one call that is
@@ -18,7 +18,7 @@ Run with KRW_AGENT_DATABASE_URL in the environment (pass the value through
 the environment only; never write it into files, logs, or command history).
 
 Modes:
-  default        apply 0024 inside the rolled-back transaction (post-migration)
+  default        apply 0023 inside the rolled-back transaction (post-migration)
   --no-migrate   run only the contract calls against the currently deployed
                  function (pre-migration red run)
 """
@@ -31,7 +31,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
-    REPO_ROOT / "migrations" / "0024_heartbeat_request_backward_compatibility.sql"
+    REPO_ROOT / "migrations" / "0023_heartbeat_request_backward_compatibility.sql"
 )
 
 DB_URL = os.environ.get("KRW_AGENT_DATABASE_URL")

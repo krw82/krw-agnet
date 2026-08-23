@@ -24,16 +24,16 @@
 - 배포 프로바이더는 항상 DeepSeek, 로컬 테스트는 GLM(사용자 확립 규칙).
 - 소스/예제/테스트에 사용 가능한 credential 리터럴 금지. SQL은 파라미터 바인딩만.
 - 모든 커밋 전 `cargo test` 관련 크레이트 통과. 스키마 커밋 후 `cargo build --bins` 재실행(부분 디버그 재빌드 함정).
-- 마이그레이션은 additive-first(expand-contract): 이번 계획의 0024는 expand 절반만 한다. contract(필드 제거)는 별도 후속.
+- 마이그레이션은 additive-first(expand-contract): 이번 계획의 0023는 expand 절반만 한다. contract(필드 제거)는 별도 후속.
 
 ---
 
 ## Phase A — 엔진 크래시 루프 제거 (Tasks 1-4, 독립 배포 가능)
 
-### Task 1: 하트비트 요청 계약의 하위호환 (migration 0024)
+### Task 1: 하트비트 요청 계약의 하위호환 (migration 0023)
 
 **Files:**
-- Create: `migrations/0024_heartbeat_request_backward_compatibility.sql`
+- Create: `migrations/0023_heartbeat_request_backward_compatibility.sql`
 - Create: `scripts/test_heartbeat_request_tolerance.py`
 
 **Interfaces:**
@@ -46,7 +46,7 @@
 
 ```python
 #!/usr/bin/env python3
-"""Contract test: heartbeat_daemon tolerates a pre-0024 request shape.
+"""Contract test: heartbeat_daemon tolerates a pre-0023 request shape.
 
 All calls run inside BEGIN/ROLLBACK so the shared heartbeat table is
 never durably modified by this test. Run against the LOCAL dev stack
@@ -113,16 +113,16 @@ if __name__ == "__main__":
 Run: `set -a; source .local/agent-gateway/secrets.env; set +a; python3 scripts/test_heartbeat_request_tolerance.py`
 Expected: FAIL — "legacy request (no mcp_ready) was rejected: ... boolean_field_required" (현재 프로시저는 8필드 정확 일치).
 
-- [ ] **Step 3: migration 0024 작성**
+- [ ] **Step 3: migration 0023 작성**
 
-`migrations/0024_heartbeat_request_backward_compatibility.sql`:
+`migrations/0023_heartbeat_request_backward_compatibility.sql`:
 
 ```sql
--- 0024_heartbeat_request_backward_compatibility.sql
+-- 0023_heartbeat_request_backward_compatibility.sql
 -- Expand half of an expand/contract pair: `mcp_ready` moves from required
--- to optional so a daemon binary built before 0024 can still publish a
+-- to optional so a daemon binary built before 0023 can still publish a
 -- receipt while a deploy is between its migration stage and its local
--- activation stage. A pre-0024 daemon passed its own boot MCP preflight
+-- activation stage. A pre-0023 daemon passed its own boot MCP preflight
 -- (main.rs run_mcp_preflight predates this field), so the honest default
 -- for an absent field is true; defaulting false would re-create the exact
 -- multi-hour outage this migration removes (2026-08 analysis: 24,094
@@ -194,13 +194,13 @@ COMMIT;
 
 - [ ] **Step 4: 로컬 스택에 적용하고 테스트 통과 확인**
 
-Run: `psql "$KRW_AGENT_DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0024_heartbeat_request_backward_compatibility.sql && python3 scripts/test_heartbeat_request_tolerance.py`
+Run: `psql "$KRW_AGENT_DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0023_heartbeat_request_backward_compatibility.sql && python3 scripts/test_heartbeat_request_tolerance.py`
 Expected: PASS 4/4 (legacy 수용, mcp_ready true/false 왕복, unknown 필드 거부 유지).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add migrations/0024_heartbeat_request_backward_compatibility.sql scripts/test_heartbeat_request_tolerance.py
+git add migrations/0023_heartbeat_request_backward_compatibility.sql scripts/test_heartbeat_request_tolerance.py
 git commit -m "fix(migrations): make the heartbeat request contract backward-compatible"
 ```
 
