@@ -19,6 +19,7 @@ pub mod executor;
 pub mod hashing;
 pub mod pipeline;
 pub mod receipts;
+pub mod reconcile;
 pub mod stages;
 pub mod target;
 pub mod timeutil;

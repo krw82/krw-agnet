@@ -242,6 +242,17 @@ provider 전환은 hot-swap하지 않는다.
 DB migration은 additive forward-only이므로 rollback은 이전 compatible binary/web image로
 수행하며 destructive down migration은 하지 않는다.
 
+### Admission 봉인 복구 (2026-08 이후)
+
+스테이지 9 이후에서 실패한 배포는 전체 재배포 없이 복구한다:
+
+```bash
+krw-agent-deploy --config <production-config> reconcile
+```
+
+스테이지 9 이전 실패(핀 미반영)는 여전히 전체 재배포가 필요하다 — 명령이
+이유와 함께 거부한다.
+
 ## Go/No-Go
 
 다음이 모두 pass일 때만 DeepSeek production admission을 연다.

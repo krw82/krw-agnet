@@ -3693,7 +3693,7 @@ fn normalize_previous_admission(raw: &str) -> String {
     }
 }
 
-fn verify_deep_observation(
+pub fn verify_deep_observation(
     observation: Option<DeepHealthObservation>,
     release_id: &str,
 ) -> Result<(), String> {
