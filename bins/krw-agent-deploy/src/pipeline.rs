@@ -81,6 +81,36 @@ pub const SSH_PREPARE_TIMEOUT_MS: u64 = 1_800_000;
 pub const SCP_TIMEOUT_MS: u64 = 1_800_000;
 pub const SCP_MAX_ATTEMPTS: u32 = 3;
 
+/// Bounded retry attempts for deploy commands that are safe to re-run:
+/// remote transports (transient SSH/curl failures were 10+ deploy failures
+/// in the 2026-08 receipts) and idempotent local activation steps. State
+/// transitions (`admission.*`, `migrations.*`, `activation.agentd-activate`)
+/// stay single-shot, and `readiness.*` probes stay single-shot at this
+/// layer because the real executor already polls them until `timeout_ms`
+/// (outer retries would triple the wall-clock budget).
+pub const COMMAND_RETRY_ATTEMPTS: u32 = 3;
+
+/// Exact command ids that are idempotent and therefore safe to re-run.
+const RETRIABLE_COMMAND_IDS: &[&str] = &[
+    "activation.agentd-stage",
+    "activation.agentd-start",
+    "activation.mcp-gateways-prepare",
+    "activation.mcp-gateways-activate",
+    "activation.capabilityd-activate",
+];
+
+/// Retry policy by command id: remote transports (`ship.*`, `remote.*`) and
+/// the idempotent activation steps above get [`COMMAND_RETRY_ATTEMPTS`]
+/// attempts; everything else — including `readiness.*` (executor-polled) —
+/// returns 1 (single-shot).
+pub fn command_retry_attempts(id: &str) -> u32 {
+    if id.starts_with("ship.") || id.starts_with("remote.") || RETRIABLE_COMMAND_IDS.contains(&id) {
+        COMMAND_RETRY_ATTEMPTS
+    } else {
+        1
+    }
+}
+
 /// Local ship directory under the run's release output tree.
 pub const SHIP_DIR_NAME: &str = "ship";
 
@@ -3159,6 +3189,23 @@ impl StageCtx<'_> {
         Err(last_error)
     }
 
+    /// Route a command through the retry policy: retryable ids (see
+    /// [`command_retry_attempts`]) get [`COMMAND_RETRY_ATTEMPTS`] attempts
+    /// via [`StageCtx::command_with_retries`]; everything else stays
+    /// single-shot through [`StageCtx::command`].
+    fn command_with_policy(
+        &mut self,
+        executor: &dyn StageExecutor,
+        spec: StageCommand,
+    ) -> Result<String, String> {
+        let attempts = command_retry_attempts(&spec.id);
+        if attempts > 1 {
+            self.command_with_retries(executor, spec, attempts)
+        } else {
+            self.command(executor, spec)
+        }
+    }
+
     /// Post-success cleanup commands (05 artifact-cleanup): recorded with
     /// their real outcome, but a failure NEVER fails the deploy — it becomes
     /// a receipt note for the operator.
@@ -3680,11 +3727,11 @@ fn stage_admission_close(
             ));
             let mut commands = build_admission_commands_remote(ctx.deps, remote).into_iter();
             let read_previous = commands.next().expect("admission.read-previous command");
-            let raw = ctx.command(executor, read_previous)?;
+            let raw = ctx.command_with_policy(executor, read_previous)?;
             let close = commands.next().expect("admission.close command");
-            ctx.command(executor, close)?;
+            ctx.command_with_policy(executor, close)?;
             let verify = commands.next().expect("admission.verify-closed command");
-            ctx.command(executor, verify)?;
+            ctx.command_with_policy(executor, verify)?;
             normalize_previous_admission(&raw)
         }
         None => {
@@ -3699,11 +3746,11 @@ fn stage_admission_close(
                 .map_err(|error| format!("local admission upsert failed: {error}"))?;
             let mut commands = build_admission_commands_local(ctx.deps).into_iter();
             let close = commands.next().expect("admission.close-local command");
-            ctx.command(executor, close)?;
+            ctx.command_with_policy(executor, close)?;
             let verify = commands
                 .next()
                 .expect("admission.verify-closed-local command");
-            let stdout = ctx.command(executor, verify)?;
+            let stdout = ctx.command_with_policy(executor, verify)?;
             let status_ok = serde_json::from_str::<serde_json::Value>(&stdout)
                 .ok()
                 .and_then(|value| {
@@ -3732,13 +3779,13 @@ fn stage_admission_close(
     // plan, then the schema smoke, then the sealed DB ABI — and only then
     // the contract's exact ABI entries.
     let db_handle = ctx.deps.agent_db_url_handle()?;
-    ctx.command(
+    ctx.command_with_policy(
         executor,
         build_agent_release_migrations_command(ctx.deps, &db_handle),
     )
     .map_err(|error| format!("sealed agent release migrations failed: {error}"))?;
     let include_all = ctx.state.migration_include_all;
-    let stdout = ctx.command(executor, build_db_push_command(ctx.deps, include_all))?;
+    let stdout = ctx.command_with_policy(executor, build_db_push_command(ctx.deps, include_all))?;
     let applied = parse_applied_migrations(&stdout);
     ctx.note(format!(
         "forward-only db push applied {} migration(s): {}",
@@ -3750,11 +3797,11 @@ fn stage_admission_close(
         }
     ));
     ctx.state.applied_migrations = applied;
-    ctx.command(executor, build_schema_smoke_command(ctx.deps))
+    ctx.command_with_policy(executor, build_schema_smoke_command(ctx.deps))
         .map_err(|error| format!("supabase schema smoke failed: {error}"))?;
     let (check_dir, overlay) =
         prepare_sealed_check_overlay(ctx.deps, "sealed-release-database-check")?;
-    let abi_result = ctx.command(
+    let abi_result = ctx.command_with_policy(
         executor,
         build_sealed_abi_command(ctx.deps, SealedAbiMode::Database, &overlay)?,
     );
@@ -3785,7 +3832,7 @@ fn stage_admission_close(
             &format!("{PROCEDURE_ABI_PREFIX}{index}"),
             &abi.sql(),
         );
-        let stdout = ctx.command(executor, spec)?;
+        let stdout = ctx.command_with_policy(executor, spec)?;
         if stdout != abi.expected_output() {
             return Err(format!(
                 "procedure ABI verification failed for `{entry}`: expected `{}`, got `{stdout}`",
@@ -3797,7 +3844,7 @@ fn stage_admission_close(
     for (index, entry) in columns.iter().enumerate() {
         let abi = parse_column_entry(entry)?;
         let spec = build_abi_command(ctx.deps, &format!("{COLUMN_ABI_PREFIX}{index}"), &abi.sql());
-        let stdout = ctx.command(executor, spec)?;
+        let stdout = ctx.command_with_policy(executor, spec)?;
         if stdout != abi.expected_output() {
             return Err(format!(
                 "column ABI verification failed for `{entry}`: expected `{}`, got `{stdout}`",
@@ -3832,7 +3879,7 @@ fn stage_local_activation(
         prepare_sealed_check_overlay(ctx.deps, "sealed-release-mcp-check")?;
     let result: Result<(), String> = (|| {
         for spec in build_stage8_commands(ctx.deps, &mcp_overlay) {
-            ctx.command(executor, spec)?;
+            ctx.command_with_policy(executor, spec)?;
         }
         Ok(())
     })();
@@ -3920,7 +3967,7 @@ fn stage_remote_activation(
         ),
         SCP_MAX_ATTEMPTS,
     )?;
-    let prepare_output = ctx.command(
+    let prepare_output = ctx.command_with_policy(
         executor,
         build_remote_prepare_command(ctx.deps, &topology, &descriptor_hash, &release_set_hash),
     )?;
@@ -3942,7 +3989,7 @@ fn stage_remote_activation(
     // Post-migration candidate ABI proof, then the public activation.
     for spec in build_stage9_commands(ctx.deps, &topology) {
         let id = spec.id.clone();
-        let stdout = ctx.command(executor, spec)?;
+        let stdout = ctx.command_with_policy(executor, spec)?;
         match id.as_str() {
             "remote.candidate-abi" => {
                 verify_candidate_check_output(&stdout, "gcp_agent_v1_candidate_abi").map_err(
@@ -3964,7 +4011,7 @@ fn stage_deep_readiness(
     executor: &dyn StageExecutor,
 ) -> Result<(), String> {
     // Process layer: the local daemon's metrics endpoint.
-    ctx.command(executor, build_daemon_metrics_command(ctx.deps))?;
+    ctx.command_with_policy(executor, build_daemon_metrics_command(ctx.deps))?;
 
     // Dependency layer: every MCP endpoint — TCP + readiness endpoint, no
     // LLM calls.
@@ -3973,7 +4020,7 @@ fn stage_deep_readiness(
             executor,
             build_mcp_probe(index, endpoint, ctx.deps.config.timeouts.mcp_ms)?,
         )?;
-        ctx.command(
+        ctx.command_with_policy(
             executor,
             build_mcp_ready_command(ctx.deps, index, endpoint)?,
         )?;
@@ -3982,8 +4029,10 @@ fn stage_deep_readiness(
     // Product layer 1: web /api/healthz/deep with internal-key headers.
     let topology = resolve_remote_topology(ctx.deps.target)?;
     let deep = match &topology {
-        Some(remote) => ctx.command(executor, build_web_deep_command_remote(ctx.deps, remote))?,
-        None => ctx.command(executor, build_web_deep_command_local(ctx.deps))?,
+        Some(remote) => {
+            ctx.command_with_policy(executor, build_web_deep_command_remote(ctx.deps, remote))?
+        }
+        None => ctx.command_with_policy(executor, build_web_deep_command_local(ctx.deps))?,
     };
     verify_deep_observation(parse_deep_health(&deep), &ctx.deps.release_id())?;
     if let Some(observed) = parse_deep_health(&deep) {
@@ -4000,7 +4049,7 @@ fn stage_deep_readiness(
         if topology.is_none() {
             break;
         }
-        let stdout = ctx.command(
+        let stdout = ctx.command_with_policy(
             executor,
             build_public_healthz_command(ctx.deps, index, origin),
         )?;
@@ -4012,7 +4061,7 @@ fn stage_deep_readiness(
 
     // Product layer 2: the daemon's release-bound DB heartbeat.
     if let Some(spec) = build_db_heartbeat_command(ctx.deps) {
-        let stdout = ctx.command(executor, spec)?;
+        let stdout = ctx.command_with_policy(executor, spec)?;
         let parts: Vec<&str> = stdout.split('|').collect();
         if parts.len() != 4 {
             return Err(format!("db heartbeat row has the wrong shape: `{stdout}`"));
@@ -4061,7 +4110,7 @@ fn stage_admission_open(
         Some(remote) => {
             for spec in build_admission_open_commands_remote(ctx.deps, remote) {
                 let is_verify = spec.id == verify_id_remote;
-                let stdout = ctx.command(executor, spec)?;
+                let stdout = ctx.command_with_policy(executor, spec)?;
                 if is_verify {
                     verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
                     if parse_deep_health(&stdout).and_then(|observation| observation.admission)
@@ -4084,7 +4133,7 @@ fn stage_admission_open(
                 .map_err(|error| format!("local admission upsert failed: {error}"))?;
             for spec in build_admission_open_commands_local(ctx.deps) {
                 let is_verify = spec.id == verify_id_local;
-                let stdout = ctx.command(executor, spec)?;
+                let stdout = ctx.command_with_policy(executor, spec)?;
                 if is_verify {
                     verify_deep_observation(parse_deep_health(&stdout), &ctx.deps.release_id())?;
                     if parse_deep_health(&stdout).and_then(|observation| observation.admission)
@@ -4248,6 +4297,41 @@ mod tests {
             ]
         );
         assert!(parse_applied_migrations("no migrations to apply").is_empty());
+    }
+
+    #[test]
+    fn remote_and_idempotent_activation_commands_get_bounded_retries() {
+        // Remote transports: transient SSH/curl failures are safe to re-run.
+        assert_eq!(command_retry_attempts("ship.scp-front-archive"), 3);
+        assert_eq!(command_retry_attempts("ship.remote-prepare"), 3);
+        assert_eq!(command_retry_attempts("remote.candidate-abi"), 3);
+        assert_eq!(command_retry_attempts("remote.web-up"), 3);
+        // Idempotent local activation steps.
+        assert_eq!(command_retry_attempts("activation.agentd-stage"), 3);
+        assert_eq!(command_retry_attempts("activation.agentd-start"), 3);
+        assert_eq!(command_retry_attempts("activation.capabilityd-activate"), 3);
+        assert_eq!(command_retry_attempts("activation.mcp-gateways-prepare"), 3);
+        assert_eq!(
+            command_retry_attempts("activation.mcp-gateways-activate"),
+            3
+        );
+        // Readiness probes stay single-shot at the policy layer: the real
+        // executor already polls `readiness.*` to their full timeout_ms
+        // (outer retries would triple the wall-clock budget).
+        assert_eq!(command_retry_attempts("readiness.web-deep"), 1);
+        assert_eq!(command_retry_attempts("readiness.daemon-metrics"), 1);
+        assert_eq!(command_retry_attempts("readiness.remote-web-healthz"), 1);
+        assert_eq!(command_retry_attempts("readiness.admission-open-verify"), 1);
+        // Single-shot stays — state transitions/migrations/pure-local steps.
+        assert_eq!(command_retry_attempts("migrations.db-push"), 1);
+        assert_eq!(command_retry_attempts("admission.close"), 1);
+        assert_eq!(command_retry_attempts("admission.open"), 1);
+        assert_eq!(command_retry_attempts("activation.agentd-activate"), 1);
+        assert_eq!(command_retry_attempts("activation.sealed-mcp-abi"), 1);
+        assert_eq!(command_retry_attempts("seal.seal-production-candidate"), 1);
+        assert_eq!(command_retry_attempts("build.dual-provider-bundles"), 1);
+        assert_eq!(command_retry_attempts("frontend-image.archive-source"), 1);
+        assert_eq!(command_retry_attempts("cleanup.remote-prune-stale"), 1);
     }
 
     #[test]
