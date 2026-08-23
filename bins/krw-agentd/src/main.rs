@@ -52,6 +52,12 @@ const MAX_DESCRIPTOR_WRITE_ATTEMPTS: u64 = 16;
 const DAEMON_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const DAEMON_HEARTBEAT_TTL_MS: u64 = 90_000;
 const MCP_PREFLIGHT_DEADLINE: Duration = Duration::from_secs(45);
+/// Bounded retry budget for the startup heartbeat. 30 attempts at
+/// 1s doubling to a 60s cap is ~17 minutes — longer than any observed
+/// deploy window between the migration stage and local activation, which
+/// is exactly the window whose ABI drift used to crash-loop the daemon
+/// (24,094 fatal exits in the 2026-08 analysis).
+const INITIAL_HEARTBEAT_MAX_ATTEMPTS: u32 = 30;
 const MAX_RELEASE_AUTHORIZATION_ARTIFACT_BYTES: u64 = 64 * 1024;
 static DESCRIPTOR_STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -267,6 +273,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::duration_suboptimal_units,
+    reason = "std Duration has no from_minutes"
+)]
 async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     validate_image_dir_count(&args.image_dirs)?;
     let images = load_image_set(&args.image_dirs)?;
@@ -427,7 +437,13 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // local queue/executor component has been constructed, and before any
     // browser can enqueue a customer run. The retired Claude/plugin worker is
     // not in this control path.
-    let initial_daemon_heartbeat = client.execute(&daemon_heartbeat).await?;
+    let initial_daemon_heartbeat = retry_with_backoff(
+        INITIAL_HEARTBEAT_MAX_ATTEMPTS,
+        Duration::from_secs(1),
+        Duration::from_secs(60),
+        || async { client.execute(&daemon_heartbeat).await },
+    )
+    .await?;
     if !initial_daemon_heartbeat.ready {
         return Err("daemon heartbeat was not accepted".into());
     }
@@ -1257,6 +1273,41 @@ async fn read_http_request_line(socket: &mut tokio::net::TcpStream) -> std::io::
     }
 }
 
+/// Retry `try_once` with exponential backoff (`first` doubling up to `cap`)
+/// for at most `max_attempts`. The sleeper is real; tests shrink the
+/// durations so the loop stays fast.
+async fn retry_with_backoff<F, Fut, T, E>(
+    max_attempts: u32,
+    first: Duration,
+    cap: Duration,
+    mut try_once: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut delay = first;
+    for attempt in 1..=max_attempts {
+        match try_once().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt == max_attempts => return Err(error),
+            Err(error) => {
+                warn!(
+                    attempt,
+                    max_attempts,
+                    next_delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    %error,
+                    "startup heartbeat attempt failed; retrying with backoff"
+                );
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(cap);
+            }
+        }
+    }
+    unreachable!("loop returns from both match arms")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1552,5 +1603,64 @@ mod tests {
             reject_forbidden_public_fields(&unsafe_value),
             Err(DescriptorExportError::ForbiddenField(field)) if field == "credential_ref"
         ));
+    }
+}
+
+#[cfg(test)]
+mod initial_heartbeat_tests {
+    use super::*;
+
+    struct AttemptPlan {
+        failures_before_success: u32,
+    }
+
+    #[allow(
+        clippy::unused_async,
+        reason = "async keeps this a future so Box::pin yields the retry closure's type"
+    )]
+    async fn plan_result(attempt: u32, plan: &AttemptPlan) -> Result<(), String> {
+        if attempt <= plan.failures_before_success {
+            Err("simulated K-code rejection".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_heartbeat_retries_transient_rejections_until_budget() {
+        let plan = AttemptPlan {
+            failures_before_success: 3,
+        };
+        // 4번째 시도에서 성공해야 함: 0..=3 실패 후 성공.
+        let mut attempts = 0u32;
+        let outcome = retry_with_backoff(
+            INITIAL_HEARTBEAT_MAX_ATTEMPTS,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            || {
+                attempts += 1;
+                Box::pin(plan_result(attempts, &plan))
+            },
+        )
+        .await;
+        assert!(outcome.is_ok(), "must succeed after transient failures");
+        assert_eq!(attempts, 4);
+    }
+
+    #[tokio::test]
+    async fn initial_heartbeat_gives_up_after_the_budget() {
+        let mut attempts = 0u32;
+        let outcome = retry_with_backoff(
+            3,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            || {
+                attempts += 1;
+                Box::pin(async { Err::<(), _>("permanent".to_owned()) })
+            },
+        )
+        .await;
+        assert!(outcome.is_err(), "must exhaust the budget and fail");
+        assert_eq!(attempts, 3);
     }
 }
