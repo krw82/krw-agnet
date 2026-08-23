@@ -287,8 +287,8 @@ write_plist() {
     <string>--env-file</string><string>$CAPABILITY_ENV</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ThrottleInterval</key><integer>2</integer>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>EnvironmentVariables</key><dict>
     <key>KRW_AGENT_CURRENT_DIR</key><string>$INSTALL_ROOT/current</string>
     <key>KRW_AGENT_CAPABILITY_RUNTIME_DIR</key><string>$MATERIALIZED_RUNTIME</string>

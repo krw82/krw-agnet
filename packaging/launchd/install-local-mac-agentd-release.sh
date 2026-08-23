@@ -209,6 +209,9 @@ write_plist() {
     xml_escape_path "$value" >/dev/null || fail "Launchd path contains an unsupported XML character"
   done
   temporary=$(mktemp "${plist}.XXXXXX")
+  # KeepAlive=true: a daemon that exits 0 (graceful drain) must still come
+  # back — SuccessfulExit:false left the engine dead until the next deploy
+  # (2026-08 analysis). ThrottleInterval=10 bounds crash-loop churn.
   cat > "$temporary" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -221,8 +224,8 @@ write_plist() {
     <string>--overlay-file</string><string>$overlay_file</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ThrottleInterval</key><integer>2</integer>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>WorkingDirectory</key><string>$INSTALL_ROOT</string>
   <key>StandardOutPath</key><string>$log_dir/krw-agentd.out.log</string>
   <key>StandardErrorPath</key><string>$log_dir/krw-agentd.err.log</string>
