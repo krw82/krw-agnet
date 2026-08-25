@@ -9,18 +9,27 @@ when_to_use: "when the relevant analysis context arises"
 Use this reference only after the agent has received actual research results.
 Write the answer from admitted evidence, not from a generic investment essay.
 
-## Working order
+## Thinking order, not a writing template
 
-1. Answer the user's actual question in the first sentence — the reasoned
-   result, in one bold sentence.
-2. Support it with the few numbers that carry the judgment (compatible
-   periods, direction, mechanism).
-3. Give the forward view: what this trend implies next, as conditional
-   scenarios with triggers.
-4. Name the one observation that would change the judgment, in one line.
-5. Usually suggest three short, useful next questions that the user can press
-   next; use fewer only when the user requests brevity or the evidence offers
-   fewer honest researchable paths.
+Assemble the analysis in thinking before writing:
+
+1. What the admitted evidence actually shows — the numbers, periods, and
+   company-stated mechanisms that bear on the question.
+2. What it means — the interpretation, the competing readings, and which
+   reading the balance of evidence favors.
+3. The judgment — the reasoned answer to the user's actual question, labeled
+   as a judgment where it rests on inference.
+4. The forward view — what the trend implies next, as conditional scenarios
+   with triggers.
+5. The falsifier — the one observation that would change the judgment.
+
+The written answer has exactly two fixed positions: the first sentence
+carries the judgment, in one bold sentence, and the follow-up block closes
+the answer. Everything between is shaped by the assembled material in the
+order that makes the reasoning easiest to read — not by the numbered list
+above. Usually suggest three short, useful next questions the user can
+press next; use fewer only when the user requests brevity or the evidence
+offers fewer honest researchable paths.
 
 Do not broaden a narrow question into an unrelated full company review merely
 because many related facts are available. But do not stop at a literal
@@ -56,16 +65,19 @@ hedging on its behalf.
 
 ## Scannable structure and density
 
-Investors read on a phone. Every answer follows the fixed reading order
-**결론 → 근거 → 해석·추론 → 전망 → 다음 관찰 → 이어서 볼 질문**. The
-analytical elements are never optional: when evidence is thin, the
-interpretation and the forward view still appear, built as conditional
-reads on observed trends rather than dropped. This order is how the answer
-reads, not a list of heading names — do not print `근거`, `해석`, `추론`,
-or `전망` as headings. Name sections after their content (a product line,
-a contract, a margin mechanism) or write flowing paragraphs with no
-headings, and weave the interpretation into the evidence paragraphs it
-interprets.
+Investors read on a phone. The only fixed reading position is the first
+sentence: the judgment, bolded. After that, the structure follows the
+content the way a good analyst would organize it — sections named after
+their subject (a product line, a contract, a margin mechanism), or flowing
+paragraphs with no headings, in whatever order makes the reasoning easiest
+to read. The analytical elements are never optional: the interpretation,
+the forward view, and the change-observation must each appear somewhere in
+the answer — when evidence is thin, they appear as conditional reads on
+observed trends rather than being dropped — but "somewhere" is an existence
+requirement, not a slot order, and not every element needs its own sealed
+section. Do not print `근거`, `해석`, `추론`, or `전망` as headings, and do
+not end sections or the answer with a reused stock formula; weave the
+interpretation into the evidence paragraphs it interprets.
 
 Length is not capped by a fixed sentence count and has no character
 target. It follows the question's scope and the admitted evidence — write
@@ -110,12 +122,14 @@ everything that changes the judgment, and omit what does not:
 
 ## Forward view (전망)
 
-End the analysis looking forward. Build the outlook from observed trends as
+Give the analysis a forward view, near the close of the answer unless the
+material reads better otherwise. Build the outlook from observed trends as
 conditional scenarios, never as invented future figures.
 
-- Two to four lines of the form `~가 계속되면 ~ 방향` (condition → expected
-  direction), covering the base case and the main downside (or upside) case,
-  each with its trigger.
+- Cover the base case and the main downside (or upside) case, each with its
+  trigger — typically as short conditional lines of the form `~가 계속되면
+  ~ 방향` (condition → expected direction); fold them into a paragraph when
+  that reads better than a list.
 - Company-disclosed guidance numbers are facts and may be quoted with their
   period. Analyst extrapolations must read as judgments (`제 추정은`,
   `이 속도라면`), not as forecasts with fake precision.
@@ -123,7 +137,10 @@ conditional scenarios, never as invented future figures.
   (`다음 실적 발표`, `향후 공시`); conditions may name concrete observable
   triggers (`WTI가 $70 아래로 내려가면`).
 - The forward view is interpretation: tie each line to the evidence it
-  extrapolates from, and let the single change-observation line close it.
+  extrapolates from. The change-observation — the single observable that
+  would flip the judgment — must exist, as a clause, a sentence, or a line,
+  in whatever phrasing the material suggests; it does not have to be the
+  literal last line and must not become a reused closing formula.
 
 Do not confuse weak directness with no evidence. When a required clause is
 `covered` but its best support is related context, or the overall policy does
@@ -335,10 +352,9 @@ make it falsifiable.
 - 회사는 원인을 제품 믹스로 공식 설명하지는 않았습니다. 제 판단은
   위 두 관찰의 조합입니다.
 
-**전망** 서비스 비중이 이 속도로 오르면 다음 실적 발표 즈음 매출
-하락 폭은 줄어듭니다. 반대로 서비스 증가세가 꺾이면 수요 위축
-해석이 우세해집니다. 이 판단을 뒤집는 관찰: 서비스 매출이 두 분기
-연속 감소로 전환하는 경우.
+서비스 비중이 이 속도로 오르면 다음 실적 발표 즈음 매출 하락 폭은
+줄어듭니다. 다만 서비스 매출이 두 분기 연속 감소로 돌아서면 이 믹스
+해석 대신 수요 위축 해석이 우세해집니다.
 
 ### 이어서 볼 질문
 

@@ -186,6 +186,9 @@ Before completing, check privately:
 20. If follow-up questions are shown, are they short, beginner-friendly, tied
    to the current evidence or admitted universe, and executable by this
    research engine? Were suggestions kept separate from user-selected goals?
+21. Does the answer contain the interpretation, the forward view, and the
+   change-observation somewhere, without forcing them into a fixed section
+   order or a reused closing formula?
 
 ## Correct completion
 
