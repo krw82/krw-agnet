@@ -37,11 +37,14 @@ profiles:
       # detailed multi-objective company question can legitimately reuse its
       # grounded context across several turns before composition. At 80% the
       # kernel stops optional research and moves to the answer phase, so this
-      # GLM-5.3 has a 204800-token context. Keep the existing 144000-token
-      # input allowance (long follow-ups need it) and expand the cumulative
-      # output tail to 60000: 144000 + 60000 = 204000.
-      max_input_tokens: 144000
-      max_output_tokens: 60000
+      # GLM-5.3 has a 204800-token context. The filing-event/news fallback
+      # ladder (2026-08-28) adds catalog and feed evidence to the transcript,
+      # and a 9-turn ladder run reached 158875 input tokens against the old
+      # 144000 allowance, escaping to the ledger fallback before composing.
+      # Rebalance the same 204000 cumulative envelope toward input:
+      # 168000 + 36000 = 204000.
+      max_input_tokens: 168000
+      max_output_tokens: 36000
       max_evidence_bytes: 8388608
       # Wall-clock ceiling for the 20-turn envelope: GLM high-reasoning turns
       # run 96-144s each, so a full-depth run needs ~32-48 minutes. The old
