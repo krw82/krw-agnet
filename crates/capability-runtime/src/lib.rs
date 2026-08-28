@@ -1765,17 +1765,13 @@ impl PooledMcpCapabilityRuntime {
     /// Execute a local builtin. Local capabilities carry no deployment
     /// binding and never touch the MCP transport; the canonical synthetic
     /// binding restores the same frozen-invocation checks the remote path
-    /// applies.
+    /// applies. The caller has already routed the invocation through
+    /// `lookup_invocation`, so the run-scope and contract pins held.
     async fn invoke_local_builtin(
         &self,
+        descriptor: CapabilityDescriptor,
         invocation: &CapabilityInvocation,
     ) -> Result<CapabilityResult, DependencyFailure> {
-        let descriptor = self
-            .catalog
-            .descriptors
-            .get(&invocation.capability_id)
-            .ok_or_else(|| reject("unknown_capability", "capability is absent from AgentImage"))?
-            .clone();
         let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
             Some(self.stateful_order.lock().await)
         } else {
@@ -1783,7 +1779,8 @@ impl PooledMcpCapabilityRuntime {
         };
         match descriptor.specification.local_builtin() {
             Some(LocalCapability::WebNewsSearch) => {
-                let binding = local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
+                let binding =
+                    local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
                 let image_hash = self.catalog.image_hash.clone();
                 let pool_scope = self.pool_scope.clone();
                 let cpu_invocation = invocation.clone();
@@ -1847,13 +1844,12 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
         &self,
         invocation: &CapabilityInvocation,
     ) -> Result<CapabilityResult, DependencyFailure> {
-        let descriptor = self
-            .catalog
-            .descriptors
-            .get(&invocation.capability_id)
-            .ok_or_else(|| reject("unknown_capability", "capability is absent from AgentImage"))?;
-        if descriptor.specification.local_builtin().is_some() {
-            return self.invoke_local_builtin(invocation).await;
+        // Every dispatch — remote or local builtin — enters through the
+        // frozen-invocation lookup, so the run-scope cross-check and the
+        // image/deployment contract pins apply identically on both paths.
+        let (descriptor, resolved) = self.lookup_invocation(invocation)?;
+        if resolved.is_none() {
+            return self.invoke_local_builtin(descriptor.clone(), invocation).await;
         }
         let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
             Some(self.stateful_order.lock().await)
@@ -1874,7 +1870,6 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
         self.map_outcome_async(canonical_invocation, descriptor, resolved, outcome)
             .await
     }
-
 
     async fn restore_committed_result(
         &self,
@@ -4448,6 +4443,115 @@ mod tests {
                 .await,
             serde_json::json!({"items": []})
         );
+    }
+
+    #[tokio::test]
+    async fn local_builtin_invoke_rejects_a_foreign_run_scope() {
+        // Pin an active configuration so a buggy implementation that skipped
+        // the run-scope check would perform the lookup and fail open with
+        // Ok({"items": []}); the correct path must instead reject with the
+        // same run_scope_mismatch the remote dispatch path uses.
+        web_news::pin_test_config(Some(web_news::WebNewsConfig {
+            key: "test-key".into(),
+            // Discard-port base: any wrong-path fetch is refused instantly.
+            base: "http://127.0.0.1:9".into(),
+        }));
+        let catalog = ladder_catalog();
+        let transport = FakeTransport::new([]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
+        let canonical = local_invocation(
+            &catalog,
+            "news.web_search",
+            serde_json::json!({"ticker": "LRCX", "limit": 3}),
+        );
+        let mut foreign = canonical.clone();
+        foreign.run_id = "run-other".into();
+        // Keep the invocation internally consistent (action key derived for
+        // the foreign run) so only the run-scope cross-check can reject it.
+        let descriptor = catalog
+            .descriptors
+            .get("news.web_search")
+            .expect("local capability descriptor");
+        foreign.action_key = deterministic_action_key(
+            "run-other",
+            &catalog.image_hash,
+            &descriptor.specification,
+            &descriptor.contracts,
+            &canonical.binding,
+            &foreign.arguments,
+        )
+        .expect("deterministic action key");
+        let error = runtime
+            .invoke(&foreign)
+            .await
+            .expect_err("local builtin invoke must carry the run-scope cross-check");
+        assert_eq!(error.code, "run_scope_mismatch");
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+        web_news::clear_test_config();
+    }
+
+    #[tokio::test]
+    async fn feed_list_input_identity_is_closed_to_the_schema() {
+        let catalog = ladder_catalog();
+        let transport = FakeTransport::new([]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            transport.clone(),
+            scope(),
+        )
+        .expect("run runtime");
+        // Six tickers exceed the pinned maxItems of five.
+        let oversized = serde_json::json!({
+            "tickers": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
+            "limit": 5,
+        });
+        // A non-string entry violates the item shape.
+        let mistyped = serde_json::json!({"tickers": [42], "limit": 5});
+        for arguments in [oversized, mistyped] {
+            assert_eq!(
+                runtime
+                    .invoke(&invocation(&catalog, "news.feed_list", arguments))
+                    .await
+                    .expect_err("feed list input must satisfy the pinned schema")
+                    .code,
+                "canonical_input_invalid"
+            );
+        }
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn web_news_input_identity_is_closed_to_the_schema() {
+        web_news::pin_test_config(Some(web_news::WebNewsConfig {
+            key: "test-key".into(),
+            base: "http://127.0.0.1:9".into(),
+        }));
+        let catalog = ladder_catalog();
+        let transport = FakeTransport::new([]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            transport.clone(),
+            scope(),
+        )
+        .expect("run runtime");
+        // A limit above the pinned bound is invalid input, not a fail-open
+        // lookup: the builtin validates before any network egress.
+        assert_eq!(
+            runtime
+                .invoke(&local_invocation(
+                    &catalog,
+                    "news.web_search",
+                    serde_json::json!({"ticker": "LRCX", "limit": 11}),
+                ))
+                .await
+                .expect_err("web news limit must satisfy the pinned schema")
+                .code,
+            "canonical_input_invalid"
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+        web_news::clear_test_config();
     }
 
     #[test]
