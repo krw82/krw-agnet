@@ -546,7 +546,7 @@ mod tests {
     fn full_stream() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"event: message_start\n");
-        bytes.extend_from_slice(b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"glm-5.3\",\"usage\":{\"input_tokens\":25}}}\n\n");
+        bytes.extend_from_slice(b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"glm-5.3-flash\",\"usage\":{\"input_tokens\":25}}}\n\n");
         bytes.extend_from_slice(b"event: content_block_start\n");
         bytes.extend_from_slice(b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n");
         bytes.extend_from_slice(b"event: content_block_delta\n");
@@ -573,7 +573,7 @@ mod tests {
             AnthropicSseEvent::MessageStart {
                 model,
                 input_tokens: 25,
-            } if model == "glm-5.3"
+            } if model == "glm-5.3-flash"
         ));
         assert!(matches!(
             &events[1],

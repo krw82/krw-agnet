@@ -748,7 +748,7 @@ mod tests {
         // MessageStart after MessageStop is DataAfterDone; test directly:
         let mut asm2 = build_assembler(64 * 1024);
         asm2.push_event(SseEvent::MessageStart {
-            model: "glm-5.3".into(),
+            model: "glm-5.3-flash".into(),
             input_tokens: 1,
         })
         .unwrap();

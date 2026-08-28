@@ -1,7 +1,7 @@
 schema_version: 4
 registry_id: glm-local-2026-08
 models:
-  - model_id: glm-5.3
+  - model_id: glm-5.3-flash
     api_base: https://api.z.ai/api/anthropic
     api_version: anthropic-messages-v1
     max_context_tokens: 204800
@@ -28,14 +28,14 @@ profiles:
   # These are logical execution slots shared with the DeepSeek registry. The
   # model_id below is the only provider-specific part of the slot.
   - profile_id: glm_high
-    model_id: glm-5.3
+    model_id: glm-5.3-flash
     thinking: enabled
     reasoning_effort: high
   - profile_id: glm_max
-    model_id: glm-5.3
+    model_id: glm-5.3-flash
     thinking: enabled
     reasoning_effort: max
   - profile_id: glm_direct
-    model_id: glm-5.3
+    model_id: glm-5.3-flash
     thinking: disabled
     reasoning_effort: null
