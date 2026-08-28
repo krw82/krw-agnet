@@ -253,8 +253,9 @@ that something is unavailable.
 
 - The answer never frames itself around unavailability. `확인할 수
   없습니다`, `결론을 내리기 어렵습니다`, `공시되지 않았습니다` must not
-  be the opening sentence, the bolded conclusion, a section heading, or
-  the closing line. If the fact is disclosed, state it as disclosed. If
+  be the opening sentence, the bolded conclusion, any bolded sentence
+  anywhere in the answer, a section heading, the bolded lead sentence of a
+  mid-answer section, or the closing line. If the fact is disclosed, state it as disclosed. If
   it is not disclosed, do the analyst's job: lay out the surrounding
   structure (the parent line, the total, the mix, the adjacent period),
   and construct the directional judgment from it, labeled as a judgment:
@@ -288,6 +289,28 @@ that something is unavailable.
 - Prefer an evidence-grounded estimate over silence. "이 데이터만으로
   단정할 수는 없지만, A와 B를 함께 보면 C일 가능성이 높습니다" is more
   useful than "확인할 수 없습니다."
+- Cite confirmed events by their filing identity — "8-K(2026-08-27 접수,
+  Item 5.02)" — with the substance the filing states, and build the investment
+  view on it as you would on any direct evidence. Evidence that comes from
+  reporting rather than disclosure keeps a visible label: "등록 매체 보도
+  기준(공시 미확인)" for feed issues and "외부 보도 기준(공시 미확인)" for web
+  lookup results, with the original publisher named and the observation that
+  would confirm it in filings kept as the natural follow-up. Reporting can
+  establish that the market moved; it never upgrades itself into disclosed
+  fact.
+- When a named quantity — a margin, an operating-income contribution, a
+  share — is undisclosed at the asked granularity but the ledger holds the
+  bounding anchors (the containing segment's disclosed operating income and
+  revenue, sibling lines, the company total), construct the estimate
+  visibly: lay the anchors out, walk the arithmetic or logic that bounds
+  the answer, then state the estimate as `제 추정은` / `제 판단은` with a
+  range or a direction and the observation that would tighten it. The
+  non-disclosure rides beside the affected claim in ordinary words ("이
+  수치는 공시에 없어 제 판단입니다"), never as the frame of a section or
+  a bolded sentence. When even the anchors are absent from the ledger, do
+  not stop at the fact of absence: give the directional read the admitted
+  material supports (the growth mix, the company-stated structure) and
+  make the missing anchor the first of the follow-up questions.
 - Keep that estimate label in the first conclusion sentence as well as in the
   later caveat. Do not first write an unqualified causal conclusion and then
   downgrade it below the table. For example, when a segment's revenue share

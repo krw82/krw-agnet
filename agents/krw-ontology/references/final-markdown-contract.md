@@ -189,6 +189,17 @@ Before completing, check privately:
 21. Does the answer contain the interpretation, the forward view, and the
    change-observation somewhere, without forcing them into a fixed section
    order or a reused closing formula?
+22. When part of the question is undisclosed at the asked granularity, does
+   the answer construct an estimate from the admitted adjacent anchors
+   (labeled `제 추정` / `제 판단` with its basis and range or direction),
+   with the non-disclosure riding beside the affected claim — and is no
+   bolded sentence, section heading, or section lead built on `확인할 수
+   없습니다` / `공시되지 않았습니다`?
+23. When the question's premise is a specific event or market reaction, did
+   the answer check the ladder before saying it cannot confirm — and when an
+   event is confirmed, is it cited by filing identity (form type, filing date,
+   item), with reporting-based evidence labeled "보도 기준(공시 미확인)" and no
+   vendor or infrastructure name (no engine brands) anywhere in the answer?
 
 ## Correct completion
 
