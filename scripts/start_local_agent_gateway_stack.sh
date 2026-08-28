@@ -120,7 +120,17 @@ if [[ ! -f "$krw_secrets" ]]; then
 fi
 # shellcheck disable=SC1090
 source "$krw_secrets"
-export KRW_AGENT_GATEWAY_TOKEN KRW_AGENT_ARTIFACT_KEY_V1
+# External MCP gateway wiring (feed and filings rungs) plus the web news
+# lookup. Values live in the operator's gitignored secrets file; the pinned
+# CA bundle for the external gateways is deployment material read from the
+# state directory. Names only are referenced here.
+if [[ -f "$krw_state/mcp-gateways-ca.pem" ]]; then
+  export KRW_AGENT_MCP_CA_PEM="$(< "$krw_state/mcp-gateways-ca.pem")"
+fi
+export KRW_AGENT_GATEWAY_TOKEN KRW_AGENT_ARTIFACT_KEY_V1 \
+  KRW_FEED_MCP_URL KRW_FEED_MCP_READY_URL KRW_FEED_MCP_TOKEN \
+  KRW_FILINGS_MCP_URL KRW_FILINGS_MCP_READY_URL KRW_FILINGS_MCP_TOKEN \
+  KRW_AGENT_MCP_CA_PEM KRW_WEB_NEWS_API_KEY KRW_WEB_NEWS_API_BASE
 
 cleanup() {
   set +e
@@ -288,11 +298,33 @@ krw_cache_dir="$krw_cache_root/$krw_prepare_fingerprint"
 mkdir -p "$krw_cache_dir"
 chmod 700 "$krw_cache_dir"
 
-python3 - "$krw_deployment_binding_source" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" <<'PY'
-import pathlib, sys
+# Optional release-manifest hash of the external feed/filings MCP gateways,
+# supplied by name through the operator's environment (never a value here).
+krw_gateways_release=${KRW_MCP_GATEWAYS_RELEASE_MANIFEST_SHA256:-}
+python3 - "$krw_deployment_binding_source" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" "$krw_gateways_release" <<'PY'
+import pathlib, re, sys
 import json
-source, output, endpoint_output, build, schema, release = sys.argv[1:]
+source, output, endpoint_output, build, schema, release, gateways_release = sys.argv[1:8]
 text = pathlib.Path(source).read_text(encoding="utf-8")
+# The feed and filings endpoints are served by the external MCP gateways,
+# whose readiness documents pin their own front-contract release manifest.
+# Their bindings must therefore not inherit this stack's local release hash;
+# substitute the operator-provided gateway manifest hash (an environment
+# NAME resolved by the caller, value never in this script) when present.
+if gateways_release:
+    external_refs = {"krw-feed-local", "krw-filings-local"}
+    rewritten = []
+    external_block = False
+    for line in text.splitlines(keepends=True):
+        matched = re.search(r"^\s*endpoint_ref:\s*(\S+)\s*$", line)
+        if matched:
+            external_block = matched.group(1) in external_refs
+        if external_block and re.match(r"^\s*data_release_hash:\s*sha256:0{64}\s*$", line):
+            indent = line[: len(line) - len(line.lstrip())]
+            rewritten.append(f"{indent}data_release_hash: {gateways_release}\n")
+            continue
+        rewritten.append(line)
+    text = "".join(rewritten)
 text = text.replace("server_schema_bundle_hash: sha256:" + "0" * 64, "server_schema_bundle_hash: " + schema)
 text = text.replace("server_build: fixture", "server_build: " + build)
 text = text.replace("data_release_hash: sha256:" + "0" * 64, "data_release_hash: " + release)
@@ -300,19 +332,44 @@ pathlib.Path(output).write_text(text, encoding="utf-8")
 endpoint = {
     "schema_version": 1,
     "registry_id": "local-loopback-runtime",
-    "endpoints": [{
-        "endpoint_ref": "krw-ontology-local",
-        "url_env": "KRW_ONTOLOGY_MCP_URL",
-        "readiness_url_env": "KRW_ONTOLOGY_READY_URL",
-        "protocol_version": "2025-06-18",
-        "origin": "https://krw-agent.local",
-        "credential_version": "local-public-v1",
-        "tls_profile": "system-plus-pinned-ca-v1",
-        "tls_ca_pem_env": "KRW_ONTOLOGY_CA_PEM",
-    }],
+    "endpoints": [
+        {
+            "endpoint_ref": "krw-ontology-local",
+            "url_env": "KRW_ONTOLOGY_MCP_URL",
+            "readiness_url_env": "KRW_ONTOLOGY_READY_URL",
+            "protocol_version": "2025-06-18",
+            "origin": "https://krw-agent.local",
+            "credential_version": "local-public-v1",
+            "tls_profile": "system-plus-pinned-ca-v1",
+            "tls_ca_pem_env": "KRW_ONTOLOGY_CA_PEM",
+        },
+        {
+            "endpoint_ref": "krw-feed-local",
+            "url_env": "KRW_FEED_MCP_URL",
+            "readiness_url_env": "KRW_FEED_MCP_READY_URL",
+            "protocol_version": "2025-06-18",
+            "origin": "https://127.0.0.1",
+            "credential_version": "feed-service-v1",
+            "tls_profile": "system-plus-pinned-ca-v1",
+            "tls_ca_pem_env": "KRW_AGENT_MCP_CA_PEM",
+        },
+        {
+            "endpoint_ref": "krw-filings-local",
+            "url_env": "KRW_FILINGS_MCP_URL",
+            "readiness_url_env": "KRW_FILINGS_MCP_READY_URL",
+            "protocol_version": "2025-06-18",
+            "origin": "https://127.0.0.1",
+            "credential_version": "filings-service-v1",
+            "tls_profile": "system-plus-pinned-ca-v1",
+            "tls_ca_pem_env": "KRW_AGENT_MCP_CA_PEM",
+        },
+    ],
 }
 # YAML 1.2 is a JSON superset; the Rust YAML loader accepts this canonical,
-# secret-free single-endpoint document without a second YAML dependency.
+# secret-free document without a second YAML dependency. The feed and filings
+# descriptors resolve against operator-provided environment names (URLs,
+# readiness probes, bearer tokens, and the shared pinned CA bundle for the
+# external MCP gateways); only the names appear here, never values.
 pathlib.Path(endpoint_output).write_text(json.dumps(endpoint, separators=(",", ":"), sort_keys=True), encoding="utf-8")
 PY
 
