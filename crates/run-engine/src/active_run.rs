@@ -2392,7 +2392,10 @@ impl ActiveRun {
         call: &PreparedCall,
         result: &CapabilityResult,
     ) -> Result<(), EngineError> {
-        let content = model_visible_capability_result(call, result);
+        let ladder_dispatched = self.capability_calls.keys().any(|capability_id| {
+            EVENT_LADDER_CAPABILITY_IDS.contains(&capability_id.as_str())
+        });
+        let content = model_visible_capability_result(call, result, ladder_dispatched);
         self.append_tool_result(&call.tool_call_id, &content)
     }
 

@@ -28,10 +28,10 @@ use active_run::{
 };
 use capability_dispatch::{
     ActionExecutionContext, PreparedCall, ResearchDispatchDecision, ResearchStopReason,
-    capability_invocation, capability_result_cacheable, capability_result_completes_prerequisite,
-    is_append_context_plan_capacity_rejection, is_input_correction,
-    model_visible_capability_result, prepare_calls, rejection_reason_code, research_candidate,
-    research_fingerprint, violation_to_detail,
+    EVENT_LADDER_CAPABILITY_IDS, capability_invocation, capability_result_cacheable,
+    capability_result_completes_prerequisite, is_append_context_plan_capacity_rejection,
+    is_input_correction, model_visible_capability_result, prepare_calls, rejection_reason_code,
+    research_candidate, research_fingerprint, violation_to_detail,
 };
 pub use capability_dispatch::{ModelProposalRejection, deterministic_action_key};
 use finalization::{
@@ -70,7 +70,7 @@ use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 use capability_dispatch::{
     TargetedQueryAttribution, assemble_company_context_request,
     canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
-    model_research_gap_hint, normalize_physical_capability_arguments,
+    model_event_ladder_hint, model_research_gap_hint, normalize_physical_capability_arguments,
     normalize_provider_model_input, selected_targeted_response_detail,
 };
 #[cfg(test)]
@@ -2108,6 +2108,52 @@ mod tests {
         assert!(physical.get("periods").is_none());
         assert_eq!(physical["include_internal_ids"], false);
         assert!(physical.get("response_format").is_none());
+    }
+
+    fn ladder_test_receipt(event_premise: bool) -> ResearchIntentReceipt {
+        ResearchIntentReceipt {
+            schema_version: 1,
+            anchor_hash: ContentHash::sha256(b"ladder-test-anchor"),
+            compiled_plan_hash: ContentHash::sha256(b"ladder-test-plan"),
+            intent_graph: krw_agent_planning::EvidenceGoalGraph::new(vec![
+                krw_agent_planning::EvidenceGoal {
+                    goal_id: "goal-test".into(),
+                    required: true,
+                    weight: 1_000,
+                    dependencies: Vec::new(),
+                    directness: krw_agent_planning::DirectnessRequirement::Direct,
+                    calculation_required: false,
+                    status: krw_agent_planning::GoalStatus::Unresolved,
+                    coverage_ppm: 0,
+                    evidence_ids: Vec::new(),
+                    calculation_ids: Vec::new(),
+                    event_premise,
+                },
+            ])
+            .unwrap(),
+            clause_goal_ids: std::collections::BTreeMap::from([(
+                "clause-test".to_string(),
+                vec!["goal-test".to_string()],
+            )]),
+        }
+    }
+
+    #[test]
+    fn event_ladder_hint_present_when_marked_and_undispatched() {
+        let hint = model_event_ladder_hint(&ladder_test_receipt(true), false).expect("hint");
+        assert_eq!(hint["kind"], "event_premise_ladder_hint");
+        assert_eq!(hint["marked_goal_ids"][0], "goal-test");
+        assert_eq!(hint["ladder_capabilities_dispatched"], false);
+    }
+
+    #[test]
+    fn event_ladder_hint_absent_when_ladder_dispatched() {
+        assert!(model_event_ladder_hint(&ladder_test_receipt(true), true).is_none());
+    }
+
+    #[test]
+    fn event_ladder_hint_absent_when_unmarked() {
+        assert!(model_event_ladder_hint(&ladder_test_receipt(false), false).is_none());
     }
 
     #[test]

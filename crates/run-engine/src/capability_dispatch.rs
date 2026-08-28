@@ -215,6 +215,7 @@ impl Drop for PreparedCall {
 pub(crate) fn model_visible_capability_result(
     call: &PreparedCall,
     result: &CapabilityResult,
+    ladder_dispatched: bool,
 ) -> Value {
     let Some(receipt) = &call.research_intent_receipt else {
         return result.provider_content.clone();
@@ -253,8 +254,55 @@ pub(crate) fn model_visible_capability_result(
                 .expect("JSON object literal")
                 .insert("kernel_research_gap_hint".into(), hint);
         }
+        if let Some(hint) = model_event_ladder_hint(receipt, ladder_dispatched) {
+            visible
+                .as_object_mut()
+                .expect("JSON object literal")
+                .insert("kernel_event_ladder_hint".into(), hint);
+        }
     }
     visible
+}
+
+/// Capability ids of the event-premise fallback ladder rungs (the
+/// krw-ontology workflow states event_filing_search..news_web_search). The
+/// event reminder clears itself once any rung has been dispatched.
+pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
+    "filing.search_events",
+    "filing.event_brief",
+    "news.feed_list",
+    "news.feed_context",
+    "news.web_search",
+];
+
+/// Kernel-owned note mirroring `model_research_gap_hint`: the committed plan
+/// marks an event-premise goal and no event/news ladder rung has run. Context
+/// only — it does not force a tool choice, and it never carries question or
+/// retrieval text (the receipt privacy boundary holds).
+pub(crate) fn model_event_ladder_hint(
+    receipt: &ResearchIntentReceipt,
+    ladder_dispatched: bool,
+) -> Option<Value> {
+    if ladder_dispatched {
+        return None;
+    }
+    let marked: Vec<&str> = receipt
+        .intent_graph
+        .goals()
+        .filter(|goal| goal.event_premise)
+        .map(|goal| goal.goal_id.as_str())
+        .take(12)
+        .collect();
+    if marked.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "schema_version": 1,
+        "kind": "event_premise_ladder_hint",
+        "marked_goal_ids": marked,
+        "ladder_capabilities_dispatched": false,
+        "note": "This run's committed plan marks an event-premise goal, and no filing-catalog or news-feed read has been dispatched. The filing event search is the direct evidence path for an event premise; ontology company facts cannot confirm the event.",
+    }))
 }
 
 /// Project only a bounded list of canonical retrieval gaps from a typed
