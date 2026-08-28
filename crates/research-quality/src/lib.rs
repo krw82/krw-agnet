@@ -1548,6 +1548,11 @@ impl FixtureCapabilityRuntime {
             | CapabilityResultIngest::FrontFilingDocumentsV1
             | CapabilityResultIngest::FrontFilingDocumentTextV1
             | CapabilityResultIngest::FrontForm4TransactionsV1
+            | CapabilityResultIngest::FilingEventSearchV1
+            | CapabilityResultIngest::FilingEventBriefV1
+            | CapabilityResultIngest::FeedIssueListV1
+            | CapabilityResultIngest::FeedIssueContextV1
+            | CapabilityResultIngest::WebNewsV1
             | CapabilityResultIngest::GuruQueryContextV1
             | CapabilityResultIngest::GuruCompanyBriefV1
             | CapabilityResultIngest::GuruEvidenceReviewV1

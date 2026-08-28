@@ -967,6 +967,8 @@ dependencies = [
  "krw-agent-runtime-config",
  "krw-agent-tool-mcp",
  "krw-ontology-adapter",
+ "reqwest",
+ "rustls",
  "serde_jcs",
  "serde_json",
  "thiserror 2.0.19",

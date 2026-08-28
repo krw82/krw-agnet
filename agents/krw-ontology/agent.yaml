@@ -524,7 +524,7 @@ capabilities:
     input_contract: krw-filing-search-input/v1
     output_contracts: [krw-filing-search-result/v1, normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: front_filing_search_v1
+    result_ingest: filing_event_search_v1
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -541,15 +541,15 @@ capabilities:
     input_contract: krw-filing-brief-input/v1
     output_contracts: [krw-filing-brief-result/v1, normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: front_filing_brief_v1
+    result_ingest: filing_event_brief_v1
     scope_binding:
       # The brief input carries only the observed filing_event_id, so the
       # trusted ticker scope stays the one the run already authenticated
-      # through filing.search_events for that event.
-      kind: trusted_ticker_set
-      ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+      # through filing.search_events for that event: the capability-runtime
+      # observed-id guard authorizes the id and inherits that ticker.
+      kind: observed_result_ids
+      producer_capability_id: filing.search_events
+      ids_pointer: /filing_event_id
     parallel_safe: false
     prerequisites: [filing.search_events]
   - id: news.feed_list
@@ -558,7 +558,7 @@ capabilities:
     input_contract: krw-feed-list-items-input/v1
     output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: front_feed_list_items_v1
+    result_ingest: feed_issue_list_v1
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -573,25 +573,27 @@ capabilities:
     input_contract: krw-feed-context-input/v2
     output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: front_feed_context_v2
+    result_ingest: feed_issue_context_v1
     scope_binding:
-      kind: trusted_ticker_set
-      ticker_references:
-        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
-      require_any_of: [tickers]
+      # The trusted ticker scope stays the one the run already authenticated
+      # through news.feed_list; the capability-runtime observed-id guard
+      # rejects any issue id that list never returned.
+      kind: observed_result_ids
+      producer_capability_id: news.feed_list
+      ids_pointer: /issue_ids
     parallel_safe: false
     prerequisites: [news.feed_list]
   - id: news.web_search
-    # Neutral-name, fail-open external headline lookup. The engine brand
-    # never appears in prompts or answers; citations name the original
-    # publisher only. Declared as a remote binding until the typed local
-    # builtin ingest lands; with no deployment binding it stays inert.
-    execution: { kind: remote, binding_key: web_news_search }
+    # Neutral-name, fail-open external headline lookup, executed as a local
+    # builtin from environment-only configuration (unset = disabled; any
+    # failure returns an empty item list). The engine brand never appears in
+    # prompts or answers; citations name the original publisher only.
+    execution: { kind: local, builtin: web_news_search }
     permission: read
     input_contract: krw-web-news-search-input/v1
     output_contracts: [krw-web-news-search-result/v1, normalized-capability-result/v1]
     idempotency: canonical_args
-    result_ingest: front_feed_context_v2
+    result_ingest: web_news_v1
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:

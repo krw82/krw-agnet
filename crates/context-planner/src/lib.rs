@@ -1010,12 +1010,20 @@ mod tests {
                 .iter()
                 .map(|schema| schema.capability_id.as_str())
                 .collect::<BTreeSet<_>>(),
+            // The filing-event/news fallback ladder is reachable from the
+            // analyst assessment, so its five reads are advertised alongside
+            // the core ontology surface.
             BTreeSet::from([
                 "ontology.query_context",
                 "market.snapshot",
                 "ontology.query",
                 "ontology.trace",
                 "ontology.chain",
+                "filing.search_events",
+                "filing.event_brief",
+                "news.feed_list",
+                "news.feed_context",
+                "news.web_search",
                 "skill.load",
             ])
         );

@@ -414,6 +414,16 @@ pub(crate) fn validate_capability_run_scope(
             },
             RunContextV1::SourceFiling { filing_event_id },
         ) => validate_source_filing_binding(arguments, filing_event_id_pointer, filing_event_id),
+        // A follow-up read whose identifiers the capability-runtime observed
+        // in a prior committed producer result of this run. Admitting the
+        // dispatch into the trusted ticker context does not widen anything:
+        // the producer ran under the same validated ticker scope, the
+        // observed-id guard rejects unobserved identifiers fail-closed, and
+        // the inherited scope is the producer's trusted ticker.
+        (
+            CapabilityScopeBinding::ObservedResultIds { .. },
+            RunContextV1::CompanyTickerSet { .. } | RunContextV1::ResearchNotebook { .. },
+        ) => Ok(()),
         (
             _,
             RunContextV1::QuestionOnly {}

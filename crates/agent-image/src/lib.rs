@@ -498,6 +498,22 @@ pub enum CapabilityResultIngest {
     FrontFilingDocumentsV1,
     FrontFilingDocumentTextV1,
     FrontForm4TransactionsV1,
+    /// Company-research supplemental ladder: a filing-event catalog search.
+    /// Evidence mapping happens in the capability runtime via the
+    /// ontology adapter; observed event ids feed later follow-up reads.
+    FilingEventSearchV1,
+    /// Company-research supplemental ladder: one per-event brief for a
+    /// filing event observed in a prior `FilingEventSearchV1` result.
+    FilingEventBriefV1,
+    /// Company-research supplemental ladder: a feed issue discovery list.
+    /// Observed issue ids feed a later `FeedIssueContextV1` read.
+    FeedIssueListV1,
+    /// Company-research supplemental ladder: context for feed issues
+    /// observed in a prior `FeedIssueListV1` result of the same run.
+    FeedIssueContextV1,
+    /// Local, fail-open external web headline lookup. The builtin stays
+    /// vendor-neutral: citations name the original publisher only.
+    WebNewsV1,
     GuruQueryContextV1,
     GuruCompanyBriefV1,
     GuruEvidenceReviewV1,
@@ -538,10 +554,17 @@ impl CapabilityResultIngest {
             | Self::FrontFilingDocumentsV1
             | Self::FrontFilingDocumentTextV1
             | Self::FrontForm4TransactionsV1
+            | Self::FilingEventSearchV1
+            | Self::FilingEventBriefV1
+            | Self::FeedIssueListV1
+            | Self::FeedIssueContextV1
             | Self::GuruQueryContextV1
             | Self::GuruCompanyBriefV1
             | Self::GuruEvidenceReviewV1 => {
                 "Invoke the pinned read capability allowed in this workflow."
+            }
+            Self::WebNewsV1 => {
+                "Retrieve a small set of recent public web headlines for the already in-scope company only as a last-resort fallback when stored research and filing reads left a material gap. The lookup is fail-open: when it is unavailable it returns an empty item list rather than an error. Cite only the original publisher and headline; never name or infer the retrieval engine."
             }
             Self::SkillContentV1 => {
                 "Load the full body of a skill listed in the skill catalog. Call this only for skills you intend to follow, then act on the loaded instructions. The body is resolved locally — no external lookup."
@@ -615,6 +638,22 @@ pub enum CapabilityScopeBinding {
     /// A source-filing workflow may only access the immutable filing event
     /// received in its host `RunRequest`.
     SourceFiling { filing_event_id_pointer: String },
+    /// A follow-up read whose input identifiers must have been observed in a
+    /// prior committed result of one producer capability in the same run.
+    /// The capability-runtime observed-id guard enforces this fail-closed:
+    /// an unobserved identifier is rejected before dispatch, and the trusted
+    /// ticker scope is inherited from the producer's already-validated
+    /// ticker-scoped request, so a cross-ticker identifier is never
+    /// observable in the first place. The engine-level scope check admits
+    /// the dispatch into a scoped run context; it never widens a scope on
+    /// its own.
+    ObservedResultIds {
+        /// Producing capability whose committed result exposes the ids.
+        producer_capability_id: String,
+        /// RFC 6901 JSON pointer to the input's observed identifier site
+        /// (a single string or an array of strings).
+        ids_pointer: String,
+    },
     /// A capability whose input carries no authenticated run scope at all —
     /// for example a local skill-body lookup keyed only by a skill name. The
     /// kernel imposes no ticker/filing binding because the result is a static
@@ -879,6 +918,11 @@ pub enum CapabilityExecution {
 #[serde(rename_all = "snake_case")]
 pub enum LocalCapability {
     SkillLoad,
+    /// Local, fail-open external web headline lookup. Executed by the
+    /// capability runtime from environment-only configuration; it never
+    /// touches the MCP transport and returns an empty item list on any
+    /// failure.
+    WebNewsSearch,
 }
 
 impl CapabilitySpec {
@@ -3589,6 +3633,14 @@ fn validate_capability_scope_binding(capability: &CapabilitySpec) -> Result<(), 
         CapabilityScopeBinding::SourceFiling {
             filing_event_id_pointer,
         } => valid_json_pointer(filing_event_id_pointer),
+        CapabilityScopeBinding::ObservedResultIds {
+            producer_capability_id,
+            ids_pointer,
+        } => {
+            valid_json_pointer(ids_pointer)
+                && !producer_capability_id.is_empty()
+                && producer_capability_id.len() <= 128
+        }
         CapabilityScopeBinding::Unscoped => true,
     };
     if valid && capability.permission == Permission::Read {

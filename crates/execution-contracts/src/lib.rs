@@ -23,7 +23,7 @@ use krw_agent_persistence::{
     ActionFinalizationReceipt, ActionReceipt, ActionStage, BeginActionMutation,
     CheckpointEpisodeMutation, FinalCommitMutation, FinalizeActionMutation, ObserveActionMutation,
 };
-use krw_agent_protocol::{BudgetUsage, CapabilityBinding, ContentHash};
+use krw_agent_protocol::{AuthScope, BudgetUsage, CapabilityBinding, ContentHash, McpToolSessionReuse};
 use krw_agent_provider_wire::{
     EpisodeContext, MessagesRequest, PreparedMessagesRequest, ProviderEpisodeV1,
 };
@@ -925,6 +925,34 @@ pub fn deterministic_action_key(
                 DeliveryCertainty::NotDispatched,
             )
         })
+}
+
+/// Deterministic physical binding for a capability the kernel executes
+/// locally (no MCP endpoint). The engine and the capability runtime must
+/// derive byte-identical bindings so the durable action key and the
+/// invocation contract check agree; both therefore call this one function.
+/// The image hash stands in for the usual server schema/data release pins
+/// because a local builtin's release IS the immutable image it was compiled
+/// from.
+pub fn local_builtin_binding(
+    capability: &CapabilitySpec,
+    image_hash: &ContentHash,
+) -> CapabilityBinding {
+    CapabilityBinding {
+        binding_key: format!("local-builtin:{}", capability.id),
+        // A local builtin has no MCP ABI symbol; the builtin name is the
+        // execution selector and is already pinned by the image enum.
+        mcp_tool_name: format!("local:{}", capability.id),
+        endpoint_ref: "krw-agent-local-builtin".into(),
+        credential_ref: None,
+        auth_scope: AuthScope::Run,
+        tool_session_reuse: McpToolSessionReuse::RunScoped,
+        server_schema_bundle_hash: image_hash.clone(),
+        server_build: "krw-agent-local-builtin".into(),
+        data_release_hash: image_hash.clone(),
+        max_connections: 1,
+        request_timeout_ms: 5_000,
+    }
 }
 
 /// Bounded, non-authoritative runtime timing counters.

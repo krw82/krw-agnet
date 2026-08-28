@@ -412,6 +412,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         STATE_FACTS_V1 => validate_state_facts(value),
         SKILL_LOAD_V1 => validate_skill_load(value),
         SKILL_CONTENT_V1 => validate_skill_content(value),
+        KRW_WEB_NEWS_SEARCH_INPUT_V1 => validate_web_news_search_input(value),
+        KRW_WEB_NEWS_SEARCH_RESULT_V1 => validate_web_news_search_result(value),
         NORMALIZED_CAPABILITY_RESULT_V1 | ANSWER_IR_V1 => Ok(()),
         FINAL_MARKDOWN_V1 if bounded_string(Some(value), 1, 64_000) => Ok(()),
         FINAL_MARKDOWN_V1 => Err(ContractValueError::Shape(FINAL_MARKDOWN_V1)),
@@ -616,6 +618,62 @@ fn validate_skill_content(value: &Value) -> Result<(), ContractValueError> {
         || !bounded_string(body.get("content"), 1, 256_000)
     {
         return Err(ContractValueError::Shape(SKILL_CONTENT_V1));
+    }
+    Ok(())
+}
+
+/// Validate a `krw-web-news-search-input/v1` request: the already trusted
+/// ticker (required, 1..=16 chars) plus an optional bounded result limit.
+fn validate_web_news_search_input(value: &Value) -> Result<(), ContractValueError> {
+    let body = object(value, KRW_WEB_NEWS_SEARCH_INPUT_V1)?;
+    exact_keys(
+        body,
+        &["ticker", "limit"],
+        KRW_WEB_NEWS_SEARCH_INPUT_V1,
+    )?;
+    if !bounded_string(body.get("ticker"), 1, 16)
+        || !integer_range(body.get("limit"), 1, 10)
+    {
+        return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Validate a `krw-web-news-search-result/v1`: one bounded `items` array in
+/// which every item carries a required headline, publisher, and publication
+/// timestamp; a source URL and summary are optional bounded strings.
+fn validate_web_news_search_result(value: &Value) -> Result<(), ContractValueError> {
+    let body = object(value, KRW_WEB_NEWS_SEARCH_RESULT_V1)?;
+    exact_keys(body, &["items"], KRW_WEB_NEWS_SEARCH_RESULT_V1)?;
+    let Some(items) = body.get("items").and_then(Value::as_array) else {
+        return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_RESULT_V1));
+    };
+    if items.len() > 10 {
+        return Err(ContractValueError::Limit(KRW_WEB_NEWS_SEARCH_RESULT_V1));
+    }
+    for item in items {
+        let Some(item) = item.as_object() else {
+            return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_RESULT_V1));
+        };
+        exact_keys(
+            item,
+            &[
+                "headline",
+                "publisher",
+                "published_at",
+                "url",
+                "summary",
+            ],
+            KRW_WEB_NEWS_SEARCH_RESULT_V1,
+        )?;
+        if !bounded_string(item.get("headline"), 1, 300)
+            || !bounded_string(item.get("publisher"), 1, 120)
+            || !bounded_string(item.get("published_at"), 1, 40)
+            || !optional_string(item.get("url"), 500)
+            || !optional_string(item.get("summary"), 1000)
+        {
+            return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_RESULT_V1));
+        }
     }
     Ok(())
 }
@@ -2101,5 +2159,83 @@ mod tests {
             "calculations": [],
         });
         validate_value(NORMALIZED_CAPABILITY_RESULT_V1, &result).unwrap();
+    }
+
+    #[test]
+    fn web_news_search_input_accepts_only_the_trusted_ticker_and_bounded_limit() {
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_INPUT_V1,
+            &serde_json::json!({"ticker": "LRCX", "limit": 5}),
+        )
+        .unwrap();
+        validate_value(KRW_WEB_NEWS_SEARCH_INPUT_V1, &serde_json::json!({"ticker": "LRCX"}))
+            .unwrap();
+        // The model cannot widen the request surface or the result limit.
+        assert!(matches!(
+            validate_value(
+                KRW_WEB_NEWS_SEARCH_INPUT_V1,
+                &serde_json::json!({"ticker": "LRCX", "limit": 11})
+            ),
+            Err(ContractValueError::Shape(_))
+        ));
+        assert!(matches!(
+            validate_value(
+                KRW_WEB_NEWS_SEARCH_INPUT_V1,
+                &serde_json::json!({"ticker": ""})
+            ),
+            Err(ContractValueError::Shape(_))
+        ));
+        assert!(matches!(
+            validate_value(
+                KRW_WEB_NEWS_SEARCH_INPUT_V1,
+                &serde_json::json!({"ticker": "LRCX", "extra": 1})
+            ),
+            Err(ContractValueError::Shape(_))
+        ));
+    }
+
+    #[test]
+    fn web_news_search_result_requires_the_five_field_item_shape() {
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_RESULT_V1,
+            &serde_json::json!({"items": [{
+                "headline": "Lamcal ships new chamber",
+                "publisher": "Market Wire",
+                "published_at": "2026-08-28T09:00:00Z",
+                "url": "https://news.example.com/a",
+                "summary": "Short recap"
+            }]}),
+        )
+        .unwrap();
+        validate_value(KRW_WEB_NEWS_SEARCH_RESULT_V1, &serde_json::json!({"items": []}))
+            .unwrap();
+        assert!(matches!(
+            validate_value(
+                KRW_WEB_NEWS_SEARCH_RESULT_V1,
+                &serde_json::json!({"items": [{"headline": "Missing publisher"}]})
+            ),
+            Err(ContractValueError::Shape(_))
+        ));
+        assert!(matches!(
+            validate_value(
+                KRW_WEB_NEWS_SEARCH_RESULT_V1,
+                &serde_json::json!({"items": [{
+                    "headline": "h", "publisher": "p", "published_at": "t",
+                    "vendor": "unnamed"
+                }]})
+            ),
+            Err(ContractValueError::Shape(_))
+        ));
+        let oversized = serde_json::json!({"items": (0..11).map(|index| {
+            serde_json::json!({
+                "headline": format!("headline {index}"),
+                "publisher": "publisher",
+                "published_at": "2026-08-28T09:00:00Z"
+            })
+        }).collect::<Vec<_>>()});
+        assert!(matches!(
+            validate_value(KRW_WEB_NEWS_SEARCH_RESULT_V1, &oversized),
+            Err(ContractValueError::Limit(_))
+        ));
     }
 }

@@ -1143,27 +1143,49 @@ pub(crate) fn prepare_calls(
                 outcome: "state-scoped capability frontier",
             });
         }
-        let binding_key = capability
-            .remote_binding_key()
-            .ok_or(EngineError::Invariant(
-                "local capability reached external dispatch preparation",
-            ))?;
-        let binding = input
-            .deployment
-            .capabilities
-            .iter()
-            .find(|binding| binding.binding_key == binding_key)
-            .ok_or_else(|| EngineError::MissingCapabilityBinding(capability.id.clone()))?;
-        let pinned_release = input
-            .snapshot
-            .capability_release_hashes
-            .get(&capability.id)
-            .ok_or_else(|| EngineError::MissingPinnedRelease(capability.id.clone()))?;
-        if pinned_release != &binding.data_release_hash {
-            return Err(EngineError::CapabilityReleaseMismatch(
-                capability.id.clone(),
-            ));
-        }
+        // Local builtins carry no deployment binding. The canonical
+        // synthetic binding pins their release to the immutable image
+        // itself — already bound into the durable action fingerprint — so
+        // no separate data-release pin applies. Every other capability
+        // must resolve its pinned physical binding before dispatch.
+        let local_builtin_binding_storage;
+        let binding: &krw_agent_protocol::CapabilityBinding = if capability.local_builtin()
+            .is_some()
+        {
+            local_builtin_binding_storage =
+                krw_agent_execution_contracts::local_builtin_binding(
+                    capability,
+                    &input.image.content_hash,
+                );
+            &local_builtin_binding_storage
+        } else {
+            let binding_key = capability
+                .remote_binding_key()
+                .ok_or(EngineError::Invariant(
+                    "local capability reached external dispatch preparation",
+                ))?;
+            let binding = input
+                .deployment
+                .capabilities
+                .iter()
+                .find(|binding| binding.binding_key == binding_key)
+                .ok_or_else(|| {
+                    EngineError::MissingCapabilityBinding(capability.id.clone())
+                })?;
+            let pinned_release = input
+                .snapshot
+                .capability_release_hashes
+                .get(&capability.id)
+                .ok_or_else(|| {
+                    EngineError::MissingPinnedRelease(capability.id.clone())
+                })?;
+            if pinned_release != &binding.data_release_hash {
+                return Err(EngineError::CapabilityReleaseMismatch(
+                    capability.id.clone(),
+                ));
+            }
+            binding
+        };
         let raw_arguments: Value =
             serde_json::from_str(&call.function.arguments).map_err(|_| {
                 EngineError::ModelProposalRejected(ModelProposalRejection::generic(

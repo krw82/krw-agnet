@@ -20,13 +20,13 @@ use krw_agent_contracts::{
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
     CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
-    DependencyFailure, ResultTruncationReceipt, deterministic_action_key,
+    DependencyFailure, ResultTruncationReceipt, deterministic_action_key, local_builtin_binding,
 };
 use krw_agent_image::{
     AgentImageManifest, CapabilityResultIngest, CapabilitySpec, IdempotencyPolicy, InputDerivation,
-    Permission, ResolvedCapabilityContracts,
+    LocalCapability, Permission, ResolvedCapabilityContracts,
 };
-use krw_agent_protocol::{ContentHash, is_canonical_ticker};
+use krw_agent_protocol::{CapabilityBinding, ContentHash, is_canonical_ticker};
 use krw_agent_runtime_config::{ResolvedCapability, ResolvedRuntime};
 use krw_agent_tool_mcp::{
     McpClientPool, McpError, McpHttpConfig, PoolKey, PoolScope, ToolCallOutcome,
@@ -46,6 +46,9 @@ mod guru_mapping;
 use guru_mapping::{
     GuruMapping, GuruRunState, is_correction as is_guru_correction, validate_correction_for_mapping,
 };
+mod ladder_mapping;
+use ladder_mapping::{LadderMapping, apply_ladder_committed, authorize_ladder, map_ladder_evidence};
+mod web_news;
 
 const MAX_MCP_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SCOPE_ID_BYTES: usize = 128;
@@ -119,6 +122,11 @@ enum EvidenceMapping {
     TraceLineageV1,
     Front(FrontMapping),
     Guru(GuruMapping),
+    /// Supplemental company-research ladder (filing events and news
+    /// fallback). Reuses the front physical contracts and observed-id
+    /// authorization state, but projects evidence through the ontology
+    /// adapter's supplemental mappers.
+    Ladder(LadderMapping),
     /// Local skill body passthrough. Produces no evidence ledger entries; the
     /// raw Markdown is forwarded as the provider-visible content.
     SkillContent,
@@ -157,6 +165,17 @@ impl EvidenceMapping {
             CapabilityResultIngest::FrontForm4TransactionsV1 => {
                 Self::Front(FrontMapping::Form4Transactions)
             }
+            CapabilityResultIngest::FilingEventSearchV1 => {
+                Self::Ladder(LadderMapping::FilingEventSearch)
+            }
+            CapabilityResultIngest::FilingEventBriefV1 => {
+                Self::Ladder(LadderMapping::FilingEventBrief)
+            }
+            CapabilityResultIngest::FeedIssueListV1 => Self::Ladder(LadderMapping::FeedIssueList),
+            CapabilityResultIngest::FeedIssueContextV1 => {
+                Self::Ladder(LadderMapping::FeedIssueContext)
+            }
+            CapabilityResultIngest::WebNewsV1 => Self::Ladder(LadderMapping::WebNewsSearch),
             CapabilityResultIngest::GuruQueryContextV1 => Self::Guru(GuruMapping::QueryContext),
             CapabilityResultIngest::GuruCompanyBriefV1 => Self::Guru(GuruMapping::CompanyBrief),
             CapabilityResultIngest::GuruEvidenceReviewV1 => Self::Guru(GuruMapping::EvidenceReview),
@@ -165,7 +184,20 @@ impl EvidenceMapping {
     }
 
     const fn requires_run_order(self) -> bool {
-        matches!(self, Self::Front(_) | Self::Guru(_))
+        match self {
+            Self::Front(_) | Self::Guru(_) => true,
+            // The ladder's follow-up reads depend on observed-id state that
+            // is only sound under per-run serialization. The local web-news
+            // lookup is stateless and fail-open.
+            Self::Ladder(LadderMapping::WebNewsSearch) => false,
+            Self::Ladder(_) => true,
+            Self::ResearchStateV2
+            | Self::CompanyContextV1
+            | Self::MarketSnapshotV1
+            | Self::TargetedEvidenceV1
+            | Self::TraceLineageV1
+            | Self::SkillContent => false,
+        }
     }
 
     const fn input_contract(self) -> &'static str {
@@ -178,6 +210,7 @@ impl EvidenceMapping {
             Self::SkillContent => SKILL_LOAD_V1,
             Self::Front(mapping) => mapping.input_contract(),
             Self::Guru(mapping) => mapping.input_contract(),
+            Self::Ladder(mapping) => mapping.input_contract(),
         }
     }
 
@@ -195,7 +228,25 @@ impl EvidenceMapping {
             Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
             Self::Front(mapping) => mapping.output_contracts(),
             Self::Guru(mapping) => mapping.output_contracts(),
+            Self::Ladder(mapping) => mapping.output_contracts(),
         }
+    }
+
+    /// True when a successful projection is a deterministic function of the
+    /// canonical arguments and raw payload, so recovery can re-derive and
+    /// compare the committed normalized result. The local web-news lookup
+    /// reads a live external source and is deliberately excluded.
+    const fn deterministic_projection(self) -> bool {
+        matches!(self, Self::Front(_))
+            || matches!(
+                self,
+                Self::Ladder(
+                    LadderMapping::FilingEventSearch
+                        | LadderMapping::FilingEventBrief
+                        | LadderMapping::FeedIssueList
+                        | LadderMapping::FeedIssueContext
+                )
+            )
     }
 }
 
@@ -315,9 +366,6 @@ impl CapabilityCatalog {
 
         let mut descriptors = BTreeMap::new();
         for capability in &image.body.capabilities {
-            if capability.remote_binding_key().is_none() {
-                continue;
-            }
             let mapping = EvidenceMapping::from_result_ingest(capability.result_ingest);
             validate_capability_semantics(capability, mapping)?;
             let contracts = image.resolve_capability_contracts(capability)?;
@@ -329,11 +377,26 @@ impl CapabilityCatalog {
                 .ok_or_else(|| CatalogError::MissingNormalizedOutput(capability.id.clone()))?
                 .content_hash
                 .clone();
-            let resolved = runtime
-                .capabilities
-                .get(&capability.id)
-                .ok_or_else(|| CatalogError::MissingResolvedBinding(capability.id.clone()))?;
-            validate_resolved_binding(capability, resolved)?;
+            if capability.remote_binding_key().is_some() {
+                let resolved = runtime.capabilities.get(&capability.id).ok_or_else(|| {
+                    CatalogError::MissingResolvedBinding(capability.id.clone())
+                })?;
+                validate_resolved_binding(capability, resolved)?;
+            } else {
+                // Local builtins carry no deployment binding. Closedness: a
+                // local capability must be one the runtime can actually
+                // execute, otherwise the image is rejected at startup rather
+                // than failing per dispatch.
+                match capability.local_builtin() {
+                    Some(LocalCapability::WebNewsSearch)
+                        if matches!(mapping, EvidenceMapping::Ladder(LadderMapping::WebNewsSearch)) => {}
+                    Some(LocalCapability::SkillLoad)
+                        if matches!(mapping, EvidenceMapping::SkillContent) => {}
+                    _ => {
+                        return Err(CatalogError::IncompatibleCapability(capability.id.clone()));
+                    }
+                }
+            }
             let descriptor = CapabilityDescriptor {
                 specification: capability.clone(),
                 contracts,
@@ -347,9 +410,19 @@ impl CapabilityCatalog {
                 return Err(CatalogError::DuplicateCapability(capability.id.clone()));
             }
         }
-        let runtime_ids = runtime.capabilities.keys().collect::<BTreeSet<_>>();
-        let image_ids = descriptors.keys().collect::<BTreeSet<_>>();
-        if runtime_ids != image_ids {
+        let runtime_ids = runtime
+            .capabilities
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let image_remote_ids = image
+            .body
+            .capabilities
+            .iter()
+            .filter(|capability| capability.remote_binding_key().is_some())
+            .map(|capability| capability.id.as_str())
+            .collect::<BTreeSet<&str>>();
+        if runtime_ids != image_remote_ids {
             return Err(CatalogError::ResolvedCapabilitySetMismatch);
         }
         let guru_policy = compile_guru_runtime_policy(image, &descriptors)?;
@@ -779,7 +852,10 @@ struct RestoreCommittedInput<'a> {
     invocation: &'a CapabilityInvocation,
     result: &'a CapabilityResult,
     descriptor: &'a CapabilityDescriptor,
-    resolved: &'a ResolvedCapability,
+    /// Physical binding the invocation was pinned to: the deployment
+    /// binding for remote capabilities, the canonical synthetic binding for
+    /// local builtins.
+    binding: &'a CapabilityBinding,
     front_state: &'a Mutex<FrontRunState>,
     pending_front_result: &'a Mutex<Option<(String, ContentHash)>>,
     guru_state: &'a Mutex<GuruRunState>,
@@ -846,7 +922,8 @@ impl PooledMcpCapabilityRuntime {
     fn lookup_invocation<'a>(
         &'a self,
         invocation: &CapabilityInvocation,
-    ) -> Result<(&'a CapabilityDescriptor, &'a Arc<ResolvedCapability>), DependencyFailure> {
+    ) -> Result<(&'a CapabilityDescriptor, Option<&'a Arc<ResolvedCapability>>), DependencyFailure>
+    {
         if invocation.run_id != self.pool_scope.run_id {
             return Err(reject(
                 "run_scope_mismatch",
@@ -858,6 +935,27 @@ impl PooledMcpCapabilityRuntime {
             .descriptors
             .get(&invocation.capability_id)
             .ok_or_else(|| reject("unknown_capability", "capability is absent from AgentImage"))?;
+        if descriptor.specification.local_builtin().is_some() {
+            // Local builtins have no deployment binding. The invocation must
+            // instead carry the canonical synthetic binding both the engine
+            // and this runtime derive from the immutable image.
+            let expected = local_builtin_binding(
+                &descriptor.specification,
+                &self.catalog.image_hash,
+            );
+            if invocation.binding != expected
+                || invocation.input_schema_hash != descriptor.contracts.input.content_hash
+                || invocation.output_schema_hash != descriptor.contracts.output_contract_set_hash
+                || invocation.normalized_output_contract_hash
+                    != descriptor.normalized_output_contract_hash
+            {
+                return Err(reject(
+                    "invocation_contract_mismatch",
+                    "invocation does not match the frozen image/deployment contract",
+                ));
+            }
+            return Ok((descriptor, None));
+        }
         let resolved = self
             .catalog
             .runtime
@@ -877,7 +975,7 @@ impl PooledMcpCapabilityRuntime {
                 "invocation does not match the frozen image/deployment contract",
             ));
         }
-        Ok((descriptor, resolved))
+        Ok((descriptor, Some(resolved)))
     }
 
     fn validate_invocation_cpu(
@@ -937,6 +1035,17 @@ impl PooledMcpCapabilityRuntime {
                 })?
                 .authorize(mapping, &invocation.arguments)?;
         }
+        if let EvidenceMapping::Ladder(mapping) = descriptor.mapping
+            && mapping.requires_observed_ids()
+        {
+            let state = front_state.lock().map_err(|_| {
+                reject(
+                    "front_state_poisoned",
+                    "front authorization state is unavailable",
+                )
+            })?;
+            authorize_ladder(mapping, &state, &invocation.arguments)?;
+        }
         let is_guru_evidence = descriptor.is_guru_evidence_capability(guru_policy);
         match descriptor.mapping {
             EvidenceMapping::Guru(mapping) => guru_state
@@ -992,7 +1101,12 @@ impl PooledMcpCapabilityRuntime {
     > {
         let (descriptor, resolved) = self.lookup_invocation(invocation)?;
         let descriptor = descriptor.clone();
-        let resolved = Arc::clone(resolved);
+        let Some(resolved) = resolved.cloned() else {
+            return Err(reject(
+                "missing_resolved_binding",
+                "local builtin reached the pooled remote dispatch path",
+            ));
+        };
         let image_hash = self.catalog.image_hash.clone();
         let invocation = Arc::new(invocation.clone());
         let cpu_invocation = Arc::clone(&invocation);
@@ -1028,7 +1142,7 @@ impl PooledMcpCapabilityRuntime {
         guru_state: Option<&GuruRunState>,
         invocation: &CapabilityInvocation,
         descriptor: &CapabilityDescriptor,
-        resolved: &ResolvedCapability,
+        binding: &CapabilityBinding,
         payload: Value,
         payload_selection: Option<PayloadSelection>,
     ) -> Result<(CapabilityResult, Option<ContentHash>), DependencyFailure> {
@@ -1038,7 +1152,7 @@ impl PooledMcpCapabilityRuntime {
         );
         let payload_ref = ContentHash::sha256(payload_bytes.as_slice());
         let scope_hash = pool_scope
-            .partition_hash(&resolved.binding.auth_scope)
+            .partition_hash(&binding.auth_scope)
             .map_err(|error| {
                 mcp_failure(
                     "evidence_scope",
@@ -1050,12 +1164,12 @@ impl PooledMcpCapabilityRuntime {
         let context = MappingContext {
             capability_id: invocation.capability_id.clone(),
             action_key: invocation.action_key.clone(),
-            server_build: resolved.binding.server_build.clone(),
+            server_build: binding.server_build.clone(),
             normalized_contract_hash: descriptor.normalized_output_contract_hash.clone(),
-            server_schema_bundle_hash: resolved.binding.server_schema_bundle_hash.clone(),
-            data_release_hash: resolved.binding.data_release_hash.clone(),
+            server_schema_bundle_hash: binding.server_schema_bundle_hash.clone(),
+            data_release_hash: binding.data_release_hash.clone(),
             scope: EvidenceScope {
-                auth_scope: resolved.binding.auth_scope.clone(),
+                auth_scope: binding.auth_scope.clone(),
                 scope_hash,
             },
             payload_ref,
@@ -1193,6 +1307,44 @@ impl PooledMcpCapabilityRuntime {
                     truncation: None,
                 }
             }
+            EvidenceMapping::Ladder(mapping) => {
+                validate_value(mapping.output_contract(), &payload).map_err(|error| {
+                    reject("ladder_success_contract_invalid", format!("{error:?}"))
+                })?;
+                if mapping.uses_front_exchange() {
+                    ladder_mapping::validate_ladder_exchange(
+                        mapping,
+                        &invocation.arguments,
+                        &payload,
+                    )?;
+                }
+                let ladder_front_state = match mapping {
+                    LadderMapping::FilingEventBrief | LadderMapping::FeedIssueContext => {
+                        Some(front_state.ok_or_else(|| {
+                            reject(
+                                "front_state_unavailable",
+                                "front validation state was not provided",
+                            )
+                        })?)
+                    }
+                    _ => None,
+                };
+                let (evidence, answerability) = map_ladder_evidence(
+                    mapping,
+                    ladder_front_state,
+                    &invocation.arguments,
+                    &payload,
+                    &context,
+                )?;
+                CapabilityResult {
+                    provider_content: payload,
+                    evidence,
+                    answerability,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                }
+            }
             EvidenceMapping::Guru(mapping) => {
                 let guru_state = guru_state.ok_or_else(|| {
                     reject(
@@ -1231,7 +1383,7 @@ impl PooledMcpCapabilityRuntime {
         };
         apply_result_size_budget(&mut result, payload_selection)?;
         validate_normalized_result(&result)?;
-        let pending_hash = if matches!(descriptor.mapping, EvidenceMapping::Front(_)) {
+        let pending_hash = if descriptor.mapping.deterministic_projection() {
             let bytes =
                 Zeroizing::new(serde_jcs::to_vec(&result).map_err(|error| {
                     reject("front_result_canonicalization", format!("{error:?}"))
@@ -1245,7 +1397,7 @@ impl PooledMcpCapabilityRuntime {
 
     fn map_tool_error(
         descriptor: &CapabilityDescriptor,
-        resolved: &ResolvedCapability,
+        binding: &CapabilityBinding,
         payload: Value,
     ) -> Result<CapabilityResult, DependencyFailure> {
         match descriptor.mapping {
@@ -1263,7 +1415,7 @@ impl PooledMcpCapabilityRuntime {
                 };
                 validate_correction_for_mapping(
                     mapping,
-                    resolved.binding.mcp_tool_name.as_str(),
+                    binding.mcp_tool_name.as_str(),
                     &payload,
                 )?;
             }
@@ -1273,6 +1425,7 @@ impl PooledMcpCapabilityRuntime {
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
+            | EvidenceMapping::Ladder(_)
             | EvidenceMapping::SkillContent => {
                 return Err(retryable_tool_error(
                     "untyped_tool_error",
@@ -1315,14 +1468,21 @@ impl PooledMcpCapabilityRuntime {
             invocation,
             result,
             descriptor,
-            resolved,
+            binding,
             front_state,
             pending_front_result,
             guru_state,
             guru_policy,
         } = *input;
-        Self::validate_invocation_cpu(image_hash, invocation, descriptor, &resolved.binding)?;
+        Self::validate_invocation_cpu(image_hash, invocation, descriptor, binding)?;
         let is_guru_evidence = descriptor.is_guru_evidence_capability(guru_policy);
+        if descriptor.specification.local_builtin().is_some() {
+            // A local builtin owns no authorization state. The committed
+            // result is only checked against the frozen invocation contract;
+            // the web-news lookup is deliberately non-deterministic, so no
+            // projection is re-derived on recovery.
+            return Ok(());
+        }
         match descriptor.mapping {
             EvidenceMapping::Front(mapping) => {
                 let observed_bytes =
@@ -1360,7 +1520,7 @@ impl PooledMcpCapabilityRuntime {
                                 None,
                                 invocation,
                                 descriptor,
-                                resolved,
+                                binding,
                                 result.provider_content.clone(),
                                 committed_payload_selection(result),
                             )?
@@ -1384,9 +1544,72 @@ impl PooledMcpCapabilityRuntime {
                     })?
                     .apply_committed(mapping, &invocation.arguments, &result.provider_content)
             }
+            EvidenceMapping::Ladder(mapping) => {
+                // Same recovery contract as the front family: the committed
+                // normalized projection must match the deterministic
+                // re-derivation, and the producer folds its observed ids
+                // into the authorization state.
+                let observed_bytes = Zeroizing::new(
+                    serde_jcs::to_vec(result).map_err(|error| {
+                        reject("front_result_canonicalization", format!("{error:?}"))
+                    })?,
+                );
+                let observed_hash = ContentHash::sha256(observed_bytes.as_slice());
+                let pending = pending_front_result
+                    .lock()
+                    .map_err(|_| {
+                        reject("front_state_poisoned", "front pending state is unavailable")
+                    })?
+                    .take();
+                match pending {
+                    Some((action_key, expected_hash))
+                        if action_key == invocation.action_key
+                            && expected_hash == observed_hash => {}
+                    Some(_) => {
+                        return Err(reject(
+                            "front_committed_projection_mismatch",
+                            "committed normalized projection differs from the invoked result",
+                        ));
+                    }
+                    None => {
+                        let expected = {
+                            let state = front_state.lock().map_err(|_| {
+                                reject(
+                                    "front_state_poisoned",
+                                    "front authorization state is unavailable",
+                                )
+                            })?;
+                            Self::map_success_cpu(
+                                pool_scope,
+                                Some(&state),
+                                None,
+                                invocation,
+                                descriptor,
+                                binding,
+                                result.provider_content.clone(),
+                                committed_payload_selection(result),
+                            )?
+                            .0
+                        };
+                        if expected != *result {
+                            return Err(reject(
+                                "ladder_recovery_projection_mismatch",
+                                "persisted normalized result is not the canonical raw-output projection",
+                            ));
+                        }
+                    }
+                }
+                let mut state = front_state.lock().map_err(|_| {
+                    reject(
+                        "front_state_poisoned",
+                        "front authorization state is unavailable",
+                    )
+                })?;
+                apply_ladder_committed(mapping, &mut state, &invocation.arguments, &result.provider_content)
+            }
             EvidenceMapping::Guru(mapping) => {
                 let expected = if is_guru_correction(&result.provider_content) {
-                    Self::map_tool_error(descriptor, resolved, result.provider_content.clone())?
+                    Self::map_tool_error(descriptor, binding, result.provider_content.clone())?
                 } else {
                     let state = guru_state.lock().map_err(|_| {
                         reject(
@@ -1400,7 +1623,7 @@ impl PooledMcpCapabilityRuntime {
                         Some(&state),
                         invocation,
                         descriptor,
-                        resolved,
+                        binding,
                         result.provider_content.clone(),
                         committed_payload_selection(result),
                     )?
@@ -1422,7 +1645,7 @@ impl PooledMcpCapabilityRuntime {
                     })?
                     .apply_committed(
                         mapping,
-                        resolved.binding.mcp_tool_name.as_str(),
+                        binding.mcp_tool_name.as_str(),
                         &invocation.arguments,
                         &result.provider_content,
                     )
@@ -1480,13 +1703,16 @@ impl PooledMcpCapabilityRuntime {
                 let payload_selection = extracted.selection;
                 let payload = extracted.payload;
                 if is_error {
-                    return Self::map_tool_error(&descriptor, &resolved, payload)
+                    return Self::map_tool_error(&descriptor, &resolved.binding, payload)
                         .map(|result| (result, None, presentation));
                 }
                 // Live run state is read-only in this non-cancelable blocking
                 // task. Per-run ordering plus these locks keeps validation
                 // stable without cloning potentially multi-megabyte state.
-                let front_state = if matches!(descriptor.mapping, EvidenceMapping::Front(_)) {
+                let front_state = if matches!(
+                    descriptor.mapping,
+                    EvidenceMapping::Front(_) | EvidenceMapping::Ladder(_)
+                ) {
                     Some(front_state.lock().map_err(|_| {
                         reject(
                             "front_state_poisoned",
@@ -1512,7 +1738,7 @@ impl PooledMcpCapabilityRuntime {
                     guru_state.as_deref(),
                     &cpu_invocation,
                     &descriptor,
-                    &resolved,
+                    &resolved.binding,
                     payload,
                     payload_selection,
                 )
@@ -1535,6 +1761,77 @@ impl PooledMcpCapabilityRuntime {
         }
         Ok(result)
     }
+
+    /// Execute a local builtin. Local capabilities carry no deployment
+    /// binding and never touch the MCP transport; the canonical synthetic
+    /// binding restores the same frozen-invocation checks the remote path
+    /// applies.
+    async fn invoke_local_builtin(
+        &self,
+        invocation: &CapabilityInvocation,
+    ) -> Result<CapabilityResult, DependencyFailure> {
+        let descriptor = self
+            .catalog
+            .descriptors
+            .get(&invocation.capability_id)
+            .ok_or_else(|| reject("unknown_capability", "capability is absent from AgentImage"))?
+            .clone();
+        let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
+            Some(self.stateful_order.lock().await)
+        } else {
+            None
+        };
+        match descriptor.specification.local_builtin() {
+            Some(LocalCapability::WebNewsSearch) => {
+                let binding = local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
+                let image_hash = self.catalog.image_hash.clone();
+                let pool_scope = self.pool_scope.clone();
+                let cpu_invocation = invocation.clone();
+                let cpu_descriptor = descriptor.clone();
+                let cpu_binding = binding.clone();
+                // Validate the frozen invocation contract before any network
+                // egress: a tampered action key or schema hash must never
+                // reach the external lookup.
+                self.cpu_work
+                    .execute(DeliveryCertainty::NotDispatched, move || {
+                        Self::validate_invocation_cpu(
+                            &image_hash,
+                            &cpu_invocation,
+                            &cpu_descriptor,
+                            &cpu_binding,
+                        )
+                    })
+                    .await?;
+                // Fail-open lookup: configuration, network, and parsing
+                // failures all yield the normal empty item result.
+                let payload = web_news::fetch_web_news(&invocation.arguments).await;
+                let cpu_invocation = invocation.clone();
+                self.cpu_work
+                    .execute(DeliveryCertainty::NotDispatched, move || {
+                        Self::map_success_cpu(
+                            &pool_scope,
+                            None,
+                            None,
+                            &cpu_invocation,
+                            &descriptor,
+                            &binding,
+                            payload,
+                            None,
+                        )
+                    })
+                    .await
+                    .map(|(result, _)| result)
+            }
+            Some(LocalCapability::SkillLoad) => Err(reject(
+                "local_builtin_unsupported",
+                "skill bodies resolve in the engine before pooled dispatch",
+            )),
+            None => Err(reject(
+                "local_builtin_unsupported",
+                "capability is not a local builtin",
+            )),
+        }
+    }
 }
 
 #[async_trait]
@@ -1555,6 +1852,9 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
             .descriptors
             .get(&invocation.capability_id)
             .ok_or_else(|| reject("unknown_capability", "capability is absent from AgentImage"))?;
+        if descriptor.specification.local_builtin().is_some() {
+            return self.invoke_local_builtin(invocation).await;
+        }
         let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
             Some(self.stateful_order.lock().await)
         } else {
@@ -1575,6 +1875,7 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
             .await
     }
 
+
     async fn restore_committed_result(
         &self,
         invocation: &CapabilityInvocation,
@@ -1582,7 +1883,10 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
     ) -> Result<(), DependencyFailure> {
         let (descriptor, resolved) = self.lookup_invocation(invocation)?;
         let descriptor = descriptor.clone();
-        let resolved = Arc::clone(resolved);
+        let binding = match resolved {
+            Some(resolved) => resolved.binding.clone(),
+            None => local_builtin_binding(&descriptor.specification, &self.catalog.image_hash),
+        };
         let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
             Some(self.stateful_order.lock().await)
         } else {
@@ -1604,7 +1908,7 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
                     invocation: &invocation,
                     result: &result,
                     descriptor: &descriptor,
-                    resolved: &resolved,
+                    binding: &binding,
                     front_state: &front_state,
                     pending_front_result: &pending_front_result,
                     guru_state: &guru_state,
@@ -2262,12 +2566,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use krw_agent_contracts::{
-        KRW_FEED_LIST_ITEMS_INPUT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_GET_INPUT_V1,
-        KRW_FILING_METADATA_V1, KRW_FILING_READ_SECTION_INPUT_V1,
-        KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SECTIONS_INPUT_V1,
+        KRW_FEED_CONTEXT_INPUT_V2, KRW_FEED_CONTEXT_V2, KRW_FEED_LIST_ITEMS_INPUT_V1,
+        KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_INPUT_V1, KRW_FILING_BRIEF_RESULT_V1,
+        KRW_FILING_GET_INPUT_V1, KRW_FILING_METADATA_V1, KRW_FILING_READ_SECTION_INPUT_V1,
+        KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SEARCH_INPUT_V1,
+        KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_INPUT_V1,
         KRW_FILING_SECTIONS_RESULT_V1, KRW_GURU_COMPANY_BRIEF_INPUT_V1,
         KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_QUERY_CONTEXT_INPUT_V1,
-        KRW_GURU_QUERY_CONTEXT_RESULT_V1, validate_value,
+        KRW_GURU_QUERY_CONTEXT_RESULT_V1, KRW_WEB_NEWS_SEARCH_RESULT_V1, validate_value,
     };
     use krw_agent_evidence::{Answerability, Directness, EvidenceGrade, EvidenceLedger};
     use krw_agent_image::compile_agent_dir;
@@ -2800,13 +3106,9 @@ mod tests {
             let runtime = fixture_runtime(&image);
             let catalog = CapabilityCatalog::compile(&image, runtime)
                 .expect("image must use only closed mappings");
-            let remote_capability_count = image
-                .body
-                .capabilities
-                .iter()
-                .filter(|capability| capability.remote_binding_key().is_some())
-                .count();
-            assert_eq!(catalog.capability_count(), remote_capability_count);
+            // Local builtins compile into the same closed catalog; only
+            // their dispatch path differs.
+            assert_eq!(catalog.capability_count(), image.body.capabilities.len());
         }
     }
 
@@ -3681,6 +3983,470 @@ mod tests {
                 .expect_err("multiple items")
                 .code,
             "mcp_envelope_content_count"
+        );
+    }
+
+
+    // --- Supplemental ladder: filing events, news, and the web-news builtin ---
+
+    fn ladder_catalog() -> Arc<CapabilityCatalog> {
+        let (image, resolved) = fixture_image_and_runtime();
+        CapabilityCatalog::compile(&image, resolved).expect("ontology ladder catalog")
+    }
+
+    fn local_invocation(
+        catalog: &CapabilityCatalog,
+        capability_id: &str,
+        arguments: Value,
+    ) -> CapabilityInvocation {
+        let descriptor = catalog
+            .descriptors
+            .get(capability_id)
+            .expect("local capability descriptor");
+        let binding = local_builtin_binding(&descriptor.specification, &catalog.image_hash);
+        let request_hash = ContentHash::sha256(
+            serde_jcs::to_vec(&arguments).expect("canonical invocation arguments"),
+        );
+        let action_key = deterministic_action_key(
+            "run-a",
+            &catalog.image_hash,
+            &descriptor.specification,
+            &descriptor.contracts,
+            &binding,
+            &arguments,
+        )
+        .expect("deterministic action key");
+        CapabilityInvocation {
+            run_id: "run-a".into(),
+            action_key,
+            capability_id: capability_id.into(),
+            request_hash,
+            input_schema_hash: descriptor.contracts.input.content_hash.clone(),
+            output_schema_hash: descriptor.contracts.output_contract_set_hash.clone(),
+            normalized_output_contract_hash: descriptor.normalized_output_contract_hash.clone(),
+            arguments,
+            binding,
+        }
+    }
+
+    #[tokio::test]
+    async fn filing_search_maps_direct_evidence_and_closes_its_input_identity() {
+        let catalog = ladder_catalog();
+        let mut invalid = front_vector(KRW_FILING_SEARCH_INPUT_V1);
+        invalid["form_type"] = serde_json::json!("10-K");
+        assert!(
+            catalog
+                .descriptors
+                .get("filing.search_events")
+                .expect("filing search descriptor")
+                .specification
+                .input_contract
+                == KRW_FILING_SEARCH_INPUT_V1
+        );
+        let transport = FakeTransport::new([]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            transport.clone(),
+            scope(),
+        )
+        .expect("run runtime");
+        let error = runtime
+            .invoke(&invocation(
+                &catalog,
+                "filing.search_events",
+                invalid,
+            ))
+            .await
+            .expect_err("form type outside the pinned enum must fail closed");
+        assert_eq!(error.code, "canonical_input_invalid");
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+
+        let output = front_vector(KRW_FILING_SEARCH_RESULT_V1);
+        let transport = FakeTransport::new([envelope(&output, false)]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let result = runtime
+            .invoke(&invocation(
+                &catalog,
+                "filing.search_events",
+                front_vector(KRW_FILING_SEARCH_INPUT_V1),
+            ))
+            .await
+            .expect("canonical filing-event search mapping");
+        assert_eq!(result.answerability, Some(Answerability::StrongAllowed));
+        assert!(!result.evidence.is_empty());
+        assert!(result.evidence.iter().all(|record| {
+            record.strong_claim_allowed
+                && record.directness == Directness::Direct
+                && record.grade == EvidenceGrade::Strong
+                && record.evidence_id.starts_with("filing-event:")
+                && record
+                    .citation
+                    .document_type
+                    .as_deref()
+                    .is_some_and(|form| form == "8-K")
+        }));
+        runtime
+            .restore_committed_result(
+                &invocation(
+                    &catalog,
+                    "filing.search_events",
+                    front_vector(KRW_FILING_SEARCH_INPUT_V1),
+                ),
+                &result,
+            )
+            .await
+            .expect("commit filing-event search");
+    }
+
+    #[tokio::test]
+    async fn filing_brief_requires_an_observed_event_and_flattens_its_metadata() {
+        let catalog = ladder_catalog();
+        let brief_input = front_vector(KRW_FILING_BRIEF_INPUT_V1);
+        let brief_output = front_vector(KRW_FILING_BRIEF_RESULT_V1);
+        let transport = FakeTransport::new([envelope(&brief_output, false)]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            transport.clone(),
+            scope(),
+        )
+        .expect("run runtime");
+        // Unobserved event id: fail-closed before any dispatch.
+        assert_eq!(
+            runtime
+                .invoke(&invocation(&catalog, "filing.event_brief", brief_input.clone()))
+                .await
+                .expect_err("brief target must be observed by a prior search")
+                .code,
+            "filing_event_not_observed"
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+
+        // A different (unobserved) id must also be rejected even after a
+        // search commits a different event.
+        let search_output = front_vector(KRW_FILING_SEARCH_RESULT_V1);
+        let transport = FakeTransport::new([
+            envelope(&search_output, false),
+            envelope(&brief_output, false),
+        ]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let search_invocation = invocation(
+            &catalog,
+            "filing.search_events",
+            front_vector(KRW_FILING_SEARCH_INPUT_V1),
+        );
+        let search_result = runtime
+            .invoke(&search_invocation)
+            .await
+            .expect("filing-event search");
+        runtime
+            .restore_committed_result(&search_invocation, &search_result)
+            .await
+            .expect("commit filing-event search observations");
+
+        let brief_result = runtime
+            .invoke(&invocation(&catalog, "filing.event_brief", brief_input))
+            .await
+            .expect("observed event brief");
+        assert_eq!(brief_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(brief_result.evidence.len(), 1);
+        let record = &brief_result.evidence[0];
+        assert!(record.strong_claim_allowed);
+        // Scope inheritance: the observed catalog row's trusted ticker is
+        // the evidence subject, and the flattened metadata carried the form
+        // type into the public citation.
+        assert_eq!(record.entity.as_deref(), Some("ACME"));
+        assert_eq!(record.citation.document_type.as_deref(), Some("8-K"));
+        assert!(record
+            .facts
+            .iter()
+            .any(|fact| fact.predicate == "filing_form_type"));
+    }
+
+    #[tokio::test]
+    async fn feed_context_requires_issue_ids_observed_by_a_prior_list() {
+        let catalog = ladder_catalog();
+        let list_input = front_vector(KRW_FEED_LIST_ITEMS_INPUT_V1);
+        let mut list_output = front_vector(KRW_FEED_LIST_ITEMS_RESULT_V1);
+        // The exchange contract binds every listed issue to the requested
+        // ticker through its entity set.
+        list_output["items"][0]["entities"] = serde_json::json!([{
+            "ticker": "ACME",
+            "name": "Acme",
+            "relationship": "primary",
+            "relationship_reason": "subject",
+            "confidence": 1.0,
+        }]);
+        let context_input = front_vector(KRW_FEED_CONTEXT_INPUT_V2);
+        let context_output = front_vector(KRW_FEED_CONTEXT_V2);
+        let transport = FakeTransport::new([
+            envelope(&list_output, false),
+            envelope(&context_output, false),
+        ]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            transport.clone(),
+            scope(),
+        )
+        .expect("run runtime");
+        assert_eq!(
+            runtime
+                .invoke(&invocation(&catalog, "news.feed_context", context_input.clone()))
+                .await
+                .expect_err("issue ids must be observed by a prior list")
+                .code,
+            "feed_issue_not_observed"
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+
+        let list_invocation = invocation(&catalog, "news.feed_list", list_input);
+        let list_result = runtime
+            .invoke(&list_invocation)
+            .await
+            .expect("feed issue list");
+        assert_eq!(list_result.answerability, Some(Answerability::QualifiedOnly));
+        assert!(!list_result.evidence.is_empty());
+        assert!(list_result.evidence.iter().all(|record| {
+            !record.strong_claim_allowed
+                && record.directness == Directness::Related
+                && record.grade == EvidenceGrade::Medium
+                && record.evidence_id.starts_with("feed-issue:")
+        }));
+        runtime
+            .restore_committed_result(&list_invocation, &list_result)
+            .await
+            .expect("commit feed issue observations");
+
+        let context_result = runtime
+            .invoke(&invocation(&catalog, "news.feed_context", context_input))
+            .await
+            .expect("observed issue context");
+        assert_eq!(
+            context_result.answerability,
+            Some(Answerability::QualifiedOnly)
+        );
+        assert!(!context_result.evidence.is_empty());
+        assert!(context_result
+            .evidence
+            .iter()
+            .all(|record| !record.strong_claim_allowed
+                && record.entity.as_deref() == Some("ACME")));
+        runtime
+            .restore_committed_result(
+                &invocation(&catalog, "news.feed_context", front_vector(KRW_FEED_CONTEXT_INPUT_V2)),
+                &context_result,
+            )
+            .await
+            .expect("commit feed context");
+    }
+
+    #[tokio::test]
+    async fn web_news_builtin_invoke_returns_empty_items_when_env_is_unset() {
+        // Environment-only configuration: an unset key or base is exactly a
+        // `None` configuration, so pinning `None` reproduces the disabled
+        // builtin deterministically regardless of the ambient environment.
+        web_news::pin_test_config(None);
+        let catalog = ladder_catalog();
+        let transport = FakeTransport::new([]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
+        let result = runtime
+            .invoke(&local_invocation(
+                &catalog,
+                "news.web_search",
+                serde_json::json!({"ticker": "LRCX", "limit": 3}),
+            ))
+            .await
+            .expect("disabled builtin is a normal empty result, never an error");
+        assert_eq!(result.provider_content, serde_json::json!({"items": []}));
+        assert!(result.evidence.is_empty());
+        assert_eq!(
+            result.answerability,
+            Some(Answerability::QualifiedOnly)
+        );
+        // The local builtin never touches the MCP transport.
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+        runtime
+            .restore_committed_result(
+                &local_invocation(
+                    &catalog,
+                    "news.web_search",
+                    serde_json::json!({"ticker": "LRCX", "limit": 3}),
+                ),
+                &result,
+            )
+            .await
+            .expect("local builtin commits without observed-id state");
+        web_news::clear_test_config();
+    }
+
+    #[tokio::test]
+    async fn web_news_builtin_dispatch_maps_publisher_items_into_evidence() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local listener");
+        let address = listener.local_addr().expect("local listener address");
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("local connection");
+            let mut request = vec![0_u8; 8_192];
+            let read = socket.read(&mut request).await.expect("read request");
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let body = concat!(
+                "[{\"title\":\"Lamcal ships new chamber\",\"publisher\":\"Market Wire\",",
+                "\"publishedDate\":\"2026-08-28T09:00:00Z\",",
+                "\"link\":\"https://news.example.com/a\",\"text\":\"Recap.\"}]"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            let _ = socket.shutdown().await;
+            request
+        });
+        web_news::pin_test_config(Some(web_news::WebNewsConfig {
+            key: "test-key".into(),
+            base: format!("http://{address}"),
+        }));
+        let catalog = ladder_catalog();
+        let transport = FakeTransport::new([]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
+        let result = runtime
+            .invoke(&local_invocation(
+                &catalog,
+                "news.web_search",
+                serde_json::json!({"ticker": "LRCX", "limit": 2}),
+            ))
+            .await
+            .expect("fail-open web news lookup");
+        let request = server.await.expect("local endpoint served");
+        assert!(request.contains("GET /api/v3/stock_news?tickers=LRCX&limit=2"));
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            result.provider_content["items"][0]["headline"],
+            "Lamcal ships new chamber"
+        );
+        assert_eq!(
+            result.provider_content["items"][0]["publisher"],
+            "Market Wire"
+        );
+        assert_eq!(result.evidence.len(), 1);
+        let record = &result.evidence[0];
+        assert!(record.evidence_id.starts_with("web-news:"));
+        assert!(!record.strong_claim_allowed);
+        assert_eq!(record.entity.as_deref(), Some("LRCX"));
+        // Citations stay vendor-neutral: the original publisher and headline
+        // only, with no retrieval-engine naming.
+        assert_eq!(
+            record.citation.title, "Market Wire: Lamcal ships new chamber"
+        );
+        assert_eq!(result.answerability, Some(Answerability::QualifiedOnly));
+        web_news::clear_test_config();
+    }
+
+    #[tokio::test]
+    async fn web_news_builtin_maps_the_five_field_shape_from_a_local_endpoint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local listener");
+        let address = listener
+            .local_addr()
+            .expect("local listener address");
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("local connection");
+            let mut request = vec![0_u8; 8_192];
+            let read = socket.read(&mut request).await.expect("read request");
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let body = concat!(
+                "[{\"title\":\"Lamcal ships new chamber\",\"site\":\"example.com\",",
+                "\"publisher\":\"Market Wire\",\"publishedDate\":\"2026-08-28T09:00:00Z\",",
+                "\"link\":\"https://news.example.com/a\",",
+                "\"text\":\"Long recap that should be preserved.\"}]"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            let _ = socket.shutdown().await;
+            (request, response)
+        });
+        let config = web_news::WebNewsConfig {
+            key: "test-key".into(),
+            base: format!("http://{address}"),
+        };
+        let normalized = web_news::fetch_with_config(
+            &serde_json::json!({"ticker": "LRCX", "limit": 2}),
+            Some(&config),
+        )
+        .await;
+        let (request, _) = server.await.expect("local endpoint served");
+        // The request carries the neutral path and query, and the key rides
+        // a header rather than the URL.
+        assert!(request.contains("GET /api/v3/stock_news?tickers=LRCX&limit=2"));
+        assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
+        let items = normalized["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["headline"], "Lamcal ships new chamber");
+        assert_eq!(items[0]["publisher"], "Market Wire");
+        assert_eq!(items[0]["published_at"], "2026-08-28T09:00:00Z");
+        assert_eq!(items[0]["url"], "https://news.example.com/a");
+        assert_eq!(items[0]["summary"], "Long recap that should be preserved.");
+        validate_value(KRW_WEB_NEWS_SEARCH_RESULT_V1, &normalized)
+            .expect("normalized payload satisfies the typed result contract");
+    }
+
+    #[tokio::test]
+    async fn web_news_builtin_fails_open_on_http_error_and_oversized_bodies() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local listener");
+        let address = listener.local_addr().expect("local listener address");
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.expect("local connection");
+            socket
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n")
+                .await
+                .expect("write error response");
+        });
+        let config = web_news::WebNewsConfig {
+            key: "test-key".into(),
+            base: format!("http://{address}"),
+        };
+        let normalized = web_news::fetch_with_config(
+            &serde_json::json!({"ticker": "LRCX"}),
+            Some(&config),
+        )
+        .await;
+        server.await.expect("local endpoint served");
+        assert_eq!(normalized, serde_json::json!({"items": []}));
+        // Unset configuration behaves identically.
+        assert_eq!(
+            web_news::fetch_with_config(&serde_json::json!({"ticker": "LRCX"}), None).await,
+            serde_json::json!({"items": []})
+        );
+        // A malformed body is an empty result, not an error.
+        assert_eq!(
+            web_news::fetch_with_config(&serde_json::json!({"ticker": "LRCX"}), Some(&config))
+                .await,
+            serde_json::json!({"items": []})
         );
     }
 

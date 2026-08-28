@@ -9635,6 +9635,43 @@ mod tests {
     }
 
     #[test]
+    fn observed_result_ids_binding_admits_scoped_runs_and_rejects_scopeless_contexts() {
+        let image = loaded_agent("krw-ontology");
+        let entrypoint = image.body.entrypoints.get("company_research").unwrap();
+        let brief = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "filing.event_brief")
+            .unwrap();
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["AAPL".into()],
+        };
+        // The brief input legitimately carries only the observed id; the
+        // engine admits the dispatch and the capability-runtime observed-id
+        // guard stays the fail-closed authority for the id itself.
+        validate_capability_run_scope(
+            entrypoint,
+            &context,
+            None,
+            brief,
+            &serde_json::json!({"filing_event_id": "11111111-1111-4111-8111-111111111111"}),
+        )
+        .unwrap();
+        // No-scope contexts still cannot authorize the follow-up read.
+        assert!(matches!(
+            validate_capability_run_scope(
+                entrypoint,
+                &RunContextV1::QuestionOnly {},
+                None,
+                brief,
+                &serde_json::json!({"filing_event_id": "11111111-1111-4111-8111-111111111111"}),
+            ),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+    }
+
+    #[test]
     fn targeted_query_and_trace_require_the_explicit_trusted_ticker() {
         let image = loaded_agent("krw-ontology-en");
         let entrypoint = image.body.entrypoints.get("company_research_en").unwrap();

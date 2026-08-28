@@ -25,6 +25,7 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use super::reject;
+use crate::ladder_mapping::ladder_issue_ticker;
 
 const MAX_VERIFIED_FILINGS: usize = 64;
 const MAX_SECTION_MEMBERSHIPS: usize = 2_048;
@@ -32,6 +33,10 @@ const MAX_DOCUMENT_MEMBERSHIPS: usize = 1_024;
 const MAX_NORMALIZED_RECORDS: usize = 256;
 const TEXT_CHUNK_BYTES: usize = 24 * 1024;
 const FORM4_CHUNK_BYTES: usize = 48 * 1024;
+/// Fixed bound for the supplemental ladder's observed identifier sets. The
+/// image-level workflow already caps each producer at one visit per run; this
+/// backstop keeps a hostile oversized payload from bloating per-run state.
+const MAX_OBSERVED_LADDER_IDS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrontMapping {
@@ -133,6 +138,14 @@ pub(crate) struct FrontRunState {
     verified_filings: BTreeMap<String, ContentHash>,
     sections: BTreeSet<(String, String)>,
     documents: BTreeSet<(String, String)>,
+    /// Supplemental ladder observations: hashed filing-event id to the
+    /// trusted ticker whose scope-validated search observed it. The value
+    /// stays clear text because it is the already-authenticated run scope a
+    /// later brief inherits, never a raw server identifier.
+    observed_filing_events: BTreeMap<String, String>,
+    /// Supplemental ladder observations: hashed feed issue id to the trusted
+    /// ticker whose scope-validated list observed it.
+    observed_feed_issues: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for FrontRunState {
@@ -142,6 +155,8 @@ impl std::fmt::Debug for FrontRunState {
             .field("verified_filing_count", &self.verified_filings.len())
             .field("section_membership_count", &self.sections.len())
             .field("document_membership_count", &self.documents.len())
+            .field("observed_filing_event_count", &self.observed_filing_events.len())
+            .field("observed_feed_issue_count", &self.observed_feed_issues.len())
             .finish()
     }
 }
@@ -308,6 +323,127 @@ impl FrontRunState {
             ))
         }
     }
+
+    /// Record the filing events a committed, exchange-validated catalog
+    /// search observed. The exchange contract already pins every returned
+    /// row to the requested ticker, which the engine scope check kept inside
+    /// the trusted run scope; rows are re-checked here anyway so a
+    /// cross-ticker row is never observable (fail-closed skip).
+    pub(crate) fn observe_ladder_filing_search(
+        &mut self,
+        arguments: &Value,
+        payload: &Value,
+    ) -> Result<(), DependencyFailure> {
+        let requested_ticker = arguments
+            .get("ticker")
+            .and_then(Value::as_str)
+            .ok_or_else(|| reject("filing_input_shape", "filing search lost its ticker"))?;
+        let rows = payload
+            .as_array()
+            .ok_or_else(|| reject("filing_search_shape", "filing search result must be an array"))?;
+        for row in rows {
+            let Some(object) = row.as_object() else {
+                return Err(reject("filing_search_shape", "filing row must be an object"));
+            };
+            let event_id = required_str(object, "filing_event_id")?;
+            let ticker = required_str(object, "ticker")?;
+            if ticker != requested_ticker {
+                continue;
+            }
+            let key = ladder_id_key(event_id);
+            if !self.observed_filing_events.contains_key(&key)
+                && self.observed_filing_events.len() >= MAX_OBSERVED_LADDER_IDS
+            {
+                return Err(reject(
+                    "observed_filing_event_limit",
+                    "run exceeded the fixed observed filing-event bound",
+                ));
+            }
+            self.observed_filing_events.insert(key, ticker.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Record the feed issues a committed, exchange-validated list observed.
+    /// The trusted ticker each issue is bound to comes from the run-validated
+    /// request: an entity ticker must be one of the requested tickers, and a
+    /// single-ticker request binds every issue. Unresolvable issues are not
+    /// recorded, so a later context read for them fails closed.
+    pub(crate) fn observe_ladder_feed_list(
+        &mut self,
+        arguments: &Value,
+        payload: &Value,
+    ) -> Result<(), DependencyFailure> {
+        let requested = arguments
+            .get("tickers")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        let items = required_array(payload, "items")?;
+        for item in items {
+            let object = item
+                .as_object()
+                .ok_or_else(|| reject("front_feed_shape", "feed item must be an object"))?;
+            let issue_id = required_str(object, "id")?;
+            let Some(ticker) = ladder_issue_ticker(object, &requested) else {
+                continue;
+            };
+            let key = ladder_id_key(issue_id);
+            if !self.observed_feed_issues.contains_key(&key)
+                && self.observed_feed_issues.len() >= MAX_OBSERVED_LADDER_IDS
+            {
+                return Err(reject(
+                    "observed_feed_issue_limit",
+                    "run exceeded the fixed observed feed-issue bound",
+                ));
+            }
+            self.observed_feed_issues.insert(key, ticker.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Fail-closed authorization for a filing-event brief follow-up: the
+    /// event id must have been observed by a prior committed search, and the
+    /// returned ticker is the trusted scope the brief inherits.
+    pub(crate) fn authorize_observed_filing_event(
+        &self,
+        filing_event_id: &str,
+    ) -> Result<&str, DependencyFailure> {
+        self.observed_filing_events
+            .get(&ladder_id_key(filing_event_id))
+            .map(String::as_str)
+            .ok_or_else(|| {
+                reject(
+                    "filing_event_not_observed",
+                    "brief target was not observed in a prior committed catalog search",
+                )
+            })
+    }
+
+    /// Fail-closed authorization for one feed-issue context id. Returns the
+    /// trusted ticker the issue was observed under.
+    pub(crate) fn authorize_observed_feed_issue(
+        &self,
+        issue_id: &str,
+    ) -> Result<&str, DependencyFailure> {
+        self.observed_feed_issues
+            .get(&ladder_id_key(issue_id))
+            .map(String::as_str)
+            .ok_or_else(|| {
+                reject(
+                    "feed_issue_not_observed",
+                    "feed issue was not observed in a prior committed list",
+                )
+            })
+    }
+}
+
+/// One-way key for supplemental ladder observations. Raw identifiers never
+/// become map keys or log values.
+fn ladder_id_key(identifier: &str) -> String {
+    ContentHash::sha256(identifier.as_bytes()).as_str().to_owned()
 }
 
 pub(crate) fn validate_exchange(
