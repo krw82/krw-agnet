@@ -98,6 +98,14 @@ const STATE_FACTS_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/state-facts-v1.json"
 ));
+const KRW_WEB_NEWS_SEARCH_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/krw-web-news-search-input-v1.json"
+));
+const KRW_WEB_NEWS_SEARCH_RESULT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/krw-web-news-search-result-v1.json"
+));
 const SKILL_LOAD_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/krw-ontology/v2/schemas/skill-load-v1.json"
@@ -140,6 +148,11 @@ pub const ANSWER_IR_V1: &str = "answer-ir/v1";
 pub const FINAL_MARKDOWN_V1: &str = "final-markdown/v1";
 pub const STATE_OPERATION_OUTPUT_V1: &str = "state-operation-output/v1";
 pub const STATE_FACTS_V1: &str = "state-facts/v1";
+/// Model-authored web news search request: the model supplies only the
+/// already trusted ticker plus an optional bounded result limit.
+pub const KRW_WEB_NEWS_SEARCH_INPUT_V1: &str = "krw-web-news-search-input/v1";
+/// Bounded web news items returned by the web news search capability.
+pub const KRW_WEB_NEWS_SEARCH_RESULT_V1: &str = "krw-web-news-search-result/v1";
 /// Model-authored skill load request: `{ "skill_id": "<catalog-id>" }`. The body is
 /// resolved locally from the immutable image blob store — no MCP round trip.
 pub const SKILL_LOAD_V1: &str = "skill-load/v1";
@@ -155,6 +168,10 @@ pub const STATE_OPERATION_OUTPUT_V1_SCHEMA_SHA256: &str =
     "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c";
 pub const STATE_FACTS_V1_SCHEMA_SHA256: &str =
     "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8";
+pub const KRW_WEB_NEWS_SEARCH_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:96712fe30127baca0c7cbbe0f442e4657ac4515ad453810f3539784a996c390e";
+pub const KRW_WEB_NEWS_SEARCH_RESULT_V1_SCHEMA_SHA256: &str =
+    "sha256:efce2db03cfaa90f59891d4aea8192118a95aad374d250730d1de5f44032da49";
 pub const RESEARCH_PROPOSAL_V4_SCHEMA_SHA256: &str =
     "sha256:815cd59f1ca832b67141106e3893b25e7ec6b1413226b4778c3b61d8506e0943";
 pub const COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256: &str =
@@ -272,6 +289,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: STATE_FACTS_V1_SCHEMA_SHA256,
             schema: STATE_FACTS_BYTES,
         }),
+        KRW_WEB_NEWS_SEARCH_INPUT_V1 => Some(ContractDescriptor {
+            id: KRW_WEB_NEWS_SEARCH_INPUT_V1,
+            schema_sha256: KRW_WEB_NEWS_SEARCH_INPUT_V1_SCHEMA_SHA256,
+            schema: KRW_WEB_NEWS_SEARCH_INPUT_BYTES,
+        }),
+        KRW_WEB_NEWS_SEARCH_RESULT_V1 => Some(ContractDescriptor {
+            id: KRW_WEB_NEWS_SEARCH_RESULT_V1,
+            schema_sha256: KRW_WEB_NEWS_SEARCH_RESULT_V1_SCHEMA_SHA256,
+            schema: KRW_WEB_NEWS_SEARCH_RESULT_BYTES,
+        }),
         SKILL_LOAD_V1 => Some(ContractDescriptor {
             id: SKILL_LOAD_V1,
             schema_sha256: SKILL_LOAD_V1_SCHEMA_SHA256,
@@ -305,6 +332,8 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(FINAL_MARKDOWN_V1).expect("static contract"),
         contract(STATE_OPERATION_OUTPUT_V1).expect("static contract"),
         contract(STATE_FACTS_V1).expect("static contract"),
+        contract(KRW_WEB_NEWS_SEARCH_INPUT_V1).expect("static contract"),
+        contract(KRW_WEB_NEWS_SEARCH_RESULT_V1).expect("static contract"),
         contract(SKILL_LOAD_V1).expect("static contract"),
         contract(SKILL_CONTENT_V1).expect("static contract"),
     ];
@@ -1801,7 +1830,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 59);
+        assert_eq!(descriptors().len(), 61);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
