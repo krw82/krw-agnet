@@ -109,3 +109,47 @@ capabilities:
     data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
     max_connections: 4
     request_timeout_ms: 30000
+  - binding_key: search_catalog_filings
+    mcp_tool_name: search_catalog_filings
+    endpoint_ref: krw-filings-local
+    credential_ref: KRW_FILINGS_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:4b707d2c91b0134320d8cd12dc63b5481184fbaaf72f439f81910d129b208992
+    server_build: krw-front-contract-export-362183ec1211e088
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 15000
+  - binding_key: get_filing_brief
+    mcp_tool_name: get_filing_brief
+    endpoint_ref: krw-filings-local
+    credential_ref: KRW_FILINGS_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:4b707d2c91b0134320d8cd12dc63b5481184fbaaf72f439f81910d129b208992
+    server_build: krw-front-contract-export-362183ec1211e088
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 15000
+  - binding_key: list_feed_items
+    mcp_tool_name: list_feed_items
+    endpoint_ref: krw-feed-local
+    credential_ref: KRW_FEED_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:4b707d2c91b0134320d8cd12dc63b5481184fbaaf72f439f81910d129b208992
+    server_build: krw-front-contract-export-362183ec1211e088
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 10000
+  - binding_key: get_feed_context
+    mcp_tool_name: get_feed_context
+    endpoint_ref: krw-feed-local
+    credential_ref: KRW_FEED_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:4b707d2c91b0134320d8cd12dc63b5481184fbaaf72f439f81910d129b208992
+    server_build: krw-front-contract-export-362183ec1211e088
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 4
+    request_timeout_ms: 15000
