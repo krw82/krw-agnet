@@ -4238,6 +4238,249 @@ mod tests {
             .expect("commit feed context");
     }
 
+    /// Live-shape regression for the GLM bench failure: the front's
+    /// `search_catalog_filings` tool answers with a bare canonical array
+    /// (`[]` when the catalog has no row for the ticker), and the run
+    /// engine's after-action contract guard must accept the ladder's
+    /// normalized result for every rung — an empty-but-valid catalog is an
+    /// accepted action with zero evidence, never `ActionRejected`.
+    #[tokio::test]
+    async fn ladder_live_front_shapes_pass_the_engine_after_action_contract_guard() {
+        use krw_agent_run_engine::{CanonicalContractGuard, ContractGuard};
+
+        let lrcx_search = serde_json::json!([{
+            "filing_event_id": "01234567-89ab-4cde-8123-456789abcdef",
+            "ticker": "LRCX",
+            "cik": "0000707549",
+            "accession_number": "0000707549-26-012345",
+            "form_type": "8-K",
+            "filing_date": "2026-08-27",
+            "report_date": "2026-08-27",
+            "accepted_at": "2026-08-27T16:01:00Z",
+            "sec_items": ["5.02"],
+            "event_tags": ["leadership_or_board_change"],
+            "filing_detail_url": "https://www.sec.gov/Archives/edgar/data/707549/000070754926012345/index.htm",
+            "primary_document_url": "https://www.sec.gov/Archives/edgar/data/707549/000070754926012345/lrcx-20260827.htm",
+            "enrichment_status": "ready"
+        }]);
+        let lrcx_arguments = serde_json::json!({"ticker": "LRCX", "limit": 10});
+
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog =
+            Arc::new(CapabilityCatalog::compile(&image, resolved).expect("ontology ladder catalog"));
+        let guard = CanonicalContractGuard::new(&image).expect("engine contract guard");
+        let capability = |id: &str| {
+            image
+                .body
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == id)
+                .unwrap_or_else(|| panic!("ladder capability {id}"))
+        };
+
+        // (a) Empty live catalog: a bare `[]` is contract-valid and must ride
+        // the ingest path with zero evidence records.
+        let transport = FakeTransport::new([envelope(&serde_json::json!([]), false)]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let empty_invocation = invocation(&catalog, "filing.search_events", lrcx_arguments.clone());
+        let empty_result = runtime
+            .invoke(&empty_invocation)
+            .await
+            .expect("empty catalog search is a successful dispatch");
+        assert_eq!(empty_result.provider_content, serde_json::json!([]));
+        assert!(empty_result.evidence.is_empty());
+        assert_eq!(
+            empty_result.answerability,
+            Some(Answerability::QualifiedOnly)
+        );
+        guard
+            .validate_result(
+                capability("filing.search_events"),
+                &empty_invocation.binding,
+                &empty_result,
+            )
+            .expect("engine guard must accept the empty-but-valid filing catalog");
+
+        // (b) Realistic non-empty live catalog row: direct, strong evidence.
+        let transport = FakeTransport::new([envelope(&lrcx_search, false)]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let search_invocation = invocation(&catalog, "filing.search_events", lrcx_arguments);
+        let search_result = runtime
+            .invoke(&search_invocation)
+            .await
+            .expect("live filing catalog search dispatch");
+        assert_eq!(search_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(search_result.evidence.len(), 1);
+        assert!(search_result.evidence.iter().all(|record| {
+            record.directness == Directness::Direct
+                && record.grade == EvidenceGrade::Strong
+                && record.strong_claim_allowed
+                && record.entity.as_deref() == Some("LRCX")
+        }));
+        guard
+            .validate_result(
+                capability("filing.search_events"),
+                &search_invocation.binding,
+                &search_result,
+            )
+            .expect("engine guard must accept direct filing-event evidence");
+        runtime
+            .restore_committed_result(&search_invocation, &search_result)
+            .await
+            .expect("commit filing search observations");
+
+        // (c) Filing brief for an observed event. The conformance brief targets
+        // the conformance search row, so observe that row first with the ACME
+        // vector arguments.
+        let acme_arguments = front_vector(KRW_FILING_SEARCH_INPUT_V1);
+        let acme_search = front_vector(KRW_FILING_SEARCH_RESULT_V1);
+        let transport = FakeTransport::new([
+            envelope(&acme_search, false),
+            envelope(&front_vector(KRW_FILING_BRIEF_RESULT_V1), false),
+        ]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let acme_invocation = invocation(&catalog, "filing.search_events", acme_arguments);
+        let acme_result = runtime
+            .invoke(&acme_invocation)
+            .await
+            .expect("conformance filing search");
+        guard
+            .validate_result(
+                capability("filing.search_events"),
+                &acme_invocation.binding,
+                &acme_result,
+            )
+            .expect("engine guard must accept the conformance catalog row");
+        runtime
+            .restore_committed_result(&acme_invocation, &acme_result)
+            .await
+            .expect("commit conformance search observations");
+        let brief_invocation = invocation(
+            &catalog,
+            "filing.event_brief",
+            front_vector(KRW_FILING_BRIEF_INPUT_V1),
+        );
+        let brief_result = runtime
+            .invoke(&brief_invocation)
+            .await
+            .expect("observed event brief");
+        assert_eq!(brief_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(brief_result.evidence.len(), 1);
+        guard
+            .validate_result(
+                capability("filing.event_brief"),
+                &brief_invocation.binding,
+                &brief_result,
+            )
+            .expect("engine guard must accept the flattened filing brief");
+
+        // (d) Feed rungs with the live object-root shapes: list then context.
+        let mut list_output = front_vector(KRW_FEED_LIST_ITEMS_RESULT_V1);
+        list_output["items"][0]["entities"] = serde_json::json!([{
+            "ticker": "ACME",
+            "name": "Acme",
+            "relationship": "primary",
+            "relationship_reason": "subject",
+            "confidence": 1.0,
+        }]);
+        let empty_list = serde_json::json!({
+            "environment": "prod",
+            "items": [],
+            "pagination": {"limit": 10, "next_cursor": null, "has_more": false}
+        });
+        let transport = FakeTransport::new([
+            envelope(&empty_list, false),
+            envelope(&list_output, false),
+            envelope(&front_vector(KRW_FEED_CONTEXT_V2), false),
+        ]);
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+                .expect("run runtime");
+        let list_arguments = front_vector(KRW_FEED_LIST_ITEMS_INPUT_V1);
+        let empty_list_invocation = invocation(&catalog, "news.feed_list", list_arguments.clone());
+        let empty_list_result = runtime
+            .invoke(&empty_list_invocation)
+            .await
+            .expect("empty feed list is a successful dispatch");
+        assert!(empty_list_result.evidence.is_empty());
+        guard
+            .validate_result(
+                capability("news.feed_list"),
+                &empty_list_invocation.binding,
+                &empty_list_result,
+            )
+            .expect("engine guard must accept the empty feed list");
+
+        let list_invocation = invocation(&catalog, "news.feed_list", list_arguments);
+        let list_result = runtime
+            .invoke(&list_invocation)
+            .await
+            .expect("feed issue list");
+        guard
+            .validate_result(
+                capability("news.feed_list"),
+                &list_invocation.binding,
+                &list_result,
+            )
+            .expect("engine guard must accept the feed issue list");
+        runtime
+            .restore_committed_result(&list_invocation, &list_result)
+            .await
+            .expect("commit feed list observations");
+
+        let context_invocation = invocation(
+            &catalog,
+            "news.feed_context",
+            front_vector(KRW_FEED_CONTEXT_INPUT_V2),
+        );
+        let context_result = runtime
+            .invoke(&context_invocation)
+            .await
+            .expect("observed issue context");
+        guard
+            .validate_result(
+                capability("news.feed_context"),
+                &context_invocation.binding,
+                &context_result,
+            )
+            .expect("engine guard must accept the feed issue context");
+
+        // (e) Local web-news builtin: disabled config is the normal empty
+        // result, and the guard must accept it like any other rung.
+        web_news::pin_test_config(None);
+        let runtime = PooledMcpCapabilityRuntime::for_run(
+            Arc::clone(&catalog),
+            FakeTransport::new([]),
+            scope(),
+        )
+        .expect("run runtime");
+        let web_invocation = local_invocation(
+            &catalog,
+            "news.web_search",
+            serde_json::json!({"ticker": "LRCX", "limit": 3}),
+        );
+        let web_result = runtime
+            .invoke(&web_invocation)
+            .await
+            .expect("disabled web news lookup is a successful dispatch");
+        assert_eq!(web_result.provider_content, serde_json::json!({"items": []}));
+        assert!(web_result.evidence.is_empty());
+        guard
+            .validate_result(
+                capability("news.web_search"),
+                &web_invocation.binding,
+                &web_result,
+            )
+            .expect("engine guard must accept the empty web news lookup");
+        web_news::clear_test_config();
+    }
+
     #[tokio::test]
     async fn web_news_builtin_invoke_returns_empty_items_when_env_is_unset() {
         // Environment-only configuration: an unset key or base is exactly a

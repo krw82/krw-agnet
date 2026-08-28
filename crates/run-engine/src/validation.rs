@@ -181,7 +181,7 @@ impl ContractGuard for CanonicalContractGuard {
         if let Some(raw_contract) = front_success_contract(capability)? {
             validate_canonical_value(raw_contract, &result.provider_content)
                 .map_err(|error| canonical_value_failure("canonical_front_output", &error))?;
-            validate_front_projection(raw_contract, result)?;
+            validate_front_projection(raw_contract, capability, result)?;
         }
 
         let mut ledger =
@@ -240,42 +240,21 @@ fn front_success_contract(capability: &CapabilitySpec) -> Result<Option<&str>, D
 
 fn validate_front_projection(
     raw_contract: &str,
+    capability: &CapabilitySpec,
     result: &CapabilityResult,
 ) -> Result<(), DependencyFailure> {
-    match raw_contract {
-        KRW_FEED_LIST_ITEMS_RESULT_V1 | KRW_FEED_GET_ITEMS_RESULT_V1 | KRW_FEED_CONTEXT_V2 => {
-            if !result.calculations.is_empty()
-                || result.answerability != Some(Answerability::QualifiedOnly)
-                || result.evidence.iter().any(|record| {
-                    record.strong_claim_allowed
-                        || record.directness > Directness::Related
-                        || record.grade > EvidenceGrade::Medium
-                })
-            {
-                return Err(contract_failure(
-                    "front_feed_projection_unsafe",
-                    "feed output may only produce related/unverified qualified evidence",
-                ));
-            }
-        }
-        KRW_FILING_SEARCH_RESULT_V1
-        | KRW_FILING_METADATA_V1
-        | KRW_FILING_BRIEF_RESULT_V1
-        | KRW_FILING_SECTIONS_RESULT_V1
-        | KRW_FILING_DOCUMENTS_RESULT_V1 => {
-            if !result.evidence.is_empty()
-                || !result.calculations.is_empty()
-                || result.answerability.is_some()
-            {
-                return Err(contract_failure(
-                    "front_filing_catalog_became_evidence",
-                    "filing catalog, metadata, brief, and list outputs are non-evidence",
-                ));
-            }
-        }
-        KRW_FILING_READ_SECTION_RESULT_V1
-        | KRW_FILING_READ_DOCUMENT_RESULT_V1
-        | KRW_FORM4_TRANSACTIONS_RESULT_V1 => {
+    // The company-research supplemental ladder reuses the front physical
+    // contracts but projects evidence through the ontology adapter's
+    // supplemental mappers: filing events are issuer-disclosed fact and map to
+    // direct/strong records, feed issues stay related/unverified. The feed
+    // deployment's non-evidence catalog policy keys on the same output
+    // contracts, so the projection class must follow the image-declared
+    // result ingest, not the contract id alone.
+    match capability.result_ingest {
+        CapabilityResultIngest::FilingEventSearchV1 | CapabilityResultIngest::FilingEventBriefV1 => {
+            // Same closed projection the verified filing reads enforce: only
+            // direct strong qualitative records, and an empty-but-valid
+            // catalog carries no evidence and stays qualified-only.
             let expected_answerability = if result.evidence.is_empty() {
                 Answerability::QualifiedOnly
             } else {
@@ -290,17 +269,80 @@ fn validate_front_projection(
                 })
             {
                 return Err(contract_failure(
-                    "front_filing_direct_projection_invalid",
-                    "verified filing content must map only to direct strong qualitative evidence",
+                    "front_filing_ladder_projection_invalid",
+                    "ladder filing events must map only to direct strong qualitative evidence",
                 ));
             }
         }
-        _ => {
-            return Err(contract_failure(
-                "unknown_front_projection",
-                "front success contract has no closed projection policy",
-            ));
+        CapabilityResultIngest::FeedIssueListV1 | CapabilityResultIngest::FeedIssueContextV1 => {
+            validate_front_feed_projection(result)?;
         }
+        _ => match raw_contract {
+            KRW_FEED_LIST_ITEMS_RESULT_V1 | KRW_FEED_GET_ITEMS_RESULT_V1 | KRW_FEED_CONTEXT_V2 => {
+                validate_front_feed_projection(result)?;
+            }
+            KRW_FILING_SEARCH_RESULT_V1
+            | KRW_FILING_METADATA_V1
+            | KRW_FILING_BRIEF_RESULT_V1
+            | KRW_FILING_SECTIONS_RESULT_V1
+            | KRW_FILING_DOCUMENTS_RESULT_V1 => {
+                if !result.evidence.is_empty()
+                    || !result.calculations.is_empty()
+                    || result.answerability.is_some()
+                {
+                    return Err(contract_failure(
+                        "front_filing_catalog_became_evidence",
+                        "filing catalog, metadata, brief, and list outputs are non-evidence",
+                    ));
+                }
+            }
+            KRW_FILING_READ_SECTION_RESULT_V1
+            | KRW_FILING_READ_DOCUMENT_RESULT_V1
+            | KRW_FORM4_TRANSACTIONS_RESULT_V1 => {
+                let expected_answerability = if result.evidence.is_empty() {
+                    Answerability::QualifiedOnly
+                } else {
+                    Answerability::StrongAllowed
+                };
+                if !result.calculations.is_empty()
+                    || result.answerability != Some(expected_answerability)
+                    || result.evidence.iter().any(|record| {
+                        record.directness != Directness::Direct
+                            || record.grade != EvidenceGrade::Strong
+                            || !record.strong_claim_allowed
+                    })
+                {
+                    return Err(contract_failure(
+                        "front_filing_direct_projection_invalid",
+                        "verified filing content must map only to direct strong qualitative evidence",
+                    ));
+                }
+            }
+            _ => {
+                return Err(contract_failure(
+                    "unknown_front_projection",
+                    "front success contract has no closed projection policy",
+                ));
+            }
+        },
+    }
+    Ok(())
+}
+
+/// Feed output may only produce related/unverified qualified evidence.
+fn validate_front_feed_projection(result: &CapabilityResult) -> Result<(), DependencyFailure> {
+    if !result.calculations.is_empty()
+        || result.answerability != Some(Answerability::QualifiedOnly)
+        || result.evidence.iter().any(|record| {
+            record.strong_claim_allowed
+                || record.directness > Directness::Related
+                || record.grade > EvidenceGrade::Medium
+        })
+    {
+        return Err(contract_failure(
+            "front_feed_projection_unsafe",
+            "feed output may only produce related/unverified qualified evidence",
+        ));
     }
     Ok(())
 }

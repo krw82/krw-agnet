@@ -9572,6 +9572,170 @@ mod tests {
         );
     }
 
+    /// The front projection policy must follow the image-declared result
+    /// ingest, not the output contract alone: the company-research ladder's
+    /// `filing_event_search_v1` legitimately projects direct/strong evidence
+    /// (and a valid-but-empty catalog carries zero evidence), while the feed
+    /// deployment's `front_filing_search_v1` keeps the same physical contract
+    /// a non-evidence catalog.
+    #[test]
+    fn canonical_guard_front_projection_follows_the_ladder_result_ingest() {
+        let fixture = fixture();
+        let guard = CanonicalContractGuard::new(&fixture.image).unwrap();
+        let binding = &fixture.deployment.capabilities[0];
+        let ladder_search = fixture
+            .image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "filing.search_events")
+            .unwrap();
+        let adapter_context = krw_ontology_adapter::MappingContext {
+            capability_id: ladder_search.id.clone(),
+            action_key: "action-ladder-search".into(),
+            server_build: "fixture-build".into(),
+            normalized_contract_hash: ContentHash::sha256("normalized"),
+            server_schema_bundle_hash: ContentHash::sha256("schema"),
+            data_release_hash: ContentHash::sha256("release"),
+            scope: EvidenceScope {
+                auth_scope: AuthScope::Tenant,
+                scope_hash: ContentHash::sha256("scope"),
+            },
+            payload_ref: ContentHash::sha256("payload"),
+        };
+        let lrcx_catalog = serde_json::json!([{
+            "filing_event_id": "01234567-89ab-4cde-8123-456789abcdef",
+            "ticker": "LRCX",
+            "cik": "0000707549",
+            "accession_number": "0000707549-26-012345",
+            "form_type": "8-K",
+            "filing_date": "2026-08-27",
+            "report_date": "2026-08-27",
+            "accepted_at": "2026-08-27T16:01:00Z",
+            "sec_items": ["5.02"],
+            "event_tags": ["leadership_or_board_change"],
+            "filing_detail_url": "https://www.sec.gov/Archives/edgar/data/707549/000070754926012345/index.htm",
+            "primary_document_url": "https://www.sec.gov/Archives/edgar/data/707549/000070754926012345/lrcx-20260827.htm",
+            "enrichment_status": "ready"
+        }]);
+
+        // The ladder normalization is the adapter's supplemental mapper: the
+        // bare canonical array rides as provider content and the mapped
+        // records ride the ingest path.
+        let ladder_result = |payload: Value| {
+            let records = krw_ontology_adapter::map_filing_event_search(
+                &serde_json::json!({"items": payload}),
+                "LRCX",
+                &adapter_context,
+            )
+            .unwrap();
+            let answerability = if records.is_empty() {
+                Answerability::QualifiedOnly
+            } else {
+                Answerability::StrongAllowed
+            };
+            CapabilityResult {
+                provider_content: payload,
+                evidence: records,
+                answerability: Some(answerability),
+                calculations: Vec::new(),
+                presentation: None,
+                truncation: None,
+            }
+        };
+
+        // A valid-but-empty catalog is an accepted action with zero evidence.
+        let empty = ladder_result(serde_json::json!([]));
+        assert!(empty.evidence.is_empty());
+        guard
+            .validate_result(ladder_search, binding, &empty)
+            .expect("empty-but-valid filing catalog must be accepted");
+        // A non-empty live catalog row maps to direct/strong evidence and is
+        // accepted.
+        let non_empty = ladder_result(lrcx_catalog.clone());
+        assert_eq!(non_empty.evidence.len(), 1);
+        assert_eq!(non_empty.answerability, Some(Answerability::StrongAllowed));
+        guard
+            .validate_result(ladder_search, binding, &non_empty)
+            .expect("direct filing-event evidence must be accepted");
+
+        // Genuine projection violations still reject: a downgraded record and
+        // an answerability that does not follow the evidence.
+        let mut downgraded = ladder_result(lrcx_catalog.clone());
+        downgraded.evidence[0].directness = Directness::Related;
+        assert_eq!(
+            guard
+                .validate_result(ladder_search, binding, &downgraded)
+                .unwrap_err()
+                .code,
+            "front_filing_ladder_projection_invalid"
+        );
+        let mut overclaimed = ladder_result(serde_json::json!([]));
+        overclaimed.answerability = Some(Answerability::StrongAllowed);
+        assert!(
+            guard
+                .validate_result(ladder_search, binding, &overclaimed)
+                .is_err()
+        );
+
+        // The feed deployment's catalog ingest keeps the non-evidence policy
+        // on the same physical contract.
+        let feed = loaded_agent("krw-feed");
+        let feed_guard = CanonicalContractGuard::new(&feed.manifest).unwrap();
+        let feed_catalog = feed
+            .manifest
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "filing.search_catalog")
+            .unwrap();
+        let feed_empty = CapabilityResult {
+            provider_content: serde_json::json!([]),
+            evidence: Vec::new(),
+            answerability: None,
+            calculations: Vec::new(),
+            presentation: None,
+            truncation: None,
+        };
+        feed_guard
+            .validate_result(feed_catalog, binding, &feed_empty)
+            .expect("feed-deployment empty catalog stays accepted");
+        let mut feed_evidence = feed_empty;
+        feed_evidence.evidence = non_empty.evidence.clone();
+        feed_evidence.answerability = Some(Answerability::StrongAllowed);
+        assert_eq!(
+            feed_guard
+                .validate_result(feed_catalog, binding, &feed_evidence)
+                .unwrap_err()
+                .code,
+            "front_filing_catalog_became_evidence"
+        );
+
+        // Ladder feed rungs keep the related/unverified qualified policy.
+        let feed_list = fixture
+            .image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "news.feed_list")
+            .unwrap();
+        let mut qualified = ladder_result(serde_json::json!([]));
+        qualified.provider_content = front_contract_value("krw-feed-list-items-result/v1");
+        qualified.answerability = Some(Answerability::QualifiedOnly);
+        guard
+            .validate_result(feed_list, binding, &qualified)
+            .expect("empty feed list must be accepted");
+        let mut unsafe_feed = qualified.clone();
+        unsafe_feed.evidence = downgraded.evidence.clone();
+        assert_eq!(
+            guard
+                .validate_result(feed_list, binding, &unsafe_feed)
+                .unwrap_err()
+                .code,
+            "front_feed_projection_unsafe"
+        );
+    }
+
     #[test]
     fn pre_action_state_order_fails_closed() {
         let fixture = fixture();

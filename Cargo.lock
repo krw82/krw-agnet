@@ -964,6 +964,7 @@ dependencies = [
  "krw-agent-execution-contracts",
  "krw-agent-image",
  "krw-agent-protocol",
+ "krw-agent-run-engine",
  "krw-agent-runtime-config",
  "krw-agent-tool-mcp",
  "krw-ontology-adapter",

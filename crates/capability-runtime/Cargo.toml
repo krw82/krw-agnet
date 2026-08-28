@@ -23,5 +23,8 @@ thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+krw-agent-run-engine = { path = "../run-engine" }
+
 [lints]
 workspace = true
