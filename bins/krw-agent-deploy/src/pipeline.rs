@@ -622,7 +622,7 @@ impl FixtureStageExecutor {
                 let bundle = dir.join(provider);
                 let _ = std::fs::create_dir_all(&bundle);
                 let model = if provider == "glm" {
-                    "glm-5.3"
+                    "glm-5.3-flash"
                 } else {
                     "deepseek-v4-flash"
                 };
@@ -672,7 +672,7 @@ impl FixtureStageExecutor {
                     .cloned()
                     .unwrap_or_else(|| provider.clone());
                 let model = if argv_provider == "glm" {
-                    "glm-5.3"
+                    "glm-5.3-flash"
                 } else {
                     "deepseek-v4-flash"
                 };
@@ -1786,7 +1786,7 @@ pub fn payload_remote_candidate_abi(topology: &RemoteTopology, release_id: &str)
 pub fn candidate_preflight_script() -> &'static str {
     r#"const fs = require("fs");
 const { Pool } = require("pg");
-const providerModels = { glm: "glm-5.3", deepseek: "deepseek-v4-flash" };
+const providerModels = { glm: "glm-5.3-flash", deepseek: "deepseek-v4-flash" };
 const url = process.env.AGENT_V1_DATABASE_URL;
 const tenant = process.env.KRW_AGENT_TENANT_ID;
 const provider = process.env.KRW_AGENT_PROVIDER;

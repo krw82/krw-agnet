@@ -71,7 +71,7 @@ class AcceptanceEvidenceTest(unittest.TestCase):
                 "release_set_hash": "sha256:" + "c" * 64,
                 "runtime_version": "0.1.0",
                 "entries": [
-                    {"execution": {"resolved_model": "glm-5.3"}},
+                    {"execution": {"resolved_model": "glm-5.3-flash"}},
                 ],
             }
             raw = (json.dumps(value, sort_keys=True) + "\n").encode()

@@ -46,7 +46,7 @@ printf '%s\n' "$*" >> "$KRW_TEST_LAUNCHCTL_LOG"
 
 def make_dual_release(root: pathlib.Path) -> None:
     bundles: dict[str, dict[str, str]] = {}
-    for provider, model in (("glm", "glm-5.3"), ("deepseek", "deepseek-v4-flash")):
+    for provider, model in (("glm", "glm-5.3-flash"), ("deepseek", "deepseek-v4-flash")):
         bundle = root / provider
         manifest = {
             "provider_id": provider,
