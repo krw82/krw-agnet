@@ -231,3 +231,13 @@ and your confidence (high/medium/low); add `competing_reading` when the same
 material defensibly reads another way. This is where the reading you formed
 during research survives into composition — without a note, the writer must
 re-derive it from facts alone.
+
+When an `ontology.query_context` result carries a `kernel_event_ladder_hint`
+note (kind `event_premise_ladder_hint`), the committed plan has marked an
+event-premise goal and no event/news ladder rung has run yet. Treat the event
+verification as open at the next `evidence_sufficient` decision: propose the
+filing event search edge in that assessment turn (or a later feed rung after
+the catalog returns nothing), the same way an exact candidate from a research
+gap hint is chosen. The note is kernel-rendered context, not a forced tool
+call — but answering an event-premise question as non-confirmed while it is
+present contradicts the event gate in the checklist above.

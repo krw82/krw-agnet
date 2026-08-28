@@ -93,4 +93,9 @@ array; use `[]` when no filter is needed. `goal` is exactly one of the five
 tagged goal types documented in the examples. Every objective has `priority`,
 `alternatives`, `directness`, `object_types`, and `goal`; every metric goal
 includes `metric_dimensions`, including an empty array when no dimension is
-requested.
+requested. A `qualitative_evidence` goal may additionally set the optional
+boolean `"event_premise": true` when its premise is a specific corporate
+event, announcement, or report (최근 보도/발표/~가 사실인가요, a departure, a
+deal, a guidance change, a post-results move); the kernel uses the marking to
+remind the analyst that the filing event catalog precedes ontology facts.
+Omit the key for definitions, mechanisms, and ordinary business description.

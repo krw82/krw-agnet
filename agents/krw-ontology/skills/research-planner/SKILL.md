@@ -333,6 +333,23 @@ Use when the question asks "why?" or "what caused?".
   items — the compiler rejects a multi-concept qualitative objective with an
   empty `predicates`. Use exactly one relationship wording (for example
   `"due to"`). A single-concept objective may use `predicates: []`.
+- `event_premise`: optional boolean, `true` when this goal's premise is a
+  specific corporate event, announcement, or report — a departure or
+  appointment, a transaction, a guidance change, a post-results move, or any
+  recency/reportage ask (최근 보도/발표/~가 사실인가요). The kernel uses this
+  marking to remind the analyst that the filing event catalog comes before
+  ontology facts. Omit the key (or `false`) for definitions, mechanisms, and
+  ordinary business description. It is a classification of the claim, not
+  proof — marking it does not change retrieval.
+
+```json
+"goal": {
+  "kind": "qualitative_evidence",
+  "concepts": ["executive change"],
+  "predicates": ["announced"],
+  "event_premise": true
+}
+```
 
 ## Canonical metric identifiers
 
