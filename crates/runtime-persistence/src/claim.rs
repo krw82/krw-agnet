@@ -322,8 +322,8 @@ mod tests {
         DeploymentBinding, ModelRegistry, RunContextV1, SessionMemoryCarrierV3,
     };
     use krw_agent_runtime_config::{
-        BudgetRegistry, ConfigError, EndpointDescriptor, EndpointRegistry, SecretSource,
-        ValidationMode, load_yaml, resolve_runtime,
+        BudgetRegistry, ConfigError, EndpointRegistry, SecretSource, ValidationMode, load_yaml,
+        resolve_runtime,
     };
     use zeroize::Zeroizing;
 
@@ -340,6 +340,16 @@ mod tests {
                 "KRW_ONTOLOGY_READY_URL" => {
                     Ok(Zeroizing::new("https://ontology.invalid/readyz".into()))
                 }
+                "KRW_FEED_MCP_URL" => Ok(Zeroizing::new("https://feed.invalid/mcp".into())),
+                "KRW_FEED_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://feed.invalid/readyz".into()))
+                }
+                "KRW_FEED_MCP_TOKEN" => Ok(Zeroizing::new("feed-token".into())),
+                "KRW_FILINGS_MCP_URL" => Ok(Zeroizing::new("https://filings.invalid/mcp".into())),
+                "KRW_FILINGS_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://filings.invalid/readyz".into()))
+                }
+                "KRW_FILINGS_MCP_TOKEN" => Ok(Zeroizing::new("filings-token".into())),
                 _ => Err(ConfigError::MissingSecret(name.into())),
             }
         }
@@ -365,20 +375,12 @@ mod tests {
         budget
             .profiles
             .retain(|profile| profile.profile_id == "company_research_glm");
-        let endpoints = EndpointRegistry {
-            schema_version: 1,
-            registry_id: "fixture".into(),
-            endpoints: vec![EndpointDescriptor {
-                endpoint_ref: "krw-ontology-local".into(),
-                url_env: "KRW_ONTOLOGY_MCP_URL".into(),
-                readiness_url_env: "KRW_ONTOLOGY_READY_URL".into(),
-                protocol_version: "2025-06-18".into(),
-                origin: "https://krw-agent.local".into(),
-                credential_version: "public-v1".into(),
-                tls_profile: "system-roots-v1".into(),
-                tls_ca_pem_env: None,
-            }],
-        };
+        // The canonical endpoint template declares the ontology, feed, and
+        // filings local endpoints the deployment binding example references;
+        // resolving against it keeps this fixture honest about the registry
+        // contract instead of a diverging hardcoded copy.
+        let endpoints: EndpointRegistry =
+            load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap();
         let mut request: RunRequest = serde_json::from_slice(
             &fs::read(root.join("fixtures/vertical-slice/v1/run-request.json")).unwrap(),
         )

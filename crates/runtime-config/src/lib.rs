@@ -1643,36 +1643,17 @@ mod tests {
         let registry = load_yaml(root.join("deployments/local/model-registry.glm.yaml")).unwrap();
         let budget: BudgetRegistry =
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
-        let endpoint_registry = EndpointRegistry {
-            schema_version: 1,
-            registry_id: "fixture".into(),
-            endpoints: vec![EndpointDescriptor {
-                endpoint_ref: "krw-ontology-local".into(),
-                url_env: "KRW_ONTOLOGY_MCP_URL".into(),
-                readiness_url_env: "KRW_ONTOLOGY_READY_URL".into(),
-                protocol_version: "2025-06-18".into(),
-                origin: "https://krw-agent.local".into(),
-                credential_version: "public-v1".into(),
-                tls_profile: "system-roots-v1".into(),
-                tls_ca_pem_env: None,
-            }],
-        };
+        // The canonical endpoint template ships the same three local endpoints
+        // (ontology, feed, filings) the deployment binding example references,
+        // so fixture resolution validates the real registry document instead
+        // of a diverging hardcoded copy.
+        let endpoint_registry: EndpointRegistry =
+            load_yaml(root.join("deployments/local/endpoint-registry.example.yaml")).unwrap();
         let request = serde_json::from_slice(
             &fs::read(root.join("fixtures/vertical-slice/v1/run-request.json")).unwrap(),
         )
         .unwrap();
-        let secrets = FixtureSecrets(BTreeMap::from([
-            ("DEEPSEEK_API_KEY".into(), "fixture-deepseek".into()),
-            ("GLM_API_KEY".into(), "fixture-glm".into()),
-            (
-                "KRW_ONTOLOGY_MCP_URL".into(),
-                "https://ontology.invalid/mcp".into(),
-            ),
-            (
-                "KRW_ONTOLOGY_READY_URL".into(),
-                "https://ontology.invalid/readyz".into(),
-            ),
-        ]));
+        let secrets = global_fixture_secrets();
         (
             image,
             binding,
@@ -1773,8 +1754,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            6,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding"
+            10,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four more physical bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1806,7 +1787,7 @@ mod tests {
         .expect("local skill.load must not depend on a physical MCP deployment binding");
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
-        assert_eq!(runtime.physical_binding_count(), 6);
+        assert_eq!(runtime.physical_binding_count(), 10);
     }
 
     #[test]
