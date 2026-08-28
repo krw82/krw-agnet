@@ -59,7 +59,7 @@ expected_model = model_for_provider(provider)
 registry = (root / "deployments" / "model-registry.yaml").read_text(encoding="utf-8")
 if f"model_id: {expected_model}" not in registry:
     raise SystemExit("provider registry does not contain the closed physical model")
-if "model_id: glm-5.3" in registry and provider != "glm":
+if "model_id: glm-5.3-flash" in registry and provider != "glm":
     raise SystemExit("DeepSeek candidate contains the GLM registry")
 if "model_id: deepseek-v4-flash" in registry and provider != "deepseek":
     raise SystemExit("GLM candidate contains the DeepSeek registry")
