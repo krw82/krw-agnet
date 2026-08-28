@@ -241,6 +241,8 @@ struct IntentGoal {
     dependencies: Vec<String>,
     directness: Directness,
     calculation_required: bool,
+    #[serde(default)]
+    event_premise: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +386,8 @@ enum ResearchProposalGoal {
     QualitativeEvidence {
         concepts: Vec<String>,
         predicates: Vec<String>,
+        #[serde(default)]
+        event_premise: bool,
     },
 }
 
@@ -551,6 +555,13 @@ fn lower_research_proposal(
         if !seen_goal_ids.insert(goal_id.clone()) {
             continue;
         }
+        let event_premise = matches!(
+            &objective.goal,
+            ResearchProposalGoal::QualitativeEvidence {
+                event_premise: true,
+                ..
+            }
+        );
         let mut lowered = lower_goal(&objective.goal);
         let object_types = normalize_execution_object_types(&objective.object_types, &lowered);
         let calculation_required = lowered.calculation_window.is_some();
@@ -574,6 +585,7 @@ fn lower_research_proposal(
             // physical clause carries the shared window required by the
             // ontology's plan-wide temporal-axis rule.
             calculation_required,
+            event_premise,
         });
         for (alternative_index, alternative) in objective.alternatives.into_iter().enumerate() {
             let alternative_rank = u8::try_from(alternative_index)
@@ -911,6 +923,7 @@ fn research_objective_identity(objective: &ResearchProposalObjective) -> Researc
         ResearchProposalGoal::QualitativeEvidence {
             concepts,
             predicates,
+            event_premise: _,
         } => ResearchObjectiveIdentity {
             kind: "qualitative_evidence".into(),
             metric: None,
@@ -1023,6 +1036,7 @@ fn lower_goal(goal: &ResearchProposalGoal) -> LoweredGoal {
         ResearchProposalGoal::QualitativeEvidence {
             concepts,
             predicates,
+            event_premise: _,
         } => LoweredGoal {
             required_concepts: concepts.clone(),
             required_predicates: predicates.clone(),
@@ -1292,6 +1306,7 @@ fn index_and_validate_goals(
             coverage_ppm: 0,
             evidence_ids: Vec::new(),
             calculation_ids: Vec::new(),
+            event_premise: goal.event_premise,
         });
     }
     let intent_graph =
@@ -1776,6 +1791,59 @@ mod tests {
                 }
             }]
         })
+    }
+
+    #[test]
+    fn event_premise_marking_reaches_intent_graph() {
+        let question = "How durable is AAPL services growth?";
+        let mut proposal = proposal();
+        proposal["objectives"][0]["goal"]["event_premise"] = json!(true);
+        let compiled = compile_research_proposal(&proposal, company_scope(question)).unwrap();
+        let marked: Vec<&str> = compiled
+            .receipt
+            .intent_graph
+            .goals()
+            .filter(|goal| goal.event_premise)
+            .map(|goal| goal.goal_id.as_str())
+            .collect();
+        assert_eq!(marked.len(), 1);
+        assert!(compiled
+            .receipt
+            .clause_goal_ids
+            .values()
+            .flatten()
+            .any(|goal_id| marked.contains(&goal_id.as_str())));
+    }
+
+    #[test]
+    fn unmarked_proposal_leaves_event_premise_false() {
+        let question = "How durable is AAPL services growth?";
+        let compiled = compile_research_proposal(&proposal(), company_scope(question)).unwrap();
+        assert!(compiled
+            .receipt
+            .intent_graph
+            .goals()
+            .all(|goal| !goal.event_premise));
+    }
+
+    #[test]
+    fn legacy_receipt_without_event_premise_field_still_recovers() {
+        let question = "How durable is AAPL services growth?";
+        let compiled = compile_research_proposal(&proposal(), company_scope(question)).unwrap();
+        let mut value = serde_json::to_value(&compiled.receipt).unwrap();
+        for goal in value["intent_graph"]["goals"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            goal.as_object_mut().unwrap().remove("event_premise");
+        }
+        let recovered: ResearchIntentReceipt = serde_json::from_value(value).unwrap();
+        recovered.validate_recovered().unwrap();
+        assert!(recovered
+            .intent_graph
+            .goals()
+            .all(|goal| !goal.event_premise));
     }
 
     #[test]

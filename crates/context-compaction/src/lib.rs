@@ -563,6 +563,7 @@ fn composer_research_projection(
             coverage_ppm: goal.coverage_ppm,
             evidence_ids: Vec::new(),
             calculation_ids: goal.calculation_ids.clone(),
+            event_premise: goal.event_premise,
         })
         .collect();
     if clause_goals.is_empty() && projection.clauses.is_empty() {

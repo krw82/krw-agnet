@@ -947,6 +947,7 @@ pub fn derive_evidence_goal_graph(
             coverage_ppm,
             evidence_ids: bounded_goal_links(&coverage.evidence_ids),
             calculation_ids: Vec::new(),
+            event_premise: false,
         });
     }
     if goals.len() != clause_definitions.len() {
@@ -980,6 +981,7 @@ pub fn derive_evidence_goal_graph(
             coverage_ppm,
             evidence_ids: Vec::new(),
             calculation_ids: bounded_goal_links(&coverage.calculation_ids),
+            event_premise: false,
         });
     }
     EvidenceGoalGraph::new(goals).map_err(AdapterError::Planning)

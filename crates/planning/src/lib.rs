@@ -84,6 +84,13 @@ pub struct EvidenceGoal {
     pub coverage_ppm: u32,
     pub evidence_ids: Vec<String>,
     pub calculation_ids: Vec<String>,
+    /// Planner-authored classification: this goal asserts or assumes a
+    /// specific corporate event, announcement, or report. Carried in the
+    /// durable receipt so the run engine can surface the event-ladder
+    /// obligation without retaining the user question. Defaults to false so
+    /// checkpoints written before the field existed still recover.
+    #[serde(default)]
+    pub event_premise: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,6 +783,7 @@ mod tests {
             coverage_ppm: 0,
             evidence_ids: Vec::new(),
             calculation_ids: Vec::new(),
+            event_premise: false,
         }
     }
 
