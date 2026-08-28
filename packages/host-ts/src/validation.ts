@@ -36,7 +36,7 @@ const GLM_PROFILE_POLICY = {
 } as const;
 const MODEL_PROFILE_POLICY = GLM_PROFILE_POLICY;
 const MODEL_WIRE_POLICY = {
-  ["glm-5.3"]: {
+  ["glm-5.3-flash"]: {
     provider_api_version: GLM_PROVIDER_API_VERSION,
     max_context_tokens: GLM_MAX_CONTEXT_TOKENS,
   },

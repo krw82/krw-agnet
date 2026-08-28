@@ -167,7 +167,7 @@ def verify_dual_root(root: pathlib.Path, expect_sealed: bool) -> dict[str, objec
 class DualProviderReleaseTest(unittest.TestCase):
     def test_provider_models_are_closed(self) -> None:
         self.assertEqual(PROVIDER_MODELS, {
-            "glm": "glm-5.3",
+            "glm": "glm-5.3-flash",
             "deepseek": "deepseek-v4-flash",
         })
 

@@ -15,7 +15,7 @@ from verify_standalone_release import SCHEMA_VERSION, canonical_bytes, content_h
 
 class StandaloneReleaseManifestTest(unittest.TestCase):
     def build_bundle(self, root: pathlib.Path, provider: str = "glm") -> pathlib.Path:
-        model = "glm-5.3" if provider == "glm" else "deepseek-v4-flash"
+        model = "glm-5.3-flash" if provider == "glm" else "deepseek-v4-flash"
         binary = root / "bin" / "krw-agent"
         binary.parent.mkdir()
         binary.write_bytes(b"deterministic test binary")
@@ -104,7 +104,7 @@ class StandaloneReleaseManifestTest(unittest.TestCase):
             self.build_bundle(root, provider="deepseek")
             manifest_path = root / "release-manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["physical_models"] = ["glm-5.3"]
+            manifest["physical_models"] = ["glm-5.3-flash"]
             body = {key: value for key, value in manifest.items() if key != "manifest_hash"}
             manifest["manifest_hash"] = content_hash(canonical_bytes(body))
             manifest_path.write_text(

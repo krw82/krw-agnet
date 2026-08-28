@@ -8,7 +8,7 @@
     "fixtures/research-quality/v4/company-dual-claim/provider/turn-1-assistant.json": "sha256:286bf45880ebcb2d56451946a2d66b181b6d3c6f0ee13a20063c7b8c8fabc929",
     "fixtures/research-quality/v4/company-dual-claim/provider/turn-2-evidence-sufficient.json": "sha256:4091a056da612701acd978e9b44185a3720569388cfe6aa7bcfe3bd3cfcf860b",
     "fixtures/research-quality/v4/company-dual-claim/provider/turn-3-answer.json": "sha256:381f04ba140f71af75fcd819dfc5b665178068214e74241eeaaa6e9de8bf156f",
-    "fixtures/research-quality/v4/company-dual-claim/run-request.json": "sha256:0a9adcd3c2f932f62e4d892d5774d9da903e4acbc1e2962997c97bc1e1f1586c",
+    "fixtures/research-quality/v4/company-dual-claim/run-request.json": "sha256:64259912145e1c7332f7041403be4911b9e9c45910e6ebaa33c208e6f25293eb",
     "fixtures/research-quality/v4/company-context-vg.json": "sha256:c23e94838ea927f1309a6f14238e4548bb1cdfc2a864987b0aff962a15d75815",
     "fixtures/research-quality/v4/partial-research-replan/mcp/research-state-answerable-after-append.json": "sha256:d37a53318e2b2bfc3f6403237233c542fdfa2e57db39e6427880d5c1894362f0",
     "fixtures/research-quality/v4/partial-research-replan/mcp/research-state-partial.json": "sha256:e1a455a8a248902903687fe3aa13efae0cd6fa3eeb17c23992be72f65e3813d2",
@@ -23,7 +23,7 @@
     "fixtures/vertical-slice/v1/provider/turn-1-assistant.json": "sha256:b0027823395281cc23d35282431a72682ac1a0713424a3c75c9e05c14721758d",
     "fixtures/vertical-slice/v1/provider/turn-2-evidence-sufficient.json": "sha256:bcb488ff179436bc66ec69e13ebe3b463df4f9f9a7c78f0266021298ff4915f0",
     "fixtures/vertical-slice/v1/provider/turn-3-answer.json": "sha256:8d375272bc17b5c3c8062c95dec6ccf81b05d0acfcf8d3f25de13e5eff7e2730",
-    "fixtures/vertical-slice/v1/run-request.json": "sha256:6b1f8ac572704aee556bef9c3010391182ba669311990f4530ac4d15b53df7d0"
+    "fixtures/vertical-slice/v1/run-request.json": "sha256:b98b286cb703764c736f11b1bd4bb388101acda6a0d1ad8807705d965bfdfb98"
   },
   "case_count": 3
 }
