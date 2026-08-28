@@ -117,6 +117,19 @@ contracts:
     schema_ref: canonical:krw-agent/skill-content-v1
     content_hash: sha256:29e76200a214632bb215b6427f1308438f11adc6437cbad1ed466818f23ab55e
     semantic_authority: krw-agent-image
+  # Front-read contracts shared with the krw-feed deployment. The content
+  # hashes are the same canonical registry pins krw-feed already declares for
+  # the identical schema files.
+  - { id: krw-filing-search-input/v1, schema_ref: canonical:krw-front/krw-filing-search-input-v1, content_hash: "sha256:07ce2fcb0a38577f6c3ad70854bcdbaad2f4eb637e8d897ca8925656e9e7f8ad", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-search-result/v1, schema_ref: canonical:krw-front/krw-filing-search-result-v1, content_hash: "sha256:75303a0d683826807c742512b410f2d8a36d0ed162bfa335954b9e7110d0d872", semantic_authority: krw-ontology-front-typescript, max_items: 25 }
+  - { id: krw-filing-brief-input/v1, schema_ref: canonical:krw-front/krw-filing-brief-input-v1, content_hash: "sha256:1e8d2957625c2e5e6923a0a4ca0b09eb71b2f67f268fc4a6089054b9526dcec1", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-filing-brief-result/v1, schema_ref: canonical:krw-front/krw-filing-brief-result-v1, content_hash: "sha256:58b0c6434b19df909aa06999a8c91c7d72ca146a1aeb2297da0cf635e9559b72", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-list-items-input/v1, schema_ref: canonical:krw-front/krw-feed-list-items-input-v1, content_hash: "sha256:4d7bc71506c533a764e76465d1f3dfa94279bb4f8407e1996e65e391d16ef8fe", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-list-items-result/v1, schema_ref: canonical:krw-front/krw-feed-list-items-result-v1, content_hash: "sha256:04cf3e36af372adf49438e551e143c272751909ae75a072186043ac0bc5d917e", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-context-input/v2, schema_ref: canonical:krw-front/krw-feed-context-input-v2, content_hash: "sha256:5a57dba020f4c4ebc7a5946c068e547849ec0e367d45cea9068507a0b8b742ed", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-feed-context/v2, schema_ref: canonical:krw-front/krw-feed-context-v2, content_hash: "sha256:225d64167191d5618a1b2192fb9c0af8951366a8091f520eeb7e89f6737780d3", semantic_authority: krw-ontology-front-typescript }
+  - { id: krw-web-news-search-input/v1, schema_ref: canonical:krw-agent/krw-web-news-search-input-v1, content_hash: "sha256:96712fe30127baca0c7cbbe0f442e4657ac4515ad453810f3539784a996c390e", semantic_authority: krw-agent-capability-runtime }
+  - { id: krw-web-news-search-result/v1, schema_ref: canonical:krw-agent/krw-web-news-search-result-v1, content_hash: "sha256:efce2db03cfaa90f59891d4aea8192118a95aad374d250730d1de5f44032da49", semantic_authority: krw-agent-capability-runtime, max_items: 10 }
 roles:
   - id: company_orienter
     # A small, company-specific ontology map is fetched before the planner
@@ -502,6 +515,90 @@ capabilities:
       require_any_of: [ticker]
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # Filing-event and news fallback ladder for event-shaped premises. These
+  # reuse the same front-read result ingests and MCP bindings the krw-feed
+  # deployment already serves, so no new endpoint appears here.
+  - id: filing.search_events
+    execution: { kind: remote, binding_key: search_catalog_filings }
+    permission: read
+    input_contract: krw-filing-search-input/v1
+    output_contracts: [krw-filing-search-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_search_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: filing.event_brief
+    execution: { kind: remote, binding_key: get_filing_brief }
+    permission: read
+    # filing_event_id must be one observed in a prior filing.search_events
+    # result of this run; the kernel guard rejects unobserved ids (same
+    # pattern as ontology.chain object ids).
+    input_contract: krw-filing-brief-input/v1
+    output_contracts: [krw-filing-brief-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_filing_brief_v1
+    scope_binding:
+      # The brief input carries only the observed filing_event_id, so the
+      # trusted ticker scope stays the one the run already authenticated
+      # through filing.search_events for that event.
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [filing.search_events]
+  - id: news.feed_list
+    execution: { kind: remote, binding_key: list_feed_items }
+    permission: read
+    input_contract: krw-feed-list-items-input/v1
+    output_contracts: [krw-feed-list-items-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_list_items_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      require_any_of: [tickers]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: news.feed_context
+    execution: { kind: remote, binding_key: get_feed_context }
+    permission: read
+    # issue_ids must come from a prior news.feed_list result of this run.
+    input_contract: krw-feed-context-input/v2
+    output_contracts: [krw-feed-context/v2, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_context_v2
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
+      require_any_of: [tickers]
+    parallel_safe: false
+    prerequisites: [news.feed_list]
+  - id: news.web_search
+    # Neutral-name, fail-open external headline lookup. The engine brand
+    # never appears in prompts or answers; citations name the original
+    # publisher only. Declared as a remote binding until the typed local
+    # builtin ingest lands; with no deployment binding it stays inert.
+    execution: { kind: remote, binding_key: web_news_search }
+    permission: read
+    input_contract: krw-web-news-search-input/v1
+    output_contracts: [krw-web-news-search-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: front_feed_context_v2
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: skill.load
     execution: { kind: local, builtin: skill_load }
     permission: read
@@ -532,8 +629,9 @@ workflows:
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
       # This is a kernel builtin (not an additional model turn). It must be
       # able to accept every already-advertised evidence-producing read:
-      # query_context x2, targeted query x2, trace, chain, and market x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 7 }
+      # query_context x2, targeted query x2, trace, chain, market x1, and
+      # each of the five event/news ladder reads x1.
+      - { id: ingest_evidence, kind: ingest, max_visits: 12 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # A broad company question can have two independent, material evidence
@@ -546,6 +644,14 @@ workflows:
       # causal/business context. Keep this as a separate bounded capability
       # state so it is advertised only after evidence has been ingested.
       - { id: chain_selected, kind: capability, capability_id: ontology.chain, max_visits: 1 }
+      # Event-premise fallback ladder: filing catalog first, feed news second,
+      # web news last. Each rung is a separately bounded capability state so
+      # it is advertised only from the obligation assessment.
+      - { id: event_filing_search, kind: capability, capability_id: filing.search_events, max_visits: 1 }
+      - { id: event_filing_brief, kind: capability, capability_id: filing.event_brief, max_visits: 1 }
+      - { id: news_feed_lookup, kind: capability, capability_id: news.feed_list, max_visits: 1 }
+      - { id: news_feed_context, kind: capability, capability_id: news.feed_context, max_visits: 1 }
+      - { id: news_web_search, kind: capability, capability_id: news.web_search, max_visits: 1 }
       - { id: compose_ir, kind: compose, role_id: composer, max_visits: 2 }
       - { id: verify_ir, kind: verify, max_visits: 2 }
       - { id: repair_ir, kind: compose, role_id: composer, max_visits: 1 }
@@ -574,6 +680,14 @@ workflows:
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
+      # Event/news ladder rungs. Each edge is the model-selected capability
+      # proposal from the obligation assessment; ordering between rungs is
+      # enforced by the action_limits state_precedes validators below.
+      - { from: assess_obligations, on: filing_search_has_value, to: event_filing_search }
+      - { from: assess_obligations, on: filing_brief_has_value, to: event_filing_brief }
+      - { from: assess_obligations, on: news_lookup_has_value, to: news_feed_lookup }
+      - { from: assess_obligations, on: news_context_has_value, to: news_feed_context }
+      - { from: assess_obligations, on: news_web_has_value, to: news_web_search }
       - { from: assess_obligations, on: append_context_plan, to: query_context }
       - { from: assess_obligations, on: evidence_sufficient, to: compose_ir }
       - { from: assess_obligations, on: no_positive_value_action, to: compose_ir }
@@ -582,6 +696,11 @@ workflows:
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
       - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
+      - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
+      - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
+      - { from: news_feed_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: news_feed_context, on: evidence_observed, to: ingest_evidence }
+      - { from: news_web_search, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }
@@ -867,7 +986,7 @@ answer_policy:
   definitive_rating_forbidden: true
   personalized_instruction_forbidden: true
   raw_internal_ids_visible: false
-  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, chain, MCP, object_id, tool_budget_exceeded, budget exceeded, 도구 호출, 검색 계획, 근거 커버리지]
+  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, chain, MCP, object_id, tool_budget_exceeded, budget exceeded, 도구 호출, 검색 계획, 근거 커버리지, FMP, Yahoo Finance, 야후파이낸스]
 
 security_policy:
   user_and_retrieved_text_untrusted: true
@@ -902,11 +1021,19 @@ validators:
       - { op: max_calls, capability_id: ontology.query_context_universe, max: 2, code: universe_context_limit }
       - { op: max_calls, capability_id: ontology.query_universe, max: 3, code: universe_query_limit }
       - { op: max_calls, capability_id: ontology.trace_universe, max: 2, code: universe_trace_limit }
+      - { op: max_calls, capability_id: filing.search_events, max: 1, code: filing_search_limit }
+      - { op: max_calls, capability_id: filing.event_brief, max: 1, code: filing_brief_limit }
+      - { op: max_calls, capability_id: news.feed_list, max: 1, code: feed_list_limit }
+      - { op: max_calls, capability_id: news.feed_context, max: 1, code: feed_context_limit }
+      - { op: max_calls, capability_id: news.web_search, max: 1, code: web_news_limit }
       - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_targeted_query }
       - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
       - { op: state_precedes, before: query_context, after: chain_selected, code: context_before_chain }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
+      - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }
+      - { op: state_precedes, before: news_feed_lookup, after: news_feed_context, code: list_before_context }
+      - { op: state_precedes, before: news_feed_lookup, after: news_web_search, code: ladder_before_web_news }
   - id: research_state_contract
     phase: post_action
     result_ingest_scope: [research_state_v2]
