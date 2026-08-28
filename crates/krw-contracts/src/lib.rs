@@ -1056,7 +1056,7 @@ fn validate_research_proposal_goal(value: Option<&Value>) -> Result<(), Contract
         "qualitative_evidence" => {
             exact_keys(
                 goal,
-                &["concepts", "kind", "predicates"],
+                &["concepts", "event_premise", "kind", "predicates"],
                 RESEARCH_PROPOSAL_V4,
             )?;
             let concepts = goal
@@ -1074,6 +1074,14 @@ fn validate_research_proposal_goal(value: Option<&Value>) -> Result<(), Contract
             }
             if concepts.is_empty() || (concepts.len() > 1 && predicates.is_empty()) {
                 return Err(ContractValueError::Semantic(RESEARCH_PROPOSAL_V4));
+            }
+            // Optional classification flag: the goal's premise is a specific
+            // corporate event/announcement/report. Absent means false.
+            if goal
+                .get("event_premise")
+                .is_some_and(|value| !value.is_boolean())
+            {
+                return Err(ContractValueError::Shape(RESEARCH_PROPOSAL_V4));
             }
             Ok(())
         }
@@ -1264,7 +1272,7 @@ fn research_proposal_v4_shape_detail(value: &Value) -> Option<ResearchProposalVi
                     &["kind", "metric", "metric_dimensions"]
                 }
                 "metric_change" => &["change", "kind", "metric", "metric_dimensions", "window"],
-                "qualitative_evidence" => &["concepts", "kind", "predicates"],
+                "qualitative_evidence" => &["concepts", "event_premise", "kind", "predicates"],
                 _ => unreachable!("unknown goal kind returned above"),
             };
             if let Some(violation) =
@@ -2104,6 +2112,52 @@ mod tests {
             research_proposal_v4_validation_code(&qualitative),
             "proposal_required_objective_missing"
         );
+    }
+
+    fn qualitative_event_premise_proposal(event_premise: serde_json::Value) -> serde_json::Value {
+        let mut proposal = serde_json::json!({
+            "intent": "company_research",
+            "answer_scope": "direct",
+            "uncertainty": "low",
+            "document_types": ["8-K"],
+            "periods": [],
+            "objectives": [{
+                "priority": "required",
+                "alternatives": [{"terms": ["AAPL", "executive change 8-K"]}],
+                "directness": "direct_required",
+                "object_types": [],
+                "goal": {
+                    "kind": "qualitative_evidence",
+                    "concepts": ["executive change"],
+                    "predicates": ["announced"]
+                }
+            }]
+        });
+        if !event_premise.is_null() {
+            proposal["objectives"][0]["goal"]["event_premise"] = event_premise;
+        }
+        proposal
+    }
+
+    #[test]
+    fn research_proposal_accepts_event_premise_true_on_qualitative_goal() {
+        let proposal = qualitative_event_premise_proposal(serde_json::json!(true));
+        validate_value(RESEARCH_PROPOSAL_V4, &proposal).unwrap();
+    }
+
+    #[test]
+    fn research_proposal_accepts_absent_event_premise_on_qualitative_goal() {
+        let proposal = qualitative_event_premise_proposal(serde_json::Value::Null);
+        validate_value(RESEARCH_PROPOSAL_V4, &proposal).unwrap();
+    }
+
+    #[test]
+    fn research_proposal_rejects_non_boolean_event_premise() {
+        let proposal = qualitative_event_premise_proposal(serde_json::json!("yes"));
+        assert!(matches!(
+            validate_value(RESEARCH_PROPOSAL_V4, &proposal),
+            Err(ContractValueError::Shape(RESEARCH_PROPOSAL_V4))
+        ));
     }
 
     #[test]
