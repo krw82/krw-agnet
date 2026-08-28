@@ -21,6 +21,8 @@ const MAX_SUPPLEMENTAL_RECORDS: usize = 256;
 const MAX_SUPPLEMENTAL_FACTS: usize = 16;
 const MAX_COMPANY_CONTEXT_TOPICS: usize = 8;
 const MAX_MARKET_SNAPSHOT_METRICS: usize = 6;
+const MAX_FILING_EVENT_FACTS: usize = 16;
+const MAX_NEWS_FACTS: usize = 12;
 const MAX_MARKET_METRIC_ABS: f64 = 1.0e18;
 const MAX_RESEARCH_FACTS_PER_RECORD: usize = 128;
 const MAX_RESEARCH_CALCULATIONS: usize = 64;
@@ -2191,7 +2193,7 @@ fn market_snapshot_record(
         strong_claim_allowed: false,
         payload_ref: context.payload_ref.clone(),
         citation: PublicCitation {
-            title: "Timestamped FMP research snapshot (advisory only)".into(),
+            title: "Timestamped market snapshot (advisory only)".into(),
             document_type: Some("market_snapshot".into()),
             period: None,
         },
@@ -2246,6 +2248,438 @@ fn market_currency(value: Option<&Value>) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
+}
+
+/// Sanitized filing-event shape shared by the catalog search and the per-event
+/// brief. The form type is the identity a public citation may carry; every
+/// other field is optional so a sparse catalog row still maps.
+struct FilingEventShape {
+    filing_event_id: Option<String>,
+    form_type: String,
+    filing_date: Option<String>,
+    event_tag: Option<String>,
+    headline: Option<String>,
+    excerpt: Option<String>,
+    sec_items: Vec<String>,
+}
+
+fn filing_event_shape(map: &serde_json::Map<String, Value>) -> Option<FilingEventShape> {
+    let form_type = bounded_optional(map.get("form_type"), 16)?;
+    let excerpt = first_bounded_text(map, &["excerpt", "summary", "fact_ko"], 4096)
+        .or_else(|| {
+            map.get("summary_sentences")
+                .and_then(Value::as_array)
+                .and_then(|sentences| sentences.first())
+                .and_then(|sentence| bounded_optional(Some(sentence), 4096))
+        })
+        .or_else(|| first_bounded_text(map, &["headline_ko"], 4096));
+    Some(FilingEventShape {
+        filing_event_id: bounded_optional(map.get("filing_event_id"), 128),
+        form_type,
+        filing_date: bounded_optional(map.get("filing_date"), 64),
+        event_tag: bounded_optional(map.get("event_tag"), 128),
+        headline: first_bounded_text(map, &["headline", "title"], 512),
+        excerpt,
+        sec_items: map
+            .get("sec_items")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(|item| bounded_optional(Some(item), 32))
+            .collect(),
+    })
+}
+
+/// Map a filing-event catalog search into direct, strong-grade evidence
+/// records. A filing event is issuer-disclosed fact: its record carries the
+/// form type, filing date, SEC item numbers, event tag, and title as bounded
+/// string facts. Citations stay vendor-neutral — the form type names the
+/// document, never the transport that fetched it.
+pub fn map_filing_event_search(
+    payload: &Value,
+    ticker: &str,
+    context: &MappingContext,
+) -> Result<Vec<EvidenceRecord>, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    let items = match payload.get("items") {
+        None => return Ok(Vec::new()),
+        Some(value) => value
+            .as_array()
+            .ok_or(AdapterError::InvalidSupplementalPayload("items"))?,
+    };
+    let mut records = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    for item in items.iter().take(MAX_SUPPLEMENTAL_RECORDS) {
+        let Some(map) = item.as_object() else {
+            continue;
+        };
+        if map.get("ticker").and_then(Value::as_str).is_some_and(|value| value != ticker) {
+            continue;
+        }
+        let Some(shape) = filing_event_shape(map) else {
+            continue;
+        };
+        let record = filing_event_record(&shape, ticker, context)?;
+        if seen_ids.insert(record.evidence_id.clone()) {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+/// Map one filing-event brief into a direct, strong-grade evidence record.
+/// The runtime flattens the brief beside the observed catalog row, so the
+/// excerpt rides the same record as the form type and filing date it belongs
+/// to. A brief without a form type cannot be cited publicly and fails closed.
+pub fn map_filing_event_brief(
+    payload: &Value,
+    ticker: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    let map = payload
+        .as_object()
+        .ok_or(AdapterError::InvalidSupplementalPayload("filing brief"))?;
+    let shape =
+        filing_event_shape(map).ok_or(AdapterError::InvalidSupplementalPayload("filing brief"))?;
+    filing_event_record(&shape, ticker, context)
+}
+
+fn filing_event_record(
+    shape: &FilingEventShape,
+    ticker: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    let fingerprint = serde_json::json!({
+        "kind": "filing-event/v1",
+        "ticker": ticker,
+        "filing_event_id": shape.filing_event_id,
+        "form_type": shape.form_type,
+        "filing_date": shape.filing_date,
+        "event_tag": shape.event_tag,
+        "headline": shape.headline,
+        "excerpt": shape.excerpt,
+        "sec_items": shape.sec_items,
+    });
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(&fingerprint)?);
+    let evidence_id = evidence_id_from_hash("filing-event", &content_hash);
+    let mut facts = vec![filing_fact(
+        ticker,
+        "filing_form_type",
+        Value::String(shape.form_type.clone()),
+        shape.filing_date.clone(),
+    )];
+    if let Some(date) = shape.filing_date.clone() {
+        facts.push(filing_fact(ticker, "filing_date", Value::String(date.clone()), Some(date)));
+    }
+    if let Some(tag) = shape.event_tag.clone() {
+        facts.push(filing_fact(ticker, "filing_event_tag", Value::String(tag), shape.filing_date.clone()));
+    }
+    if let Some(headline) = shape.headline.clone() {
+        facts.push(filing_fact(
+            ticker,
+            "filing_headline",
+            Value::String(headline),
+            shape.filing_date.clone(),
+        ));
+    }
+    if let Some(excerpt) = shape.excerpt.clone() {
+        facts.push(filing_fact(
+            ticker,
+            "filing_excerpt",
+            Value::String(excerpt),
+            shape.filing_date.clone(),
+        ));
+    }
+    for item in &shape.sec_items {
+        facts.push(filing_fact(
+            ticker,
+            "filing_sec_item",
+            Value::String(item.clone()),
+            shape.filing_date.clone(),
+        ));
+    }
+    facts.truncate(MAX_FILING_EVENT_FACTS);
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: evidence_source(context),
+        scope: context.scope.clone(),
+        entity: Some(ticker.to_owned()),
+        period: None,
+        as_of: shape.filing_date.clone(),
+        directness: Directness::Direct,
+        grade: EvidenceGrade::Strong,
+        strong_claim_allowed: true,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: format!("SEC filing event ({})", shape.form_type),
+            document_type: Some(shape.form_type.clone()),
+            period: shape.filing_date.clone(),
+        },
+        facts,
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: shape
+            .filing_event_id
+            .iter()
+            .filter(|id| valid_identifier(id))
+            .cloned()
+            .collect(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
+/// Map one feed issue context into a related, medium-grade evidence record.
+/// Reporting can establish that the market moved; it never upgrades itself
+/// into disclosed fact, so `strong_claim_allowed` stays false and only the
+/// confirmed facts become evidence — unconfirmed observations are dropped at
+/// the boundary instead of riding beside them as if verified.
+pub fn map_feed_issue_context(
+    payload: &Value,
+    ticker: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    let map = payload
+        .as_object()
+        .ok_or(AdapterError::InvalidSupplementalPayload("feed issue"))?;
+    let title = first_bounded_text(map, &["title_ko", "title"], 360)
+        .ok_or(AdapterError::InvalidSupplementalPayload("feed issue title"))?;
+    let published_at = bounded_optional(map.get("published_at"), 64);
+    let confirmed = map
+        .get("confirmed_facts")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(|fact| bounded_optional(Some(fact), 1024))
+        .collect::<Vec<_>>();
+    let fingerprint = serde_json::json!({
+        "kind": "feed-issue/v1",
+        "ticker": ticker,
+        "title": title,
+        "published_at": published_at,
+        "confirmed_facts": confirmed,
+        "market_score": map.get("market_score").and_then(Value::as_f64),
+    });
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(&fingerprint)?);
+    let evidence_id = evidence_id_from_hash("feed-issue", &content_hash);
+    let mut facts = vec![filing_fact(
+        ticker,
+        "issue_title",
+        Value::String(title.clone()),
+        None,
+    )];
+    if let Some(published_at) = published_at.clone() {
+        facts.push(filing_fact(
+            ticker,
+            "issue_published_at",
+            Value::String(published_at),
+            None,
+        ));
+    }
+    if let Some(score) = map
+        .get("market_score")
+        .and_then(Value::as_f64)
+        .filter(|score| score.is_finite() && score.abs() <= MAX_MARKET_METRIC_ABS)
+    {
+        facts.push(filing_fact(
+            ticker,
+            "issue_market_score",
+            Value::from(score),
+            None,
+        ));
+    }
+    for fact in &confirmed {
+        facts.push(filing_fact(
+            ticker,
+            "confirmed_reported_fact",
+            Value::String(fact.clone()),
+            None,
+        ));
+    }
+    facts.truncate(MAX_NEWS_FACTS);
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: evidence_source(context),
+        scope: context.scope.clone(),
+        entity: Some(ticker.to_owned()),
+        period: None,
+        as_of: published_at,
+        directness: Directness::Related,
+        grade: EvidenceGrade::Medium,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: safe_single_line(&format!("Market issue report: {title}"), 512, ""),
+            document_type: Some("news_report".into()),
+            period: None,
+        },
+        facts,
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: map
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_identifier(id))
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
+/// Map an external web news lookup into related, medium-grade evidence
+/// records, one per item. The lookup is the last rung of the fallback ladder
+/// and its engine brand must never reach a citation: titles name the original
+/// publisher and headline only. Items without a headline carry nothing a
+/// reader could verify, so they are skipped rather than cited.
+pub fn map_web_news(
+    payload: &Value,
+    ticker: &str,
+    context: &MappingContext,
+) -> Result<Vec<EvidenceRecord>, AdapterError> {
+    validate_supplemental_payload(payload)?;
+    let items = match payload.get("items") {
+        None => return Ok(Vec::new()),
+        Some(value) => value
+            .as_array()
+            .ok_or(AdapterError::InvalidSupplementalPayload("items"))?,
+    };
+    let mut records = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    for item in items.iter().take(MAX_SUPPLEMENTAL_RECORDS) {
+        let Some(map) = item.as_object() else {
+            continue;
+        };
+        let Some(headline) = first_bounded_text(map, &["headline", "title"], 512) else {
+            continue;
+        };
+        let publisher = bounded_optional(map.get("publisher"), 128);
+        let published_at = bounded_optional(map.get("published_at"), 64);
+        let summary = bounded_optional(map.get("summary"), 2048);
+        let fingerprint = serde_json::json!({
+            "kind": "web-news/v1",
+            "ticker": ticker,
+            "headline": headline,
+            "publisher": publisher,
+            "published_at": published_at,
+            "summary": summary,
+        });
+        let content_hash = ContentHash::sha256(serde_jcs::to_vec(&fingerprint)?);
+        let evidence_id = evidence_id_from_hash("web-news", &content_hash);
+        let citation_title = match publisher.as_deref() {
+            Some(publisher) => format!("{publisher}: {headline}"),
+            None => headline.clone(),
+        };
+        let mut facts = vec![filing_fact(
+            ticker,
+            "news_headline",
+            Value::String(headline),
+            None,
+        )];
+        if let Some(publisher) = publisher.clone() {
+            facts.push(filing_fact(
+                ticker,
+                "news_publisher",
+                Value::String(publisher),
+                None,
+            ));
+        }
+        if let Some(published_at) = published_at.clone() {
+            facts.push(filing_fact(
+                ticker,
+                "news_published_at",
+                Value::String(published_at),
+                None,
+            ));
+        }
+        if let Some(summary) = summary.clone() {
+            facts.push(filing_fact(ticker, "news_summary", Value::String(summary), None));
+        }
+        facts.truncate(MAX_NEWS_FACTS);
+        let record = EvidenceRecord {
+            evidence_id,
+            content_hash,
+            source: evidence_source(context),
+            scope: context.scope.clone(),
+            entity: Some(ticker.to_owned()),
+            period: None,
+            as_of: published_at,
+            directness: Directness::Related,
+            grade: EvidenceGrade::Medium,
+            strong_claim_allowed: false,
+            payload_ref: context.payload_ref.clone(),
+            citation: PublicCitation {
+                title: safe_single_line(&citation_title, 512, ""),
+                document_type: Some("news_report".into()),
+                period: None,
+            },
+            facts,
+            supports: Vec::new(),
+            refutes: Vec::new(),
+            qualifies: Vec::new(),
+            source_object_ids: Vec::new(),
+        };
+        if seen_ids.insert(record.evidence_id.clone()) {
+            ensure_record_bound(&record)?;
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+fn evidence_source(context: &MappingContext) -> EvidenceSource {
+    EvidenceSource {
+        capability_id: context.capability_id.clone(),
+        action_key: context.action_key.clone(),
+        server_build: context.server_build.clone(),
+        normalized_contract_hash: context.normalized_contract_hash.clone(),
+        server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+        data_release_hash: context.data_release_hash.clone(),
+    }
+}
+
+fn evidence_id_from_hash(prefix: &str, content_hash: &ContentHash) -> String {
+    format!(
+        "{prefix}:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    )
+}
+
+fn filing_fact(
+    ticker: &str,
+    predicate: &str,
+    value: Value,
+    period: Option<String>,
+) -> NormalizedFact {
+    NormalizedFact {
+        subject: ticker.to_owned(),
+        predicate: predicate.into(),
+        value,
+        unit: None,
+        period,
+    }
+}
+
+fn first_bounded_text(
+    map: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    max_bytes: usize,
+) -> Option<String> {
+    fields
+        .iter()
+        .find_map(|field| bounded_optional(map.get(*field), max_bytes))
 }
 
 fn unavailable_company_context(expected_ticker: &str) -> CompanyContextDelta {
@@ -3496,6 +3930,229 @@ mod tests {
         assert_eq!(delta.provider_content["status"], "unavailable");
         assert_eq!(delta.provider_content["metrics"], serde_json::json!({}));
         assert!(delta.records.is_empty());
+    }
+
+    #[test]
+    fn filing_event_search_maps_lrcx_8k_as_direct_strong_evidence() {
+        let payload = serde_json::json!({
+            "items": [{
+                "filing_event_id": "lrcx-20260827-8k",
+                "form_type": "8-K",
+                "filing_date": "2026-08-27",
+                "sec_items": ["5.02"],
+                "event_tag": "leadership_or_board_change",
+                "title": "Director departures"
+            }]
+        });
+        let records =
+            map_filing_event_search(&payload, "LRCX", &context("filing.search_events")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].directness, Directness::Direct);
+        assert_eq!(records[0].grade, EvidenceGrade::Strong);
+        assert!(records[0].strong_claim_allowed);
+        let cited = format!("{:?}", records[0].citation.title);
+        assert!(cited.contains("8-K"));
+        assert!(!cited.contains("FMP") && !cited.contains("Yahoo"));
+        EvidenceLedger::from_records(records).unwrap();
+    }
+
+    #[test]
+    fn filing_brief_maps_brief_excerpt_as_direct() {
+        let payload = serde_json::json!({
+            "filing_event_id": "lrcx-20260827-8k",
+            "form_type": "8-K",
+            "filing_date": "2026-08-27",
+            "sec_items": ["5.02"],
+            "headline": "Lam Research Corporation director departures",
+            "excerpt": "On August 25, 2026, two directors notified the board of their resignations, effective immediately."
+        });
+        let record =
+            map_filing_event_brief(&payload, "LRCX", &context("filing.event_brief")).unwrap();
+        assert_eq!(record.directness, Directness::Direct);
+        assert_eq!(record.grade, EvidenceGrade::Strong);
+        assert!(record.strong_claim_allowed);
+        let cited = format!("{:?}", record.citation.title);
+        assert!(cited.contains("8-K"));
+        assert!(!cited.contains("FMP") && !cited.contains("Yahoo"));
+        assert!(record.facts.iter().any(|fact| fact.predicate == "filing_excerpt"
+            && fact
+                .value
+                .as_str()
+                .is_some_and(|text| text.contains("directors"))));
+        EvidenceLedger::from_records(vec![record]).unwrap();
+    }
+
+    #[test]
+    fn feed_context_maps_confirmed_facts_as_related_medium() {
+        let payload = serde_json::json!({
+            "id": "0b914cf0-0a3e-4b57-8b2e-9e2d53a41f02",
+            "title_ko": "엔비디아 실적 호조에도 메모리 주식 동반 하락",
+            "summary_ko": "엔비디아의 호조 실적 발표에도 메모리 섹터 주식이 동반 하락했습니다.",
+            "confirmed_facts": [
+                "마이크론은 2.0% 하락한 187.20달러로 마감했습니다.",
+                "SK하이닉스는 1.8% 하락했습니다.",
+                "산디스크는 3.1% 하락했습니다."
+            ],
+            "unconfirmed_facts": ["일부 기관의 매도 관측"],
+            "published_at": "2026-08-27T02:10:00Z"
+        });
+        let record =
+            map_feed_issue_context(&payload, "NVDA", &context("news.feed_context")).unwrap();
+        assert_eq!(record.directness, Directness::Related);
+        assert_eq!(record.grade, EvidenceGrade::Medium);
+        assert!(!record.strong_claim_allowed);
+        let cited = format!("{:?}", record.citation.title);
+        assert!(cited.contains("엔비디아 실적 호조에도 메모리 주식 동반 하락"));
+        assert!(!cited.contains("FMP") && !cited.contains("Yahoo"));
+        assert_eq!(
+            record
+                .facts
+                .iter()
+                .filter(|fact| fact.predicate == "confirmed_reported_fact")
+                .count(),
+            3
+        );
+        assert!(record.facts.iter().all(|fact| fact.value.as_str()
+            != Some("일부 기관의 매도 관측")));
+        EvidenceLedger::from_records(vec![record]).unwrap();
+    }
+
+    #[test]
+    fn web_news_maps_publisher_items_as_related_medium() {
+        let payload = serde_json::json!({
+            "items": [
+                {
+                    "headline": "Lam Research says two directors resigned from board",
+                    "publisher": "Reuters",
+                    "published_at": "2026-08-27T12:03:00Z",
+                    "url": "https://example.com/lrcx-directors",
+                    "summary": "Lam Research disclosed the departures in a regulatory filing."
+                },
+                {
+                    "headline": "Memory stocks fall despite Nvidia beat",
+                    "published_at": "2026-08-27T13:00:00Z"
+                }
+            ]
+        });
+        let records = map_web_news(&payload, "LRCX", &context("news.web_search")).unwrap();
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert_eq!(record.directness, Directness::Related);
+            assert_eq!(record.grade, EvidenceGrade::Medium);
+            assert!(!record.strong_claim_allowed);
+        }
+        assert!(records[0].citation.title.contains("Reuters"));
+        assert!(records[0]
+            .facts
+            .iter()
+            .any(|fact| fact.predicate == "news_publisher"));
+        EvidenceLedger::from_records(records).unwrap();
+    }
+
+    #[test]
+    fn web_news_citations_never_expose_vendor() {
+        let news = map_web_news(
+            &serde_json::json!({
+                "items": [{
+                    "headline": "Lam Research director changes",
+                    "publisher": "Reuters",
+                    "published_at": "2026-08-27T12:03:00Z"
+                }]
+            }),
+            "LRCX",
+            &context("news.web_search"),
+        )
+        .unwrap();
+        let mut records = news;
+        records.extend(map_filing_event_search(
+            &serde_json::json!({
+                "items": [{
+                    "filing_event_id": "lrcx-20260827-8k",
+                    "form_type": "8-K",
+                    "filing_date": "2026-08-27",
+                    "sec_items": ["5.02"],
+                    "event_tag": "leadership_or_board_change",
+                    "title": "Director departures"
+                }]
+            }),
+            "LRCX",
+            &context("filing.search_events"),
+        )
+        .unwrap());
+        records.push(
+            map_feed_issue_context(
+                &serde_json::json!({
+                    "title_ko": "엔비디아 실적 호조에도 메모리 주식 동반 하락",
+                    "confirmed_facts": ["마이크론은 2.0% 하락했습니다."],
+                    "published_at": "2026-08-27T02:10:00Z"
+                }),
+                "NVDA",
+                &context("news.feed_context"),
+            )
+            .unwrap(),
+        );
+        assert_eq!(records.len(), 3);
+        for record in &records {
+            let cited = format!("{:?}", record.citation);
+            assert!(!cited.contains("FMP"), "vendor leaked: {cited}");
+            assert!(!cited.contains("Yahoo"), "vendor leaked: {cited}");
+        }
+    }
+
+    #[test]
+    fn filing_and_news_fact_caps_truncate_instead_of_erroring() {
+        let filing_search = map_filing_event_search(
+            &serde_json::json!({
+                "items": [{
+                    "filing_event_id": "lrcx-20260827-8k",
+                    "form_type": "8-K",
+                    "filing_date": "2026-08-27",
+                    "event_tag": "leadership_or_board_change",
+                    "title": "Director departures",
+                    "sec_items": (0..40).map(|index| format!("5.{index:02}")).collect::<Vec<_>>()
+                }]
+            }),
+            "LRCX",
+            &context("filing.search_events"),
+        )
+        .unwrap();
+        assert_eq!(filing_search.len(), 1);
+        assert_eq!(filing_search[0].facts.len(), MAX_FILING_EVENT_FACTS);
+
+        let feed_issue = map_feed_issue_context(
+            &serde_json::json!({
+                "title_ko": "엔비디아 실적 호조에도 메모리 주식 동반 하락",
+                "published_at": "2026-08-27T02:10:00Z",
+                "confirmed_facts": (0..20)
+                    .map(|index| format!("확정 팩트 {index}"))
+                    .collect::<Vec<_>>()
+            }),
+            "NVDA",
+            &context("news.feed_context"),
+        )
+        .unwrap();
+        assert_eq!(feed_issue.facts.len(), MAX_NEWS_FACTS);
+
+        let web_news = map_web_news(
+            &serde_json::json!({
+                "items": (0..300)
+                    .map(|index| {
+                        serde_json::json!({
+                            "headline": format!("Headline {index}"),
+                            "publisher": "Reuters",
+                            "published_at": "2026-08-27T12:03:00Z"
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            "LRCX",
+            &context("news.web_search"),
+        )
+        .unwrap();
+        assert_eq!(web_news.len(), MAX_SUPPLEMENTAL_RECORDS);
+        assert!(web_news
+            .iter()
+            .all(|record| record.facts.len() <= MAX_NEWS_FACTS));
     }
 
     #[test]
