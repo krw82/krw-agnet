@@ -82,6 +82,14 @@ contracts:
     schema_ref: canonical:krw-agent/market-snapshot-request-v1
     content_hash: sha256:3bc99711dff7ab052a7c43177b05bf65fe4e706d8a5509eb8573425eacfe8425
     semantic_authority: krw-agent-market-router
+  - id: market-series-request/v1
+    schema_ref: canonical:krw-agent/market-series-request-v1
+    content_hash: sha256:0bd37520778b3825a2af019ce39cfee57fcbaa23fc0dde345c55b514af4f021b
+    semantic_authority: krw-agent-market-router
+  - id: macro-series-request/v1
+    schema_ref: canonical:krw-agent/macro-series-request-v1
+    content_hash: sha256:7f64997070484801b60b899977692a0ddfa8125a5ea97e08dd38889169f5e0dc
+    semantic_authority: krw-agent-market-router
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -398,6 +406,40 @@ capabilities:
       require_any_of: [ticker]
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # Observation-plane series reads over the immutable observation store. Like
+  # the snapshot they are advisory_only research context: the result is never
+  # filing evidence and never supports a target price or recommendation. They
+  # carry no research_action policy for the same reason as the snapshot: the
+  # planner's action kinds are closed to the canonical query/trace surfaces.
+  - id: market.series
+    execution: { kind: remote, binding_key: krw_market_series }
+    permission: read
+    # One already trusted ticker plus one canonical metric id. The kernel owns
+    # the store/cache policy, so this cannot become an arbitrary fetch surface.
+    input_contract: market-series-request/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: market_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: macro.series
+    execution: { kind: remote, binding_key: krw_macro_series }
+    permission: read
+    # Macro indicator series are not company-scoped: the model names only a
+    # canonical metric id and a bounded limit, so no ticker scope exists to
+    # bind. The kernel-owned metric allowlist keeps the read bounded.
+    input_contract: macro-series-request/v1
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: macro_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
@@ -631,11 +673,17 @@ workflows:
       - { id: repair_server_violations, kind: plan, role_id: planner, max_visits: 1 }
       # This is a kernel builtin (not an additional model turn). It must be
       # able to accept every already-advertised evidence-producing read:
-      # query_context x2, targeted query x2, trace, chain, market x1, and
-      # each of the five event/news ladder reads x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 12 }
+      # query_context x2, targeted query x2, trace, chain, market x1, each
+      # of the five event/news ladder reads x1, and the two observation
+      # series lookups x1.
+      - { id: ingest_evidence, kind: ingest, max_visits: 14 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
+      # Observation-plane series lookups (advisory market/macro backdrop).
+      # Each lookup is one bounded read; action_limits still allows two calls
+      # per capability as a second validator layer below the state bound.
+      - { id: market_series_lookup, kind: capability, capability_id: market.series, max_visits: 1 }
+      - { id: macro_series_lookup, kind: capability, capability_id: macro.series, max_visits: 1 }
       # A broad company question can have two independent, material evidence
       # gaps (for example, revenue mix and cash conversion). The analyst may
       # still stop after zero or one query; this only leaves room for a second
@@ -679,6 +727,8 @@ workflows:
       - { from: ingest_evidence, on: ingested, to: assess_obligations }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: assess_obligations, on: market_snapshot_has_value, to: market_snapshot }
+      - { from: assess_obligations, on: market_series_has_value, to: market_series_lookup }
+      - { from: assess_obligations, on: macro_series_has_value, to: macro_series_lookup }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
@@ -698,6 +748,8 @@ workflows:
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
       - { from: chain_selected, on: evidence_observed, to: ingest_evidence }
       - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
+      - { from: market_series_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: macro_series_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
       - { from: news_feed_lookup, on: evidence_observed, to: ingest_evidence }
@@ -1017,6 +1069,8 @@ validators:
       - { op: max_calls, capability_id: ontology.query_context, max: 2, code: query_context_limit }
       - { op: max_calls, capability_id: ontology.company_context, max: 1, code: company_context_limit }
       - { op: max_calls, capability_id: market.snapshot, max: 1, code: market_snapshot_limit }
+      - { op: max_calls, capability_id: market.series, max: 2, code: market_series_limit }
+      - { op: max_calls, capability_id: macro.series, max: 2, code: macro_series_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
@@ -1031,6 +1085,8 @@ validators:
       - { op: state_precedes, before: query_context, after: targeted_query, code: context_before_targeted_query }
       - { op: state_precedes, before: query_context, after: trace_selected, code: context_before_trace }
       - { op: state_precedes, before: query_context, after: chain_selected, code: context_before_chain }
+      - { op: state_precedes, before: query_context, after: market_series_lookup, code: context_before_market_series }
+      - { op: state_precedes, before: query_context, after: macro_series_lookup, code: context_before_macro_series }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
       - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }

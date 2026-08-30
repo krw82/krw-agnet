@@ -1754,8 +1754,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            10,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four more physical bindings"
+            12,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four and the observation series tools two more physical bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1787,7 +1787,115 @@ mod tests {
         .expect("local skill.load must not depend on a physical MCP deployment binding");
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
-        assert_eq!(runtime.physical_binding_count(), 10);
+        assert_eq!(runtime.physical_binding_count(), 12);
+    }
+
+    /// The observation series bindings are held to the same fail-closed
+    /// deployment contract as every other physical tool: dropping any
+    /// required field must reject the whole binding document at load time.
+    #[test]
+    fn observation_series_bindings_fail_closed_on_missing_required_fields() {
+        let text = fs::read_to_string(
+            root().join("deployments/local/deployment-binding.krw-ontology.example.yaml"),
+        )
+        .unwrap();
+        for binding_key in ["krw_market_series", "krw_macro_series"] {
+            for required_field in [
+                "mcp_tool_name",
+                "endpoint_ref",
+                "tool_session_reuse",
+                "server_schema_bundle_hash",
+                "server_build",
+                "data_release_hash",
+                "max_connections",
+                "request_timeout_ms",
+            ] {
+                let mut in_block = false;
+                let mut removed = false;
+                let doctored = text
+                    .lines()
+                    .filter(|line| {
+                        if line.starts_with("  - binding_key: ") {
+                            in_block = line == &format!("  - binding_key: {binding_key}");
+                            return true;
+                        }
+                        if in_block && line.starts_with("  - binding_key: ") {
+                            in_block = false;
+                        }
+                        if in_block && line.trim_start().starts_with(required_field) {
+                            removed = true;
+                            return false;
+                        }
+                        true
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    removed,
+                    "fixture must still contain {binding_key}.{required_field}"
+                );
+                assert!(
+                    serde_yaml_ng::from_str::<DeploymentBinding>(&doctored).is_err(),
+                    "{binding_key} without {required_field} must fail closed at load time"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn observation_series_bindings_resolve_and_are_mandatory_for_the_image() {
+        let (image, binding, registry, budget, endpoints, _request, secrets) = fixture();
+
+        let runtime = resolve_runtime(
+            &image,
+            &binding,
+            &registry,
+            &budget,
+            &endpoints,
+            &secrets,
+            ValidationMode::Fixture,
+        )
+        .unwrap();
+        for capability_id in ["market.series", "macro.series"] {
+            let resolved = runtime
+                .capabilities
+                .get(capability_id)
+                .expect("observation series capability must resolve a physical binding");
+            assert_eq!(resolved.binding.endpoint_ref, "krw-ontology-local");
+            assert_eq!(resolved.binding.server_build, "fixture");
+        }
+
+        let mut missing_series = binding.clone();
+        missing_series
+            .capabilities
+            .retain(|capability| capability.binding_key != "krw_market_series");
+        assert!(matches!(
+            resolve_runtime(
+                &image,
+                &missing_series,
+                &registry,
+                &budget,
+                &endpoints,
+                &secrets,
+                ValidationMode::Fixture,
+            ),
+            Err(ConfigError::MissingBindingKey(key)) if key == "krw_market_series"
+        ));
+
+        let mut degenerate = binding.clone();
+        binding_mut(&mut degenerate, "krw_macro_series").max_connections = 0;
+        assert!(matches!(
+            resolve_runtime(
+                &image,
+                &degenerate,
+                &registry,
+                &budget,
+                &endpoints,
+                &secrets,
+                ValidationMode::Fixture,
+            ),
+            Err(ConfigError::InvalidCapabilityBinding(key)) if key == "krw_macro_series"
+        ));
     }
 
     #[test]

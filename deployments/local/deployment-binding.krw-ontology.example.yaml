@@ -34,6 +34,33 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 2
     request_timeout_ms: 10000
+  # Observation-plane series tools over the same capabilityd endpoint. Unlike
+  # the older bindings above, these pin the reviewed 30-tool schema-bundle ABI
+  # (B5: sha256:e0ed0b62...) instead of the zero placeholder: a future tool
+  # surface change must fail closed here until this pin is re-reviewed. The
+  # stack startup script substitutes only the zero-hash placeholders.
+  - binding_key: krw_market_series
+    mcp_tool_name: krw_market_series
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:e0ed0b62b6c7ed98d168fe0a0f03c95099f7a2f2a0e2e13e50aac86e3d6da095
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 10000
+  - binding_key: krw_macro_series
+    mcp_tool_name: krw_macro_series
+    endpoint_ref: krw-ontology-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:e0ed0b62b6c7ed98d168fe0a0f03c95099f7a2f2a0e2e13e50aac86e3d6da095
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 10000
   - binding_key: krw_ontology_query
     mcp_tool_name: krw_ontology_query
     endpoint_ref: krw-ontology-local

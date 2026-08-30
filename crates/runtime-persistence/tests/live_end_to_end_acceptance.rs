@@ -98,17 +98,36 @@ fn live_ontology_binding(root: &Path) -> DeploymentBinding {
     let schema_hash = required_hash("KRW_LIVE_MCP_TOOL_SCHEMA_SHA256");
     let release_hash = required_hash("KRW_LIVE_MCP_RELEASE_MANIFEST_SHA256");
     let server_build = required("KRW_LIVE_MCP_SERVER_BUILD");
-    assert_eq!(binding.capabilities.len(), 6);
+    // Only the krw-ontology-local tools receive the sealed capabilityd
+    // identity. The template also carries the front-read ladder bindings
+    // (feed/filings endpoints), which this live path does not substitute.
+    let ontology_bindings: Vec<&str> = binding
+        .capabilities
+        .iter()
+        .filter(|capability| capability.endpoint_ref == "krw-ontology-local")
+        .map(|capability| capability.binding_key.as_str())
+        .collect();
+    assert_eq!(
+        ontology_bindings,
+        vec![
+            "krw_ontology_query_context",
+            "krw_ontology_company_context",
+            "krw_market_snapshot",
+            "krw_market_series",
+            "krw_macro_series",
+            "krw_ontology_query",
+            "krw_ontology_trace",
+            "krw_ontology_chain",
+            "krw_guru_query_context",
+            "krw_guru_company_brief",
+            "krw_guru_review_company_evidence",
+        ],
+        "the live template must expose exactly the sealed ontology endpoint tools"
+    );
     for capability in &mut binding.capabilities {
-        assert!(matches!(
-            capability.binding_key.as_str(),
-            "krw_ontology_query_context"
-                | "krw_ontology_company_context"
-                | "krw_market_snapshot"
-                | "krw_ontology_query"
-                | "krw_ontology_trace"
-                | "krw_ontology_chain"
-        ));
+        if capability.endpoint_ref != "krw-ontology-local" {
+            continue;
+        }
         capability.server_schema_bundle_hash = schema_hash.clone();
         capability.data_release_hash = release_hash.clone();
         capability.server_build.clone_from(&server_build);

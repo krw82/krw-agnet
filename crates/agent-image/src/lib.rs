@@ -5002,6 +5002,166 @@ mod tests {
         assert!(!text.to_lowercase().contains("credential_ref"));
     }
 
+    /// The observation series lookups mirror the market snapshot wiring: one
+    /// bounded capability state reachable only from the obligation
+    /// assessment, gated behind query_context by both the capability
+    /// prerequisites and the action_limits state_precedes validator.
+    #[test]
+    fn observation_series_lookup_states_are_wired_into_company_research() {
+        let image = compile_agent_dir(agent_root()).unwrap().manifest;
+        let workflow = image
+            .body
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "company_research_v2")
+            .unwrap();
+
+        let market_capability = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "market.series")
+            .expect("market.series capability");
+        assert_eq!(
+            market_capability.prerequisites,
+            vec!["ontology.query_context"]
+        );
+        assert_eq!(
+            market_capability.result_ingest,
+            CapabilityResultIngest::MarketSeriesV1
+        );
+        let macro_capability = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "macro.series")
+            .expect("macro.series capability");
+        assert_eq!(
+            macro_capability.prerequisites,
+            vec!["ontology.query_context"]
+        );
+        assert_eq!(
+            macro_capability.result_ingest,
+            CapabilityResultIngest::MacroSeriesV1
+        );
+
+        for (state_id, capability_id) in [
+            ("market_series_lookup", "market.series"),
+            ("macro_series_lookup", "macro.series"),
+        ] {
+            let state = workflow
+                .states
+                .iter()
+                .find(|state| state.stable_id == state_id)
+                .expect("observation series lookup state");
+            assert_eq!(state.capability_id.as_deref(), Some(capability_id));
+            assert!(matches!(
+                &state.operation,
+                StateOperation::CapabilityAction { capability_id, .. }
+                    if capability_id == state.capability_id.as_deref().unwrap()
+            ));
+            assert_eq!(state.max_visits, 1);
+            let stable = |id: &str| {
+                workflow
+                    .states
+                    .iter()
+                    .find(|state| state.stable_id == id)
+                    .unwrap()
+                    .numeric_id
+            };
+            let event = format!("{}_has_value", state_id.strip_suffix("_lookup").unwrap());
+            assert!(
+                workflow.transitions.iter().any(|transition| {
+                    transition.from == stable("assess_obligations")
+                        && transition.to == state.numeric_id
+                        && transition.event == event
+                }),
+                "assess_obligations must expose the {event} edge to {state_id}"
+            );
+            assert!(workflow.transitions.iter().any(|transition| {
+                transition.from == state.numeric_id
+                    && transition.to == stable("ingest_evidence")
+                    && transition.event == "evidence_observed"
+            }));
+        }
+
+        // Every advertised read must fit the ingest builtin's visit budget.
+        let ingest = workflow
+            .states
+            .iter()
+            .find(|state| state.stable_id == "ingest_evidence")
+            .unwrap();
+        let ingest_source_visits: u16 = workflow
+            .transitions
+            .iter()
+            .filter(|transition| {
+                transition.to == ingest.numeric_id && transition.event == "evidence_observed"
+            })
+            .map(|transition| {
+                workflow
+                    .states
+                    .iter()
+                    .find(|state| state.numeric_id == transition.from)
+                    .unwrap()
+                    .max_visits
+            })
+            .sum();
+        assert!(ingest.max_visits >= ingest_source_visits);
+    }
+
+    /// The pre_action action_limits program is the second, graph-independent
+    /// bound: a third market.series call in one run must be rejected even if
+    /// a future workflow revision raised the state visit bound.
+    #[test]
+    fn action_limits_reject_a_third_observation_series_call() {
+        let image = compile_agent_dir(agent_root()).unwrap().manifest;
+        let program = image
+            .body
+            .validators
+            .iter()
+            .find(|program| program.id == "action_limits")
+            .expect("action_limits program");
+        assert_eq!(program.phase, RulePhase::PreAction);
+
+        let macro_calls = |count: u64| {
+            serde_json::json!({
+                "usage": {"capability_calls": {"market.series": count, "macro.series": 2}},
+                "state_trace": ["accepted", "author_plan", "query_context",
+                                 "ingest_evidence", "assess_obligations",
+                                 "market_series_lookup", "ingest_evidence",
+                                 "assess_obligations"],
+            })
+        };
+        let allowed = evaluate_rule_program(program, &macro_calls(2)).unwrap();
+        assert!(
+            allowed.violations.is_empty(),
+            "two observation calls per capability stay within the declared ceiling: {:?}",
+            allowed.violations
+        );
+        let rejected = evaluate_rule_program(program, &macro_calls(3)).unwrap();
+        assert!(
+            rejected
+                .violations
+                .iter()
+                .any(|violation| violation.code == "market_series_limit"),
+            "a third market.series call must violate the pre_action limit"
+        );
+
+        let no_context = serde_json::json!({
+            "usage": {"capability_calls": {"market.series": 1}},
+            "state_trace": ["accepted", "author_plan", "assess_obligations",
+                             "macro_series_lookup"],
+        });
+        let gated = evaluate_rule_program(program, &no_context).unwrap();
+        assert!(
+            gated
+                .violations
+                .iter()
+                .any(|violation| violation.code == "context_before_macro_series"),
+            "a macro series lookup before query_context must violate the ladder gate"
+        );
+    }
+
     #[test]
     fn loader_verifies_and_shares_every_prompt_blob() {
         let image = compile_agent_dir(agent_root()).unwrap();

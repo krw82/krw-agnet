@@ -67,7 +67,7 @@ done
 # pin.  The data-release hash is supplied by the caller, rather than copied
 # into this script: accepting whatever `current` happens to point at would
 # defeat the immutable-release admission this test is meant to prove.
-readonly krw_expected_tool_schema_sha256=sha256:66517f6128c616225ef6d961344dc63440d73b30d121baf0485b3d33f720679b
+readonly krw_expected_tool_schema_sha256=sha256:e0ed0b62b6c7ed98d168fe0a0f03c95099f7a2f2a0e2e13e50aac86e3d6da095
 krw_ontology_release_pointer=${KRW_LIVE_ONTOLOGY_RELEASE_ROOT:-~/krw-ontology-data/releases/prod/current}
 krw_expected_release_manifest_sha256=${KRW_LIVE_EXPECTED_RELEASE_MANIFEST_SHA256:-}
 [[ "$krw_ontology_release_pointer" == /* ]] || {

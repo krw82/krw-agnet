@@ -1751,7 +1751,17 @@ impl PooledMcpCapabilityRuntime {
         let pool_scope = self.pool_scope.clone();
         let front_state = Arc::clone(&self.front_state);
         let guru_state = Arc::clone(&self.guru_state);
-        let captures_presentation = matches!(descriptor.mapping, EvidenceMapping::ResearchStateV2);
+        // Presentation packs ride the private `_meta` channel of the same
+        // tools/call envelope as the research result. Retention is mapping-
+        // gated so only results whose presentation the compiler understands
+        // reach the ledger: the ResearchState sidecar charts and the
+        // observation series packs (monthly market/macro points).
+        let captures_presentation = matches!(
+            descriptor.mapping,
+            EvidenceMapping::ResearchStateV2
+                | EvidenceMapping::MarketSeriesV1
+                | EvidenceMapping::MacroSeriesV1
+        );
         let (mut result, pending_hash, presentation) = self
             .cpu_work
             .execute(DeliveryCertainty::MayHaveDispatched, move || {
@@ -3071,6 +3081,133 @@ mod tests {
         assert_eq!(packs.len(), 1, "only the _meta pack is retained");
         assert_eq!(packs[0]["schema_version"], 2);
         assert_eq!(packs[0]["series"][0]["basis"], "consolidated");
+    }
+
+    fn valid_market_series_payload() -> Value {
+        serde_json::json!({
+            "format": "market-series/v1",
+            "ticker": "SO",
+            "canonical_metric": "last_price",
+            "unit": "usd",
+            "currency": "USD",
+            "status": "available",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": "2026-08-09",
+            "points": [
+                {"date": "2026-08-07", "value": 100.5, "observation_id": "obs:aa11"},
+                {"date": "2026-08-08", "value": 101.5, "observation_id": "obs:aa22"},
+                {"date": "2026-08-09", "value": 102.25, "observation_id": "obs:aa33"}
+            ]
+        })
+    }
+
+    fn valid_macro_series_payload() -> Value {
+        serde_json::json!({
+            "format": "macro-series/v1",
+            "series_key": "seed:cpi.yoy",
+            "canonical_metric": "cpi_yoy",
+            "unit": "percent",
+            "frequency": "monthly",
+            "factor": 1.0,
+            "status": "available",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": "2026-07",
+            "points": [
+                {"date": "2026-05", "value": 2.9, "observation_id": "obs:bb11"},
+                {"date": "2026-06", "value": 3.0, "observation_id": "obs:bb22"},
+                {"date": "2026-07", "value": 3.1, "observation_id": "obs:bb33"}
+            ]
+        })
+    }
+
+    fn monthly_observation_pack(series_key: &str, ticker: Option<&str>) -> Value {
+        let points = (0..6)
+            .map(|index| {
+                serde_json::json!({
+                    "period": format!("2026-{:02}", index + 1),
+                    "value": 100.0 + index as f64,
+                    "observation_id": format!("obs:series-{index}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut series = serde_json::json!({
+            "series_key": series_key,
+            "mode": "observation_series",
+            "points": points
+        });
+        if let Some(ticker) = ticker {
+            series["ticker"] = serde_json::json!(ticker);
+        }
+        serde_json::json!({
+            "schema_version": 2,
+            "mode": "observation_series",
+            "series": [series]
+        })
+    }
+
+    #[tokio::test]
+    async fn observation_series_presentation_packs_are_retained_for_both_series_mappings() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let market_payload = valid_market_series_payload();
+        let macro_payload = valid_macro_series_payload();
+        let transport = FakeTransport::new([
+            envelope_with_meta(
+                &market_payload,
+                serde_json::json!({
+                    "com.krwontology/presentationSeries":
+                        monthly_observation_pack("seed:SO:last_price", Some("SO"))
+                }),
+            ),
+            envelope_with_meta(
+                &macro_payload,
+                serde_json::json!({
+                    "com.krwontology/presentationSeries":
+                        monthly_observation_pack("seed:cpi_yoy", None)
+                }),
+            ),
+        ]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
+
+        let market = runtime
+            .invoke(&invocation(
+                &catalog,
+                "market.series",
+                serde_json::json!({"ticker": "SO", "metric": "last_price"}),
+            ))
+            .await
+            .expect("market series with presentation pack");
+        assert!(!market.evidence.is_empty(), "market series mapping is unchanged");
+        assert!(
+            market.presentation.is_some(),
+            "the authoritative result channel carries the pack for the compiler"
+        );
+        let macro_result = runtime
+            .invoke(&invocation(
+                &catalog,
+                "macro.series",
+                serde_json::json!({"metric": "cpi_yoy"}),
+            ))
+            .await
+            .expect("macro series with presentation pack");
+        assert!(
+            !macro_result.evidence.is_empty(),
+            "macro series mapping is unchanged"
+        );
+        assert!(
+            macro_result.presentation.is_some(),
+            "the authoritative result channel carries the pack for the compiler"
+        );
+
+        let packs = runtime.presentation_packs();
+        assert_eq!(packs.len(), 2, "both observation packs are retained");
+        assert_eq!(packs[0]["mode"], "observation_series");
+        assert_eq!(packs[1]["mode"], "observation_series");
     }
 
     #[tokio::test]
