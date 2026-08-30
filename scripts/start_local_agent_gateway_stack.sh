@@ -12,6 +12,14 @@ set -euo pipefail
 krw_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 krw_state=${KRW_AGENT_LOCAL_STATE_DIR:-"$krw_root/.local/agent-gateway"}
 krw_release_root=${KRW_AGENT_LOCAL_ONTOLOGY_RELEASE_ROOT:-~/krw-ontology-data/releases/prod/current}
+# Ontology admission env for the capability sidecar. The default keeps the
+# production `env/current` pointer contract; a dev-env release (manifest
+# `env: dev`, no current symlink) is served by exporting KRW_ONTOLOGY_ENV=dev.
+krw_ontology_env=${KRW_ONTOLOGY_ENV:-prod}
+case "$krw_ontology_env" in
+  dev|staging|prod) ;;
+  *) printf 'KRW_ONTOLOGY_ENV must be dev, staging, or prod\n' >&2; exit 2 ;;
+esac
 krw_database_mode=${KRW_AGENT_DATABASE_MODE:-local}
 krw_postgres_lifecycle=${KRW_AGENT_POSTGRES_LIFECYCLE:-persistent}
 krw_supabase_project_dir=${KRW_AGENT_SUPABASE_PROJECT_DIR:-}
@@ -241,7 +249,7 @@ fi
 read -r krw_build krw_schema_hash krw_release_hash < <(
   (
     cd "$krw_root/services/krw-ontology-runtime"
-    KRW_ONTOLOGY_ENV=prod KRW_ONTOLOGY_RELEASE_ROOT="$krw_release_root" uv run krw-capabilityd --print-identity
+    KRW_ONTOLOGY_ENV="$krw_ontology_env" KRW_ONTOLOGY_RELEASE_ROOT="$krw_release_root" uv run krw-capabilityd --print-identity
   ) | python3 -c '
 import json, sys
 value = json.load(sys.stdin)
@@ -375,7 +383,7 @@ PY
 
 (
   cd "$krw_root/services/krw-ontology-runtime"
-  KRW_ONTOLOGY_ENV=prod KRW_ONTOLOGY_RELEASE_ROOT="$krw_release_root" \
+  KRW_ONTOLOGY_ENV="$krw_ontology_env" KRW_ONTOLOGY_RELEASE_ROOT="$krw_release_root" \
   KRW_CAPABILITYD_HOST=127.0.0.1 KRW_CAPABILITYD_PORT="$krw_capability_port" \
   KRW_CAPABILITYD_EXPECTED_BUILD_ID="$krw_build" \
   KRW_CAPABILITYD_EXPECTED_TOOL_SCHEMA_SHA256="$krw_schema_hash" \

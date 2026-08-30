@@ -102,12 +102,12 @@ from krw_capability_runtime.agent_index.spine_schema import (
     write_global_spine_metadata,
 )
 
-COMPANY_SHARD_SCHEMA_VERSION = "krw-ontology-company-shard/v2"
+COMPANY_SHARD_SCHEMA_VERSION = "krw-ontology-company-shard/v3"
 COMPANY_SHARD_CACHE_FORMAT_VERSION = "krw-ontology-company-shard-cache/v4"
 SPINE_FRAGMENT_CACHE_FORMAT_VERSION = "krw-ontology-spine-fragment-cache/v8"
 GLOBAL_SPINE_CACHE_FORMAT_VERSION = "krw-ontology-global-spine-cache/v1"
 SPINE_FRAGMENT_FORMAT_VERSION = "krw-ontology-spine-fragment/v3"
-SPINE_PROJECTION_VERSION = "spine-projection/v6"
+SPINE_PROJECTION_VERSION = "spine-projection/v7"
 V3_BUILD_SUMMARY_FORMAT_VERSION = "krw-ontology-v3-build-summary/v1"
 V3_BUILD_PLAN_FORMAT_VERSION = "krw-ontology-v3-build-plan/v1"
 V3_BUILD_PROGRESS_FORMAT_VERSION = "krw-ontology-v3-build-progress/v1"
