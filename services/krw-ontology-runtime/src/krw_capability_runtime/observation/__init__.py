@@ -26,6 +26,7 @@ from krw_capability_runtime.observation.seed import (
 from krw_capability_runtime.observation.store import (
     OBSERVATIONS_BUILDER_VERSION,
     OBSERVATIONS_SCHEMA_VERSION,
+    ObservationPoint,
     ObservationsStore,
     verify_observations_schema,
 )

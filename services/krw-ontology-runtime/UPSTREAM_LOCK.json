@@ -1,5 +1,6 @@
 {
-  "format_version": 1,
+  "format_version": 2,
+  "generated_at": "2026-08-30T16:44:01Z",
   "source": {
     "repository": "~/krw-ontology-v2/krw-ontology",
     "commit": "0cdc12200f6478bf71e373c6ab820137d1dff676",
@@ -78,6 +79,505 @@
     "ontology/sector_packs/generic.yaml",
     "ontology/taxonomy/factors.yaml",
     "ontology/taxonomy/sector_expectations.yaml"
+  ],
+  "files": [
+    {
+      "path": "src/krw_ontology/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/__init__.py",
+      "upstream_sha256": "sha256:4327264426d6dcca59415b0f96bbadae25a36135ac1b8ac9b16b3767ffc62c2a",
+      "runtime_sha256": "sha256:4327264426d6dcca59415b0f96bbadae25a36135ac1b8ac9b16b3767ffc62c2a",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/__init__.py",
+      "upstream_sha256": "sha256:087e0e35bd0b0a175bd88aecf28b6bc49e637f9d8a13317f28d43adcae6c2f1d",
+      "runtime_sha256": "sha256:188dbcec090e671db612016ddd27c2c6bce4413571e766801bcfd7427a0eaf33",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/builder.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/builder.py",
+      "upstream_sha256": "sha256:25694f61aee94cbc7c952a3ea059d2e4eb40442c071b6cdffac5ea3b07efeabd",
+      "runtime_sha256": "sha256:b05b5eb2f35e62e3768e97ac208ab49e7348d7044d5bff0dc4e3433ee424147d",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/cache_seal.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/cache_seal.py",
+      "upstream_sha256": "sha256:4a2f892e43b0388ebce5ee4a2da4938194d519a31b54324457368b28db6bb73c",
+      "runtime_sha256": "sha256:4a2f892e43b0388ebce5ee4a2da4938194d519a31b54324457368b28db6bb73c",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/chart_series.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/chart_series.py",
+      "upstream_sha256": "sha256:c938098ae24fc3a555dab1e28cd3e9809d3f34438da5a40b0dd5252a0526957f",
+      "runtime_sha256": "sha256:b373cfa22587a12aeebc2e5f8ba7af304974e72a254490196f8d85b2c1271347",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/cross_company_links.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/cross_company_links.py",
+      "upstream_sha256": "sha256:0171be00ad1da1fdb7bd8648a2dcd5d906e418347ad482caefc576d3f868bf29",
+      "runtime_sha256": "sha256:0171be00ad1da1fdb7bd8648a2dcd5d906e418347ad482caefc576d3f868bf29",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/discovery.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/discovery.py",
+      "upstream_sha256": "sha256:3830a4bdd8b441bfd7fa3ea8b84317e7ce79020709cd875fb55a9eb782420ff0",
+      "runtime_sha256": "sha256:3830a4bdd8b441bfd7fa3ea8b84317e7ce79020709cd875fb55a9eb782420ff0",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/metric_dictionary.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/metric_dictionary.py",
+      "upstream_sha256": "sha256:2e674e8b2cb72e1cf913ad10bd49c223261a3b14b6feb5cc81120c2d8794ca8a",
+      "runtime_sha256": "sha256:f2e94fe490bcc56245b6b45622e63e5119b92d0fac18f6b556db290e4b79b6ea",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/research_budget.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/research_budget.py",
+      "upstream_sha256": "sha256:19c3319c9a969211e428e5efb5cfcdf9d18b125aeaa7d8948208a81473ad4f2e",
+      "runtime_sha256": "sha256:19c3319c9a969211e428e5efb5cfcdf9d18b125aeaa7d8948208a81473ad4f2e",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/research_contexts.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/research_contexts.py",
+      "upstream_sha256": "sha256:f9303b27e48b664bd0f37a46301e2872c018ed1ed33902640be1c39fcac8585b",
+      "runtime_sha256": "sha256:f9303b27e48b664bd0f37a46301e2872c018ed1ed33902640be1c39fcac8585b",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/research_kernel.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/research_kernel.py",
+      "upstream_sha256": "sha256:9afec8ee45abe57d5b94fb9f565afca8257877509a2804f8b02d5403e9fdeb8a",
+      "runtime_sha256": "sha256:26d0d0ed370163d84abf6a40b1089d8dfaae7d031cef876ccd2eba4719eac35b",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/research_router.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/research_router.py",
+      "upstream_sha256": "sha256:eb2bdc084f1f601b9d1dd45aa8007f8ed78ef7704f3bb524f1a9ee2b07163b13",
+      "runtime_sha256": "sha256:eb2bdc084f1f601b9d1dd45aa8007f8ed78ef7704f3bb524f1a9ee2b07163b13",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/research_types.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/research_types.py",
+      "upstream_sha256": "sha256:1866049053bf00b06619370f96d9efad481bb046c0dc6d1fca087d58218e8291",
+      "runtime_sha256": "sha256:1866049053bf00b06619370f96d9efad481bb046c0dc6d1fca087d58218e8291",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/retrieval_text.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/retrieval_text.py",
+      "upstream_sha256": "sha256:67e94cf4c3ebefc58df27f7b491cbb59aadf7d47e6d1468226b4b3fd39393a62",
+      "runtime_sha256": "sha256:67e94cf4c3ebefc58df27f7b491cbb59aadf7d47e6d1468226b4b3fd39393a62",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/retriever.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/retriever.py",
+      "upstream_sha256": "sha256:82d36ccb6fe9b60f8a5bb19c5afd6e10b06e387f3b9f5f33e8d4f59f5b5ebd2f",
+      "runtime_sha256": "sha256:82d36ccb6fe9b60f8a5bb19c5afd6e10b06e387f3b9f5f33e8d4f59f5b5ebd2f",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/router.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/router.py",
+      "upstream_sha256": "sha256:c8f93c5b679e53fd8ec362f8274d5caf2d42bb57ad37c3777e4e81bd18d54323",
+      "runtime_sha256": "sha256:c8f93c5b679e53fd8ec362f8274d5caf2d42bb57ad37c3777e4e81bd18d54323",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/router_cache.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/router_cache.py",
+      "upstream_sha256": "sha256:25d9cee4b6fcf42bd8aec4f6fe63a2c1b98e45389f18d313ff3a219efb526777",
+      "runtime_sha256": "sha256:25d9cee4b6fcf42bd8aec4f6fe63a2c1b98e45389f18d313ff3a219efb526777",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/router_coherence.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/router_coherence.py",
+      "upstream_sha256": "sha256:5059e37844d8913677c66a408c690bf9a4a3a86456057cf246aa43fdc3ebdb57",
+      "runtime_sha256": "sha256:7e8e2d6af6b991599b18d32031cc37540970e72d040bd3f819aa89e3ae958d9a",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/router_sidecar.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/router_sidecar.py",
+      "upstream_sha256": "sha256:f586ae35825e2b50382699683f5300583cdab4cfcdc6e48758dff4c4aa48a3ff",
+      "runtime_sha256": "sha256:6cff9f84b9b820324153d26129390995bb681ceba8e7647339fccf81b3e77f17",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/semantic_identity.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/semantic_identity.py",
+      "upstream_sha256": "sha256:d6850ff4f56b7d676748119fca5f18b4b923faa83936c0850b3dd04bbbc0c50d",
+      "runtime_sha256": "sha256:d6850ff4f56b7d676748119fca5f18b4b923faa83936c0850b3dd04bbbc0c50d",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/source_artifact_sqlite.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/source_artifact_sqlite.py",
+      "upstream_sha256": "sha256:43ec5b67037a4d8a9156ff2987975806b7d0a3fa90c09f2a5f55158749683047",
+      "runtime_sha256": "sha256:43ec5b67037a4d8a9156ff2987975806b7d0a3fa90c09f2a5f55158749683047",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/spine_builder.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/spine_builder.py",
+      "upstream_sha256": "sha256:77b7935c9e78e3e1eb71934543ad307dabe69b001fae1900fbec3deb65c40e2e",
+      "runtime_sha256": "sha256:60733c158e4d8f2681422433505aa46c8a3039e53fcd03555bb4e95f0ea18762",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/spine_preflight.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/spine_preflight.py",
+      "upstream_sha256": "sha256:4e567531aaa608c162db36e4c9b36670a63710372b026f974518b79a69c61a36",
+      "runtime_sha256": "sha256:4e567531aaa608c162db36e4c9b36670a63710372b026f974518b79a69c61a36",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/spine_router.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/spine_router.py",
+      "upstream_sha256": "sha256:dd0b55692594f38bb2d908759d47c062b4247d310f401870a83af40b35391666",
+      "runtime_sha256": "sha256:2680c2c34431511324db16726d9d37d801cb42e5c32680c7ec4d77663e7079e9",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/spine_schema.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/spine_schema.py",
+      "upstream_sha256": "sha256:314eb68748a0ea3d16d5e0cdf35299798346dc5e0ff94957495f92aaff2265bf",
+      "runtime_sha256": "sha256:314eb68748a0ea3d16d5e0cdf35299798346dc5e0ff94957495f92aaff2265bf",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/agent_index/spine_verify.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/spine_verify.py",
+      "upstream_sha256": "sha256:3b53747e807a366e43f817eb5519b44318be48d066e6b473ed6937d54cbaf3ac",
+      "runtime_sha256": "sha256:5451e8fffe92edcce7860e0f92239784d55755d327fc912180f5fe62088195a0",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/agent_index/store.py",
+      "runtime_path": "src/krw_capability_runtime/agent_index/store.py",
+      "upstream_sha256": "sha256:614717515e2861e00a4daf0f6402f81a6db453720807deb0749588d5e522d41e",
+      "runtime_sha256": "sha256:8e291a2f0a2e533e7d7f01e7a9c358b6d5e7e8ee0aa5f82a38cff5f6067fe846",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/config/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/config/__init__.py",
+      "upstream_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/config/constants.py",
+      "runtime_path": "src/krw_capability_runtime/config/constants.py",
+      "upstream_sha256": "sha256:7533d35c3fe7342122c841f0df8dd79f2169f4499425ab58810f50d14fac16f1",
+      "runtime_sha256": "sha256:7533d35c3fe7342122c841f0df8dd79f2169f4499425ab58810f50d14fac16f1",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/config/paths.py",
+      "runtime_path": "src/krw_capability_runtime/config/paths.py",
+      "upstream_sha256": "sha256:c96ec8f26b090928fef8b740ea7210db20e41740a4f27df7a062c4c013a2f637",
+      "runtime_sha256": "sha256:c96ec8f26b090928fef8b740ea7210db20e41740a4f27df7a062c4c013a2f637",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/guru/__init__.py",
+      "upstream_sha256": "sha256:e7549236233adab20e4c32c0e5c5ab53af8a41d8969c934da98f613296cccc8d",
+      "runtime_sha256": "sha256:e7549236233adab20e4c32c0e5c5ab53af8a41d8969c934da98f613296cccc8d",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/company_bridge.py",
+      "runtime_path": "src/krw_capability_runtime/guru/company_bridge.py",
+      "upstream_sha256": "sha256:824f4593bad8cfd2c931f4e629c66d8be7ccace605c47d951394d3826757b196",
+      "runtime_sha256": "sha256:824f4593bad8cfd2c931f4e629c66d8be7ccace605c47d951394d3826757b196",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/company_context.py",
+      "runtime_path": "src/krw_capability_runtime/guru/company_context.py",
+      "upstream_sha256": "sha256:c34770f332fde208214d2ed2f3a539da0ca0067bbefb7040ab3768f7bcd83c9e",
+      "runtime_sha256": "sha256:c34770f332fde208214d2ed2f3a539da0ca0067bbefb7040ab3768f7bcd83c9e",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/context_taxonomy.json",
+      "runtime_path": "src/krw_capability_runtime/guru/context_taxonomy.json",
+      "upstream_sha256": "sha256:97122c583046dedefb88f7c5ee791dc9ab73c3d6f50aa5378b8c6efba0bf2b47",
+      "runtime_sha256": "sha256:97122c583046dedefb88f7c5ee791dc9ab73c3d6f50aa5378b8c6efba0bf2b47",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/context_taxonomy.py",
+      "runtime_path": "src/krw_capability_runtime/guru/context_taxonomy.py",
+      "upstream_sha256": "sha256:f3de474a6ba4f937606a9294d1643599fab9b9951bcc74c939d1bfc63d12daaf",
+      "runtime_sha256": "sha256:f3de474a6ba4f937606a9294d1643599fab9b9951bcc74c939d1bfc63d12daaf",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/index.py",
+      "runtime_path": "src/krw_capability_runtime/guru/index.py",
+      "upstream_sha256": "sha256:814bbd551d8fdefec0065454a9a3e477c1c9963e5603026057c9ab61bf599052",
+      "runtime_sha256": "sha256:814bbd551d8fdefec0065454a9a3e477c1c9963e5603026057c9ab61bf599052",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/lens_selector.py",
+      "runtime_path": "src/krw_capability_runtime/guru/lens_selector.py",
+      "upstream_sha256": "sha256:6f5521aa084adc1eaf3e7a5a5a83fe82e918359c35babb226168787248ac1937",
+      "runtime_sha256": "sha256:6f5521aa084adc1eaf3e7a5a5a83fe82e918359c35babb226168787248ac1937",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/mcp_tools.py",
+      "runtime_path": "src/krw_capability_runtime/guru/mcp_tools.py",
+      "upstream_sha256": "sha256:44e05c126546a04cf3464090bc9d4fb410ff2858d90557139bdb5b5c218f25a3",
+      "runtime_sha256": "sha256:0ab1b3b0bf27be4bef0225e7cf360705c8425953c5306ade78d887c214c036a6",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/guru/models.py",
+      "runtime_path": "src/krw_capability_runtime/guru/models.py",
+      "upstream_sha256": "sha256:10c330398e2836ccc7b8ffe79c9c3ec5cd7766d4f40c1251199e77818b9b97ba",
+      "runtime_sha256": "sha256:10c330398e2836ccc7b8ffe79c9c3ec5cd7766d4f40c1251199e77818b9b97ba",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/planner.py",
+      "runtime_path": "src/krw_capability_runtime/guru/planner.py",
+      "upstream_sha256": "sha256:a6c745f8e9ae9e14747f0540f6e8c261842f07efcffc3456837160c8854cbc63",
+      "runtime_sha256": "sha256:a6c745f8e9ae9e14747f0540f6e8c261842f07efcffc3456837160c8854cbc63",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/renderer.py",
+      "runtime_path": "src/krw_capability_runtime/guru/renderer.py",
+      "upstream_sha256": "sha256:f0974bcac20eb61f6ccaa967108b3cc2289f9882207d0413cb74d352f600e1c0",
+      "runtime_sha256": "sha256:f0974bcac20eb61f6ccaa967108b3cc2289f9882207d0413cb74d352f600e1c0",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/sources.py",
+      "runtime_path": "src/krw_capability_runtime/guru/sources.py",
+      "upstream_sha256": "sha256:4098eeb6622525bc9012eaf04ec0c5bb5b7a94f7c28290fd1570a6476fbc6024",
+      "runtime_sha256": "sha256:4098eeb6622525bc9012eaf04ec0c5bb5b7a94f7c28290fd1570a6476fbc6024",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/guru/workspace.py",
+      "runtime_path": "src/krw_capability_runtime/guru/workspace.py",
+      "upstream_sha256": "sha256:b89aa1d67e68804f5253b237aca56dc8be0e9c3224edd4e0be12894459864540",
+      "runtime_sha256": "sha256:b89aa1d67e68804f5253b237aca56dc8be0e9c3224edd4e0be12894459864540",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/mcp_server/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/mcp_server/__init__.py",
+      "upstream_sha256": "sha256:d4b576ec21f621833e51dde0b46802c56cc60287f4b2a3a847205b2f019323ee",
+      "runtime_sha256": "sha256:d4b576ec21f621833e51dde0b46802c56cc60287f4b2a3a847205b2f019323ee",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/mcp_server/contracts.py",
+      "runtime_path": "src/krw_capability_runtime/mcp_server/contracts.py",
+      "upstream_sha256": "sha256:97f98db76582631e1e48dbdd67af5654de9ed5bf1ac1eef9c9d960ca150b3834",
+      "runtime_sha256": "sha256:3fb5aa3dbc844b2c1ab16e2448eed31677ffde78d8bcaf5c5a4d56115a2b4bde",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/mcp_server/evidence_pack.py",
+      "runtime_path": "src/krw_capability_runtime/mcp_server/evidence_pack.py",
+      "upstream_sha256": "sha256:a22044959e07a2cb86c3196aaf54f5fe8961bb00de68dbcc1a58ce5da99b789f",
+      "runtime_sha256": "sha256:a22044959e07a2cb86c3196aaf54f5fe8961bb00de68dbcc1a58ce5da99b789f",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/mcp_server/runtime.py",
+      "runtime_path": "src/krw_capability_runtime/mcp_server/runtime.py",
+      "upstream_sha256": "sha256:23f61ae2c4b7eceaa28f6010ea1f4faca085afad91b0bb33ed1f50c4c23c2578",
+      "runtime_sha256": "sha256:f31c3228c76fc1c013b6385273202b382960e6cf6473ae6b615e8137bc2218c3",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/mcp_server/tools.py",
+      "runtime_path": "src/krw_capability_runtime/mcp_server/tools.py",
+      "upstream_sha256": "sha256:eb900dd998599732d98f4b758808f8eb01cebed12d06eb4c761bb9c3b116c5ca",
+      "runtime_sha256": "sha256:b97a80133c92af5a36a99aa3a76a0de0eaf66f53ca13669c86ac02344f73dae5",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/observation/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/observation/__init__.py",
+      "upstream_sha256": "sha256:9fc5d229d1098bf750353015b6b597304b774dd576e14170ad288d215af449c5",
+      "runtime_sha256": "sha256:c8fe1e0fb6511195e25f8e79588bb05afa9ce4ebea218b0ae7602b509caf04d9",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/observation/ports.py",
+      "runtime_path": "src/krw_capability_runtime/observation/ports.py",
+      "upstream_sha256": "sha256:61d4417ddd7a82e8c943b7eed082c6fb7e4535e37886fedac2c45a952c55ede3",
+      "runtime_sha256": "sha256:61d4417ddd7a82e8c943b7eed082c6fb7e4535e37886fedac2c45a952c55ede3",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/observation/seed.py",
+      "runtime_path": "src/krw_capability_runtime/observation/seed.py",
+      "upstream_sha256": "sha256:9635d2895c13496cfc9fed9b8336938a2c3bf66341c4f0e3e6fc36ab56b0d1a9",
+      "runtime_sha256": "sha256:237ee175859e61941e9a3e1aa77551b89ff52cfb4d21dbc45e158e97e6144a03",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/observation/store.py",
+      "runtime_path": "src/krw_capability_runtime/observation/store.py",
+      "upstream_sha256": "sha256:b708cc5c4238fdfd845aa0e16b9dd7329868614997ce1e6f65dbf8492bbc069b",
+      "runtime_sha256": "sha256:b708cc5c4238fdfd845aa0e16b9dd7329868614997ce1e6f65dbf8492bbc069b",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/release.py",
+      "runtime_path": "src/krw_capability_runtime/release.py",
+      "upstream_sha256": "sha256:500d90c3b8eb1b35225fe74cb1ed6cef59cc90bb4def36c6b89fdf959afde008",
+      "runtime_sha256": "sha256:00bd9dcf5a4d8438d1b3673d8bde9751341554d3b428c3b423930634e586a35a",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/schema/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/schema/__init__.py",
+      "upstream_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/schema/objects.py",
+      "runtime_path": "src/krw_capability_runtime/schema/objects.py",
+      "upstream_sha256": "sha256:48403d8cac69dd51fd4070835356559d82e59538b3211d09717624d80ab4acce",
+      "runtime_sha256": "sha256:430547225420485792a25b485cd3240de1e02144c94338f2480a98f459e32ab4",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/utils/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/utils/__init__.py",
+      "upstream_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "runtime_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/utils/io.py",
+      "runtime_path": "src/krw_capability_runtime/utils/io.py",
+      "upstream_sha256": "sha256:397d99d7b5beb916a3c65795e757e42a4020a8c2dee28241765d8ad71c13e850",
+      "runtime_sha256": "sha256:397d99d7b5beb916a3c65795e757e42a4020a8c2dee28241765d8ad71c13e850",
+      "diverged": false
+    },
+    {
+      "path": "src/krw_ontology/validators/__init__.py",
+      "runtime_path": "src/krw_capability_runtime/validators/__init__.py",
+      "upstream_sha256": "sha256:2af02a2ed39627b578b60e783b5a372286fdbaf0b1894df761ee0e070253d7c4",
+      "runtime_sha256": "sha256:fc0699dfd60cddab4dc635a977b9914fa3b133b005843317a8dc8aac52ed6b86",
+      "diverged": true
+    },
+    {
+      "path": "src/krw_ontology/validators/metric_validator.py",
+      "runtime_path": "src/krw_capability_runtime/validators/metric_validator.py",
+      "upstream_sha256": "sha256:af6b18a7e9bf9476aaef9bd00afd0d56f6ee708180e34dd8619959e0c4e34a06",
+      "runtime_sha256": "sha256:4414c47c79a28edd7f7265c63c3108de039f8524bd41994407e86200b6b70622",
+      "diverged": true
+    },
+    {
+      "path": "ontology/observation/series_seed.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/observation/series_seed.yaml",
+      "upstream_sha256": "sha256:fbb7357c61c931a2dbbb4865c5264778030a62b58763f77e57f6b79cff9cb999",
+      "runtime_sha256": "sha256:fbb7357c61c931a2dbbb4865c5264778030a62b58763f77e57f6b79cff9cb999",
+      "diverged": false
+    },
+    {
+      "path": "ontology/registry.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/registry.yaml",
+      "upstream_sha256": "sha256:ee6b31130d8d7093f002dd95ad59d024f3d391d9038ec41832fda45dcd83b0b3",
+      "runtime_sha256": "sha256:ee6b31130d8d7093f002dd95ad59d024f3d391d9038ec41832fda45dcd83b0b3",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/claim_types.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/claim_types.yaml",
+      "upstream_sha256": "sha256:48d9759bcb9db0d7aea8884c33b1b23b7626021f120455f779ed88827df4c315",
+      "runtime_sha256": "sha256:48d9759bcb9db0d7aea8884c33b1b23b7626021f120455f779ed88827df4c315",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/language_signals.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/language_signals.yaml",
+      "upstream_sha256": "sha256:f1e61acb730cbeca98ecf5a290726d6740fda2f0c293bfc3e0dcd22b55eb5e86",
+      "runtime_sha256": "sha256:f1e61acb730cbeca98ecf5a290726d6740fda2f0c293bfc3e0dcd22b55eb5e86",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/metric_dictionary.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/metric_dictionary.yaml",
+      "upstream_sha256": "sha256:ffc8f3c1aebfc1f92e7a3f434da379e937a5dbb83f4e84bc499efe95c452a01b",
+      "runtime_sha256": "sha256:ffc8f3c1aebfc1f92e7a3f434da379e937a5dbb83f4e84bc499efe95c452a01b",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/quote_types.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/quote_types.yaml",
+      "upstream_sha256": "sha256:ada20fe1389d656e16834409a26b2b19a6222c404b2c3589d4d1de17614c3cc5",
+      "runtime_sha256": "sha256:ada20fe1389d656e16834409a26b2b19a6222c404b2c3589d4d1de17614c3cc5",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/relations.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/relations.yaml",
+      "upstream_sha256": "sha256:1b72a9035d9e841d5209e500dff3d74bf2ad406e1b7abf15c83114636e71f140",
+      "runtime_sha256": "sha256:1b72a9035d9e841d5209e500dff3d74bf2ad406e1b7abf15c83114636e71f140",
+      "diverged": false
+    },
+    {
+      "path": "ontology/schema/risk_categories.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/schema/risk_categories.yaml",
+      "upstream_sha256": "sha256:e43fb5f24671c51331b1d525f453470057ef781efc4d7f13c59575adb4ab6e63",
+      "runtime_sha256": "sha256:e43fb5f24671c51331b1d525f453470057ef781efc4d7f13c59575adb4ab6e63",
+      "diverged": false
+    },
+    {
+      "path": "ontology/sector_packs/energy_lng.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/sector_packs/energy_lng.yaml",
+      "upstream_sha256": "sha256:f778c4db0652fc615aec78d86f3cbb9a36b2e0b0796d63be3b2a36edb3f9e1b8",
+      "runtime_sha256": "sha256:f778c4db0652fc615aec78d86f3cbb9a36b2e0b0796d63be3b2a36edb3f9e1b8",
+      "diverged": false
+    },
+    {
+      "path": "ontology/sector_packs/generic.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/sector_packs/generic.yaml",
+      "upstream_sha256": "sha256:51467ce0512cf3adbf516817454c14b1144989b6457175701c72107bdeace506",
+      "runtime_sha256": "sha256:51467ce0512cf3adbf516817454c14b1144989b6457175701c72107bdeace506",
+      "diverged": false
+    },
+    {
+      "path": "ontology/taxonomy/factors.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/taxonomy/factors.yaml",
+      "upstream_sha256": "sha256:72953f64fec157422c144a3144cb68672491cb4e34a4d043a371cc08663bed56",
+      "runtime_sha256": "sha256:72953f64fec157422c144a3144cb68672491cb4e34a4d043a371cc08663bed56",
+      "diverged": false
+    },
+    {
+      "path": "ontology/taxonomy/sector_expectations.yaml",
+      "runtime_path": "src/krw_capability_runtime/resources/ontology/taxonomy/sector_expectations.yaml",
+      "upstream_sha256": "sha256:3c0fe0ae2ddd857c3b4ada97bf287e5deb31f304bbf23d8322d6142e8c8e38cb",
+      "runtime_sha256": "sha256:3c0fe0ae2ddd857c3b4ada97bf287e5deb31f304bbf23d8322d6142e8c8e38cb",
+      "diverged": false
+    }
   ],
   "excluded_paths": [
     "src/krw_ontology/agent_index/claude_sdk.py",

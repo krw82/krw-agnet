@@ -153,24 +153,27 @@ def _unavailable_series_payload(
     }
 
 
-def _assert_doctrine_invariants(payload: dict[str, Any], *, allowed_tokens: frozenset[str]) -> None:
+# Top-level payload keys that echo caller-validated request input verbatim.
+_ECHO_FIELDS = ("ticker", "canonical_metric")
+
+
+def _assert_doctrine_invariants(payload: dict[str, Any]) -> None:
     """Fail closed when a served payload breaks the observation doctrine.
 
-    ``allowed_tokens`` carries the caller-validated canonical ticker in
-    lowercase: a legitimate ticker that happens to spell a transport name
-    (``FRED``) is requested input, not a vendor leak.
+    The vendor-token scan covers every store-derived value. The ``ticker``
+    and ``canonical_metric`` keys are excluded: they echo the request
+    verbatim after Pydantic validation, so a canonical ticker or metric id
+    that happens to spell a transport name (``FRED``, ``fmp_last_price``) is
+    the caller's own input, never a vendor leak.
     """
 
     if payload.get("advisory_only") is not True:
         raise RuntimeError("observation payload must stay advisory_only")
     if payload.get("source_usage") != SOURCE_USAGE_RESEARCH_ONLY:
         raise RuntimeError("observation payload must stay research_only")
-    canonical = _canonical_json(payload).lower()
-    leaked = sorted(
-        token
-        for token in _FORBIDDEN_VENDOR_TOKENS
-        if token in canonical and token not in allowed_tokens
-    )
+    scanned = {key: value for key, value in payload.items() if key not in _ECHO_FIELDS}
+    canonical = _canonical_json(scanned).lower()
+    leaked = sorted(token for token in _FORBIDDEN_VENDOR_TOKENS if token in canonical)
     if leaked:
         raise RuntimeError(
             f"observation payload leaked internal collection identifiers: {leaked}"
@@ -196,7 +199,7 @@ def market_series_tool(ticker: str, metric: str, periods: int = MAX_MARKET_PERIO
             ticker=request.ticker,
             canonical_metric=request.metric,
         )
-    _assert_doctrine_invariants(payload, allowed_tokens=frozenset({request.ticker.lower()}))
+    _assert_doctrine_invariants(payload)
     return payload
 
 
@@ -211,7 +214,7 @@ def macro_series_tool(metric: str, limit: int = _MAX_MACRO_LIMIT) -> dict[str, A
         payload = query_macro_series(path, request.metric, request.limit)
     except sqlite3.Error:
         return _unavailable_series_payload(MACRO_SERIES_FORMAT, canonical_metric=request.metric)
-    _assert_doctrine_invariants(payload, allowed_tokens=frozenset())
+    _assert_doctrine_invariants(payload)
     return payload
 
 

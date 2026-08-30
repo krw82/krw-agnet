@@ -258,6 +258,25 @@ def test_unknown_series_is_no_data_and_never_an_error(fake_release: Path) -> Non
     assert macro["advisory_only"] is True
 
 
+def test_metric_request_echo_never_trips_the_vendor_guard(fake_release: Path) -> None:
+    """A caller-validated metric id that spells a transport name is echoed
+    input, not a vendor leak: both tools must answer no_data, not raise."""
+
+    market = market_series_tool(ticker="SO", metric="fmp_last_price", periods=5)
+    macro = macro_series_tool(metric="fred_gdp", limit=5)
+
+    assert market["format"] == MARKET_SERIES_FORMAT
+    assert market["status"] == "no_data"
+    assert market["canonical_metric"] == "fmp_last_price"
+    assert market["points"] == []
+    assert market["advisory_only"] is True
+    assert macro["format"] == MACRO_SERIES_FORMAT
+    assert macro["status"] == "no_data"
+    assert macro["canonical_metric"] == "fred_gdp"
+    assert macro["points"] == []
+    assert macro["advisory_only"] is True
+
+
 def test_absent_store_serves_unavailable_without_raising(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
