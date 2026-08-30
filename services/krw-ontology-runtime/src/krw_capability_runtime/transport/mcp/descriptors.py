@@ -34,6 +34,13 @@ from krw_capability_runtime.mcp_server.contracts import (
     SearchPlan,
     validate_query_context_search_plan,
 )
+from krw_capability_runtime.observation.tools import (
+    MacroSeriesRequest,
+    MarketSeriesRequest,
+    macro_series_tool,
+    market_series_tool,
+    observation_presentation_pack,
+)
 
 JsonObject = dict[str, Any]
 Handler = Callable[..., Any]
@@ -191,8 +198,8 @@ class CapabilityRegistry:
                 )
             by_name[descriptor.mcp_tool_name] = descriptor
             by_logical_id[descriptor.logical_capability_id] = descriptor
-        if len(by_name) != 28:
-            raise ValueError(f"expected 28 read capabilities, found {len(by_name)}")
+        if len(by_name) != 30:
+            raise ValueError(f"expected 30 read capabilities, found {len(by_name)}")
         self._by_name = by_name
         self._by_logical_id = by_logical_id
 
@@ -505,8 +512,75 @@ def _market_snapshot_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
     )
 
 
+def _observation_series_outcome(payload: Mapping[str, Any]) -> DispatchOutcome:
+    """Serve one observation series plus its private chart-ready ``_meta`` pack."""
+
+    meta_pack = observation_presentation_pack(dict(payload))
+    meta = {PRESENTATION_META_KEY: meta_pack} if meta_pack is not None else None
+    return DispatchOutcome(
+        text=_canonical_json(payload),
+        structured_content=dict(payload),
+        meta=meta,
+    )
+
+
+def _market_series_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
+    """Register the advisory market-series reader over the observation store."""
+
+    async def handler(decoded: DecodedInput) -> DispatchOutcome:
+        assert isinstance(decoded, MarketSeriesRequest)
+        value = await runtime_lanes.invoke(
+            CapabilityLane.BROAD,
+            market_series_tool,
+            decoded.model_dump(mode="python"),
+        )
+        return _observation_series_outcome(value)
+
+    return ToolDescriptor(
+        logical_capability_id="market.series",
+        mcp_tool_name="krw_market_series",
+        title="Return bounded market observation series",
+        description=(
+            "Return the latest-vintage advisory price or valuation series for one "
+            "ticker from the immutable observation store; research context only, "
+            "never filing evidence."
+        ),
+        input_model=MarketSeriesRequest,
+        lane=CapabilityLane.BROAD,
+        handler=handler,
+    )
+
+
+def _macro_series_descriptor(runtime_lanes: RuntimeLanes) -> ToolDescriptor:
+    """Register the advisory macro-series reader over the observation store."""
+
+    async def handler(decoded: DecodedInput) -> DispatchOutcome:
+        assert isinstance(decoded, MacroSeriesRequest)
+        value = await runtime_lanes.invoke(
+            CapabilityLane.BROAD,
+            macro_series_tool,
+            decoded.model_dump(mode="python"),
+        )
+        return _observation_series_outcome(value)
+
+    return ToolDescriptor(
+        logical_capability_id="macro.series",
+        mcp_tool_name="krw_macro_series",
+        title="Return bounded macro observation series",
+        description=(
+            "Return the latest-vintage advisory macro indicator series (inflation, "
+            "rates, labor, growth, housing, volatility) from the immutable "
+            "observation store; research context only, never filing evidence."
+        ),
+        input_model=MacroSeriesRequest,
+        lane=CapabilityLane.BROAD,
+        handler=handler,
+    )
+
+
 def build_registry() -> CapabilityRegistry:
-    """Build the shared registry for 13 ontology, 1 market, and 14 Guru tools."""
+    """Build the shared registry for 15 ontology-side tools (13 ontology + 2
+    observation), 1 market, and 14 Guru tools."""
 
     lanes = RuntimeLanes()
     standard = _standard_descriptor
@@ -539,6 +613,8 @@ def build_registry() -> CapabilityRegistry:
             runtime_lanes=lanes,
         ),
         _market_snapshot_descriptor(lanes),
+        _market_series_descriptor(lanes),
+        _macro_series_descriptor(lanes),
         _query_context_descriptor(lanes),
         standard(
             logical_capability_id="ontology.query",

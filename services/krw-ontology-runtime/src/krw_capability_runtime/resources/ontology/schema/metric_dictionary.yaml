@@ -206,3 +206,189 @@ canonical_metrics:
     description: "Net income divided by average total assets."
     aliases: [return_on_assets]
     xbrl_tags: []
+
+  # -- Market price / valuation multiples (observation layer; advisory_only) --
+  last_price:
+    display_name: Last Price
+    category: market
+    unit: USD_per_share
+    description: "Most recent observed closing price per share (advisory-only observation)."
+    aliases: [close, closing_price, price_close, 종가]
+    xbrl_tags: []
+
+  trailing_pe_ttm:
+    display_name: Trailing P/E (TTM)
+    category: valuation
+    unit: ratio
+    description: "Price divided by trailing-twelve-month earnings per share (advisory-only observation)."
+    aliases: [trailing_pe, pe_ttm, pe_ratio_ttm, per, 주가수익비율]
+    xbrl_tags: []
+
+  price_to_book_ttm:
+    display_name: Price to Book (TTM)
+    category: valuation
+    unit: ratio
+    description: "Price divided by latest reported book value per share (advisory-only observation)."
+    aliases: [price_to_book, pb, pbr, 주가순자산비율]
+    xbrl_tags: []
+
+  # -- Macro observations (advisory_only context; never filing evidence) --
+  cpi_yoy:
+    display_name: CPI Inflation (YoY)
+    category: macro
+    unit: percent
+    description: "Consumer price index, year-over-year percent change."
+    aliases: [cpi_inflation, headline_cpi_yoy, 소비자물가상승률, 소비자물가]
+    xbrl_tags: []
+
+  core_cpi_yoy:
+    display_name: Core CPI Inflation (YoY)
+    category: macro
+    unit: percent
+    description: "Consumer price index excluding food and energy, year-over-year percent change."
+    aliases: [core_cpi_inflation, 근원소비자물가상승률, 근원물가]
+    xbrl_tags: []
+
+  core_pce_yoy:
+    display_name: Core PCE Inflation (YoY)
+    category: macro
+    unit: percent
+    description: "Personal consumption expenditures price index excluding food and energy, year-over-year percent change."
+    aliases: [core_pce_inflation, pce_core_inflation, 근원소비지출물가상승률]
+    xbrl_tags: []
+
+  fed_funds_rate:
+    display_name: Effective Federal Funds Rate
+    category: macro
+    unit: percent
+    description: "Effective overnight federal funds rate, percent per annum."
+    aliases: [federal_funds_rate, effective_fed_funds_rate, 기준금리, 연방기금금리]
+    xbrl_tags: []
+
+  fed_funds_target_upper:
+    display_name: Fed Funds Target Range (Upper)
+    category: macro
+    unit: percent
+    description: "Upper bound of the federal funds target range, percent per annum."
+    aliases: [fed_funds_target_range_upper, 정책금리상한]
+    xbrl_tags: []
+
+  dgs2_yield:
+    display_name: 2-Year Treasury Yield
+    category: macro
+    unit: percent
+    description: "2-year US Treasury constant maturity yield, percent per annum."
+    aliases: [treasury_2y_yield, 2y_yield]
+    xbrl_tags: []
+
+  dgs10_yield:
+    display_name: 10-Year Treasury Yield
+    category: macro
+    unit: percent
+    description: "10-year US Treasury constant maturity yield, percent per annum."
+    aliases: [treasury_10y_yield, 10y_yield, 장기금리]
+    xbrl_tags: []
+
+  dgs30_yield:
+    display_name: 30-Year Treasury Yield
+    category: macro
+    unit: percent
+    description: "30-year US Treasury constant maturity yield, percent per annum."
+    aliases: [treasury_30y_yield, 30y_yield]
+    xbrl_tags: []
+
+  treasury_10y2y_spread:
+    display_name: 10Y-2Y Treasury Spread
+    category: macro
+    unit: percentage_points
+    description: "10-year minus 2-year Treasury constant maturity yield spread."
+    aliases: [t10y2y, yield_curve_spread, 10y2y_spread, 장단기금리차]
+    xbrl_tags: []
+
+  breakeven_inflation_10y:
+    display_name: 10-Year Breakeven Inflation
+    category: macro
+    unit: percent
+    description: "10-year breakeven inflation rate implied by Treasury nominal and inflation-indexed yields."
+    aliases: [t10yie, breakeven_inflation, 기대인플레이션]
+    xbrl_tags: []
+
+  unemployment_rate:
+    display_name: Unemployment Rate
+    category: macro
+    unit: percent
+    description: "Civilian unemployment rate, percent of labor force."
+    aliases: [jobless_rate, 실업률]
+    xbrl_tags: []
+
+  nonfarm_payrolls:
+    display_name: Total Nonfarm Payrolls
+    category: macro
+    unit: thousands_of_persons
+    description: "Total nonfarm payroll employment, thousands of persons."
+    aliases: [payrolls, total_nonfarm_employment, 비농업고용]
+    xbrl_tags: []
+
+  initial_jobless_claims:
+    display_name: Initial Jobless Claims
+    category: macro
+    unit: persons
+    description: "Weekly initial unemployment insurance claims, persons."
+    aliases: [initial_claims, icsa, 신규실업수당신청]
+    xbrl_tags: []
+
+  nominal_gdp:
+    display_name: Nominal GDP (SAAR)
+    category: macro
+    unit: USD_bn
+    description: "US gross domestic product in current dollars, seasonally adjusted annual rate, billions."
+    aliases: [gdp_current_dollars, 명목국내총생산]
+    xbrl_tags: []
+
+  real_gdp:
+    display_name: Real GDP (SAAR)
+    category: macro
+    unit: USD_bn_chained
+    description: "US real gross domestic product in chained dollars, seasonally adjusted annual rate, billions."
+    aliases: [chained_gdp, 실질국내총생산]
+    xbrl_tags: []
+
+  industrial_production_index:
+    display_name: Industrial Production Index
+    category: macro
+    unit: index
+    description: "Industrial production index, seasonally adjusted."
+    aliases: [industrial_production, ip_index, 산업생산지수]
+    xbrl_tags: []
+
+  retail_sales:
+    display_name: Retail Sales (Retail Trade)
+    category: macro
+    unit: USD_m
+    description: "Retail and food services sales (retail trade), millions of dollars."
+    aliases: [advance_retail_sales, 소매판매액]
+    xbrl_tags: []
+
+  housing_starts:
+    display_name: Housing Starts (SAAR)
+    category: macro
+    unit: thousands_of_units
+    description: "New privately owned housing units started, seasonally adjusted annual rate, thousands."
+    aliases: [new_housing_units_started, 주택착공호수]
+    xbrl_tags: []
+
+  vix:
+    display_name: CBOE Volatility Index
+    category: macro
+    unit: index_points
+    description: "CBOE volatility index (VIX) close, index points."
+    aliases: [vix_close, vixcls, cboe_vix, 변동성지수]
+    xbrl_tags: []
+
+  sp500_index:
+    display_name: S&P 500 Index
+    category: macro
+    unit: index_points
+    description: "S&P 500 composite index level."
+    aliases: [spx, standard_and_poors_500, S&P500]
+    xbrl_tags: []

@@ -1,0 +1,266 @@
+# P1 observation series seed.
+#
+# Static definition of the observation series families collected by the B1
+# provider adapters and materialized by the B3 builder.  Every value crossing
+# this seed is advisory_only market/macro context: never filing evidence,
+# never strong-claim support, never recommendation or price-target grounds.
+# Vendor identifiers (FRED series ids, per-ticker endpoints) stay inside the
+# collection layer; the answer layer scrubs vendor names.
+#
+# Field notes:
+# - factor is a PROVISIONAL factor_taxonomy label (P1): the formal join to
+#   ontology/taxonomy/factors.yaml happens in P2.  macro series MUST carry a
+#   label from KNOWN_FACTOR_LABELS (inflation/interest_rate/labor/growth/
+#   housing/market_volatility); price/valuation families carry no factor.
+# - *_yoy keys (CPIAUCSL, CPILFESL, PCEPILFE) fetch the provider's index
+#   level; the year-over-year percent transform is applied by the B3 builder,
+#   so the canonical_metric/unit describe the served series, not the raw feed.
+# - Per-ticker families are TEMPLATE entries (ticker: null, is_per_ticker:
+#   true): the builder instantiates one concrete series per covered ticker and
+#   substitutes the canonical ticker for the "ticker" provider_series_id
+#   placeholder.  polygon_ohlcv is optional and is registered only when the
+#   collection environment provides its API key (B1 doctrine); the seed entry
+#   itself stays static.
+
+schema_version: "1.0.0"
+
+series:
+  # -- Prices (inflation) --
+  macro_cpi_yoy:
+    domain: macro
+    provider: fred
+    provider_series_id: CPIAUCSL
+    canonical_metric: cpi_yoy
+    unit: percent
+    frequency: monthly
+    adjustment: seasonal
+    factor: inflation
+  macro_core_cpi_yoy:
+    domain: macro
+    provider: fred
+    provider_series_id: CPILFESL
+    canonical_metric: core_cpi_yoy
+    unit: percent
+    frequency: monthly
+    adjustment: seasonal
+    factor: inflation
+  macro_core_pce_yoy:
+    domain: macro
+    provider: fred
+    provider_series_id: PCEPILFE
+    canonical_metric: core_pce_yoy
+    unit: percent
+    frequency: monthly
+    adjustment: seasonal
+    factor: inflation
+
+  # -- Interest rates and yields --
+  macro_fed_funds_rate:
+    domain: macro
+    provider: fred
+    provider_series_id: FEDFUNDS
+    canonical_metric: fed_funds_rate
+    unit: percent
+    frequency: monthly
+    adjustment: none
+    factor: interest_rate
+  macro_fed_funds_target_upper:
+    domain: macro
+    provider: fred
+    provider_series_id: DFEDTARU
+    canonical_metric: fed_funds_target_upper
+    unit: percent
+    frequency: daily
+    adjustment: none
+    factor: interest_rate
+  macro_dgs2_yield:
+    domain: macro
+    provider: fred
+    provider_series_id: DGS2
+    canonical_metric: dgs2_yield
+    unit: percent
+    frequency: daily
+    adjustment: none
+    factor: interest_rate
+  macro_dgs10_yield:
+    domain: macro
+    provider: fred
+    provider_series_id: DGS10
+    canonical_metric: dgs10_yield
+    unit: percent
+    frequency: daily
+    adjustment: none
+    factor: interest_rate
+  macro_dgs30_yield:
+    domain: macro
+    provider: fred
+    provider_series_id: DGS30
+    canonical_metric: dgs30_yield
+    unit: percent
+    frequency: daily
+    adjustment: none
+    factor: interest_rate
+  macro_treasury_10y2y_spread:
+    domain: macro
+    provider: fred
+    provider_series_id: T10Y2Y
+    canonical_metric: treasury_10y2y_spread
+    unit: percentage_points
+    frequency: daily
+    adjustment: none
+    factor: interest_rate
+  macro_breakeven_inflation_10y:
+    domain: macro
+    provider: fred
+    provider_series_id: T10YIE
+    canonical_metric: breakeven_inflation_10y
+    unit: percent
+    frequency: daily
+    adjustment: none
+    factor: inflation
+
+  # -- Labor --
+  macro_unemployment_rate:
+    domain: macro
+    provider: fred
+    provider_series_id: UNRATE
+    canonical_metric: unemployment_rate
+    unit: percent
+    frequency: monthly
+    adjustment: seasonal
+    factor: labor
+  macro_nonfarm_payrolls:
+    domain: macro
+    provider: fred
+    provider_series_id: PAYEMS
+    canonical_metric: nonfarm_payrolls
+    unit: thousands_of_persons
+    frequency: monthly
+    adjustment: seasonal
+    factor: labor
+  macro_initial_jobless_claims:
+    domain: macro
+    provider: fred
+    provider_series_id: ICSA
+    canonical_metric: initial_jobless_claims
+    unit: persons
+    frequency: weekly
+    adjustment: none
+    factor: labor
+
+  # -- Growth --
+  macro_nominal_gdp:
+    domain: macro
+    provider: fred
+    provider_series_id: GDP
+    canonical_metric: nominal_gdp
+    unit: USD_bn
+    frequency: quarterly
+    adjustment: saar
+    factor: growth
+  macro_real_gdp:
+    domain: macro
+    provider: fred
+    provider_series_id: GDPC1
+    canonical_metric: real_gdp
+    unit: USD_bn_chained
+    frequency: quarterly
+    adjustment: saar
+    factor: growth
+  macro_industrial_production:
+    domain: macro
+    provider: fred
+    provider_series_id: INDPRO
+    canonical_metric: industrial_production_index
+    unit: index
+    frequency: monthly
+    adjustment: seasonal
+    factor: growth
+  macro_retail_sales:
+    domain: macro
+    provider: fred
+    provider_series_id: RSAFS
+    canonical_metric: retail_sales
+    unit: USD_m
+    frequency: monthly
+    adjustment: seasonal
+    factor: growth
+
+  # -- Housing --
+  macro_housing_starts:
+    domain: macro
+    provider: fred
+    provider_series_id: HOUST
+    canonical_metric: housing_starts
+    unit: thousands_of_units
+    frequency: monthly
+    adjustment: saar
+    factor: housing
+
+  # -- Market (provisional market_volatility bucket) --
+  macro_vix:
+    domain: macro
+    provider: fred
+    provider_series_id: VIXCLS
+    canonical_metric: vix
+    unit: index_points
+    frequency: daily
+    adjustment: none
+    factor: market_volatility
+  macro_sp500:
+    domain: macro
+    provider: fred
+    provider_series_id: SP500
+    canonical_metric: sp500_index
+    unit: index_points
+    frequency: daily
+    adjustment: none
+    factor: market_volatility
+
+  # -- Per-ticker price/valuation families (templates) --
+  price_close:
+    domain: price
+    provider: fmp
+    provider_series_id: ticker
+    canonical_metric: last_price
+    unit: USD_per_share
+    frequency: daily
+    adjustment: none
+    factor: null
+    ticker: null
+    is_per_ticker: true
+  trailing_pe_ttm:
+    domain: valuation
+    provider: fmp
+    provider_series_id: ticker
+    canonical_metric: trailing_pe_ttm
+    unit: ratio
+    frequency: daily
+    adjustment: none
+    factor: null
+    ticker: null
+    is_per_ticker: true
+  price_to_book_ttm:
+    domain: valuation
+    provider: fmp
+    provider_series_id: ticker
+    canonical_metric: price_to_book_ttm
+    unit: ratio
+    frequency: daily
+    adjustment: none
+    factor: null
+    ticker: null
+    is_per_ticker: true
+  polygon_ohlcv:
+    # Optional family: registered by the builder only when the collection
+    # environment carries the Polygon credential (B1 build_polygon_provider).
+    domain: price
+    provider: polygon
+    provider_series_id: ticker
+    canonical_metric: last_price
+    unit: USD_per_share
+    frequency: daily
+    adjustment: none
+    factor: null
+    ticker: null
+    is_per_ticker: true

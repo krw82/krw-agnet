@@ -32,12 +32,14 @@ def test_registry_has_exact_canonical_inventory() -> None:
     registry = build_registry()
     tools = registry.list_tools()
 
-    assert len(tools) == 28
+    assert len(tools) == 30
     assert {tool.name for tool in tools} >= {
         "krw_ontology_query_context",
         "krw_ontology_query",
         "krw_ontology_trace",
         "krw_market_snapshot",
+        "krw_market_series",
+        "krw_macro_series",
         "krw_guru_company_brief",
         "krw_guru_review_company_evidence",
     }
@@ -320,7 +322,7 @@ def test_streamable_http_daemon_exposes_one_shared_registry_health() -> None:
         response = client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == identity.readiness_document(tool_count=28)
+    assert response.json() == identity.readiness_document(tool_count=30)
 
 
 def test_streamable_http_protocol_and_tools_list_match_the_declared_bundle() -> None:
@@ -378,7 +380,7 @@ def test_schema_bundle_is_derived_from_the_complete_descriptor_registry() -> Non
 
     assert first == second
     assert first["schema_version"] == "krw-capabilityd/tool-schema-bundle/v1"
-    assert len(first["tools"]) == 28
+    assert len(first["tools"]) == 30
     query_context = next(
         record
         for record in first["tools"]

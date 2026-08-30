@@ -3,8 +3,8 @@
 # Git object. This is an initial import utility, never a runtime dependency.
 set -euo pipefail
 
-readonly SOURCE_REPOSITORY="${1:-~/krw-ontology}"
-readonly SOURCE_COMMIT="5dc7e709fc9613c2a926aeed58a77fbfb9d9972f"
+readonly SOURCE_REPOSITORY="${1:-~/krw-ontology-v2/krw-ontology}"
+readonly SOURCE_COMMIT="0cdc12200f6478bf71e373c6ab820137d1dff676"
 readonly TARGET_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../services/krw-ontology-runtime" && pwd)"
 readonly STAGING_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/krw-capability-import.XXXXXX")"
 
@@ -73,6 +73,14 @@ readonly SOURCE_PATHS=(
   src/krw_ontology/mcp_server/evidence_pack.py
   src/krw_ontology/mcp_server/runtime.py
   src/krw_ontology/mcp_server/tools.py
+  # Observation data layer: ports + store + seed only. The provider adapters
+  # (providers/*) are build-time collection plumbing — the serving runtime
+  # never touches a network — and builder.py materializes the store at build
+  # time, so neither belongs in the capability runtime.
+  src/krw_ontology/observation/__init__.py
+  src/krw_ontology/observation/ports.py
+  src/krw_ontology/observation/seed.py
+  src/krw_ontology/observation/store.py
   src/krw_ontology/release.py
   src/krw_ontology/schema/__init__.py
   src/krw_ontology/schema/objects.py
@@ -80,11 +88,12 @@ readonly SOURCE_PATHS=(
   src/krw_ontology/utils/io.py
   src/krw_ontology/validators/__init__.py
   src/krw_ontology/validators/metric_validator.py
+  # Observation seed resource consumed by observation/seed.py at runtime.
+  ontology/observation/series_seed.yaml
   ontology/registry.yaml
   ontology/schema/claim_types.yaml
   ontology/schema/language_signals.yaml
   ontology/schema/metric_dictionary.yaml
-  ontology/schema/objects.yaml
   ontology/schema/quote_types.yaml
   ontology/schema/relations.yaml
   ontology/schema/risk_categories.yaml

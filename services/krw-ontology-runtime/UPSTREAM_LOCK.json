@@ -1,8 +1,8 @@
 {
   "format_version": 1,
   "source": {
-    "repository": "~/krw-ontology",
-    "commit": "5dc7e709fc9613c2a926aeed58a77fbfb9d9972f",
+    "repository": "~/krw-ontology-v2/krw-ontology",
+    "commit": "0cdc12200f6478bf71e373c6ab820137d1dff676",
     "import_mode": "git_object_only",
     "working_tree_is_never_an_input": true
   },
@@ -55,6 +55,10 @@
     "src/krw_ontology/mcp_server/evidence_pack.py",
     "src/krw_ontology/mcp_server/runtime.py",
     "src/krw_ontology/mcp_server/tools.py",
+    "src/krw_ontology/observation/__init__.py",
+    "src/krw_ontology/observation/ports.py",
+    "src/krw_ontology/observation/seed.py",
+    "src/krw_ontology/observation/store.py",
     "src/krw_ontology/release.py",
     "src/krw_ontology/schema/__init__.py",
     "src/krw_ontology/schema/objects.py",
@@ -62,11 +66,11 @@
     "src/krw_ontology/utils/io.py",
     "src/krw_ontology/validators/__init__.py",
     "src/krw_ontology/validators/metric_validator.py",
+    "ontology/observation/series_seed.yaml",
     "ontology/registry.yaml",
     "ontology/schema/claim_types.yaml",
     "ontology/schema/language_signals.yaml",
     "ontology/schema/metric_dictionary.yaml",
-    "ontology/schema/objects.yaml",
     "ontology/schema/quote_types.yaml",
     "ontology/schema/relations.yaml",
     "ontology/schema/risk_categories.yaml",
@@ -117,7 +121,9 @@
     "krw_guru_chain": "reimplement_descriptor",
     "krw_guru_evidence": "reimplement_descriptor",
     "krw_guru_data_needs": "reimplement_descriptor",
-    "krw_guru_eval_questions": "reimplement_descriptor"
+    "krw_guru_eval_questions": "reimplement_descriptor",
+    "krw_market_series": "observation_store_handler",
+    "krw_macro_series": "observation_store_handler"
   },
   "forbidden_runtime_dependencies": [
     "claude-agent-sdk",
