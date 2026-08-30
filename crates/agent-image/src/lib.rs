@@ -409,6 +409,32 @@ pub enum InputDerivation {
         company_brief_capability: String,
         evidence_capabilities: Vec<String>,
     },
+    /// Expand the vendor-neutral model request for one curated openbb tool
+    /// into its physical MCP input. The kernel injects the pinned transport
+    /// provider (and default knobs the model surface omits), so the model can
+    /// never select a vendor or an open provider surface.
+    OpenbbRequestV1 {
+        pinned_provider: OpenbbPinnedProvider,
+    },
+}
+
+/// The closed set of transport providers a curated openbb binding may pin.
+/// This is engine routing data (image-owned, never model-visible): the
+/// projected evidence and provider content stay vendor-neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenbbPinnedProvider {
+    Fmp,
+    Fred,
+}
+
+impl OpenbbPinnedProvider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fmp => "fmp",
+            Self::Fred => "fred",
+        }
+    }
 }
 
 impl InputDerivation {
@@ -492,6 +518,12 @@ pub enum CapabilityResultIngest {
     /// Bounded, latest-vintage macro indicator series. Not company-scoped;
     /// advisory research context only, never filing evidence.
     MacroSeriesV1,
+    /// Bounded series read from the curated external openbb-mcp endpoint.
+    /// Like the store-backed observation series it is advisory research
+    /// context: the retained records are unverified, never filing evidence,
+    /// and never support a strong claim. The raw envelope is projected by
+    /// the generic openbb adapter with vendor material scrubbed.
+    OpenbbSeriesV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     FrontFeedListItemsV1,
@@ -549,6 +581,9 @@ impl CapabilityResultIngest {
             }
             Self::MacroSeriesV1 => {
                 "Retrieve a bounded recent macro indicator series (inflation, rates, labor, growth) only when the macro backdrop materially improves the question. It is timestamped advisory research data, never filing evidence or recommendation support."
+            }
+            Self::OpenbbSeriesV1 => {
+                "Retrieve a bounded historical price or macro series for the already in-scope ticker or a named macro series only when the trend materially improves the question. The series is timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
@@ -976,6 +1011,9 @@ impl CapabilitySpec {
                 "Call this function exactly once with only the trusted ticker. The kernel fetches a bounded company ontology map using the current document landscape; treat it as orientation-only, never as factual support. Do not set periods, document types, limits, internal IDs, or a conclusion. Exact filing scope belongs in the later ResearchProposal."
             }
             InputDerivation::Identity | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
+                self.result_ingest.provider_tool_description()
+            }
+            InputDerivation::OpenbbRequestV1 { .. } => {
                 self.result_ingest.provider_tool_description()
             }
             InputDerivation::SealedGuruCompanyBriefV1 { .. } => {
@@ -3361,6 +3399,56 @@ fn validate_capability_input_abi(
                     CapabilityResultIngest::GuruQueryContextV1,
                 )
         }
+        InputDerivation::OpenbbRequestV1 { pinned_provider } => {
+            // The three curated openbb tools are the only allowed pairs, and
+            // each physical contract pins exactly one transport provider so a
+            // swapped vendor cannot ride an existing capability.
+            let (input_contract, model_contract, expected_provider, ticker_scoped) = match capability
+                .input_contract
+                .as_str()
+            {
+                "openbb-price-historical-input/v1" => (
+                    "openbb-price-historical-input/v1",
+                    "openbb-price-history-request/v1",
+                    OpenbbPinnedProvider::Fmp,
+                    true,
+                ),
+                "openbb-fred-series-input/v1" => (
+                    "openbb-fred-series-input/v1",
+                    "openbb-macro-series-request/v1",
+                    OpenbbPinnedProvider::Fred,
+                    false,
+                ),
+                "openbb-cpi-input/v1" => (
+                    "openbb-cpi-input/v1",
+                    "openbb-cpi-request/v1",
+                    OpenbbPinnedProvider::Fred,
+                    false,
+                ),
+                _ => (capability.input_contract.as_str(), "", *pinned_provider, false),
+            };
+            capability.input_contract == input_contract
+                && capability.model_input_contract.as_deref() == Some(model_contract)
+                && capability.research_proposal_anchor.is_none()
+                && capability.permission == Permission::Read
+                && capability.idempotency == IdempotencyPolicy::CanonicalArgs
+                && capability.result_ingest == CapabilityResultIngest::OpenbbSeriesV1
+                && capability.research_action.is_none()
+                && pinned_provider == &expected_provider
+                && if ticker_scoped {
+                    matches!(
+                        &capability.scope_binding,
+                        CapabilityScopeBinding::TrustedTickerSet { .. }
+                    )
+                } else {
+                    matches!(&capability.scope_binding, CapabilityScopeBinding::Unscoped)
+                }
+                && capability
+                    .prerequisites
+                    .iter()
+                    .all(|prerequisite| prerequisite == "ontology.query_context")
+                    && capability.prerequisites.len() == 1
+        }
         InputDerivation::SealedGuruEvidenceReviewV1 {
             query_context_capability,
             company_brief_capability,
@@ -3427,7 +3515,8 @@ fn validate_capability_input_abi(
         | InputDerivation::CompanyContextRequestV1
         | InputDerivation::SealedGuruQueryContextV1
         | InputDerivation::SealedGuruCompanyBriefV1 { .. }
-        | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
+        | InputDerivation::SealedGuruEvidenceReviewV1 { .. }
+        | InputDerivation::OpenbbRequestV1 { .. } => {
             capability.provider_input_codec.is_canonical_root()
         }
     };
@@ -3497,7 +3586,8 @@ fn input_derivation_references(derivation: &InputDerivation, capability_id: &str
         InputDerivation::Identity
         | InputDerivation::CompanyContextRequestV1
         | InputDerivation::SealedGuruQueryContextV1
-        | InputDerivation::ResearchProposalToSearchPlanV4 => false,
+        | InputDerivation::ResearchProposalToSearchPlanV4
+        | InputDerivation::OpenbbRequestV1 { .. } => false,
         InputDerivation::SealedGuruCompanyBriefV1 {
             query_context_capability,
         }
@@ -5142,6 +5232,204 @@ mod tests {
             })
             .sum();
         assert!(ingest.max_visits >= ingest_source_visits);
+    }
+
+    /// The curated openbb lookups follow the observation-series wiring: one
+    /// bounded capability state reachable only from the obligation
+    /// assessment, gated behind query_context by capability prerequisites and
+    /// the action_limits state_precedes validator, with the transport
+    /// provider kernel-pinned so no vendor name is model-visible.
+    #[test]
+    fn openbb_lookup_states_are_wired_into_company_research() {
+        let image = compile_agent_dir(agent_root()).unwrap().manifest;
+        let workflow = image
+            .body
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "company_research_v2")
+            .unwrap();
+
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert(
+            "openbb.price_history",
+            (
+                "openbb-price-historical-input/v1",
+                "openbb-price-history-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.macro_series",
+            (
+                "openbb-fred-series-input/v1",
+                "openbb-macro-series-request/v1",
+                OpenbbPinnedProvider::Fred,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.macro_cpi",
+            (
+                "openbb-cpi-input/v1",
+                "openbb-cpi-request/v1",
+                OpenbbPinnedProvider::Fred,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
+            let capability = image
+                .body
+                .capabilities
+                .iter()
+                .find(|capability| &capability.id == capability_id)
+                .unwrap_or_else(|| panic!("{capability_id} capability"));
+            assert_eq!(capability.prerequisites, vec!["ontology.query_context"]);
+            assert_eq!(&capability.result_ingest, ingest);
+            assert_eq!(&capability.input_contract, input_contract);
+            assert_eq!(capability.model_input_contract.as_deref(), Some(*model_contract));
+            assert_eq!(
+                capability.input_derivation,
+                InputDerivation::OpenbbRequestV1 {
+                    pinned_provider: *provider,
+                }
+            );
+            assert!(capability.research_action.is_none());
+        }
+        // The price lookup is ticker-scoped; both macro lookups are unscoped.
+        let scoped = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "openbb.price_history")
+            .unwrap();
+        assert!(matches!(
+            &scoped.scope_binding,
+            CapabilityScopeBinding::TrustedTickerSet { .. }
+        ));
+        for capability_id in ["openbb.macro_series", "openbb.macro_cpi"] {
+            let capability = image
+                .body
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == capability_id)
+                .unwrap();
+            assert!(matches!(
+                &capability.scope_binding,
+                CapabilityScopeBinding::Unscoped
+            ));
+        }
+
+        let state_ids = [
+            ("openbb_price_lookup", "openbb.price_history"),
+            ("openbb_macro_lookup", "openbb.macro_series"),
+            ("openbb_cpi_lookup", "openbb.macro_cpi"),
+        ];
+        for (state_id, capability_id) in state_ids {
+            let state = workflow
+                .states
+                .iter()
+                .find(|state| state.stable_id == state_id)
+                .unwrap_or_else(|| panic!("{state_id} state"));
+            assert_eq!(state.capability_id.as_deref(), Some(capability_id));
+            assert_eq!(state.max_visits, 1);
+            let stable = |id: &str| {
+                workflow
+                    .states
+                    .iter()
+                    .find(|state| state.stable_id == id)
+                    .unwrap()
+                    .numeric_id
+            };
+            let event = format!("{}_has_value", state_id.strip_suffix("_lookup").unwrap());
+            assert!(
+                workflow.transitions.iter().any(|transition| {
+                    transition.from == stable("assess_obligations")
+                        && transition.to == state.numeric_id
+                        && transition.event == event
+                }),
+                "assess_obligations must expose the {event} edge to {state_id}"
+            );
+            assert!(workflow.transitions.iter().any(|transition| {
+                transition.from == state.numeric_id
+                    && transition.to == stable("ingest_evidence")
+                    && transition.event == "evidence_observed"
+            }));
+        }
+
+        // Every advertised read must fit the ingest builtin's visit budget.
+        let ingest = workflow
+            .states
+            .iter()
+            .find(|state| state.stable_id == "ingest_evidence")
+            .unwrap();
+        let ingest_source_visits: u16 = workflow
+            .transitions
+            .iter()
+            .filter(|transition| {
+                transition.to == ingest.numeric_id && transition.event == "evidence_observed"
+            })
+            .map(|transition| {
+                workflow
+                    .states
+                    .iter()
+                    .find(|state| state.numeric_id == transition.from)
+                    .unwrap()
+                    .max_visits
+            })
+            .sum();
+        assert!(ingest.max_visits >= ingest_source_visits);
+    }
+
+    /// A third openbb call in one run must be rejected by the pre_action
+    /// program, and every openbb lookup must stay behind query_context.
+    #[test]
+    fn action_limits_bound_and_gate_the_openbb_lookups() {
+        let image = compile_agent_dir(agent_root()).unwrap().manifest;
+        let program = image
+            .body
+            .validators
+            .iter()
+            .find(|program| program.id == "action_limits")
+            .expect("action_limits program");
+
+        let openbb_calls = |count: u64| {
+            serde_json::json!({
+                "usage": {"capability_calls": {"openbb.macro_series": count}},
+                "state_trace": ["accepted", "author_plan", "query_context",
+                                 "ingest_evidence", "assess_obligations",
+                                 "openbb_macro_lookup", "ingest_evidence",
+                                 "assess_obligations"],
+            })
+        };
+        let allowed = evaluate_rule_program(program, &openbb_calls(2)).unwrap();
+        assert!(
+            allowed.violations.is_empty(),
+            "two openbb calls stay within the declared ceiling: {:?}",
+            allowed.violations
+        );
+        let rejected = evaluate_rule_program(program, &openbb_calls(3)).unwrap();
+        assert!(
+            rejected
+                .violations
+                .iter()
+                .any(|violation| violation.code == "openbb_macro_limit"),
+            "a third openbb macro call must violate the pre_action limit"
+        );
+
+        let no_context = serde_json::json!({
+            "usage": {"capability_calls": {"openbb.price_history": 1}},
+            "state_trace": ["accepted", "author_plan", "assess_obligations",
+                             "openbb_price_lookup"],
+        });
+        let gated = evaluate_rule_program(program, &no_context).unwrap();
+        assert!(
+            gated
+                .violations
+                .iter()
+                .any(|violation| violation.code == "context_before_openbb_price"),
+            "an openbb price lookup before query_context must violate the ladder gate"
+        );
     }
 
     /// The pre_action action_limits program is the second, graph-independent

@@ -68,7 +68,7 @@ use validation::{
 use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 #[cfg(test)]
 use capability_dispatch::{
-    TargetedQueryAttribution, assemble_company_context_request,
+    TargetedQueryAttribution, assemble_company_context_request, assemble_openbb_request,
     canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
     model_event_ladder_hint, model_research_gap_hint, normalize_physical_capability_arguments,
     normalize_provider_model_input, selected_targeted_response_detail,
@@ -2086,6 +2086,62 @@ mod tests {
         mixed["objectives"][0]["goal"]["metric_scope"] = serde_json::json!("company_total");
         normalize_provider_model_input(RESEARCH_PROPOSAL_V4, &mut mixed);
         assert!(mixed["objectives"][0]["goal"].get("kind").is_none());
+    }
+
+    #[test]
+    fn openbb_derivation_pins_the_transport_provider_and_bounded_defaults() {
+        use krw_agent_image::OpenbbPinnedProvider;
+
+        // Price history: the trusted ticker becomes the physical symbol and
+        // the kernel-injected provider is the only vendor material present.
+        let price = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL", "start_date": "2026-01-01"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-price-historical-input/v1",
+        )
+        .unwrap();
+        assert_eq!(price["provider"], "fmp");
+        assert_eq!(price["symbol"], "AAPL");
+        assert_eq!(price["start_date"], "2026-01-01");
+        assert!(price.get("end_date").is_none());
+
+        // FRED series: the observation limit defaults to the bounded ceiling.
+        let series = assemble_openbb_request(
+            &serde_json::json!({"series_id": "CPIAUCSL"}),
+            &OpenbbPinnedProvider::Fred,
+            "openbb-fred-series-input/v1",
+        )
+        .unwrap();
+        assert_eq!(series["provider"], "fred");
+        assert_eq!(series["symbol"], "CPIAUCSL");
+        assert_eq!(series["limit"], 260);
+
+        // CPI: kernel-owned defaults for every omitted knob.
+        let cpi = assemble_openbb_request(
+            &serde_json::json!({}),
+            &OpenbbPinnedProvider::Fred,
+            "openbb-cpi-input/v1",
+        )
+        .unwrap();
+        assert_eq!(cpi["provider"], "fred");
+        assert_eq!(cpi["country"], "united_states");
+        assert_eq!(cpi["transform"], "yoy");
+        assert_eq!(cpi["frequency"], "monthly");
+
+        // A shape the model contract already rejects cannot be lowered.
+        assert!(assemble_openbb_request(
+            &serde_json::json!({"series_id": ""}),
+            &OpenbbPinnedProvider::Fred,
+            "openbb-fred-series-input/v1",
+        )
+        .is_err());
+        // An unknown physical contract fails closed.
+        assert!(assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-unknown-input/v1",
+        )
+        .is_err());
     }
 
     #[test]
