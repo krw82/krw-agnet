@@ -251,3 +251,37 @@ capabilities:
     data_release_hash: sha256:REPLACE_WITH_RELEASE_MANIFEST_SHA256
     max_connections: 4
     request_timeout_ms: 30000
+  # Curated openbb-mcp data-plane tools (bearer profile in production).
+  - binding_key: openbb_equity_price_historical
+    mcp_tool_name: equity_price_historical
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_economy_fred_series
+    mcp_tool_name: economy_fred_series
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_economy_cpi
+    mcp_tool_name: economy_cpi
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000

@@ -245,3 +245,40 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 4
     request_timeout_ms: 30000
+  # Curated openbb-mcp data-plane tools. Local openbb-mcp is unauthenticated
+  # behind the loopback TLS edge, so these bindings carry no bearer
+  # credential_ref. Only these three of the ~200 advertised openbb tools are
+  # ever dispatched by the engine (closed curated tool-set doctrine).
+  - binding_key: openbb_equity_price_historical
+    mcp_tool_name: equity_price_historical
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_economy_fred_series
+    mcp_tool_name: economy_fred_series
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_economy_cpi
+    mcp_tool_name: economy_cpi
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000

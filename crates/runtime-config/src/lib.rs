@@ -1597,6 +1597,14 @@ mod tests {
                 "https://filings.invalid/readyz".into(),
             ),
             ("KRW_FILINGS_MCP_TOKEN".into(), "filings-token".into()),
+            (
+                "KRW_OPENBB_MCP_URL".into(),
+                "https://openbb.invalid/mcp".into(),
+            ),
+            (
+                "KRW_OPENBB_MCP_READY_URL".into(),
+                "https://openbb.invalid/readyz".into(),
+            ),
         ])
     }
 

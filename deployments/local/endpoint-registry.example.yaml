@@ -22,3 +22,15 @@ endpoints:
     origin: https://krw-agent.local
     credential_version: filings-service-v1
     tls_profile: system-roots-v1
+  # External openbb-mcp data plane (curated tool set only). A local openbb-mcp
+  # accepts unauthenticated streamable-http on loopback behind the same TLS
+  # edge, so the honest credential shape here is the no-bearer public profile
+  # (like krw-ontology-local): bindings on this endpoint use credential_ref
+  # null. Production upgrades the same endpoint_ref to a bearer token.
+  - endpoint_ref: krw-openbb-local
+    url_env: KRW_OPENBB_MCP_URL
+    readiness_url_env: KRW_OPENBB_MCP_READY_URL
+    protocol_version: "2025-06-18"
+    origin: https://krw-agent.local
+    credential_version: openbb-public-v1
+    tls_profile: system-roots-v1
