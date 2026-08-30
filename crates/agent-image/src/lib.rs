@@ -4498,6 +4498,41 @@ mod tests {
         assert!(!first.blobs.is_empty());
     }
 
+    /// The `ontology_schema` prompt segment renders files from the packaged
+    /// capability-runtime resources at image-compile time, so those files
+    /// must ship in this repository. `objects.yaml` is the sharp edge:
+    /// upstream deleted it (a81fe8a) and the runtime now owns the packaged
+    /// copy — a future import or cleanup that drops it must fail here,
+    /// loudly, instead of breaking every agent compile on a fresh checkout.
+    #[test]
+    fn bundled_runtime_schema_resources_ship_in_the_packaged_runtime() {
+        let spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(concat!(
+            "../../services/krw-ontology-runtime/src",
+            "/krw_capability_runtime/resources/ontology/schema"
+        ));
+        let mut bundled = Vec::new();
+        for segment in &spec.prompt_segments {
+            if let Some(source) = &segment.ontology_schema
+                && source.bundled_runtime_schema
+            {
+                bundled.extend(source.schemas.iter().cloned());
+            }
+        }
+        assert!(
+            bundled.contains(&"objects".to_owned()),
+            "fixture expects the ontology_catalog segment to render objects.yaml"
+        );
+        for schema in &bundled {
+            let path = schema_dir.join(format!("{schema}.yaml"));
+            assert!(
+                path.is_file(),
+                "bundled runtime schema {path:?} is not packaged; objects.yaml is \
+                 runtime-owned (upstream removed it in a81fe8a) and must stay tracked"
+            );
+        }
+    }
+
     #[test]
     fn skill_catalog_exposes_only_registered_loadable_ids() {
         let image = compile_agent_dir(agent_root())

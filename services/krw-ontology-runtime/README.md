@@ -21,12 +21,16 @@ Every file under `src/krw_capability_runtime` is exactly one of:
   `krw-ontology` commit modulo the mechanical `krw_ontology →
   krw_capability_runtime` package rename, plus reviewed canonical runtime
   edits made on top (for example the packaged-resource path candidates in
-  `validators/metric_validator.py` and `observation/seed.py`, and the serving
-  copy of `observation/__init__.py` without the build-time builder imports).
+  `validators/metric_validator.py` and `observation/seed.py`, the serving
+  copy of `observation/__init__.py` without the build-time builder imports,
+  and the descriptor-root glue grown in `mcp_server/runtime.py`).
 - **Runtime-native** — everything else (`market/`, `transport/`,
-  `mcp_server/runtime.py` glue where locally evolved, `observation/tools.py`,
-  `__main__.py`, …). These files are ours; the import script never writes
-  them.
+  `observation/tools.py`, `__main__.py`, the runtime-owned
+  `resources/ontology/schema/objects.yaml`, …). These files are ours; the
+  import script never writes them. `objects.yaml` is special: upstream
+  deleted it in a81fe8a, but the agent-image `ontology_schema` prompt
+  segment still renders it, so the runtime now owns the packaged copy
+  (recorded in the lock's `excluded_paths`).
 
 The lock stores, per upstream-owned file, both the `upstream_sha256` (the
 pinned commit, rename applied) and the `runtime_sha256` (the bytes actually
@@ -61,6 +65,10 @@ to the v2 `krw-ontology` checkout):
   script's pin. Also prints the files recorded as intentionally diverged
   from the pin. Run this in CI or before sealing a release.
 
-Upstream paths deleted at the pin (for example `ontology/schema/objects.yaml`)
-must be dropped from `SOURCE_PATHS` and removed from the packaged resources;
-`--record` then snapshots the new inventory.
+Upstream paths deleted at the pin must be dropped from `SOURCE_PATHS` and
+`--record` snapshots the new inventory. A deleted path is only also removed
+from the packaged resources when nothing here consumes it:
+`ontology/schema/objects.yaml` was deleted upstream (a81fe8a) but the
+agent-image `ontology_schema` prompt segment still requires it, so the
+packaged copy became runtime-owned (see the provenance list above) instead of
+being removed.

@@ -588,6 +588,7 @@
     "src/krw_ontology/extraction",
     "src/krw_ontology/pipeline",
     "src/krw_ontology/quality",
+    "ontology/schema/objects.yaml",
     "plugins",
     ".env",
     "data",
