@@ -2391,6 +2391,10 @@ fn validate_observation_series(
             observation_id,
         });
     }
+    // The store serves oldest-to-newest, but the wire order is not itself
+    // trusted: normalize to ascending date so projections and the retained
+    // fact tail are deterministic regardless of payload order.
+    points.sort_by(|left, right| left.date.cmp(&right.date));
     let status = if status == "available" && points.is_empty() {
         "no_data"
     } else {
@@ -2470,6 +2474,7 @@ pub fn map_market_series(
             &provider_content,
             &series,
             &ticker,
+            Some(ticker.as_str()),
             &format!("market_series_{}", series.canonical_metric),
             "market-series",
             "market_series",
@@ -2486,7 +2491,10 @@ pub fn map_market_series(
 }
 
 /// Vendor-neutral, advisory-only projection of a macro indicator series.
-/// Macro series are not company-scoped, so there is no ticker gate.
+/// Macro series are not company-scoped, so there is no ticker gate — and a
+/// payload that stamps a ticker onto one is not a shape the store ever
+/// serves, so it is withheld whole rather than letting a foreign entity ride
+/// an advisory macro record.
 pub fn map_macro_series(
     payload: &Value,
     context: &MappingContext,
@@ -2495,6 +2503,12 @@ pub fn map_macro_series(
         Some(series) => series,
         None => return Ok(unavailable_macro_series()),
     };
+    if payload
+        .get("ticker")
+        .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+    {
+        return Ok(unavailable_macro_series());
+    }
     if series.status == "unavailable" {
         return Ok(unavailable_macro_series());
     }
@@ -2517,6 +2531,7 @@ pub fn map_macro_series(
             &provider_content,
             &series,
             &series.canonical_metric,
+            None,
             &format!("macro_{}", series.canonical_metric),
             "macro-series",
             "macro_series",
@@ -2575,11 +2590,14 @@ fn unavailable_macro_series() -> ObservationSeriesDelta {
 /// One advisory record that survives transcript compaction. Every retained
 /// fact keeps its observation pointer so a later trace can name the exact
 /// stored observation; the record itself never gains claim eligibility.
+/// `entity` is the caller-pinned company scope (market only): it is never
+/// derived from the raw payload, so a macro record can never carry one.
 #[allow(clippy::too_many_arguments)]
 fn observation_series_record(
     provider_content: &Value,
     series: &ObservationSeries,
     subject: &str,
+    entity: Option<&str>,
     predicate: &str,
     evidence_prefix: &str,
     document_type: &str,
@@ -2634,7 +2652,7 @@ fn observation_series_record(
             data_release_hash: context.data_release_hash.clone(),
         },
         scope: context.scope.clone(),
-        entity: series.ticker.clone(),
+        entity: entity.map(str::to_owned),
         period: None,
         as_of,
         directness: Directness::Unverified,
@@ -4592,6 +4610,85 @@ mod tests {
         let delta = map_macro_series(&wrong_format, &context("macro.series")).unwrap();
         assert!(delta.evidence_records.is_empty());
         assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn macro_series_ticker_smuggling_is_rejected() {
+        // A macro indicator series is not company-scoped; the store never
+        // serves a ticker on one. A payload stamping a company onto a macro
+        // series is withheld whole rather than riding an advisory record.
+        let mut payload = valid_macro_series_payload();
+        payload["ticker"] = serde_json::json!("AAPL");
+        let delta = map_macro_series(&payload, &context("macro.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+
+        // Non-string ticker values are equally foreign and fail closed.
+        let mut numeric = valid_macro_series_payload();
+        numeric["ticker"] = serde_json::json!(123);
+        let delta = map_macro_series(&numeric, &context("macro.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn macro_series_tickerless_or_null_ticker_keeps_entity_none() {
+        let delta =
+            map_macro_series(&valid_macro_series_payload(), &context("macro.series")).unwrap();
+        assert_eq!(delta.evidence_records.len(), 1);
+        assert_eq!(delta.evidence_records[0].entity, None);
+
+        // An explicit null ticker (the unified no-store shape) is equally
+        // acceptable and still never becomes a record entity.
+        let mut nulled = valid_macro_series_payload();
+        nulled["ticker"] = Value::Null;
+        let delta = map_macro_series(&nulled, &context("macro.series")).unwrap();
+        assert_eq!(delta.evidence_records.len(), 1);
+        assert_eq!(delta.evidence_records[0].entity, None);
+    }
+
+    #[test]
+    fn market_series_descending_payload_keeps_the_newest_points() {
+        let mut payload = valid_market_series_payload();
+        payload["points"] = serde_json::json!([
+            {"date": "2026-08-09", "value": 102.25, "observation_id": "obs:aa33"},
+            {"date": "2026-08-08", "value": 101.5, "observation_id": "obs:aa22"},
+            {"date": "2026-08-07", "value": 100.5, "observation_id": "obs:aa11"}
+        ]);
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert_eq!(delta.evidence_records.len(), 1);
+        let facts = &delta.evidence_records[0].facts;
+        assert_eq!(facts.len(), 3);
+        // Facts are ascending by date regardless of payload order.
+        assert_eq!(facts[0].period.as_deref(), Some("2026-08-07"));
+        assert_eq!(facts[2].period.as_deref(), Some("2026-08-09"));
+
+        // An over-long descending series must keep its NEWEST tail, not the
+        // oldest points that happened to arrive first.
+        let mut long = valid_market_series_payload();
+        let points = (0..MAX_SERIES_POINTS)
+            .rev()
+            .map(|index| {
+                serde_json::json!({
+                    "date": format!("2025-{:02}-{:02}", (index / 28) + 1, (index % 28) + 1),
+                    "value": index as f64,
+                    "observation_id": format!("obs:{index:020x}")
+                })
+            })
+            .collect::<Vec<_>>();
+        long["points"] = Value::Array(points);
+        let delta = map_market_series(&long, &["SO"], &context("market.series")).unwrap();
+        let facts = &delta.evidence_records[0].facts;
+        assert_eq!(facts.len(), MAX_SERIES_POINT_FACTS);
+        assert_eq!(
+            facts.last().unwrap().value["observation_id"],
+            serde_json::json!(format!("obs:{:020x}", MAX_SERIES_POINTS - 1))
+        );
+        assert_eq!(
+            delta.evidence_records[0].source_object_ids.last().unwrap(),
+            &format!("obs:{:020x}", MAX_SERIES_POINTS - 1)
+        );
+        EvidenceLedger::from_records(delta.evidence_records.clone()).unwrap();
     }
 
     #[test]
