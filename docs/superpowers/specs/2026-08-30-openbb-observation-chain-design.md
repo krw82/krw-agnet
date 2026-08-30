@@ -142,11 +142,12 @@ FRED 1차 시리스 세트(FRED-MD 8그룹 분류 참조): 물가(CPIAUCSL, PCEP
 - 컴파일러(`krw-presentation`) 신규 종류 — **프론트 카드가 이미 렌더 가능한 것만**: `area`(시계열 강조), `multi_line`(가격 vs 컨센서스 vs 실적), `scatter`(밸류에이션 매핑), `combo`(가격+거시 이중축), 신규 인텐트 `reaction`(발표 전후 창). `CHART_SAFE_CANONICAL_METRICS` 화이트리스트에 관측 지표 추가.
 - 그라운딩 규칙 유지: 관측 포인트는 `evidence_ref: observation_id`(스토어 PK 문자열), 레저에 없는 참조 아티팩트는 기존 필터로 삭제.
 
-## 11. 워크스페이스 (P3)
+## 11. 워크스페이스 (P3) — OpenBB Workspace 인터페이스 채택 (2026-08-31 확정)
 
-- **Supabase 리드모델**: 수집 파이프라인이 함께 프로젝션 — `market_series_daily`, `macro_series`, `estimate_consensus`(RLS 공개 읽기, 서비스 롤 쓰기). 기존 프론트의 FMP valuation-refresh-worker는 이 파이프라인으로 **흡수 통합**(이중 수집 제거). 기본값: 수집 파이프라인은 원시 리드모델(가격·펀더멘털 스냅샷)만 제공하고 `valuation_snapshots` 계산(프론트 `computeValuation`)은 기존 위치 유지 — P3에서 수집측 이식 여부 최종 확정.
-- **프론트 페이지**: `[locale]/workspace/market/[ticker]`(시세·배수·재무 패널), `/workspace/macro`(거시 대시보드). `KrwVisualizationCard`, `CompanyValuationSnapshot` 등 기존 컴포넌트 재사용.
-- **질의 이분법**: 사용자의 차트 조작(기간·지표 전환)은 프론트에서 리드모델 직접 쿼리(엔진 회전 없음·저비용), AI 생성 차트·해석은 엔진 런(기존 채팅 파이프라인). 이 분리가 비용·지연 구조상 옳다.
+- **아키텍처**: 투자 대시보드 UI는 **OpenBB Workspace를 그대로 사용**하고, 우리는 **위젯 백엔드**만 제공한다 — 임의 스택(FastAPI 등)으로 `/widgets.json`(위젯 정의) + 데이터 엔드포인트(table·chart·metric·markdown)를 서빙하는 셀프호스팅 백엔드. OpenBB 공식 확장 방식(커스텀 백엔드 데이터 통합, CORS `pro.openbb.co`, 헤더 키 인증)을 따른다. 엔진의 근거추적 답변·AI 차트는 HTML/마크다운 위젯으로 임베딩.
+- **데이터**: 수집 파이프라인의 Supabase 리드모델(`market_series_daily`, `macro_series`, `estimate_consensus`, RLS 공개 읽기)을 위젯 백엔드가 읽는다. 기존 FMP valuation-refresh-worker 흡수 통합은 유지(원시 리드모델만 제공, `valuation_snapshots` 계산은 기존 위치 유지).
+- **채팅/답변 프론트 유지**: krw-ontology-front의 채팅·답변 화면(근거등급 답변·시각화 카드)은 그대로 유지 — OpenBB Workspace는 "데이터를 이리저리 보는" 대시보드 계층, 채팅은 "질문→근거 답변" 계층으로 역할 분리. 조작 질의=위젯 백엔드(엔진 회전 없음), AI 차트·해석=엔진 런(기존 파이프라인).
+- **라이선스 조건**: OpenBB는 2026-08-25 제품 전체(Workspace 포함)의 관대한 오픈소스 공개를 발표(상업 운영 종료, OSS Capital 지원). 단 라이선스 종류·세부 확정 전이므로 **P3 착수 시점에 라이선스 확정 확인 후 고정**하고, 불확정 시 폴백은 자체 라이트 페이지(구안)로 한다.
 
 ## 12. 단계화
 
@@ -154,7 +155,7 @@ FRED 1차 시리스 세트(FRED-MD 8그룹 분류 참조): 물가(CPIAUCSL, PCEP
 |---|---|---|
 | **P1 기반** | 수집 파이프라인 + `observations.sqlite`(시세·배수·FRED+빈티지) + `metric_dictionary` 확장 + 도구 2종 + 차트 사이드카 합류 | 도메인 3종 조회·차트 응답, 픽스처 테스트 녹색, 매트릭스 런 소수 케이스 통과 |
 | **P2 체인** | `release_events` + 팩터 조인 + 반응 창 + 추정 개정 + `VALUATION_STOP` 완화 + `TrustedMacroContext` + 발표문 파이프라인 | "CPI→금리→기업" 체인 질의 골든 케이스 통과, 정책 완화 후 환각 0 매트릭스 |
-| **P3 워크스페이스** | Supabase 프로젝션 + 프론트 페이지 2종 + 차트 종류 확장 + refresh-worker 흡수 | 워크스페이스 조작 질의 + AI 차트 응답 e2e |
+| **P3 워크스페이스** | Supabase 프로젝션 + **OpenBB Workspace 위젯 백엔드** + 차트 종류 확장 + refresh-worker 흡수 | OpenBB Workspace에서 우리 위젯 렌더링 + 조작 질의 + AI 차트 응답 e2e |
 
 각 단계는 독립 배포 가능(단계 간 계약은 스키마·도구 계약이 경계).
 
@@ -195,7 +196,7 @@ FRED 1차 시리스 세트(FRED-MD 8그룹 분류 참조): 물가(CPIAUCSL, PCEP
 - **D3. 관측 스토어 = 온톨로지와 동일한 불변 릴리스 아티팩트** — Supabase가 아니라 릴리스 트랜잭션/.verify.json 규율 적용. Supabase는 P3 리드모델 프로젝션 대상. (사용자 승인: 2026-08-30, 1부 리뷰)
 - **D4. FRED 빈티지(ALFRED) 1차 포함** — 개정 이력이 체인 신뢰도의 뿌리. (사용자 승인: 그대로 진행)
 - **D5. VALUATION_STOP 완화는 P2 시행** — 관측 사실 답변 허용 + 출처·시점 표기 + 추천 근거 금지 유지. (사용자 승인: 2부 "그대로 진행")
-- **D6. OpenBB Workspace 제품 미도입** — 자체 프론트(krw-ontology-front)에 워크스페이스 페이지 추가.
+- **D6.~~OpenBB Workspace 제품 미도입~~ → 2026-08-31 변경: OpenBB Workspace 인터페이스 채택** — 당초 자체 프론트 페이지 계획이었으나, ① OpenBB의 공식 커스텀 백엔드 확장 방식(widgets.json)이 우리 데이터 계층에 정확히 부합하고 ② 2026-08-25 OpenBB 제품 전체 오픈소스 공개 발표로 라이선스 위험이 해소 중이며 ③ 프론트 제작량 대폭 절감이라는 근거로 사용자가 변경 결정. P3에서는 자체 위젯 백엔드 + OpenBB Workspace 렌더링. 채팅/답변 프론트(krw-ontology-front)는 유지. 폴백(라이선스 미확정 시): 자체 라이트 페이지.
 - **D7. 매크로 ticker 문제 — 스파인 미변경** — 매크로 시리즈는 스파인/샤드에 넣지 않고 `factor_taxonomy` 조인으로만 체인 참여. 스키마 대범프 회피.
 
 ## 17. 리스크
