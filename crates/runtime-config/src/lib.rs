@@ -1754,8 +1754,16 @@ mod tests {
         .unwrap();
 
         let expected = [
-            ("openbb.price_history", "openbb_equity_price_historical", "equity_price_historical"),
-            ("openbb.macro_series", "openbb_economy_fred_series", "economy_fred_series"),
+            (
+                "openbb.price_history",
+                "openbb_equity_price_historical",
+                "equity_price_historical",
+            ),
+            (
+                "openbb.macro_series",
+                "openbb_economy_fred_series",
+                "economy_fred_series",
+            ),
             ("openbb.macro_cpi", "openbb_economy_cpi", "economy_cpi"),
         ];
         for (capability_id, binding_key, tool_name) in expected {

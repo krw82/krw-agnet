@@ -1010,10 +1010,9 @@ impl CapabilitySpec {
             InputDerivation::CompanyContextRequestV1 => {
                 "Call this function exactly once with only the trusted ticker. The kernel fetches a bounded company ontology map using the current document landscape; treat it as orientation-only, never as factual support. Do not set periods, document types, limits, internal IDs, or a conclusion. Exact filing scope belongs in the later ResearchProposal."
             }
-            InputDerivation::Identity | InputDerivation::SealedGuruEvidenceReviewV1 { .. } => {
-                self.result_ingest.provider_tool_description()
-            }
-            InputDerivation::OpenbbRequestV1 { .. } => {
+            InputDerivation::Identity
+            | InputDerivation::SealedGuruEvidenceReviewV1 { .. }
+            | InputDerivation::OpenbbRequestV1 { .. } => {
                 self.result_ingest.provider_tool_description()
             }
             InputDerivation::SealedGuruCompanyBriefV1 { .. } => {
@@ -5387,8 +5386,8 @@ mod tests {
         assert!(ingest.max_visits >= ingest_source_visits);
     }
 
-    /// A third openbb call in one run must be rejected by the pre_action
-    /// program, and every openbb lookup must stay behind query_context.
+    /// A third openbb call in one run must be rejected by the `pre_action`
+    /// program, and every openbb lookup must stay behind `query_context`.
     #[test]
     fn action_limits_bound_and_gate_the_openbb_lookups() {
         let image = compile_agent_dir(agent_root()).unwrap().manifest;
