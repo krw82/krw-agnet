@@ -1732,6 +1732,68 @@ mod tests {
             .unwrap()
     }
 
+    /// The curated openbb endpoint feeds the daemon's startup tools/list
+    /// preflight exactly like feed/filings: the resolved release set carries
+    /// the three bound openbb tool names grouped under one endpoint, so the
+    /// preflight rejects a server that does not advertise them. This test
+    /// pins the data the preflight consumes (endpoint_ref, exact MCP tool
+    /// names, no bearer on the local no-credential profile) and proves the
+    /// fail-closed path when the endpoint registry omits the openbb entry.
+    #[test]
+    fn openbb_endpoint_resolves_the_three_curated_tools_for_preflight() {
+        let (image, binding, registry, budget, endpoints, _request, secrets) = fixture();
+        let runtime = resolve_runtime(
+            &image,
+            &binding,
+            &registry,
+            &budget,
+            &endpoints,
+            &secrets,
+            ValidationMode::Fixture,
+        )
+        .unwrap();
+
+        let expected = [
+            ("openbb.price_history", "openbb_equity_price_historical", "equity_price_historical"),
+            ("openbb.macro_series", "openbb_economy_fred_series", "economy_fred_series"),
+            ("openbb.macro_cpi", "openbb_economy_cpi", "economy_cpi"),
+        ];
+        for (capability_id, binding_key, tool_name) in expected {
+            let resolved = runtime
+                .capabilities
+                .get(capability_id)
+                .unwrap_or_else(|| panic!("{capability_id} resolved capability"));
+            assert_eq!(resolved.binding.binding_key, binding_key);
+            // The exact name the daemon preflight requires in tools/list.
+            assert_eq!(resolved.binding.mcp_tool_name, tool_name);
+            assert_eq!(resolved.binding.endpoint_ref, "krw-openbb-local");
+            // Local openbb is unauthenticated: the honest profile carries no
+            // bearer credential for these bindings.
+            assert!(resolved.bearer_token.is_none());
+            assert_eq!(resolved.credential_version, "openbb-public-v1");
+        }
+
+        // Fail closed: an endpoint registry without the openbb entry must
+        // refuse resolution instead of silently skipping the new tools.
+        let mut missing = endpoints.clone();
+        missing
+            .endpoints
+            .retain(|endpoint| endpoint.endpoint_ref != "krw-openbb-local");
+        let outcome = resolve_runtime(
+            &image,
+            &binding,
+            &registry,
+            &budget,
+            &missing,
+            &secrets,
+            ValidationMode::Fixture,
+        );
+        assert!(matches!(
+            outcome,
+            Err(ConfigError::UnknownEndpoint(endpoint)) if endpoint == "krw-openbb-local"
+        ));
+    }
+
     #[test]
     fn resolves_an_immutable_snapshot_without_embedding_aliases_or_urls() {
         let (image, binding, registry, budget, endpoints, request, secrets) = fixture();
