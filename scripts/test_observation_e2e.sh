@@ -122,7 +122,7 @@ if [[ -n "$krw_store_env" ]]; then
   krw_expect_available=1
   note "available-path run: release $krw_release_id store verified ($krw_release_store); series checks require status=available with points"
 elif [[ -f "$krw_release_store" ]]; then
-  note "release $krw_release_id carries an observations store but KRW_OBSERVATION_E2E_STORE is unset; series checks accept available/no_data (set the env to enforce the available path)"
+  note "release $krw_release_id carries an observations store but KRW_OBSERVATION_E2E_STORE is unset; series checks accept unavailable/no_data (set the env to enforce the available path)"
 else
   note "release $krw_release_id has no observations store; series checks require the clean no-store path (unavailable/no_data, empty points)"
 fi
