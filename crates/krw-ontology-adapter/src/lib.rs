@@ -2252,6 +2252,413 @@ fn market_currency(value: Option<&Value>) -> Option<String> {
     Some(value.to_owned())
 }
 
+/// Upper bound on served points per series request (the physical tool serves
+/// at most 260). A payload claiming more is withheld whole, never truncated
+/// by guesswork.
+const MAX_SERIES_POINTS: usize = 260;
+/// Facts retained on the advisory series record. The evidence ledger accepts
+/// at most 128 facts per record; the most recent points are the ones that
+/// matter for orientation, so the head of a very long series is dropped.
+const MAX_SERIES_POINT_FACTS: usize = 128;
+/// Internal collection-transport identifiers that must never appear anywhere
+/// in a served series payload. The scan is case-insensitive and fail-closed.
+const FORBIDDEN_VENDOR_TOKENS: [&str; 3] = ["fmp", "fred", "polygon"];
+
+/// Safe projection of a bounded, latest-vintage observation series (market or
+/// macro). Like the market snapshot this is advisory-only orientation
+/// context: the retained record is `Unverified`, cannot support a strong
+/// claim, and never enters the filing-evidence or recommendation path.
+#[derive(Debug, Clone)]
+pub struct ObservationSeriesDelta {
+    pub provider_content: Value,
+    pub evidence_records: Vec<EvidenceRecord>,
+}
+
+impl ObservationSeriesDelta {
+    /// True when no safe series crossed the boundary: the payload failed a
+    /// doctrine check (format, advisory flag, research-only usage, trusted
+    /// ticker, vendor neutrality) or the store reported itself unavailable.
+    pub fn contains_unavailable_marker(&self) -> bool {
+        self.provider_content.get("status").and_then(Value::as_str) == Some("unavailable")
+    }
+}
+
+/// One validated observation point: phenomenon date, latest-vintage value,
+/// and the deterministic observation pointer that names it in the store.
+struct ObservationSeriesPoint {
+    date: String,
+    value: f64,
+    observation_id: String,
+}
+
+/// Doctrine-validated fields shared by the market and macro series payloads.
+struct ObservationSeries {
+    ticker: Option<String>,
+    canonical_metric: String,
+    unit: Option<String>,
+    currency: Option<String>,
+    frequency: Option<String>,
+    factor: Option<f64>,
+    status: &'static str,
+    fetched_at: Option<String>,
+    as_of: Option<String>,
+    points: Vec<ObservationSeriesPoint>,
+}
+
+fn canonical_series_metric(value: Option<&Value>) -> Option<String> {
+    let metric = value?.as_str()?;
+    let mut bytes = metric.bytes();
+    let first = bytes.next()?;
+    let valid = first.is_ascii_lowercase() || first.is_ascii_digit();
+    (valid
+        && (1..=64).contains(&metric.len())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then(|| metric.to_owned())
+}
+
+fn bounded_observation_id(value: Option<&Value>) -> Option<String> {
+    let text = value?.as_str()?;
+    ((1..=64).contains(&text.len())
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')))
+    .then(|| text.to_owned())
+}
+
+/// Fail closed when any internal collection-transport identifier appears
+/// anywhere in the served payload (keys or values, case-insensitive).
+fn payload_leaks_vendor_token(payload: &Value) -> bool {
+    let Ok(bytes) = serde_json::to_vec(payload) else {
+        return true;
+    };
+    let lowered = bytes.to_ascii_lowercase();
+    FORBIDDEN_VENDOR_TOKENS.iter().any(|token| {
+        lowered
+            .windows(token.len())
+            .any(|window| window == token.as_bytes())
+    })
+}
+
+/// Validate the shared observation-series doctrine over the raw payload.
+/// `expected_format` pins the wire format id; the market caller additionally
+/// pins the ticker against the already trusted scope before this runs.
+fn validate_observation_series(
+    payload: &Value,
+    expected_format: &str,
+) -> Option<ObservationSeries> {
+    if serde_json::to_vec(payload).ok()?.len() > MAX_SUPPLEMENTAL_PAYLOAD_BYTES {
+        return None;
+    }
+    let root = payload.as_object()?;
+    if root.get("format").and_then(Value::as_str) != Some(expected_format)
+        || root.get("advisory_only").and_then(Value::as_bool) != Some(true)
+        || root.get("source_usage").and_then(Value::as_str) != Some("research_only")
+        || payload_leaks_vendor_token(payload)
+    {
+        return None;
+    }
+    let status = match root.get("status").and_then(Value::as_str) {
+        Some("available") => "available",
+        Some("no_data") => "no_data",
+        Some("unavailable") => "unavailable",
+        _ => return None,
+    };
+    let canonical_metric = canonical_series_metric(root.get("canonical_metric"))?;
+    let raw_points = root.get("points").and_then(Value::as_array)?;
+    if raw_points.len() > MAX_SERIES_POINTS {
+        return None;
+    }
+    let mut points: Vec<ObservationSeriesPoint> = Vec::with_capacity(raw_points.len());
+    for item in raw_points {
+        let point = item.as_object()?;
+        let date = market_timestamp(point.get("date"))?;
+        let value = point
+            .get("value")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && value.abs() <= MAX_MARKET_METRIC_ABS)?;
+        let observation_id = bounded_observation_id(point.get("observation_id"))?;
+        if let Some(previous) = points.iter().find(|point| point.date == date) {
+            // One phenomenon date carries exactly one latest-vintage value.
+            // A payload disagreeing with itself is unsafe to project.
+            if previous.value != value || previous.observation_id != observation_id {
+                return None;
+            }
+            continue;
+        }
+        points.push(ObservationSeriesPoint {
+            date,
+            value,
+            observation_id,
+        });
+    }
+    let status = if status == "available" && points.is_empty() {
+        "no_data"
+    } else {
+        status
+    };
+    Some(ObservationSeries {
+        ticker: root
+            .get("ticker")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        canonical_metric,
+        unit: bounded_optional(root.get("unit"), 32),
+        currency: market_currency(root.get("currency")),
+        frequency: bounded_optional(root.get("frequency"), 16),
+        factor: root
+            .get("factor")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && value.abs() <= MAX_MARKET_METRIC_ABS),
+        status,
+        fetched_at: market_timestamp(root.get("fetched_at")),
+        as_of: market_timestamp(root.get("as_of")),
+        points,
+    })
+}
+
+fn series_provider_points(points: &[ObservationSeriesPoint]) -> Vec<Value> {
+    points
+        .iter()
+        .map(|point| {
+            serde_json::json!({
+                "date": point.date,
+                "value": point.value,
+                "observation_id": point.observation_id,
+            })
+        })
+        .collect()
+}
+
+/// Vendor-neutral, advisory-only projection of a market observation series.
+/// `trusted_tickers` is the already authorized company scope; a payload for
+/// any other ticker is withheld whole.
+pub fn map_market_series(
+    payload: &Value,
+    trusted_tickers: &[&str],
+    context: &MappingContext,
+) -> Result<ObservationSeriesDelta, AdapterError> {
+    let series = validate_observation_series(payload, "market-series/v1");
+    let series = match series {
+        Some(series) => series,
+        None => return Ok(unavailable_market_series(trusted_tickers.first().copied())),
+    };
+    let Some(ticker) = series.ticker.clone() else {
+        return Ok(unavailable_market_series(trusted_tickers.first().copied()));
+    };
+    if !is_canonical_ticker(&ticker) || !trusted_tickers.contains(&ticker.as_str()) {
+        return Ok(unavailable_market_series(trusted_tickers.first().copied()));
+    }
+    if series.status == "unavailable" {
+        return Ok(unavailable_market_series(Some(ticker.as_str())));
+    }
+    let provider_content = serde_json::json!({
+        "format": "market-series-context/v1",
+        "ticker": ticker,
+        "canonical_metric": series.canonical_metric,
+        "unit": series.unit,
+        "currency": series.currency,
+        "status": series.status,
+        "source_usage": "research_only",
+        "advisory_only": true,
+        "fetched_at": series.fetched_at,
+        "as_of": series.as_of,
+        "points": series_provider_points(&series.points),
+        "usage": "Timestamped advisory market context only. Do not treat it as filing evidence or support a recommendation with it."
+    });
+    let records = if series.status == "available" {
+        vec![observation_series_record(
+            &provider_content,
+            &series,
+            &ticker,
+            &format!("market_series_{}", series.canonical_metric),
+            "market-series",
+            "market_series",
+            "Timestamped market series (advisory only)",
+            context,
+        )?]
+    } else {
+        Vec::new()
+    };
+    Ok(ObservationSeriesDelta {
+        provider_content,
+        evidence_records: records,
+    })
+}
+
+/// Vendor-neutral, advisory-only projection of a macro indicator series.
+/// Macro series are not company-scoped, so there is no ticker gate.
+pub fn map_macro_series(
+    payload: &Value,
+    context: &MappingContext,
+) -> Result<ObservationSeriesDelta, AdapterError> {
+    let series = match validate_observation_series(payload, "macro-series/v1") {
+        Some(series) => series,
+        None => return Ok(unavailable_macro_series()),
+    };
+    if series.status == "unavailable" {
+        return Ok(unavailable_macro_series());
+    }
+    let provider_content = serde_json::json!({
+        "format": "macro-series-context/v1",
+        "canonical_metric": series.canonical_metric,
+        "unit": series.unit,
+        "frequency": series.frequency,
+        "factor": series.factor,
+        "status": series.status,
+        "source_usage": "research_only",
+        "advisory_only": true,
+        "fetched_at": series.fetched_at,
+        "as_of": series.as_of,
+        "points": series_provider_points(&series.points),
+        "usage": "Timestamped advisory macro context only. Do not treat it as filing evidence or support a recommendation with it."
+    });
+    let records = if series.status == "available" {
+        vec![observation_series_record(
+            &provider_content,
+            &series,
+            &series.canonical_metric,
+            &format!("macro_{}", series.canonical_metric),
+            "macro-series",
+            "macro_series",
+            "Timestamped macro indicator series (advisory only)",
+            context,
+        )?]
+    } else {
+        Vec::new()
+    };
+    Ok(ObservationSeriesDelta {
+        provider_content,
+        evidence_records: records,
+    })
+}
+
+fn unavailable_market_series(ticker: Option<&str>) -> ObservationSeriesDelta {
+    ObservationSeriesDelta {
+        provider_content: serde_json::json!({
+            "format": "market-series-context/v1",
+            "ticker": ticker,
+            "canonical_metric": null,
+            "unit": null,
+            "currency": null,
+            "status": "unavailable",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": null,
+            "as_of": null,
+            "points": [],
+            "usage": "No safe current market series was available. Continue with filing-derived research."
+        }),
+        evidence_records: Vec::new(),
+    }
+}
+
+fn unavailable_macro_series() -> ObservationSeriesDelta {
+    ObservationSeriesDelta {
+        provider_content: serde_json::json!({
+            "format": "macro-series-context/v1",
+            "canonical_metric": null,
+            "unit": null,
+            "frequency": null,
+            "factor": null,
+            "status": "unavailable",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": null,
+            "as_of": null,
+            "points": [],
+            "usage": "No safe macro indicator series was available. Continue with filing-derived research."
+        }),
+        evidence_records: Vec::new(),
+    }
+}
+
+/// One advisory record that survives transcript compaction. Every retained
+/// fact keeps its observation pointer so a later trace can name the exact
+/// stored observation; the record itself never gains claim eligibility.
+#[allow(clippy::too_many_arguments)]
+fn observation_series_record(
+    provider_content: &Value,
+    series: &ObservationSeries,
+    subject: &str,
+    predicate: &str,
+    evidence_prefix: &str,
+    document_type: &str,
+    citation_title: &str,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    // The most recent points are the orientation that matters; drop the head
+    // of an over-long series rather than exceeding the ledger fact bound.
+    let retained = if series.points.len() > MAX_SERIES_POINT_FACTS {
+        &series.points[series.points.len() - MAX_SERIES_POINT_FACTS..]
+    } else {
+        &series.points[..]
+    };
+    let facts = retained
+        .iter()
+        .map(|point| NormalizedFact {
+            subject: subject.to_owned(),
+            predicate: predicate.to_owned(),
+            value: serde_json::json!({
+                "value": point.value,
+                "observation_id": point.observation_id,
+            }),
+            unit: series.unit.clone(),
+            period: Some(point.date.clone()),
+        })
+        .collect::<Vec<_>>();
+    if facts.is_empty() {
+        return Err(AdapterError::InvalidSupplementalPayload(
+            "observation series points",
+        ));
+    }
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(provider_content)?);
+    let evidence_id = format!(
+        "{evidence_prefix}:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    );
+    let as_of = series.as_of.clone().or_else(|| series.fetched_at.clone());
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: EvidenceSource {
+            capability_id: context.capability_id.clone(),
+            action_key: context.action_key.clone(),
+            server_build: context.server_build.clone(),
+            normalized_contract_hash: context.normalized_contract_hash.clone(),
+            server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+            data_release_hash: context.data_release_hash.clone(),
+        },
+        scope: context.scope.clone(),
+        entity: series.ticker.clone(),
+        period: None,
+        as_of,
+        directness: Directness::Unverified,
+        grade: EvidenceGrade::Unverified,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: citation_title.into(),
+            document_type: Some(document_type.into()),
+            period: None,
+        },
+        facts,
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: retained
+            .iter()
+            .map(|point| point.observation_id.clone())
+            .collect(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
 /// Sanitized filing-event shape shared by the catalog search and the per-event
 /// brief. The form type is the identity a public citation may carry; every
 /// other field is optional so a sparse catalog row still maps.
@@ -3932,6 +4339,259 @@ mod tests {
         assert_eq!(delta.provider_content["status"], "unavailable");
         assert_eq!(delta.provider_content["metrics"], serde_json::json!({}));
         assert!(delta.records.is_empty());
+    }
+
+    fn valid_market_series_payload() -> Value {
+        serde_json::json!({
+            "format": "market-series/v1",
+            "ticker": "SO",
+            "canonical_metric": "last_price",
+            "unit": "usd",
+            "currency": "USD",
+            "status": "available",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": "2026-08-09",
+            "points": [
+                {"date": "2026-08-07", "value": 100.5, "observation_id": "obs:aa11"},
+                {"date": "2026-08-08", "value": 101.5, "observation_id": "obs:aa22"},
+                {"date": "2026-08-09", "value": 102.25, "observation_id": "obs:aa33"}
+            ]
+        })
+    }
+
+    fn valid_macro_series_payload() -> Value {
+        serde_json::json!({
+            "format": "macro-series/v1",
+            "series_key": "seed:cpi.yoy",
+            "canonical_metric": "cpi_yoy",
+            "unit": "percent",
+            "frequency": "monthly",
+            "factor": 1.0,
+            "status": "available",
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "fetched_at": "2026-08-10T10:00:00Z",
+            "as_of": "2026-07",
+            "points": [
+                {"date": "2026-05", "value": 2.9, "observation_id": "obs:bb11"},
+                {"date": "2026-06", "value": 3.0, "observation_id": "obs:bb22"},
+                {"date": "2026-07", "value": 3.1, "observation_id": "obs:bb33"}
+            ]
+        })
+    }
+
+    #[test]
+    fn market_series_forgery_advisory_flag_is_rejected() {
+        let mut payload = valid_market_series_payload();
+        payload["advisory_only"] = serde_json::json!(false);
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_forgery_source_usage_is_rejected() {
+        let mut payload = valid_market_series_payload();
+        payload["source_usage"] = serde_json::json!("trading_desk");
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_format_mismatch_is_rejected() {
+        let mut payload = valid_market_series_payload();
+        payload["format"] = serde_json::json!("market-snapshot/v1");
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_vendor_token_is_rejected() {
+        let mut payload = valid_market_series_payload();
+        payload["series_key"] = serde_json::json!("fmp:SO:last_price");
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+
+        let mut uppercase = valid_market_series_payload();
+        uppercase["unit"] = serde_json::json!("POLYGON-index");
+        let delta = map_market_series(&uppercase, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_untrusted_ticker_is_withheld() {
+        let payload = valid_market_series_payload();
+        let delta = map_market_series(&payload, &["AAPL"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_valid_payload_maps_one_advisory_record() {
+        let payload = valid_market_series_payload();
+        let delta =
+            map_market_series(&payload, &["MSFT", "SO"], &context("market.series")).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        assert_eq!(delta.evidence_records.len(), 1);
+        let record = &delta.evidence_records[0];
+        assert_eq!(record.directness, Directness::Unverified);
+        assert_eq!(record.grade, EvidenceGrade::Unverified);
+        assert!(!record.strong_claim_allowed);
+        assert_eq!(
+            record.citation.document_type.as_deref(),
+            Some("market_series")
+        );
+        assert_eq!(record.entity.as_deref(), Some("SO"));
+        assert!(record.evidence_id.starts_with("market-series:"));
+        assert_eq!(record.facts.len(), 3);
+        assert!(
+            record
+                .facts
+                .iter()
+                .all(|fact| fact.predicate == "market_series_last_price")
+        );
+        assert_eq!(record.facts[2].period.as_deref(), Some("2026-08-09"));
+        // Each point fact retains the observation pointer it came from.
+        assert_eq!(
+            record.facts[2].value,
+            serde_json::json!({"value": 102.25, "observation_id": "obs:aa33"})
+        );
+        assert_eq!(
+            record.source_object_ids,
+            vec!["obs:aa11", "obs:aa22", "obs:aa33"]
+        );
+        // The sanitized projection is vendor-neutral and advisory-only.
+        assert_eq!(delta.provider_content["advisory_only"], true);
+        assert_eq!(delta.provider_content["source_usage"], "research_only");
+        assert_eq!(delta.provider_content["status"], "available");
+        assert!(delta.provider_content.get("series_key").is_none());
+        let projected = serde_json::to_string(&delta.provider_content)
+            .unwrap()
+            .to_lowercase();
+        assert!(
+            !projected.contains("fmp")
+                && !projected.contains("fred")
+                && !projected.contains("polygon")
+        );
+        EvidenceLedger::from_records(delta.evidence_records.clone()).unwrap();
+    }
+
+    #[test]
+    fn market_series_no_data_and_unavailable_never_become_records() {
+        let mut no_data = valid_market_series_payload();
+        no_data["status"] = serde_json::json!("no_data");
+        no_data["points"] = serde_json::json!([]);
+        let delta = map_market_series(&no_data, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert_eq!(delta.provider_content["status"], "no_data");
+        assert!(!delta.contains_unavailable_marker());
+
+        let mut unavailable = valid_market_series_payload();
+        unavailable["status"] = serde_json::json!("unavailable");
+        let delta = map_market_series(&unavailable, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn market_series_keeps_only_the_most_recent_point_facts() {
+        let mut payload = valid_market_series_payload();
+        let points = (0..MAX_SERIES_POINTS)
+            .map(|index| {
+                serde_json::json!({
+                    "date": format!("2025-{:02}-{:02}", (index / 28) + 1, (index % 28) + 1),
+                    "value": index as f64,
+                    "observation_id": format!("obs:{index:020x}")
+                })
+            })
+            .collect::<Vec<_>>();
+        payload["points"] = Value::Array(points);
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert_eq!(delta.evidence_records.len(), 1);
+        assert_eq!(
+            delta.evidence_records[0].facts.len(),
+            MAX_SERIES_POINT_FACTS
+        );
+        let last = delta.evidence_records[0].facts.last().unwrap();
+        assert_eq!(
+            last.value["observation_id"],
+            serde_json::json!(format!("obs:{:020x}", MAX_SERIES_POINTS - 1))
+        );
+        EvidenceLedger::from_records(delta.evidence_records.clone()).unwrap();
+    }
+
+    #[test]
+    fn market_series_conflicting_duplicate_dates_are_withheld() {
+        let mut payload = valid_market_series_payload();
+        payload["points"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "date": "2026-08-09",
+                "value": 999.0,
+                "observation_id": "obs:aa99"
+            }));
+        let delta = map_market_series(&payload, &["SO"], &context("market.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn macro_series_valid_payload_maps_one_advisory_record() {
+        let payload = valid_macro_series_payload();
+        let delta = map_macro_series(&payload, &context("macro.series")).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        assert_eq!(delta.evidence_records.len(), 1);
+        let record = &delta.evidence_records[0];
+        assert_eq!(record.directness, Directness::Unverified);
+        assert_eq!(record.grade, EvidenceGrade::Unverified);
+        assert!(!record.strong_claim_allowed);
+        assert_eq!(
+            record.citation.document_type.as_deref(),
+            Some("macro_series")
+        );
+        assert!(record.evidence_id.starts_with("macro-series:"));
+        assert!(
+            record
+                .facts
+                .iter()
+                .all(|fact| fact.predicate == "macro_cpi_yoy")
+        );
+        assert_eq!(record.entity, None);
+        assert_eq!(record.facts.len(), 3);
+        assert_eq!(
+            record.facts[2].value,
+            serde_json::json!({"value": 3.1, "observation_id": "obs:bb33"})
+        );
+        assert_eq!(delta.provider_content["status"], "available");
+        EvidenceLedger::from_records(delta.evidence_records.clone()).unwrap();
+    }
+
+    #[test]
+    fn macro_series_forgery_and_vendor_tokens_are_rejected() {
+        let mut advisory = valid_macro_series_payload();
+        advisory["advisory_only"] = serde_json::json!(false);
+        let delta = map_macro_series(&advisory, &context("macro.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+
+        let mut vendor = valid_macro_series_payload();
+        vendor["series_key"] = serde_json::json!("FRED:CPIAUCSL");
+        let delta = map_macro_series(&vendor, &context("macro.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
+
+        let mut wrong_format = valid_macro_series_payload();
+        wrong_format["format"] = serde_json::json!("market-series/v1");
+        let delta = map_macro_series(&wrong_format, &context("macro.series")).unwrap();
+        assert!(delta.evidence_records.is_empty());
+        assert!(delta.contains_unavailable_marker());
     }
 
     #[test]

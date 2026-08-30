@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use krw_agent_contracts::{
-    MARKET_SNAPSHOT_REQUEST_V1, NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1,
-    ONTOLOGY_TARGETED_QUERY_V1, ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
-    RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
+    MACRO_SERIES_REQUEST_V1, MARKET_SERIES_REQUEST_V1, MARKET_SNAPSHOT_REQUEST_V1,
+    NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1, ONTOLOGY_TARGETED_QUERY_V1,
+    ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2,
+    SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
@@ -32,8 +33,9 @@ use krw_agent_tool_mcp::{
     McpClientPool, McpError, McpHttpConfig, PoolKey, PoolScope, ToolCallOutcome,
 };
 use krw_ontology_adapter::{
-    MappingContext, map_company_context, map_market_snapshot, map_research_state,
-    map_targeted_query, map_trace, parse_research_state, sanitize_research_state_scope,
+    MappingContext, map_company_context, map_macro_series, map_market_series, map_market_snapshot,
+    map_research_state, map_targeted_query, map_trace, parse_research_state,
+    sanitize_research_state_scope,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -118,6 +120,13 @@ enum EvidenceMapping {
     ResearchStateV2,
     CompanyContextV1,
     MarketSnapshotV1,
+    /// Bounded, latest-vintage market observation series. Same advisory
+    /// doctrine as the snapshot; the identity check pins the payload ticker
+    /// to the already authorized request ticker.
+    MarketSeriesV1,
+    /// Bounded, latest-vintage macro indicator series. Not company-scoped,
+    /// so there is no ticker identity to pin.
+    MacroSeriesV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     Front(FrontMapping),
@@ -138,6 +147,8 @@ impl EvidenceMapping {
             CapabilityResultIngest::ResearchStateV2 => Self::ResearchStateV2,
             CapabilityResultIngest::CompanyContextV1 => Self::CompanyContextV1,
             CapabilityResultIngest::MarketSnapshotV1 => Self::MarketSnapshotV1,
+            CapabilityResultIngest::MarketSeriesV1 => Self::MarketSeriesV1,
+            CapabilityResultIngest::MacroSeriesV1 => Self::MacroSeriesV1,
             CapabilityResultIngest::TargetedEvidenceV1 => Self::TargetedEvidenceV1,
             CapabilityResultIngest::TraceLineageV1 => Self::TraceLineageV1,
             CapabilityResultIngest::FrontFeedListItemsV1 => {
@@ -194,6 +205,8 @@ impl EvidenceMapping {
             Self::ResearchStateV2
             | Self::CompanyContextV1
             | Self::MarketSnapshotV1
+            | Self::MarketSeriesV1
+            | Self::MacroSeriesV1
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1
             | Self::SkillContent => false,
@@ -205,6 +218,8 @@ impl EvidenceMapping {
             Self::ResearchStateV2 => SEARCH_PLAN_V2,
             Self::CompanyContextV1 => ONTOLOGY_COMPANY_CONTEXT_V1,
             Self::MarketSnapshotV1 => MARKET_SNAPSHOT_REQUEST_V1,
+            Self::MarketSeriesV1 => MARKET_SERIES_REQUEST_V1,
+            Self::MacroSeriesV1 => MACRO_SERIES_REQUEST_V1,
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,
             Self::TraceLineageV1 => ONTOLOGY_TRACE_INPUT_V1,
             Self::SkillContent => SKILL_LOAD_V1,
@@ -223,6 +238,8 @@ impl EvidenceMapping {
             ],
             Self::CompanyContextV1
             | Self::MarketSnapshotV1
+            | Self::MarketSeriesV1
+            | Self::MacroSeriesV1
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
             Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
@@ -1259,6 +1276,42 @@ impl PooledMcpCapabilityRuntime {
                     truncation: None,
                 }
             }
+            EvidenceMapping::MarketSeriesV1 => {
+                let ticker = invocation
+                    .arguments
+                    .get("ticker")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        reject(
+                            "market_series_input_identity",
+                            "market series input did not retain a ticker",
+                        )
+                    })?;
+                // The request ticker is the already authorized scope; the
+                // adapter withholds any payload naming another company.
+                let delta = map_market_series(&payload, std::slice::from_ref(&ticker), &context)
+                    .map_err(|error| reject("market_series_mapping", format!("{error:?}")))?;
+                CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.evidence_records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                }
+            }
+            EvidenceMapping::MacroSeriesV1 => {
+                let delta = map_macro_series(&payload, &context)
+                    .map_err(|error| reject("macro_series_mapping", format!("{error:?}")))?;
+                CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.evidence_records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                }
+            }
             EvidenceMapping::TargetedEvidenceV1 => {
                 let delta = map_targeted_query(&payload, &context)
                     .map_err(|error| reject("targeted_evidence_mapping", format!("{error:?}")))?;
@@ -1422,6 +1475,8 @@ impl PooledMcpCapabilityRuntime {
             EvidenceMapping::Guru(GuruMapping::QueryContext)
             | EvidenceMapping::CompanyContextV1
             | EvidenceMapping::MarketSnapshotV1
+            | EvidenceMapping::MarketSeriesV1
+            | EvidenceMapping::MacroSeriesV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
@@ -1676,6 +1731,8 @@ impl PooledMcpCapabilityRuntime {
             EvidenceMapping::ResearchStateV2
             | EvidenceMapping::CompanyContextV1
             | EvidenceMapping::MarketSnapshotV1
+            | EvidenceMapping::MarketSeriesV1
+            | EvidenceMapping::MacroSeriesV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::SkillContent => Ok(()),

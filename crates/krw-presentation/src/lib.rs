@@ -81,6 +81,7 @@ pub fn compile(pack: &Value) -> Result<Vec<Value>, CompileError> {
                 period_type: item.period_type.clone().unwrap_or_default(),
                 period_basis: item.period_basis.clone().unwrap_or_default(),
                 period_axis: item.period_axis.clone(),
+                period_monthly: item.period_monthly,
                 chart_kind: clause.chart_kind.clone(),
             };
             groups.entry(key).or_default().push(item.clone());
@@ -120,6 +121,7 @@ struct GroupKey {
     period_type: String,
     period_basis: String,
     period_axis: String,
+    period_monthly: bool,
     chart_kind: String,
 }
 
@@ -235,6 +237,32 @@ fn chart_metric_allowed(metric: &str) -> bool {
             | "total_assets"
             | "total_debt"
             | "total_liabilities"
+            // Observation chart metrics (vendor-neutral, advisory only):
+            // the 20 macro families plus the monthly-aggregated per-ticker
+            // price/valuation families. They chart on the monthly axis only.
+            | "breakeven_inflation_10y"
+            | "cpi_yoy"
+            | "core_cpi_yoy"
+            | "core_pce_yoy"
+            | "dgs2_yield"
+            | "dgs10_yield"
+            | "dgs30_yield"
+            | "fed_funds_rate"
+            | "fed_funds_target_upper"
+            | "housing_starts"
+            | "industrial_production_index"
+            | "initial_jobless_claims"
+            | "nominal_gdp"
+            | "nonfarm_payrolls"
+            | "real_gdp"
+            | "retail_sales"
+            | "sp500_index"
+            | "treasury_10y2y_spread"
+            | "unemployment_rate"
+            | "vix"
+            | "last_price_monthly"
+            | "price_to_book_ttm"
+            | "trailing_pe_ttm"
     )
 }
 
@@ -262,6 +290,9 @@ struct PackSeries {
     period_type: Option<String>,
     period_basis: Option<String>,
     period_axis: String,
+    /// True when every point of the series sits on the monthly axis
+    /// (`CY{year}M{month}`). Monthly series never group with coarser ones.
+    period_monthly: bool,
     scope_kind: String,
     scope_key: String,
     scope_label: Option<String>,
@@ -278,6 +309,7 @@ struct PackPoint {
     period_sort_key: i64,
     fiscal_year: Option<i64>,
     fiscal_quarter: Option<i64>,
+    fiscal_month: Option<i64>,
     period_start: Option<String>,
     period_end: Option<String>,
     value: f64,
@@ -331,8 +363,7 @@ fn parse_series(pack: &Value) -> Result<Vec<PackSeries>, CompileError> {
             let Some(value) = finite_number(point_object.get("value")) else {
                 continue;
             };
-            let Some((period_axis, period_year, period_quarter)) = parse_period_components(&period)
-            else {
+            let Some(parts) = parse_period_components(&period) else {
                 // A point without a canonical FY/CY axis cannot be safely
                 // ordered or compared. Keep the text answer intact, but do
                 // not invent an axis position for a chart.
@@ -340,15 +371,21 @@ fn parse_series(pack: &Value) -> Result<Vec<PackSeries>, CompileError> {
             };
             let explicit_year = point_object.get("fiscal_year").and_then(Value::as_i64);
             let explicit_quarter = point_object.get("fiscal_quarter").and_then(Value::as_i64);
-            if explicit_year.is_some_and(|year| year != period_year)
-                || explicit_quarter.is_some_and(|quarter| quarter != period_quarter)
+            if explicit_year.is_some_and(|year| year != parts.year)
+                || explicit_quarter.is_some_and(|quarter| quarter != parts.quarter)
             {
                 // The textual period is the canonical axis. Do not let
-                // contradictory metadata move an observation to another FY/CY.
+                // contradictory metadata move an observation to another FY/CY
+                // — and a monthly bucket never carries a fiscal quarter.
                 continue;
             }
-            let fiscal_quarter = (period_quarter > 0).then_some(period_quarter);
-            let canonical_period_sort_key = period_year * 10 + period_quarter;
+            let fiscal_quarter = (parts.quarter > 0).then_some(parts.quarter);
+            let fiscal_month = (parts.month > 0).then_some(parts.month);
+            let canonical_period_sort_key = if parts.month > 0 {
+                parts.year * 100 + parts.month
+            } else {
+                parts.year * 10 + parts.quarter
+            };
             if let Some(explicit_period_sort_key) = point_object
                 .get("period_sort_key")
                 .and_then(Value::as_i64)
@@ -362,11 +399,12 @@ fn parse_series(pack: &Value) -> Result<Vec<PackSeries>, CompileError> {
             let period_sort_key = canonical_period_sort_key;
             points.push(PackPoint {
                 period,
-                period_axis,
+                period_axis: parts.axis.to_owned(),
                 period_basis: text(point_object, "period_basis"),
                 period_sort_key,
-                fiscal_year: Some(period_year),
+                fiscal_year: Some(parts.year),
                 fiscal_quarter,
+                fiscal_month,
                 period_start: text(point_object, "period_start"),
                 period_end: text(point_object, "period_end"),
                 value,
@@ -407,6 +445,18 @@ fn parse_series(pack: &Value) -> Result<Vec<PackSeries>, CompileError> {
         {
             continue;
         }
+        let series_monthly = points
+            .first()
+            .is_some_and(|point| point.fiscal_month.is_some());
+        if points
+            .iter()
+            .any(|point| point.fiscal_month.is_some() != series_monthly)
+        {
+            // Monthly buckets and annual/quarterly buckets are not one
+            // comparable axis (their sort keys are not even the same scale).
+            // Keep the text answer intact but refuse to chart a mixed series.
+            continue;
+        }
         let series_period_basis = points.first().and_then(|point| point.period_basis.clone());
         if points
             .iter()
@@ -438,6 +488,7 @@ fn parse_series(pack: &Value) -> Result<Vec<PackSeries>, CompileError> {
             period_type: text(object, "period_type"),
             period_basis: series_period_basis,
             period_axis: series_period_axis.unwrap_or_else(|| "".into()),
+            period_monthly: series_monthly,
             scope_kind,
             scope_key,
             scope_label,
@@ -467,7 +518,19 @@ fn finite_number(value: Option<&Value>) -> Option<f64> {
     }
 }
 
-fn parse_period_components(period: &str) -> Option<(String, i64, i64)> {
+/// Canonical period grammar components: FY/CY axis, year, quarter (0 when the
+/// period is not quarterly), and month (0 when the period is not monthly).
+/// Monthly buckets (`CY2026M07`) are calendar-month only — fiscal+month is
+/// semantically invalid — and require the exact zero-padded form the chart
+/// sidecar emits.
+struct PeriodComponents {
+    axis: &'static str,
+    year: i64,
+    quarter: i64,
+    month: i64,
+}
+
+fn parse_period_components(period: &str) -> Option<PeriodComponents> {
     let upper = period.trim().to_ascii_uppercase();
     let (axis, digits) = if let Some(digits) = upper.strip_prefix("FY") {
         ("FY", digits)
@@ -476,6 +539,31 @@ fn parse_period_components(period: &str) -> Option<(String, i64, i64)> {
     } else {
         return None;
     };
+    if axis == "CY"
+        && let Some((year, month)) = digits.split_once('M')
+    {
+        // Monthly bucket: exactly two zero-padded digits, 01-12. Anything
+        // else (`CY2026M7`, `CY2026M13`, `FY2026M07`) is garbage, not an
+        // axis position.
+        let month_digits = month.as_bytes();
+        if month_digits.len() == 2
+            && month_digits.iter().all(u8::is_ascii_digit)
+            && let Ok(year) = year.parse::<i64>()
+            && (1900..=2200).contains(&year)
+        {
+            let parsed_month =
+                (month_digits[0] - b'0') as i64 * 10 + (month_digits[1] - b'0') as i64;
+            if (1..=12).contains(&parsed_month) {
+                return Some(PeriodComponents {
+                    axis,
+                    year,
+                    quarter: 0,
+                    month: parsed_month,
+                });
+            }
+        }
+        return None;
+    }
     let (year, quarter) = if let Some((year, quarter)) = digits.split_once('Q') {
         (year.parse::<i64>().ok()?, quarter.parse::<i64>().ok()?)
     } else {
@@ -484,12 +572,23 @@ fn parse_period_components(period: &str) -> Option<(String, i64, i64)> {
     if !(1900..=2200).contains(&year) || !(0..=4).contains(&quarter) {
         return None;
     }
-    Some((axis.to_owned(), year, quarter))
+    Some(PeriodComponents {
+        axis,
+        year,
+        quarter,
+        month: 0,
+    })
 }
 
 fn parse_period_sort_key(period: &str) -> Option<i64> {
-    let (_, year, quarter) = parse_period_components(period)?;
-    Some(year * 10 + quarter)
+    let parts = parse_period_components(period)?;
+    // Monthly buckets sort at year*100 + month; FY/CY/Q keys keep their
+    // historical year*10 + quarter values.
+    Some(if parts.month > 0 {
+        parts.year * 100 + parts.month
+    } else {
+        parts.year * 10 + parts.quarter
+    })
 }
 
 fn is_breakdown(series: &PackSeries) -> bool {
@@ -921,25 +1020,26 @@ fn periods_are_compatible(previous: &PackPoint, current: &PackPoint, transform: 
     {
         return false;
     }
-    let previous_parts = parse_period_components(&previous.period);
-    let current_parts = parse_period_components(&current.period);
+    let Some(previous_parts) = parse_period_components(&previous.period) else {
+        return false;
+    };
+    let Some(current_parts) = parse_period_components(&current.period) else {
+        return false;
+    };
     if transform == "yoy_percent" {
-        return match (previous_parts, current_parts) {
-            (
-                Some((_, previous_year, previous_quarter)),
-                Some((_, current_year, current_quarter)),
-            ) => current_year - previous_year == 1 && previous_quarter == current_quarter,
-            _ => false,
-        };
+        // Same sub-period one year later (annual, the same quarter, or the
+        // same calendar month).
+        return current_parts.year - previous_parts.year == 1
+            && previous_parts.quarter == current_parts.quarter
+            && previous_parts.month == current_parts.month;
     }
-    match (previous_parts, current_parts) {
-        (Some((_, previous_year, previous_quarter)), Some((_, current_year, current_quarter)))
-            if previous_quarter > 0 && current_quarter > 0 =>
-        {
-            current_year * 4 + current_quarter - (previous_year * 4 + previous_quarter) == 1
-        }
-        _ => false,
-    }
+    // Period-over-period growth is defined for consecutive quarters only;
+    // the monthly month-over-month transform is deliberately out of P1.
+    previous_parts.quarter > 0
+        && current_parts.quarter > 0
+        && current_parts.year * 4 + current_parts.quarter
+            - (previous_parts.year * 4 + previous_parts.quarter)
+            == 1
 }
 
 fn number(value: f64) -> Value {
@@ -1291,6 +1391,148 @@ mod tests {
             .map(|artifact| artifact["views"][0]["chart_type"].as_str().unwrap())
             .collect::<BTreeSet<_>>();
         assert_eq!(kinds, BTreeSet::from(["bar", "line"]));
+    }
+
+    #[test]
+    fn monthly_series_compiles_a_line_artifact() {
+        let mut series = total_series(
+            "AAPL",
+            vec![
+                point("CY2026M05", 210.0, "obs-1"),
+                point("CY2026M06", 215.5, "obs-2"),
+                point("CY2026M07", 220.25, "obs-3"),
+            ],
+        );
+        series["canonical_metric"] = json!("last_price_monthly");
+        series["metric_name"] = json!("Month-end share price");
+        series["period_type"] = json!("monthly");
+        series["basis"] = json!("observation");
+        let mut pack = pack(vec![series]);
+        pack["chart_clauses"][0]["metrics"] = json!(["last_price_monthly"]);
+        pack["chart_clauses"][0]["calculation_window"] = json!("period_over_period");
+        let artifacts = compile(&pack).expect("monthly trend compiles");
+        assert_eq!(artifacts.len(), 1);
+        let artifact = &artifacts[0];
+        assert_eq!(artifact["views"][0]["chart_type"], "line");
+        let points = artifact["views"][0]["series"][0]["points"]
+            .as_array()
+            .unwrap();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0]["period"], "CY2026M05");
+        assert_eq!(points[2]["period"], "CY2026M07");
+        assert_eq!(points[2]["period_sort_key"], json!(202607));
+        assert_eq!(points[2]["evidence_ref"], "obs-3");
+        assert_eq!(points[2]["fiscal_year"], json!(2026));
+        assert_eq!(points[2]["fiscal_quarter"], Value::Null);
+        // Monthly points are ordered within the year by the two-digit month.
+        let keys: Vec<i64> = points
+            .iter()
+            .map(|point| point["period_sort_key"].as_i64().unwrap())
+            .collect();
+        assert_eq!(keys, vec![202605, 202606, 202607]);
+        // P1 keeps monthly series at their line view: no derived growth view
+        // until a month-over-month transform is defined.
+        assert_eq!(artifact["views"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn monthly_period_grammar_rejects_garbage() {
+        assert_eq!(
+            parse_period_components("CY2026M07").map(|parts| (
+                parts.axis,
+                parts.year,
+                parts.quarter,
+                parts.month
+            )),
+            Some(("CY", 2026, 0, 7))
+        );
+        for garbage in [
+            "CY2026M13", // month out of range
+            "CY2026M00", // zero month
+            "CY2026M7",  // zero-pad violation
+            "CY2026M007",
+            "FY2026M07", // fiscal + month is semantically invalid
+            "CY2026M",
+            "CYM07",
+        ] {
+            assert!(
+                parse_period_components(garbage).is_none(),
+                "monthly period must be rejected: {garbage}"
+            );
+        }
+
+        // Garbage points are dropped; two survivors stay below the trend
+        // floor, so the pack yields no artifact rather than a broken axis.
+        let mut series = total_series(
+            "AAPL",
+            vec![
+                point("CY2026M05", 210.0, "obs-1"),
+                point("CY2026M13", 211.0, "obs-bad-1"),
+                point("CY2026M7", 212.0, "obs-bad-2"),
+                point("CY2026M07", 220.25, "obs-2"),
+            ],
+        );
+        series["canonical_metric"] = json!("last_price_monthly");
+        let mut pack = pack(vec![series]);
+        pack["chart_clauses"][0]["metrics"] = json!(["last_price_monthly"]);
+        pack["chart_clauses"][0]["calculation_window"] = json!("period_over_period");
+        assert!(
+            compile(&pack)
+                .expect("garbage monthly periods fail open")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn monthly_and_coarser_axes_never_mix_in_one_series() {
+        // A monthly bucket next to annual/quarterly buckets of the same ticker
+        // is not one comparable axis: the series is withheld, not re-ordered.
+        for mixed in [
+            vec![
+                point("CY2025", 200.0, "a-1"),
+                point("CY2026M07", 220.25, "m-1"),
+            ],
+            vec![
+                point("CY2026Q1", 205.0, "q-1"),
+                point("CY2026M07", 220.25, "m-1"),
+            ],
+        ] {
+            let mut series = total_series("AAPL", mixed);
+            series["canonical_metric"] = json!("last_price_monthly");
+            let mut pack = pack(vec![series]);
+            pack["chart_clauses"][0]["metrics"] = json!(["last_price_monthly"]);
+            pack["chart_clauses"][0]["calculation_window"] = json!("period_over_period");
+            assert!(
+                compile(&pack)
+                    .expect("mixed monthly axis fails open")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn quarterly_periods_still_parse_after_the_monthly_extension() {
+        assert_eq!(
+            parse_period_components("FY2024Q3").map(|parts| (
+                parts.axis,
+                parts.year,
+                parts.quarter,
+                parts.month
+            )),
+            Some(("FY", 2024, 3, 0))
+        );
+        assert_eq!(
+            parse_period_components("CY2025").map(|parts| (
+                parts.axis,
+                parts.year,
+                parts.quarter,
+                parts.month
+            )),
+            Some(("CY", 2025, 0, 0))
+        );
+        assert_eq!(parse_period_sort_key("CY2026M07"), Some(202607));
+        assert_eq!(parse_period_sort_key("CY2026Q3"), Some(20263));
+        assert_eq!(parse_period_sort_key("CY2026"), Some(20260));
     }
 
     #[test]

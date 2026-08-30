@@ -74,6 +74,14 @@ const MARKET_SNAPSHOT_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/market-snapshot-request-v1.json"
 ));
+const MARKET_SERIES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/market-series-request-v1.json"
+));
+const MACRO_SERIES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/macro-series-request-v1.json"
+));
 const GURU_QUERY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/guru-query-request-v1.json"
@@ -135,6 +143,14 @@ pub const COMPANY_CONTEXT_REQUEST_V1: &str = "company-context-request/v1";
 /// Compact request for timestamped advisory market context. The provider is
 /// image-owned; the model can only request the already trusted ticker.
 pub const MARKET_SNAPSHOT_REQUEST_V1: &str = "market-snapshot-request/v1";
+/// Request for a bounded, latest-vintage market observation series. Like the
+/// snapshot it is advisory research context: one already trusted ticker, one
+/// canonical metric id, at most 260 recent points.
+pub const MARKET_SERIES_REQUEST_V1: &str = "market-series-request/v1";
+/// Request for a bounded, latest-vintage macro indicator series. Macro
+/// series are not company-scoped; the model names only a canonical metric id
+/// and a recent-point limit of at most 24.
+pub const MACRO_SERIES_REQUEST_V1: &str = "macro-series-request/v1";
 /// Empty model-authored trigger for a fixed-author Guru retrieval. The kernel
 /// owns the actual question, author, ticker, and orientation context.
 pub const GURU_QUERY_REQUEST_V1: &str = "guru-query-request/v1";
@@ -178,6 +194,10 @@ pub const COMPANY_CONTEXT_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:d557cc2a3f534d625dccc66714d007ad7685b91aaf38dcd4ae7606ff6298e680";
 pub const MARKET_SNAPSHOT_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:3bc99711dff7ab052a7c43177b05bf65fe4e706d8a5509eb8573425eacfe8425";
+pub const MARKET_SERIES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:0bd37520778b3825a2af019ce39cfee57fcbaa23fc0dde345c55b514af4f021b";
+pub const MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:7f64997070484801b60b899977692a0ddfa8125a5ea97e08dd38889169f5e0dc";
 pub const GURU_QUERY_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
@@ -248,6 +268,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             id: MARKET_SNAPSHOT_REQUEST_V1,
             schema_sha256: MARKET_SNAPSHOT_REQUEST_V1_SCHEMA_SHA256,
             schema: MARKET_SNAPSHOT_REQUEST_BYTES,
+        }),
+        MARKET_SERIES_REQUEST_V1 => Some(ContractDescriptor {
+            id: MARKET_SERIES_REQUEST_V1,
+            schema_sha256: MARKET_SERIES_REQUEST_V1_SCHEMA_SHA256,
+            schema: MARKET_SERIES_REQUEST_BYTES,
+        }),
+        MACRO_SERIES_REQUEST_V1 => Some(ContractDescriptor {
+            id: MACRO_SERIES_REQUEST_V1,
+            schema_sha256: MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256,
+            schema: MACRO_SERIES_REQUEST_BYTES,
         }),
         GURU_QUERY_REQUEST_V1 => Some(ContractDescriptor {
             id: GURU_QUERY_REQUEST_V1,
@@ -324,6 +354,8 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(ONTOLOGY_COMPANY_CONTEXT_V1).expect("static contract"),
         contract(COMPANY_CONTEXT_REQUEST_V1).expect("static contract"),
         contract(MARKET_SNAPSHOT_REQUEST_V1).expect("static contract"),
+        contract(MARKET_SERIES_REQUEST_V1).expect("static contract"),
+        contract(MACRO_SERIES_REQUEST_V1).expect("static contract"),
         contract(GURU_QUERY_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
@@ -405,6 +437,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         ONTOLOGY_COMPANY_CONTEXT_V1 => validate_company_context_input(value),
         COMPANY_CONTEXT_REQUEST_V1 => validate_company_context_request(value),
         MARKET_SNAPSHOT_REQUEST_V1 => validate_market_snapshot_request(value),
+        MARKET_SERIES_REQUEST_V1 => validate_market_series_request(value),
+        MACRO_SERIES_REQUEST_V1 => validate_macro_series_request(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
@@ -1481,27 +1515,73 @@ fn validate_company_context_request(value: &Value) -> Result<(), ContractValueEr
     Ok(())
 }
 
+fn canonical_market_ticker(ticker: &str) -> bool {
+    let mut bytes = ticker.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_uppercase() || first.is_ascii_digit())
+        && ticker.len() <= 32
+        && bytes.all(|byte| {
+            byte.is_ascii_uppercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        })
+}
+
+fn canonical_observation_metric(metric: &str) -> bool {
+    let mut bytes = metric.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && (1..=64).contains(&metric.len())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 fn validate_market_snapshot_request(value: &Value) -> Result<(), ContractValueError> {
     let request = object(value, MARKET_SNAPSHOT_REQUEST_V1)?;
     exact_keys(request, &["ticker"], MARKET_SNAPSHOT_REQUEST_V1)?;
     let canonical_ticker = request
         .get("ticker")
         .and_then(Value::as_str)
-        .is_some_and(|ticker| {
-            let mut bytes = ticker.bytes();
-            let Some(first) = bytes.next() else {
-                return false;
-            };
-            (first.is_ascii_uppercase() || first.is_ascii_digit())
-                && ticker.len() <= 32
-                && bytes.all(|byte| {
-                    byte.is_ascii_uppercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'-')
-                })
-        });
+        .is_some_and(canonical_market_ticker);
     if !canonical_ticker {
         return Err(ContractValueError::Shape(MARKET_SNAPSHOT_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_market_series_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, MARKET_SERIES_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["ticker", "metric", "periods"],
+        MARKET_SERIES_REQUEST_V1,
+    )?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        || !request
+            .get("metric")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_observation_metric)
+        || !integer_range(request.get("periods"), 1, 260)
+    {
+        return Err(ContractValueError::Shape(MARKET_SERIES_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_macro_series_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, MACRO_SERIES_REQUEST_V1)?;
+    exact_keys(request, &["metric", "limit"], MACRO_SERIES_REQUEST_V1)?;
+    if !request
+        .get("metric")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_observation_metric)
+        || !integer_range(request.get("limit"), 1, 24)
+    {
+        return Err(ContractValueError::Shape(MACRO_SERIES_REQUEST_V1));
     }
     Ok(())
 }
@@ -1896,7 +1976,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 61);
+        assert_eq!(descriptors().len(), 63);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()

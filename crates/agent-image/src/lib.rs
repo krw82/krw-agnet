@@ -485,6 +485,13 @@ pub enum CapabilityResultIngest {
     /// Timestamped, research-only current-market context. It is deliberately
     /// advisory and never enters the filing-evidence or recommendation path.
     MarketSnapshotV1,
+    /// Bounded, latest-vintage market observation series (price or valuation)
+    /// for one already trusted ticker. Advisory research context only: the
+    /// retained record is unverified and never supports a strong claim.
+    MarketSeriesV1,
+    /// Bounded, latest-vintage macro indicator series. Not company-scoped;
+    /// advisory research context only, never filing evidence.
+    MacroSeriesV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     FrontFeedListItemsV1,
@@ -536,6 +543,12 @@ impl CapabilityResultIngest {
             }
             Self::MarketSnapshotV1 => {
                 "Retrieve compact current price and valuation context only when it materially improves a current-price or valuation question. It is timestamped advisory research data, not filing evidence and not support for a target price, recommendation, or factual filing claim."
+            }
+            Self::MarketSeriesV1 => {
+                "Retrieve a bounded recent price or valuation series for the already in-scope ticker only when the trend materially improves the question. The series is timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
+            }
+            Self::MacroSeriesV1 => {
+                "Retrieve a bounded recent macro indicator series (inflation, rates, labor, growth) only when the macro backdrop materially improves the question. It is timestamped advisory research data, never filing evidence or recommendation support."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
