@@ -756,14 +756,8 @@ fn validate_skill_content(value: &Value) -> Result<(), ContractValueError> {
 /// ticker (required, 1..=16 chars) plus an optional bounded result limit.
 fn validate_web_news_search_input(value: &Value) -> Result<(), ContractValueError> {
     let body = object(value, KRW_WEB_NEWS_SEARCH_INPUT_V1)?;
-    exact_keys(
-        body,
-        &["ticker", "limit"],
-        KRW_WEB_NEWS_SEARCH_INPUT_V1,
-    )?;
-    if !bounded_string(body.get("ticker"), 1, 16)
-        || !integer_range(body.get("limit"), 1, 10)
-    {
+    exact_keys(body, &["ticker", "limit"], KRW_WEB_NEWS_SEARCH_INPUT_V1)?;
+    if !bounded_string(body.get("ticker"), 1, 16) || !integer_range(body.get("limit"), 1, 10) {
         return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_INPUT_V1));
     }
     Ok(())
@@ -787,13 +781,7 @@ fn validate_web_news_search_result(value: &Value) -> Result<(), ContractValueErr
         };
         exact_keys(
             item,
-            &[
-                "headline",
-                "publisher",
-                "published_at",
-                "url",
-                "summary",
-            ],
+            &["headline", "publisher", "published_at", "url", "summary"],
             KRW_WEB_NEWS_SEARCH_RESULT_V1,
         )?;
         if !bounded_string(item.get("headline"), 1, 300)
@@ -1723,7 +1711,10 @@ fn canonical_fred_series_id(value: &str) -> bool {
 }
 
 fn canonical_openbb_country(value: &str) -> bool {
-    (1..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
 }
 
 /// Shared optional CPI knobs across the model request and the physical input.
@@ -1737,7 +1728,9 @@ fn openbb_cpi_knobs(request: &serde_json::Map<String, Value>) -> bool {
     let frequency_ok = request
         .get("frequency")
         .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarter" | "monthly")));
-    country_ok && transform_ok && frequency_ok
+    country_ok
+        && transform_ok
+        && frequency_ok
         && optional_openbb_date(request.get("start_date"))
         && optional_openbb_date(request.get("end_date"))
 }
@@ -1792,7 +1785,13 @@ fn validate_openbb_cpi_request(value: &Value) -> Result<(), ContractValueError> 
     let request = object(value, OPENBB_CPI_REQUEST_V1)?;
     exact_keys(
         request,
-        &["country", "transform", "frequency", "start_date", "end_date"],
+        &[
+            "country",
+            "transform",
+            "frequency",
+            "start_date",
+            "end_date",
+        ],
         OPENBB_CPI_REQUEST_V1,
     )?;
     if !openbb_cpi_knobs(request) {
@@ -1851,11 +1850,17 @@ fn validate_openbb_cpi_input(value: &Value) -> Result<(), ContractValueError> {
     let request = object(value, OPENBB_CPI_INPUT_V1)?;
     exact_keys(
         request,
-        &["provider", "country", "transform", "frequency", "start_date", "end_date"],
+        &[
+            "provider",
+            "country",
+            "transform",
+            "frequency",
+            "start_date",
+            "end_date",
+        ],
         OPENBB_CPI_INPUT_V1,
     )?;
-    if request.get("provider").and_then(Value::as_str) != Some("fred")
-        || !openbb_cpi_knobs(request)
+    if request.get("provider").and_then(Value::as_str) != Some("fred") || !openbb_cpi_knobs(request)
     {
         return Err(ContractValueError::Shape(OPENBB_CPI_INPUT_V1));
     }
@@ -2285,15 +2290,31 @@ mod tests {
     #[test]
     fn openbb_contracts_are_hash_bound_and_vendor_closed() {
         for (contract_id, pinned_hash) in [
-            (OPENBB_PRICE_HISTORY_REQUEST_V1, OPENBB_PRICE_HISTORY_REQUEST_V1_SCHEMA_SHA256),
-            (OPENBB_MACRO_SERIES_REQUEST_V1, OPENBB_MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256),
+            (
+                OPENBB_PRICE_HISTORY_REQUEST_V1,
+                OPENBB_PRICE_HISTORY_REQUEST_V1_SCHEMA_SHA256,
+            ),
+            (
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                OPENBB_MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256,
+            ),
             (OPENBB_CPI_REQUEST_V1, OPENBB_CPI_REQUEST_V1_SCHEMA_SHA256),
-            (OPENBB_PRICE_HISTORICAL_INPUT_V1, OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256),
-            (OPENBB_FRED_SERIES_INPUT_V1, OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256),
+            (
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256,
+            ),
+            (
+                OPENBB_FRED_SERIES_INPUT_V1,
+                OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256,
+            ),
             (OPENBB_CPI_INPUT_V1, OPENBB_CPI_INPUT_V1_SCHEMA_SHA256),
         ] {
             assert_eq!(
-                contract(contract_id).unwrap().content_hash().unwrap().as_str(),
+                contract(contract_id)
+                    .unwrap()
+                    .content_hash()
+                    .unwrap()
+                    .as_str(),
                 pinned_hash,
                 "{contract_id} must match its pinned canonical hash"
             );
@@ -2309,52 +2330,71 @@ mod tests {
         assert!(validate_value(OPENBB_PRICE_HISTORY_REQUEST_V1, &model_with_provider).is_err());
 
         // Bounded args: series ids, limits, and dates fail closed.
-        assert!(validate_value(
-            OPENBB_MACRO_SERIES_REQUEST_V1,
-            &serde_json::json!({"series_id": "CPIAUCSL", "limit": 261})
-        )
-        .is_err());
-        assert!(validate_value(
-            OPENBB_MACRO_SERIES_REQUEST_V1,
-            &serde_json::json!({"series_id": "cpi~bad"})
-        )
-        .is_err());
-        assert!(validate_value(
-            OPENBB_MACRO_SERIES_REQUEST_V1,
-            &serde_json::json!({"series_id": "CPIAUCSL", "start_date": "2026-13-01"})
-        )
-        .is_err());
         assert!(
-            validate_value(OPENBB_MACRO_SERIES_REQUEST_V1, &serde_json::json!({"series_id": "CPIAUCSL"}))
-                .is_ok()
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL", "limit": 261})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "cpi~bad"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL", "start_date": "2026-13-01"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL"})
+            )
+            .is_ok()
         );
 
         // Physical inputs accept exactly one pinned provider per tool.
-        assert!(validate_value(
-            OPENBB_PRICE_HISTORICAL_INPUT_V1,
-            &serde_json::json!({"provider": "fmp", "symbol": "AAPL"})
-        )
-        .is_ok());
-        assert!(validate_value(
-            OPENBB_PRICE_HISTORICAL_INPUT_V1,
-            &serde_json::json!({"provider": "yfinance", "symbol": "AAPL"})
-        )
-        .is_err());
-        assert!(validate_value(
-            OPENBB_FRED_SERIES_INPUT_V1,
-            &serde_json::json!({"provider": "fred", "symbol": "CPIAUCSL", "limit": 260})
-        )
-        .is_ok());
-        assert!(validate_value(
-            OPENBB_CPI_INPUT_V1,
-            &serde_json::json!({"provider": "fred"})
-        )
-        .is_ok());
-        assert!(validate_value(
-            OPENBB_CPI_INPUT_V1,
-            &serde_json::json!({"provider": "fred", "transform": "sqrt"})
-        )
-        .is_err());
+        assert!(
+            validate_value(
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                &serde_json::json!({"provider": "fmp", "symbol": "AAPL"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                &serde_json::json!({"provider": "yfinance", "symbol": "AAPL"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_FRED_SERIES_INPUT_V1,
+                &serde_json::json!({"provider": "fred", "symbol": "CPIAUCSL", "limit": 260})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_CPI_INPUT_V1,
+                &serde_json::json!({"provider": "fred"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_CPI_INPUT_V1,
+                &serde_json::json!({"provider": "fred", "transform": "sqrt"})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2656,8 +2696,11 @@ mod tests {
             &serde_json::json!({"ticker": "LRCX", "limit": 5}),
         )
         .unwrap();
-        validate_value(KRW_WEB_NEWS_SEARCH_INPUT_V1, &serde_json::json!({"ticker": "LRCX"}))
-            .unwrap();
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_INPUT_V1,
+            &serde_json::json!({"ticker": "LRCX"}),
+        )
+        .unwrap();
         // The model cannot widen the request surface or the result limit.
         assert!(matches!(
             validate_value(
@@ -2695,8 +2738,11 @@ mod tests {
             }]}),
         )
         .unwrap();
-        validate_value(KRW_WEB_NEWS_SEARCH_RESULT_V1, &serde_json::json!({"items": []}))
-            .unwrap();
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_RESULT_V1,
+            &serde_json::json!({"items": []}),
+        )
+        .unwrap();
         assert!(matches!(
             validate_value(
                 KRW_WEB_NEWS_SEARCH_RESULT_V1,

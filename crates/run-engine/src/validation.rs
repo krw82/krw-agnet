@@ -251,7 +251,8 @@ fn validate_front_projection(
     // contracts, so the projection class must follow the image-declared
     // result ingest, not the contract id alone.
     match capability.result_ingest {
-        CapabilityResultIngest::FilingEventSearchV1 | CapabilityResultIngest::FilingEventBriefV1 => {
+        CapabilityResultIngest::FilingEventSearchV1
+        | CapabilityResultIngest::FilingEventBriefV1 => {
             // Same closed projection the verified filing reads enforce: only
             // direct strong qualitative records, and an empty-but-valid
             // catalog carries no evidence and stays qualified-only.

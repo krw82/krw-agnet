@@ -16,7 +16,10 @@ use krw_agent_contracts::{
 };
 use krw_agent_evidence::{Answerability, EvidenceRecord};
 use krw_agent_execution_contracts::DependencyFailure;
-use krw_ontology_adapter::{MappingContext, map_feed_issue_context, map_filing_event_brief, map_filing_event_search, map_web_news};
+use krw_ontology_adapter::{
+    MappingContext, map_feed_issue_context, map_filing_event_brief, map_filing_event_search,
+    map_web_news,
+};
 use serde_json::{Map, Value, json};
 
 use crate::front_mapping::FrontRunState;
@@ -54,14 +57,12 @@ impl LadderMapping {
 
     pub(crate) const fn output_contracts(self) -> &'static [&'static str] {
         match self {
-            Self::FilingEventSearch => &[
-                KRW_FILING_SEARCH_RESULT_V1,
-                NORMALIZED_CAPABILITY_RESULT_V1,
-            ],
-            Self::FilingEventBrief => &[
-                KRW_FILING_BRIEF_RESULT_V1,
-                NORMALIZED_CAPABILITY_RESULT_V1,
-            ],
+            Self::FilingEventSearch => {
+                &[KRW_FILING_SEARCH_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1]
+            }
+            Self::FilingEventBrief => {
+                &[KRW_FILING_BRIEF_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1]
+            }
             Self::FeedIssueList => &[
                 KRW_FEED_LIST_ITEMS_RESULT_V1,
                 NORMALIZED_CAPABILITY_RESULT_V1,
@@ -105,7 +106,9 @@ pub(crate) fn authorize_ladder(
                         "filing brief input did not retain its filing event id",
                     )
                 })?;
-            front_state.authorize_observed_filing_event(event_id).map(|_| ())
+            front_state
+                .authorize_observed_filing_event(event_id)
+                .map(|_| ())
         }
         LadderMapping::FeedIssueContext => {
             let issue_ids = arguments
@@ -345,7 +348,12 @@ fn flatten_filing_brief(payload: &Value) -> Result<Value, DependencyFailure> {
     let filing = payload
         .get("filing")
         .and_then(Value::as_object)
-        .ok_or_else(|| reject("filing_brief_shape", "brief result lacks its filing metadata"))?;
+        .ok_or_else(|| {
+            reject(
+                "filing_brief_shape",
+                "brief result lacks its filing metadata",
+            )
+        })?;
     let mut flattened: Map<String, Value> = filing.clone();
     if let Some(tags) = filing.get("event_tags").and_then(Value::as_array)
         && let Some(first) = tags.first()

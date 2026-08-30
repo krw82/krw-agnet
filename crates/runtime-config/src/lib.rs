@@ -1762,8 +1762,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            12,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four and the observation series tools two more physical bindings"
+            15,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, and the curated openbb endpoint three more physical bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1795,7 +1795,7 @@ mod tests {
         .expect("local skill.load must not depend on a physical MCP deployment binding");
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
-        assert_eq!(runtime.physical_binding_count(), 12);
+        assert_eq!(runtime.physical_binding_count(), 15);
     }
 
     /// The observation series bindings are held to the same fail-closed

@@ -27,8 +27,8 @@ use active_run::{
     ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION, ActiveRun, ActiveRunCheckpoint, DerivedTickerScope,
 };
 use capability_dispatch::{
-    ActionExecutionContext, PreparedCall, ResearchDispatchDecision, ResearchStopReason,
-    EVENT_LADDER_CAPABILITY_IDS, capability_invocation, capability_result_cacheable,
+    ActionExecutionContext, EVENT_LADDER_CAPABILITY_IDS, PreparedCall, ResearchDispatchDecision,
+    ResearchStopReason, capability_invocation, capability_result_cacheable,
     capability_result_completes_prerequisite, is_append_context_plan_capacity_rejection,
     is_input_correction, model_visible_capability_result, prepare_calls, rejection_reason_code,
     research_candidate, research_fingerprint, violation_to_detail,
@@ -1752,12 +1752,8 @@ mod tests {
             "a long analyst turn keeps equal space for reasoning and a capability call"
         );
         assert_eq!(
-            thinking_budget_for_turn(
-                ThinkingMode::Enabled,
-                16_384,
-                ModelOutputMode::Markdown
-            )
-            .unwrap(),
+            thinking_budget_for_turn(ThinkingMode::Enabled, 16_384, ModelOutputMode::Markdown)
+                .unwrap(),
             Some(4_096),
             "the final Markdown lane gets bounded scratch so composition cannot outlive the run deadline"
         );
@@ -2129,19 +2125,23 @@ mod tests {
         assert_eq!(cpi["frequency"], "monthly");
 
         // A shape the model contract already rejects cannot be lowered.
-        assert!(assemble_openbb_request(
-            &serde_json::json!({"series_id": ""}),
-            &OpenbbPinnedProvider::Fred,
-            "openbb-fred-series-input/v1",
-        )
-        .is_err());
+        assert!(
+            assemble_openbb_request(
+                &serde_json::json!({"series_id": ""}),
+                &OpenbbPinnedProvider::Fred,
+                "openbb-fred-series-input/v1",
+            )
+            .is_err()
+        );
         // An unknown physical contract fails closed.
-        assert!(assemble_openbb_request(
-            &serde_json::json!({"ticker": "AAPL"}),
-            &OpenbbPinnedProvider::Fmp,
-            "openbb-unknown-input/v1",
-        )
-        .is_err());
+        assert!(
+            assemble_openbb_request(
+                &serde_json::json!({"ticker": "AAPL"}),
+                &OpenbbPinnedProvider::Fmp,
+                "openbb-unknown-input/v1",
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -6071,11 +6071,11 @@ mod tests {
 
     #[test]
     fn transition_judgment_notes_are_bounded_and_smuggle_rejecting() {
+        use krw_agent_protocol::ContentHash;
         use krw_agent_provider_wire::{
             AssistantMessage, FunctionCall, ProviderEpisodeV1, ProviderFunctionName, TokenUsage,
             ToolCall, ToolCallKind,
         };
-        use krw_agent_protocol::ContentHash;
 
         fn episode_with_arguments(arguments: &str) -> ProviderEpisodeV1 {
             let assistant = AssistantMessage {
@@ -6165,11 +6165,7 @@ mod tests {
         assert!(oversized.judgment.is_empty());
 
         let five = (0..5)
-            .map(|index| {
-                format!(
-                    r#"{{"position":"p{index}","basis":"b","confidence":"low"}}"#
-                )
-            })
+            .map(|index| format!(r#"{{"position":"p{index}","basis":"b","confidence":"low"}}"#))
             .collect::<Vec<_>>()
             .join(",");
         let capped = parse_workflow_transition_call(

@@ -3403,30 +3403,33 @@ fn validate_capability_input_abi(
             // The three curated openbb tools are the only allowed pairs, and
             // each physical contract pins exactly one transport provider so a
             // swapped vendor cannot ride an existing capability.
-            let (input_contract, model_contract, expected_provider, ticker_scoped) = match capability
-                .input_contract
-                .as_str()
-            {
-                "openbb-price-historical-input/v1" => (
-                    "openbb-price-historical-input/v1",
-                    "openbb-price-history-request/v1",
-                    OpenbbPinnedProvider::Fmp,
-                    true,
-                ),
-                "openbb-fred-series-input/v1" => (
-                    "openbb-fred-series-input/v1",
-                    "openbb-macro-series-request/v1",
-                    OpenbbPinnedProvider::Fred,
-                    false,
-                ),
-                "openbb-cpi-input/v1" => (
-                    "openbb-cpi-input/v1",
-                    "openbb-cpi-request/v1",
-                    OpenbbPinnedProvider::Fred,
-                    false,
-                ),
-                _ => (capability.input_contract.as_str(), "", *pinned_provider, false),
-            };
+            let (input_contract, model_contract, expected_provider, ticker_scoped) =
+                match capability.input_contract.as_str() {
+                    "openbb-price-historical-input/v1" => (
+                        "openbb-price-historical-input/v1",
+                        "openbb-price-history-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-fred-series-input/v1" => (
+                        "openbb-fred-series-input/v1",
+                        "openbb-macro-series-request/v1",
+                        OpenbbPinnedProvider::Fred,
+                        false,
+                    ),
+                    "openbb-cpi-input/v1" => (
+                        "openbb-cpi-input/v1",
+                        "openbb-cpi-request/v1",
+                        OpenbbPinnedProvider::Fred,
+                        false,
+                    ),
+                    _ => (
+                        capability.input_contract.as_str(),
+                        "",
+                        *pinned_provider,
+                        false,
+                    ),
+                };
             capability.input_contract == input_contract
                 && capability.model_input_contract.as_deref() == Some(model_contract)
                 && capability.research_proposal_anchor.is_none()
@@ -3447,7 +3450,7 @@ fn validate_capability_input_abi(
                     .prerequisites
                     .iter()
                     .all(|prerequisite| prerequisite == "ontology.query_context")
-                    && capability.prerequisites.len() == 1
+                && capability.prerequisites.len() == 1
         }
         InputDerivation::SealedGuruEvidenceReviewV1 {
             query_context_capability,
@@ -5287,7 +5290,10 @@ mod tests {
             assert_eq!(capability.prerequisites, vec!["ontology.query_context"]);
             assert_eq!(&capability.result_ingest, ingest);
             assert_eq!(&capability.input_contract, input_contract);
-            assert_eq!(capability.model_input_contract.as_deref(), Some(*model_contract));
+            assert_eq!(
+                capability.model_input_contract.as_deref(),
+                Some(*model_contract)
+            );
             assert_eq!(
                 capability.input_derivation,
                 InputDerivation::OpenbbRequestV1 {

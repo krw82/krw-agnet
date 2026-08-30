@@ -720,10 +720,40 @@ const UNAVAILABILITY_OPENING_PHRASES: [&str; 21] = [
 /// a limitation phrase there is subordinate to a stated position, not the
 /// answer's frame.
 const OPENING_JUDGMENT_MARKERS: [&str; 34] = [
-    "가능성", "판단", "보입", "보여", "전망", "추정", "방향", "상승", "하락", "증가", "감소",
-    "성장", "견고", "부진", "개선", "악화", "늘어", "줄어", "커", "작아", "높아", "낮아",
-    "강세", "약세", "우려", "기대", "likely", "suggest", "expect", "estimate", "growth",
-    "decline", "increase", "decrease",
+    "가능성",
+    "판단",
+    "보입",
+    "보여",
+    "전망",
+    "추정",
+    "방향",
+    "상승",
+    "하락",
+    "증가",
+    "감소",
+    "성장",
+    "견고",
+    "부진",
+    "개선",
+    "악화",
+    "늘어",
+    "줄어",
+    "커",
+    "작아",
+    "높아",
+    "낮아",
+    "강세",
+    "약세",
+    "우려",
+    "기대",
+    "likely",
+    "suggest",
+    "expect",
+    "estimate",
+    "growth",
+    "decline",
+    "increase",
+    "decrease",
 ];
 
 /// The first user-facing sentence: heading-only lines are skipped, decimals
@@ -748,8 +778,7 @@ fn first_markdown_sentence(content: &str) -> String {
     while let Some(character) = chars.next() {
         sentence.push(character);
         let ends_sentence = matches!(character, '。' | '！' | '？' | '!' | '?' | '\n')
-            || (character == '.'
-                && !chars.peek().is_some_and(|next| next.is_ascii_digit()));
+            || (character == '.' && !chars.peek().is_some_and(|next| next.is_ascii_digit()));
         if ends_sentence || sentence.chars().count() >= 200 {
             break;
         }
@@ -802,8 +831,7 @@ fn markdown_contains_tool_reference(lower: &str, term: &str) -> bool {
         return true;
     }
     [
-        " 호출", " 콜", " call", " tool", " 도구", " 사용", " 결과", " 쿼리", " query",
-        "(",
+        " 호출", " 콜", " call", " tool", " 도구", " 사용", " 결과", " 쿼리", " query", "(",
     ]
     .iter()
     .any(|suffix| lower.contains(&format!("{term}{suffix}")))
@@ -824,7 +852,9 @@ pub(crate) fn markdown_content_gate_feedback(
         let internal_shape = term
             .chars()
             .any(|character| character.is_uppercase() || character == '_')
-            || !term.chars().all(|character| character.is_ascii_alphabetic() || character == ' ');
+            || !term
+                .chars()
+                .all(|character| character.is_ascii_alphabetic() || character == ' ');
         if !internal_shape && term.len() < 6 {
             if markdown_contains_tool_reference(&lower, &term_lower) {
                 return Some(format!(
@@ -1631,8 +1661,9 @@ where
                         ));
                     }
                     if state.reserve_repair()? {
-                        let code =
-                            answer_error_code(&EngineError::CanonicalRegistry(format!("{error:?}")));
+                        let code = answer_error_code(&EngineError::CanonicalRegistry(format!(
+                            "{error:?}"
+                        )));
                         tracing::warn!(%code, "typed answer repair: canonical validation");
                         state.append_assistant(episode);
                         state.append_repair_feedback(&output_contract.id, code);
@@ -2224,10 +2255,8 @@ mod markdown_gate_tests {
 
     #[test]
     fn internal_terms_are_gated_with_word_boundaries() {
-        let gated = markdown_content_gate_feedback(
-            "매출이 증가했습니다. (object_id: xbrl:COIN)",
-            &terms(),
-        );
+        let gated =
+            markdown_content_gate_feedback("매출이 증가했습니다. (object_id: xbrl:COIN)", &terms());
         assert!(gated.is_some_and(|feedback| feedback.contains("object_id")));
 
         // "chain" is a forbidden internal tool name, but an investor answer
@@ -2268,10 +2297,8 @@ mod markdown_gate_tests {
         );
         assert!(qualified_gated.is_some());
 
-        let tool_english_gated = markdown_content_gate_feedback(
-            "The chain tool traced the revenue movement.",
-            &terms(),
-        );
+        let tool_english_gated =
+            markdown_content_gate_feedback("The chain tool traced the revenue movement.", &terms());
         assert!(tool_english_gated.is_some());
     }
 

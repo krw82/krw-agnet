@@ -81,10 +81,7 @@ pub(crate) struct WebNewsConfig {
 }
 
 /// Fetch and normalize. Every failure path returns `{"items": []}`.
-pub(crate) async fn fetch_with_config(
-    arguments: &Value,
-    config: Option<&WebNewsConfig>,
-) -> Value {
+pub(crate) async fn fetch_with_config(arguments: &Value, config: Option<&WebNewsConfig>) -> Value {
     let Some(config) = config else {
         return empty_items();
     };

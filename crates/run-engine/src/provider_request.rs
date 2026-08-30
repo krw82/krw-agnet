@@ -866,7 +866,8 @@ pub(crate) fn parse_workflow_transition_call(
         let Ok(note) = serde_json::from_value::<WorkflowTransitionJudgment>(note) else {
             continue;
         };
-        let field_within_caps = |text: &str| text.chars().count() <= TRANSITION_JUDGMENT_MAX_FIELD_CHARS;
+        let field_within_caps =
+            |text: &str| text.chars().count() <= TRANSITION_JUDGMENT_MAX_FIELD_CHARS;
         if !field_within_caps(&note.position)
             || !field_within_caps(&note.basis)
             || !matches!(note.confidence.as_str(), "high" | "medium" | "low")
