@@ -1,6 +1,6 @@
 {
   "format_version": 2,
-  "generated_at": "2026-08-30T16:44:01Z",
+  "generated_at": "2026-08-30T20:51:03Z",
   "source": {
     "repository": "~/krw-ontology-v2/krw-ontology",
     "commit": "0cdc12200f6478bf71e373c6ab820137d1dff676",
@@ -232,7 +232,7 @@
       "path": "src/krw_ontology/agent_index/spine_builder.py",
       "runtime_path": "src/krw_capability_runtime/agent_index/spine_builder.py",
       "upstream_sha256": "sha256:77b7935c9e78e3e1eb71934543ad307dabe69b001fae1900fbec3deb65c40e2e",
-      "runtime_sha256": "sha256:60733c158e4d8f2681422433505aa46c8a3039e53fcd03555bb4e95f0ea18762",
+      "runtime_sha256": "sha256:7629ad33df5c628b8315c253463eb423d4e59963da980b7a2a6f8f92400755ba",
       "diverged": true
     },
     {

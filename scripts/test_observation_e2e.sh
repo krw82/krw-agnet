@@ -27,6 +27,14 @@ set -euo pipefail
 #   KRW_OBSERVATION_E2E_STATE_DIR     stack state dir (default:
 #                                     .local/agent-gateway-observation-e2e)
 #   KRW_OBSERVATION_E2E_BOOT_TIMEOUT  readiness budget in seconds (default 300)
+#   KRW_OBSERVATION_E2E_STORE         optional available-path hook: a
+#                                     pre-built observations.sqlite that the
+#                                     served release already carries; when set
+#                                     (and byte-matching the release store)
+#                                     the series checks require status=available
+#                                     with non-empty points and the chart
+#                                     _meta pack. The script never writes the
+#                                     immutable release.
 #   KRW_AGENT_PROVIDER                provider lane (default glm)
 #
 # Usage: scripts/test_observation_e2e.sh [--keep-stack]
@@ -93,10 +101,30 @@ print(manifest.get("env") or "")
 [[ "$krw_manifest_env" == "dev" ]] || {
   fail "expected a manifest env=dev release (serving contract of this smoke); observed env=$krw_manifest_env"
 }
-if [[ -f "$krw_release_root/indexes/observations.sqlite" ]]; then
-  note "release $krw_release_id carries an observations store; series checks accept available/no_data too"
+# Optional available-path hook for live runs: KRW_OBSERVATION_E2E_STORE
+# names a pre-built observations.sqlite that the served release already
+# carries (the runtime resolves <release>/indexes/observations.sqlite; this
+# script never writes into the immutable release). When set, the file must
+# exist and byte-match the release's store, and the series checks require
+# status=available with non-empty points and the chart _meta pack.
+krw_expect_available=0
+krw_store_env=${KRW_OBSERVATION_E2E_STORE:-}
+krw_release_store="$krw_release_root/indexes/observations.sqlite"
+if [[ -n "$krw_store_env" ]]; then
+  [[ -f "$krw_store_env" ]] || fail "KRW_OBSERVATION_E2E_STORE does not exist: $krw_store_env"
+  [[ -f "$krw_release_store" ]] || {
+    fail "KRW_OBSERVATION_E2E_STORE is set but the served release carries no store at $krw_release_store; run against a release built with collection"
+  }
+  if [[ "$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$krw_store_env")" != \
+        "$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$krw_release_store")" ]]; then
+    fail "KRW_OBSERVATION_E2E_STORE does not byte-match the release store at $krw_release_store"
+  fi
+  krw_expect_available=1
+  note "available-path run: release $krw_release_id store verified ($krw_release_store); series checks require status=available with points"
+elif [[ -f "$krw_release_store" ]]; then
+  note "release $krw_release_id carries an observations store but KRW_OBSERVATION_E2E_STORE is unset; series checks accept available/no_data (set the env to enforce the available path)"
 else
-  note "release $krw_release_id has no observations store; series checks expect the clean no-store path"
+  note "release $krw_release_id has no observations store; series checks require the clean no-store path (unavailable/no_data, empty points)"
 fi
 
 [[ -x "$krw_root/target/debug/krw-agent" && -x "$krw_root/target/debug/krw-agentd" ]] || {
@@ -285,7 +313,7 @@ note "stack ready (supervisor pid=$krw_supervisor_pid)"
 
 krw_checks_status=0
 python3 - "$krw_tls_port" "$krw_state/ca.pem" "$krw_expected_tool_schema_sha256" \
-  "$krw_expected_tool_count" "$krw_release_id" \
+  "$krw_expected_tool_count" "$krw_release_id" "$krw_expect_available" \
   >"$krw_state/logs/e2e-checks.log" <<'PY_CHECKS' || krw_checks_status=$?
 """TLS-MCP smoke checks against the stack's capability runtime.
 
@@ -298,8 +326,10 @@ import sys
 import urllib.error
 import urllib.request
 
-tls_port, ca_path, expected_schema_hash, expected_tool_count, expected_release_id = sys.argv[1:6]
+tls_port, ca_path, expected_schema_hash, expected_tool_count, expected_release_id, expect_available = sys.argv[1:7]
 expected_tool_count = int(expected_tool_count)
+expect_available = expect_available == "1"
+PRESENTATION_META_KEY = "com.krwontology/presentationSeries"
 base_url = f"https://127.0.0.1:{tls_port}"
 # The stack pins KRW_ONTOLOGY_MCP_URL to .../mcp/ ; the streamable-HTTP app
 # answers POST at the trailing-slash route (POST /mcp is a 307).
@@ -414,10 +444,11 @@ try:
 except TransportError as exc:
     # The remaining checks all depend on the MCP session; record them as
     # explicit failures instead of crashing without evidence.
+    series_suffix = "available" if expect_available else "clean_no_store"
     for name in (
         "tools_list_observation_tools",
-        "market_series_clean_no_store",
-        "macro_series_clean_no_store",
+        "market_series_" + series_suffix,
+        "macro_series_" + series_suffix,
         "ontology_query_context_regression",
     ):
         record(name, False, f"session unavailable: {exc}")
@@ -441,7 +472,7 @@ record(
 
 def call_tool(name: str, arguments: dict) -> dict:
     status, _, raw = request(
-        "/mcp",
+        "",
         {"jsonrpc": "2.0", "id": f"observation-e2e-{name}", "method": "tools/call", "params": {"name": name, "arguments": arguments}},
         session_id,
     )
@@ -452,33 +483,64 @@ def call_tool(name: str, arguments: dict) -> dict:
         "json_rpc_error": message.get("error"),
         "is_error": bool(result.get("isError")) if isinstance(result, dict) else True,
         "payload": structured(message),
+        "meta": result.get("_meta") if isinstance(result, dict) else None,
     }
 
 
-def series_check(name: str, call: dict) -> None:
+def series_check(name: str, call: dict, expected_format: str) -> None:
     payload = call.get("payload")
-    clean_status = isinstance(payload, dict) and payload.get("status") in {"unavailable", "no_data"}
+    pack = (call.get("meta") or {}).get(PRESENTATION_META_KEY)
+    format_ok = isinstance(payload, dict) and payload.get("format") == expected_format
+    if expect_available:
+        status_ok = isinstance(payload, dict) and payload.get("status") == "available"
+        points_ok = isinstance(payload, dict) and isinstance(payload.get("points"), list) and len(payload["points"]) > 0
+        meta_ok = (
+            isinstance(pack, dict)
+            and pack.get("mode") == "observation_series"
+            and isinstance(pack.get("series"), list)
+            and len(pack["series"]) == 1
+            and pack["series"][0].get("advisory_only") is True
+            and pack["series"][0].get("basis") == "observation"
+        )
+    else:
+        status_ok = isinstance(payload, dict) and payload.get("status") in {"unavailable", "no_data"}
+        points_ok = isinstance(payload, dict) and payload.get("points") == []
+        meta_ok = pack is None
     advisory = isinstance(payload, dict) and payload.get("advisory_only") is True
     research_only = isinstance(payload, dict) and payload.get("source_usage") == "research_only"
-    no_points = isinstance(payload, dict) and payload.get("points") == []
     scanned = {key: value for key, value in (payload or {}).items() if key not in echo_fields}
     canonical = json.dumps(scanned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).lower()
     leaked = [token for token in vendor_tokens if token in canonical]
     no_exception = call.get("http") == 200 and call.get("json_rpc_error") is None and call.get("is_error") is False
+    mode = "available" if expect_available else "no_store"
     record(
         name,
-        bool(no_exception and clean_status and advisory and research_only and no_points and not leaked),
-        "payload=" + json.dumps(payload, ensure_ascii=False, sort_keys=True) + (f" leaked={leaked}" if leaked else ""),
+        bool(
+            no_exception
+            and format_ok
+            and status_ok
+            and points_ok
+            and meta_ok
+            and advisory
+            and research_only
+            and not leaked
+        ),
+        f"mode={mode} "
+        + "payload="
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        + (f" leaked={leaked}" if leaked else ""),
     )
 
 
 series_check(
-    "market_series_clean_no_store",
+    "market_series_" + ("available" if expect_available else "clean_no_store"),
     call_tool("krw_market_series", {"ticker": "SO", "metric": "last_price"}),
+    "market-series/v1",
 )
 series_check(
-    "macro_series_clean_no_store",
+    "macro_series_" + ("available" if expect_available else "clean_no_store"),
     call_tool("krw_macro_series", {"metric": "cpi_yoy"}),
+    "macro-series/v1",
 )
 
 # Check 4: ontology regression — a gold-style SearchPlan served by the same

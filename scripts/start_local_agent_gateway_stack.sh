@@ -246,6 +246,7 @@ else
   PGSSLMODE=disable "$krw_root/scripts/apply_migrations.sh" "$krw_database_url" >/dev/null
 fi
 
+printf 'ontology admission env=%s release=%s\n' "$krw_ontology_env" "$krw_release_root"
 read -r krw_build krw_schema_hash krw_release_hash < <(
   (
     cd "$krw_root/services/krw-ontology-runtime"
