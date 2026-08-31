@@ -288,13 +288,113 @@ capabilities:
   # Curated openbb round 2 (financial-services patterns). Thirteen curated
   # tools of the ~219 advertised are ever dispatched by the engine (closed
   # curated tool-set doctrine); same credential and pin placeholders.
-  - { binding_key: openbb_equity_price_quote, mcp_tool_name: equity_price_quote, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_fundamental_metrics, mcp_tool_name: equity_fundamental_metrics, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_fundamental_income, mcp_tool_name: equity_fundamental_income, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_fundamental_balance, mcp_tool_name: equity_fundamental_balance, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_fundamental_cash, mcp_tool_name: equity_fundamental_cash, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_estimates_consensus, mcp_tool_name: equity_estimates_consensus, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_compare_peers, mcp_tool_name: equity_compare_peers, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_equity_calendar_earnings, mcp_tool_name: equity_calendar_earnings, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_fixedincome_government_yield_curve, mcp_tool_name: fixedincome_government_yield_curve, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
-  - { binding_key: openbb_economy_calendar, mcp_tool_name: economy_calendar, endpoint_ref: krw-openbb-local, credential_ref: KRW_OPENBB_MCP_TOKEN, auth_scope: tenant, tool_session_reuse: run-scoped, server_schema_bundle_hash: "sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256", server_build: REPLACE_WITH_OPENBB_BUILD_ID, data_release_hash: "sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256", max_connections: 2, request_timeout_ms: 15000 }
+  - binding_key: openbb_equity_price_quote
+    mcp_tool_name: equity_price_quote
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_fundamental_metrics
+    mcp_tool_name: equity_fundamental_metrics
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_fundamental_income
+    mcp_tool_name: equity_fundamental_income
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_fundamental_balance
+    mcp_tool_name: equity_fundamental_balance
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_fundamental_cash
+    mcp_tool_name: equity_fundamental_cash
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_estimates_consensus
+    mcp_tool_name: equity_estimates_consensus
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_compare_peers
+    mcp_tool_name: equity_compare_peers
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_calendar_earnings
+    mcp_tool_name: equity_calendar_earnings
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_fixedincome_government_yield_curve
+    mcp_tool_name: fixedincome_government_yield_curve
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_economy_calendar
+    mcp_tool_name: economy_calendar
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000
