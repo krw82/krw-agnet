@@ -75,8 +75,8 @@ use capability_dispatch::{
 };
 #[cfg(test)]
 use finalization::{
-    fallback_answer_from_ledger, parse_typed_json_content, run_outcome_after_commit,
-    sanitize_answer, validate_product_output_linkage,
+    fallback_answer_from_ledger, parse_typed_json_content, retain_section_batch,
+    run_outcome_after_commit, sanitize_answer, validate_product_output_linkage,
 };
 #[cfg(test)]
 use provider::{
@@ -10569,5 +10569,342 @@ mod tests {
             "more_sections",
         );
         assert!(state.retain_composed_section(&oversized).is_err());
+        // An empty section array is its own honest defect class, never a
+        // vacuous "duplicate" report.
+        let empty = serde_json::json!({
+            "schema_version": 1,
+            "batch_kind": "section_batch",
+            "continuation": "more_sections",
+            "sections": [],
+            "claims": [],
+            "calculations": [],
+        });
+        assert!(matches!(
+            state.retain_composed_section(&empty),
+            Err(EngineError::AnswerValidation(codes)) if codes == ["empty_section_batch"]
+        ));
+    }
+
+    /// Hand-built sectioned compose program mirroring the Task-6 state
+    /// machine shape (accepted → compose_sections ⇄ verify_sections loop),
+    /// compiled against the real fixture image so contract pins, the answer
+    /// policy, and the reserve math stay authentic. Input contracts follow
+    /// the real compile rule (union of predecessor output contracts; the
+    /// initial state gets none) so artifact ingress validates exactly as the
+    /// compiled image would. `fallback_edge` additionally declares the
+    /// `output_budget_reserved` edge from the sectioned state to a
+    /// single-shot compose fallback: agent-image only ever requires that
+    /// edge on ingest/assess states, but the engine must stay immune even if
+    /// an image declared it here.
+    fn sectioned_active_run(fallback_edge: bool) -> ActiveRun {
+        use krw_agent_image::{CompiledTransition, TransitionGuard};
+        use krw_agent_state_artifact::{ArtifactGuard, ArtifactTransition, StateNode, StateProgram};
+
+        let fixture = fixture();
+        let image_hash = fixture.image.manifest.content_hash.clone();
+        let section_pin = ContractPin::canonical(REPORT_SECTIONS_V1).unwrap();
+        let facts_pin = ContractPin::canonical(STATE_FACTS_V1).unwrap();
+        let answer_pin = ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap();
+        let start_operation = StateOperation::Builtin {
+            handler: BuiltinHandler::InitializeRun,
+            input_contracts: vec![],
+            output_contracts: vec![facts_pin.clone()],
+        };
+        let compose_operation = StateOperation::ModelDecision {
+            role_id: "composer".into(),
+            output_mode: ModelOutputMode::TypedJson,
+            input_contracts: vec![facts_pin.clone(), answer_pin.clone()],
+            output_contracts: vec![section_pin.clone()],
+        };
+        let verify_operation = StateOperation::Builtin {
+            handler: BuiltinHandler::VerifyOutput,
+            input_contracts: vec![section_pin.clone()],
+            output_contracts: vec![facts_pin.clone(), answer_pin.clone()],
+        };
+        let fallback_operation = StateOperation::ModelDecision {
+            role_id: "composer".into(),
+            output_mode: ModelOutputMode::Markdown,
+            input_contracts: vec![section_pin.clone()],
+            output_contracts: vec![answer_pin.clone()],
+        };
+        let mut states = vec![
+            CompiledState {
+                numeric_id: 1,
+                stable_id: "accepted".into(),
+                kind: StateKind::Start,
+                capability_id: None,
+                role_id: None,
+                terminal: None,
+                operation: start_operation,
+                max_visits: 1,
+            },
+            CompiledState {
+                numeric_id: 2,
+                stable_id: "compose_sections".into(),
+                kind: StateKind::Compose,
+                capability_id: None,
+                role_id: Some("composer".into()),
+                terminal: None,
+                operation: compose_operation.clone(),
+                max_visits: 5,
+            },
+            CompiledState {
+                numeric_id: 3,
+                stable_id: "verify_sections".into(),
+                kind: StateKind::Verify,
+                capability_id: None,
+                role_id: None,
+                terminal: None,
+                operation: verify_operation.clone(),
+                max_visits: 5,
+            },
+        ];
+        let mut transitions = vec![
+            CompiledTransition {
+                from: 1,
+                event: "begin".into(),
+                to: 2,
+                guard: TransitionGuard::Always,
+            },
+            CompiledTransition {
+                from: 2,
+                event: "section_submitted".into(),
+                to: 3,
+                guard: TransitionGuard::Always,
+            },
+            CompiledTransition {
+                from: 3,
+                event: "more_sections_required".into(),
+                to: 2,
+                guard: TransitionGuard::Always,
+            },
+        ];
+        let mut typed_states = vec![
+            StateNode {
+                id: "accepted".into(),
+                operation: StateOperation::Builtin {
+                    handler: BuiltinHandler::InitializeRun,
+                    input_contracts: vec![],
+                    output_contracts: vec![facts_pin.clone()],
+                },
+                max_visits: 1,
+            },
+            StateNode {
+                id: "compose_sections".into(),
+                operation: compose_operation,
+                max_visits: 5,
+            },
+            StateNode {
+                id: "verify_sections".into(),
+                operation: verify_operation,
+                max_visits: 5,
+            },
+        ];
+        let mut typed_transitions = vec![
+            ArtifactTransition {
+                from: "accepted".into(),
+                event: Some("begin".into()),
+                guard: ArtifactGuard::Always,
+                to: "compose_sections".into(),
+            },
+            ArtifactTransition {
+                from: "compose_sections".into(),
+                event: Some("section_submitted".into()),
+                guard: ArtifactGuard::Always,
+                to: "verify_sections".into(),
+            },
+            ArtifactTransition {
+                from: "verify_sections".into(),
+                event: Some("more_sections_required".into()),
+                guard: ArtifactGuard::Always,
+                to: "compose_sections".into(),
+            },
+        ];
+        if fallback_edge {
+            states.push(CompiledState {
+                numeric_id: 4,
+                stable_id: "compose_fallback".into(),
+                kind: StateKind::Compose,
+                capability_id: None,
+                role_id: Some("composer".into()),
+                terminal: None,
+                operation: fallback_operation.clone(),
+                max_visits: 1,
+            });
+            transitions.push(CompiledTransition {
+                from: 2,
+                event: "output_budget_reserved".into(),
+                to: 4,
+                guard: TransitionGuard::Always,
+            });
+            // The program validator requires an outgoing edge from every
+            // nonterminal state; the single-shot fallback composes like the
+            // legacy compose_ir → verify_ir shape.
+            transitions.push(CompiledTransition {
+                from: 4,
+                event: "draft_ready".into(),
+                to: 3,
+                guard: TransitionGuard::Always,
+            });
+            typed_states.push(StateNode {
+                id: "compose_fallback".into(),
+                operation: fallback_operation,
+                max_visits: 1,
+            });
+            typed_transitions.push(ArtifactTransition {
+                from: "compose_sections".into(),
+                event: Some("output_budget_reserved".into()),
+                guard: ArtifactGuard::Always,
+                to: "compose_fallback".into(),
+            });
+            typed_transitions.push(ArtifactTransition {
+                from: "compose_fallback".into(),
+                event: Some("draft_ready".into()),
+                guard: ArtifactGuard::Always,
+                to: "verify_sections".into(),
+            });
+        }
+        let program = Arc::new(ProgramRuntime {
+            image_hash: image_hash.clone(),
+            workflow: CompiledWorkflow {
+                id: "company_research_v2".into(),
+                initial: 1,
+                states,
+                transitions,
+            },
+            typed_program: StateProgram {
+                image_hash,
+                workflow_id: "company_research_v2".into(),
+                initial_state: "accepted".into(),
+                states: typed_states,
+                transitions: typed_transitions,
+                max_fuel: 128,
+            },
+            capability_states: BTreeMap::new(),
+            answer_contract: answer_pin,
+        });
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut run = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        run.enter_initial_model_state().unwrap();
+        run
+    }
+
+    fn section_episode(batch: &Value) -> ProviderEpisodeV1 {
+        let assistant = AssistantMessage {
+            content: Some(batch.to_string()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        };
+        ProviderEpisodeV1 {
+            schema_version: 1,
+            request_hash: ContentHash::sha256("request"),
+            requested_model: GLM_MODEL_ID.into(),
+            observed_model: GLM_MODEL_ID.into(),
+            api_version: "v1".into(),
+            assistant,
+            tool_results: Vec::new(),
+            tool_schema_hash: ContentHash::sha256("tools"),
+            agent_image_hash: ContentHash::sha256("image"),
+            finish_reason: "stop".into(),
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                prompt_cache_hit_tokens: 0,
+                prompt_cache_miss_tokens: 1,
+            },
+            replay_hash: ContentHash::sha256("replay"),
+        }
+    }
+
+    #[test]
+    fn output_reserve_fallback_never_fires_mid_section_loop_even_with_a_declared_edge() {
+        let mut state = sectioned_active_run(true);
+        // Cross the exact floor `should_finalize_for_output_reserve` protects
+        // (effective reserve 16_384 + minimum research turn 2_048) with
+        // substantive evidence admitted, so the ONLY thing standing between
+        // the budget numbers and the image-declared fallback edge is the
+        // engine's structural sectioned-state immunity.
+        state.limits.max_output_tokens = 36_000;
+        state.usage.output_tokens = 36_000 - 16_384 - 2_048;
+        state.ledger.append(sanitizer_evidence("e1")).unwrap();
+        let image = fixture_image();
+        assert!(
+            state.should_finalize_for_output_reserve(&image).unwrap(),
+            "fixture crosses the reserve boundary"
+        );
+        let before = state.interpreter.current_state().to_owned();
+        assert!(
+            !state
+                .finalize_for_output_reserve(&image, &ContentHash::sha256("episode"))
+                .unwrap(),
+            "the engine, not a reserve trigger, ends the section loop"
+        );
+        assert_eq!(
+            state.interpreter.current_state(),
+            before,
+            "no fallback transition may leave the sectioned compose state"
+        );
+    }
+
+    #[test]
+    fn conversation_limit_failure_after_a_valid_batch_does_not_strand_retention() {
+        let fixture = fixture();
+        let input = fixture.input();
+        let mut state = sectioned_active_run(false);
+        let batch = section_batch(vec![section("s0", 0)], "more_sections");
+        let episode = section_episode(&batch);
+        let section_pin = ContractPin::canonical(REPORT_SECTIONS_V1).unwrap();
+        let final_pin = ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap();
+        // The loop transitions and the transcript acknowledgement succeeded,
+        // but the conversation limit blew afterwards: the batch must NOT stay
+        // retained, or the bounded repair retry would die on
+        // duplicate_section_id.
+        let error = retain_section_batch(
+            1,
+            &input,
+            &mut state,
+            &episode,
+            &section_pin,
+            &final_pin,
+            &batch,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EngineError::SizeLimit { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            state.composed_sections_len(),
+            0,
+            "a batch whose turn failed must not stay retained"
+        );
+        assert!(
+            matches!(
+                state.interpreter.current_operation().unwrap(),
+                StateOperation::ModelDecision { .. }
+            ),
+            "the retry composes again from a model decision state"
+        );
+        // The bounded repair retry re-emits the same batch and succeeds.
+        retain_section_batch(
+            1 << 20,
+            &input,
+            &mut state,
+            &episode,
+            &section_pin,
+            &final_pin,
+            &batch,
+        )
+        .unwrap();
+        assert_eq!(state.composed_sections_len(), 1);
     }
 }

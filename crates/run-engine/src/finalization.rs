@@ -1371,7 +1371,7 @@ fn validate_section_batch_ledger_binding(
 /// was admitted (batch retained, continuation ack appended); the orchestrator
 /// checkpoints and dispatches the next compose turn.
 #[allow(clippy::too_many_arguments)]
-fn retain_section_batch(
+pub(crate) fn retain_section_batch(
     max_conversation_bytes: usize,
     input: &RunInput<'_>,
     state: &mut ActiveRun,
@@ -1380,7 +1380,12 @@ fn retain_section_batch(
     final_contract: &ContractPin,
     batch: &Value,
 ) -> Result<Option<(Value, AnswerIr, ResearchCompletion, String)>, EngineError> {
-    state.retain_composed_section(batch)?;
+    // Validate BEFORE any state change, and retain only after every fallible
+    // step of the turn succeeded: a post-push failure (transition admission,
+    // the acknowledgement's conversation limit, final assembly) would strand
+    // the retained batch and send the repair retry to a misleading
+    // `duplicate_section_id` death instead of a clean re-emit.
+    state.validate_composed_section(batch)?;
     let episode_hash = ContentHash::sha256(serde_jcs::to_vec(episode)?);
     // `section_submitted`: compose → verification builtin, with the batch
     // itself as the model artifact sealed under the section grammar.
@@ -1402,7 +1407,7 @@ fn retain_section_batch(
     let report_done = batch.get("continuation").and_then(Value::as_str) == Some("report_done");
     if !report_done && state.section_loop_may_continue(input.image)? {
         let facts = serde_json::json!({
-            "sections_retained": state.composed_sections_len(),
+            "sections_retained": state.composed_sections_len_with(batch),
         });
         let handler = match state.interpreter.current_operation()? {
             StateOperation::Builtin { handler, .. }
@@ -1433,16 +1438,21 @@ fn retain_section_batch(
         )?;
         state.require_model_state()?;
         state.append_assistant(episode);
-        state.append_section_batch_ack(state.composed_sections_len());
+        state.append_section_batch_ack(state.composed_sections_len_with(batch));
         state.check_conversation_limit(max_conversation_bytes)?;
+        state.retain_composed_section(batch)?;
         return Ok(None);
     }
     // Loop ended: assemble the final and hand it to the ordinary
     // verify→render path — the same bind/normalize/validate/sanitize chain a
     // single-shot typed answer takes, so the evidence doctrine and the
-    // claim↔ledger binding invariants are unchanged.
+    // claim↔ledger binding invariants are unchanged. Assembly is read-only
+    // over the retained batches plus this one; the push happens only after
+    // the assembled final proved committable.
     let policy = answer_policy(input.image);
-    let mut answer_ir = state.assemble_answer_ir(&policy)?;
+    let mut batches = state.composed_sections.clone();
+    batches.push(batch.clone());
+    let mut answer_ir = ActiveRun::assemble_answer_ir_from(&batches, &policy)?;
     bind_kernel_goal_ids(&mut answer_ir, state);
     normalize_answer_calculation_lineage(&mut answer_ir, state);
     normalize_answer_section_headings(&mut answer_ir, &policy);
@@ -1451,6 +1461,7 @@ fn retain_section_batch(
         .map_err(|issues| EngineError::AnswerValidation(issue_codes(&issues)))?;
     validate_kernel_goal_bindings(&answer_ir, state)?;
     let rendered_content = render_markdown(&answer_ir, &state.ledger)?;
+    state.retain_composed_section(batch)?;
     let final_output = if final_contract.id == ANSWER_IR_V1 || final_contract.id == ANSWER_IR_V2 {
         serde_json::to_value(&answer_ir)?
     } else {

@@ -1131,6 +1131,17 @@ impl ActiveRun {
         provider_episode_hash: &ContentHash,
         allow_without_substantive_evidence: bool,
     ) -> Result<bool, EngineError> {
+        // E1 sectioned compose: a section turn IS an answer turn, so the
+        // loop's only budget termination is the engine-owned
+        // `section_loop_may_continue` check. This immunity is structural and
+        // engine-side — it must not depend on the image declining to declare
+        // an `output_budget_reserved` edge from a sectioned compose state,
+        // because taking that edge mid-loop would strand the retained
+        // batches in a state whose composer no longer accepts section
+        // batches.
+        if self.section_output_contract()?.is_some() {
+            return Ok(false);
+        }
         let input_budget_reserved = self.input_budget_answer_reserve_reached();
         let substantive_evidence_available = self.has_substantive_research_evidence();
         if !substantive_evidence_available && !allow_without_substantive_evidence {
@@ -2534,6 +2545,21 @@ impl ActiveRun {
         self.composed_section_ids().len()
     }
 
+    /// Distinct section count this run would hold if `batch` were retained
+    /// (the projected acknowledgement count used before the batch is
+    /// actually pushed).
+    pub(crate) fn composed_sections_len_with(&self, batch: &Value) -> usize {
+        let mut ids = self.composed_section_ids();
+        if let Some(sections) = batch.get("sections").and_then(Value::as_array) {
+            for section in sections {
+                if let Some(id) = section.get("section_id").and_then(Value::as_str) {
+                    ids.insert(id.to_owned());
+                }
+            }
+        }
+        ids.len()
+    }
+
     /// Every section id already retained by earlier batches.
     fn composed_section_ids(&self) -> BTreeSet<String> {
         self.composed_sections
@@ -2545,14 +2571,14 @@ impl ActiveRun {
             .collect()
     }
 
-    /// Retain one validated report-sections/v1 batch. Bounded per batch by
-    /// the contract (16 sections), per run by `MAX_ANSWER_SECTIONS`, and by
-    /// bytes so a runaway composer cannot balloon the checkpoint. A batch
-    /// that re-issues only already-retained section ids is an error (repair
-    /// lane), never a silent merge: pure composer repetition must surface as
-    /// a loop error. Partial overlap with earlier batches is tolerated and
-    /// deduplicated at assembly.
-    pub(crate) fn retain_composed_section(&mut self, batch: &Value) -> Result<(), EngineError> {
+    /// Validate one report-sections/v1 batch without retaining it. Bounded
+    /// per batch by the contract (16 sections), per run by
+    /// `MAX_ANSWER_SECTIONS`, and by bytes so a runaway composer cannot
+    /// balloon the checkpoint. A batch that re-issues only already-retained
+    /// section ids is an error (repair lane), never a silent merge: pure
+    /// composer repetition must surface as a loop error. Partial overlap
+    /// with earlier batches is tolerated and deduplicated at assembly.
+    pub(crate) fn validate_composed_section(&self, batch: &Value) -> Result<(), EngineError> {
         const MAX_BATCH_BYTES: usize = 256 * 1024;
         const MAX_SECTIONS_PER_BATCH: usize = 16;
         if batch.get("schema_version").and_then(Value::as_u64) != Some(1) {
@@ -2564,6 +2590,11 @@ impl ActiveRun {
             .get("sections")
             .and_then(Value::as_array)
             .ok_or_else(|| EngineError::AnswerValidation(vec!["missing_sections".into()]))?;
+        if sections.is_empty() {
+            return Err(EngineError::AnswerValidation(vec![
+                "empty_section_batch".into(),
+            ]));
+        }
         if sections.len() > MAX_SECTIONS_PER_BATCH {
             return Err(EngineError::AnswerValidation(vec![
                 "too_many_sections_in_batch".into(),
@@ -2602,6 +2633,12 @@ impl ActiveRun {
                 "too_many_sections".into(),
             ]));
         }
+        Ok(())
+    }
+
+    /// Retain one validated report-sections/v1 batch (validate, then push).
+    pub(crate) fn retain_composed_section(&mut self, batch: &Value) -> Result<(), EngineError> {
+        self.validate_composed_section(batch)?;
         self.composed_sections.push(batch.clone());
         Ok(())
     }

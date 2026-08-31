@@ -479,6 +479,7 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         STATE_FACTS_V1 => validate_state_facts(value),
         SKILL_LOAD_V1 => validate_skill_load(value),
         SKILL_CONTENT_V1 => validate_skill_content(value),
+        REPORT_SECTIONS_V1 => validate_report_sections(value),
         KRW_WEB_NEWS_SEARCH_INPUT_V1 => validate_web_news_search_input(value),
         KRW_WEB_NEWS_SEARCH_RESULT_V1 => validate_web_news_search_result(value),
         NORMALIZED_CAPABILITY_RESULT_V1 | ANSWER_IR_V1 | ANSWER_IR_V2 => Ok(()),
@@ -687,6 +688,174 @@ fn validate_skill_content(value: &Value) -> Result<(), ContractValueError> {
         return Err(ContractValueError::Shape(SKILL_CONTENT_V1));
     }
     Ok(())
+}
+
+/// Validate a `report-sections/v1` batch: the sectioned compose loop's
+/// model-authored unit. Mirrors the pinned schema — the two enums, the
+/// 1..=16 section cardinality, per-field bounds, and the claim/calculation
+/// item shapes each batch may carry. Batch-level semantic coupling (e.g.
+/// `batch_kind` vs `continuation`) is deliberately not encoded here; that
+/// cross-field rule is a schema decision owned with the image wiring.
+fn validate_report_sections(value: &Value) -> Result<(), ContractValueError> {
+    let body = object(value, REPORT_SECTIONS_V1)?;
+    exact_keys(
+        body,
+        &[
+            "schema_version",
+            "batch_kind",
+            "continuation",
+            "sections",
+            "claims",
+            "calculations",
+            "follow_up_questions",
+        ],
+        REPORT_SECTIONS_V1,
+    )?;
+    let shape = || ContractValueError::Shape(REPORT_SECTIONS_V1);
+    let limit = || ContractValueError::Limit(REPORT_SECTIONS_V1);
+    if body.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || !matches!(
+            body.get("batch_kind").and_then(Value::as_str),
+            Some("section_batch") | Some("final_batch")
+        )
+        || !matches!(
+            body.get("continuation").and_then(Value::as_str),
+            Some("more_sections") | Some("report_done")
+        )
+    {
+        return Err(shape());
+    }
+    let Some(sections) = body.get("sections").and_then(Value::as_array) else {
+        return Err(shape());
+    };
+    if sections.is_empty() {
+        return Err(shape());
+    }
+    if sections.len() > 16 {
+        return Err(limit());
+    }
+    for section in sections {
+        let section = section.as_object().ok_or_else(shape)?;
+        exact_keys(
+            section,
+            &[
+                "section_id",
+                "order_hint",
+                "heading",
+                "body_markdown",
+                "claim_ids",
+            ],
+            REPORT_SECTIONS_V1,
+        )?;
+        if !bounded_string(section.get("section_id"), 1, 128)
+            || !integer_range(section.get("order_hint"), 0, 63)
+            || !bounded_string(section.get("heading"), 1, 200)
+            || !bounded_string(section.get("body_markdown"), 1, 20_000)
+            || !string_array(section.get("claim_ids"), 256, 128)
+        {
+            return Err(shape());
+        }
+    }
+    let Some(claims) = body.get("claims").and_then(Value::as_array) else {
+        return Err(shape());
+    };
+    if claims.len() > 256 {
+        return Err(limit());
+    }
+    for claim in claims {
+        let claim = claim.as_object().ok_or_else(shape)?;
+        exact_keys(
+            claim,
+            &[
+                "claim_id",
+                "kind",
+                "strength",
+                "text",
+                "goal_ids",
+                "evidence_ids",
+                "counter_evidence_ids",
+                "calculation_ids",
+                "subject",
+                "predicate",
+                "value",
+                "unit",
+                "period",
+                "comparison_basis",
+            ],
+            REPORT_SECTIONS_V1,
+        )?;
+        if !bounded_string(claim.get("claim_id"), 1, 128)
+            || !matches!(
+                claim.get("kind").and_then(Value::as_str),
+                Some("fact") | Some("number") | Some("interpretation") | Some("uncertainty")
+            )
+            || !matches!(
+                claim.get("strength").and_then(Value::as_str),
+                Some("qualified") | Some("strong")
+            )
+            || !bounded_string(claim.get("text"), 1, 8_000)
+            || !string_array(claim.get("goal_ids"), 32, 128)
+            || !string_array(claim.get("evidence_ids"), 64, 128)
+            || !string_array(claim.get("counter_evidence_ids"), 64, 128)
+            || !string_array(claim.get("calculation_ids"), 64, 128)
+            || !nullable_string(claim.get("subject"))
+            || !nullable_string(claim.get("predicate"))
+            || !nullable_string(claim.get("unit"))
+            || !nullable_string(claim.get("period"))
+            || !nullable_string(claim.get("comparison_basis"))
+            || !claim.contains_key("value")
+        {
+            return Err(shape());
+        }
+    }
+    let Some(calculations) = body.get("calculations").and_then(Value::as_array) else {
+        return Err(shape());
+    };
+    if calculations.len() > 256 {
+        return Err(limit());
+    }
+    for calculation in calculations {
+        let calculation = calculation.as_object().ok_or_else(shape)?;
+        exact_keys(
+            calculation,
+            &[
+                "calculation_id",
+                "expression",
+                "input_evidence_ids",
+                "output",
+                "unit",
+                "rounding",
+                "subject",
+                "metric",
+                "period",
+                "currency",
+            ],
+            REPORT_SECTIONS_V1,
+        )?;
+        if !bounded_string(calculation.get("calculation_id"), 1, 128)
+            || !bounded_string(calculation.get("expression"), 1, 4_096)
+            || !string_array(calculation.get("input_evidence_ids"), 128, 128)
+            || !calculation.contains_key("output")
+            || !nullable_string(calculation.get("unit"))
+            || !nullable_string(calculation.get("rounding"))
+            || !nullable_string(calculation.get("subject"))
+            || !nullable_string(calculation.get("metric"))
+            || !nullable_string(calculation.get("period"))
+            || !nullable_string(calculation.get("currency"))
+        {
+            return Err(shape());
+        }
+    }
+    if !string_array(body.get("follow_up_questions"), 3, 512) {
+        return Err(shape());
+    }
+    Ok(())
+}
+
+/// A schema `[string, null]` field: present and either form (the common
+/// canonical-byte cap already bounds the string form).
+fn nullable_string(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.is_string() || value.is_null())
 }
 
 /// Validate a `krw-web-news-search-input/v1` request: the already trusted
@@ -2055,6 +2224,80 @@ mod tests {
         // v1과 동일 문형으로 배치 수준 claim/calculation을 운반한다.
         assert!(schema["$defs"]["claim"].is_object());
         assert!(schema["$defs"]["calculation"].is_object());
+    }
+
+    #[test]
+    fn report_sections_v1_values_validate_against_the_pinned_shape() {
+        let batch = serde_json::json!({
+            "schema_version": 1,
+            "batch_kind": "final_batch",
+            "continuation": "report_done",
+            "sections": [{
+                "section_id": "s0",
+                "order_hint": 0,
+                "heading": "결론",
+                "body_markdown": "근거 있는 본문입니다.",
+                "claim_ids": ["c0"]
+            }],
+            "claims": [{
+                "claim_id": "c0",
+                "kind": "fact",
+                "strength": "qualified",
+                "text": "근거 있는 사실입니다.",
+                "goal_ids": [],
+                "evidence_ids": ["e1"],
+                "counter_evidence_ids": [],
+                "calculation_ids": [],
+                "subject": "AAPL",
+                "predicate": null,
+                "value": null,
+                "unit": null,
+                "period": "FY2025",
+                "comparison_basis": null
+            }],
+            "calculations": [{
+                "calculation_id": "calc0",
+                "expression": "1 + 1",
+                "input_evidence_ids": ["e1"],
+                "output": 2,
+                "unit": "배",
+                "rounding": null,
+                "subject": "AAPL",
+                "metric": "revenue_growth",
+                "period": "FY2025",
+                "currency": "USD"
+            }],
+            "follow_up_questions": ["다음 분기 매출 전망은?"]
+        });
+        assert!(validate_value(REPORT_SECTIONS_V1, &batch).is_ok());
+        // 17 sections exceed the loop's per-batch bound.
+        let mut oversized = batch.clone();
+        oversized["sections"] = serde_json::json!(
+            (0..17)
+                .map(|i| serde_json::json!({
+                    "section_id": format!("s{i}"),
+                    "order_hint": i,
+                    "heading": "결론",
+                    "body_markdown": "본문",
+                    "claim_ids": []
+                }))
+                .collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            validate_value(REPORT_SECTIONS_V1, &oversized),
+            Err(ContractValueError::Limit(REPORT_SECTIONS_V1))
+        ));
+        // Unknown continuation, empty sections, and unknown keys are shape
+        // violations mirroring the pinned schema.
+        let mut bad = batch.clone();
+        bad["continuation"] = serde_json::json!("keep_going");
+        assert!(validate_value(REPORT_SECTIONS_V1, &bad).is_err());
+        let mut empty = batch.clone();
+        empty["sections"] = serde_json::json!([]);
+        assert!(validate_value(REPORT_SECTIONS_V1, &empty).is_err());
+        let mut extra = batch.clone();
+        extra["unexpected"] = serde_json::json!(true);
+        assert!(validate_value(REPORT_SECTIONS_V1, &extra).is_err());
     }
 
     #[test]
