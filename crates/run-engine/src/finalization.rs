@@ -1298,6 +1298,14 @@ fn validate_typed_output(
             .map_err(|issues| EngineError::AnswerValidation(issue_codes(&issues)))?;
         validate_kernel_goal_bindings(&answer_ir, state)?;
         Some((answer_ir, completion))
+    } else if contract.id == REPORT_SECTIONS_V1 {
+        // E1 sectioned compose: a batch is never the committed answer. The
+        // batch grammar itself was already validated canonically; here the
+        // accumulated-so-far assembly is checked with the sanitizer's own
+        // integrity classifier so a batch that would corrupt the claim↔ledger
+        // binding rides the ordinary bounded repair lanes before retention.
+        validate_section_batch_ledger_binding(input, state, output)?;
+        None
     } else {
         None
     };
@@ -1320,6 +1328,135 @@ fn validate_typed_output(
         }
     }
     Ok(answer_ir)
+}
+
+/// E1 sectioned compose: validate one report-sections/v1 batch against the
+/// evidence doctrine before it is retained. The check assembles every batch
+/// accumulated so far plus the candidate and runs the ordinary
+/// `validate_answer`; only the sanitizer's integrity classes fail here —
+/// quality defects (heading shape, follow-up counts, strength bindings) stay
+/// with the sanitizer at final assembly, exactly as for a single-shot typed
+/// answer.
+fn validate_section_batch_ledger_binding(
+    input: &RunInput<'_>,
+    state: &ActiveRun,
+    batch: &Value,
+) -> Result<(), EngineError> {
+    let policy = answer_policy(input.image);
+    let mut batches = state.composed_sections.clone();
+    batches.push(batch.clone());
+    let assembled = ActiveRun::assemble_answer_ir_from(&batches, &policy)?;
+    let issues = match validate_answer(&assembled, &state.ledger, &policy) {
+        Ok(()) => return Ok(()),
+        Err(issues) => issues,
+    };
+    if issues
+        .iter()
+        .any(|issue| issue_is_integrity(issue, &assembled, &state.ledger))
+    {
+        return Err(EngineError::AnswerValidation(issue_codes(&issues)));
+    }
+    Ok(())
+}
+
+/// E1 engine-owned section accumulation loop: retain one validated
+/// report-sections/v1 batch, walk the `section_submitted` edge into the
+/// verification builtin, and decide loop continuation.
+///
+/// Returns `Ok(Some(assembled))` when the loop ended — the writer said
+/// `report_done`, or the engine's own reserve-floor check
+/// (`section_loop_may_continue`) stopped it, which is answer-always: the
+/// already-retained sections are assembled and flow through the ordinary
+/// verify→render path. Returns `Ok(None)` when exactly one more section turn
+/// was admitted (batch retained, continuation ack appended); the orchestrator
+/// checkpoints and dispatches the next compose turn.
+#[allow(clippy::too_many_arguments)]
+fn retain_section_batch(
+    max_conversation_bytes: usize,
+    input: &RunInput<'_>,
+    state: &mut ActiveRun,
+    episode: &ProviderEpisodeV1,
+    section_pin: &ContractPin,
+    final_contract: &ContractPin,
+    batch: &Value,
+) -> Result<Option<(Value, AnswerIr, ResearchCompletion, String)>, EngineError> {
+    state.retain_composed_section(batch)?;
+    let episode_hash = ContentHash::sha256(serde_jcs::to_vec(episode)?);
+    // `section_submitted`: compose → verification builtin, with the batch
+    // itself as the model artifact sealed under the section grammar.
+    let submitted_event = state.program.unique_transition_event(
+        state.interpreter.current_state(),
+        batch,
+        |candidate| {
+            matches!(
+                candidate.operation,
+                StateOperation::Builtin {
+                    handler: BuiltinHandler::ValidateArtifact | BuiltinHandler::VerifyOutput,
+                    ..
+                }
+            )
+        },
+        "section submitted",
+    )?;
+    state.apply_model_artifact(&submitted_event, section_pin.clone(), batch, episode_hash)?;
+    let report_done = batch.get("continuation").and_then(Value::as_str) == Some("report_done");
+    if !report_done && state.section_loop_may_continue(input.image)? {
+        let facts = serde_json::json!({
+            "sections_retained": state.composed_sections_len(),
+        });
+        let handler = match state.interpreter.current_operation()? {
+            StateOperation::Builtin { handler, .. }
+                if matches!(
+                    handler,
+                    BuiltinHandler::ValidateArtifact | BuiltinHandler::VerifyOutput
+                ) =>
+            {
+                handler
+            }
+            _ => {
+                return Err(EngineError::WorkflowResolution {
+                    outcome: "section verifier",
+                })
+            }
+        };
+        let more_event = state.program.unique_transition_event(
+            state.interpreter.current_state(),
+            &facts,
+            |candidate| matches!(candidate.operation, StateOperation::ModelDecision { .. }),
+            "more sections required",
+        )?;
+        state.apply_builtin_artifact(
+            *handler,
+            &more_event,
+            ContractPin::canonical(STATE_FACTS_V1)?,
+            &facts,
+        )?;
+        state.require_model_state()?;
+        state.append_assistant(episode);
+        state.append_section_batch_ack(state.composed_sections_len());
+        state.check_conversation_limit(max_conversation_bytes)?;
+        return Ok(None);
+    }
+    // Loop ended: assemble the final and hand it to the ordinary
+    // verify→render path — the same bind/normalize/validate/sanitize chain a
+    // single-shot typed answer takes, so the evidence doctrine and the
+    // claim↔ledger binding invariants are unchanged.
+    let policy = answer_policy(input.image);
+    let mut answer_ir = state.assemble_answer_ir(&policy)?;
+    bind_kernel_goal_ids(&mut answer_ir, state);
+    normalize_answer_calculation_lineage(&mut answer_ir, state);
+    normalize_answer_section_headings(&mut answer_ir, &policy);
+    validate_calculations(&answer_ir, &state.calculations)?;
+    let (answer_ir, completion) = sanitize_answer(&answer_ir, &state.ledger, &policy)
+        .map_err(|issues| EngineError::AnswerValidation(issue_codes(&issues)))?;
+    validate_kernel_goal_bindings(&answer_ir, state)?;
+    let rendered_content = render_markdown(&answer_ir, &state.ledger)?;
+    let final_output = if final_contract.id == ANSWER_IR_V1 || final_contract.id == ANSWER_IR_V2 {
+        serde_json::to_value(&answer_ir)?
+    } else {
+        Value::String(rendered_content.clone())
+    };
+    Ok(Some((final_output, answer_ir, completion, rendered_content)))
 }
 
 /// Research-goal aliases are created by the kernel after proposal lowering,
@@ -1533,7 +1670,15 @@ where
                 // deliberately not a generic repair reservation: a planner
                 // repair must not consume the only safe final-answer fallback.
                 state.request_direct_answer_retry();
-                state.append_direct_answer_retry_feedback("answer_output_truncated");
+                if state.section_output_contract()?.is_some() {
+                    // A sectioned compose turn must retry in the SAME batch
+                    // grammar (the retry disables private thinking so the
+                    // batch fits the cap); the Markdown-language retry
+                    // feedback would ask for the wrong output shape.
+                    state.append_repair_feedback(REPORT_SECTIONS_V1, "answer_output_truncated");
+                } else {
+                    state.append_direct_answer_retry_feedback("answer_output_truncated");
+                }
                 state.check_conversation_limit(self.config.max_conversation_bytes)?;
                 return Ok(None);
             }
@@ -1556,7 +1701,11 @@ where
             _ if !state.direct_answer_retry_requested() => {
                 state.request_direct_answer_retry();
                 state.append_assistant(episode);
-                state.append_direct_answer_retry_feedback("final_output_missing");
+                if state.section_output_contract()?.is_some() {
+                    state.append_repair_feedback(REPORT_SECTIONS_V1, "final_output_missing");
+                } else {
+                    state.append_direct_answer_retry_feedback("final_output_missing");
+                }
                 state.check_conversation_limit(self.config.max_conversation_bytes)?;
                 return Ok(None);
             }
@@ -1574,7 +1723,11 @@ where
         let output_contract =
             ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
         let final_output_mode = state.current_model_output_mode()?;
-        let (output, answer_ir, completion, rendered_content) = match final_output_mode {
+        // The fifth tuple element is the raw report-sections/v1 batch when a
+        // sectioned compose state produced this turn (its `section_submitted`
+        // model artifact carries the batch, not the assembled final); `None`
+        // for every ordinary output whose model artifact is the final itself.
+        let (output, answer_ir, completion, rendered_content, section_batch) = match final_output_mode {
             ModelOutputMode::Markdown => {
                 let output = Value::String(content.to_owned());
                 validate_canonical_value(&output_contract.id, &output)
@@ -1603,6 +1756,7 @@ where
                     None,
                     ResearchCompletion::Accepted,
                     content.to_owned(),
+                    None,
                 )
             }
             ModelOutputMode::TypedJson => {
@@ -1626,7 +1780,16 @@ where
                     }
                     Err(error) => return Err(EngineError::Json(error)),
                 };
-                if let Err(error) = validate_canonical_value(&output_contract.id, &output) {
+                // E1: a sectioned compose state declares report-sections/v1
+                // as its own output grammar; the image-level internal format
+                // stays the committed final-output contract. Canonical
+                // validation always runs against the grammar the state
+                // actually declares.
+                let section_contract = state.section_output_contract()?;
+                let validation_contract = section_contract
+                    .clone()
+                    .unwrap_or_else(|| output_contract.clone());
+                if let Err(error) = validate_canonical_value(&validation_contract.id, &output) {
                     if constraint_mode == ProviderConstraintMode::JsonSchema {
                         return Err(EngineError::ProviderConstrainedOutputViolation(
                             "canonical schema",
@@ -1637,74 +1800,129 @@ where
                             answer_error_code(&EngineError::CanonicalRegistry(format!("{error:?}")));
                         tracing::warn!(%code, "typed answer repair: canonical validation");
                         state.append_assistant(episode);
-                        state.append_repair_feedback(&output_contract.id, code);
+                        state.append_repair_feedback(&validation_contract.id, code);
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
                     return Err(EngineError::CanonicalRegistry(format!("{error:?}")));
                 }
                 if let Err(error) =
-                    validate_product_output_linkage(input.request, &output_contract, &output)
+                    validate_product_output_linkage(input.request, &validation_contract, &output)
                 {
                     if state.reserve_repair()? {
                         state.append_assistant(episode);
-                        state
-                            .append_repair_feedback(&output_contract.id, answer_error_code(&error));
+                        state.append_repair_feedback(
+                            &validation_contract.id,
+                            answer_error_code(&error),
+                        );
                         state.check_conversation_limit(self.config.max_conversation_bytes)?;
                         return Ok(None);
                     }
                     return Err(error);
                 }
 
-                let candidate = validate_typed_output(input, state, &output_contract, &output);
-                let (answer_ir, completion) = match candidate {
-                    Ok(Some((answer_ir, completion))) => (Some(answer_ir), completion),
-                    // Product outputs (routing, notebook, display planning)
-                    // intentionally produce no AnswerIR and no research
-                    // completion class beyond the default.
-                    Ok(None) => (None, ResearchCompletion::Accepted),
-                    Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
-                        let code = answer_error_code(&error);
-                        tracing::warn!(%code, "typed answer repair: answer validation");
-                        state.append_assistant(episode);
-                        state.append_repair_feedback(&output_contract.id, code);
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
+                let candidate = validate_typed_output(input, state, &validation_contract, &output);
+                if let Some(section_pin) = section_contract {
+                    // E1 engine-owned section accumulation loop: retain the
+                    // validated batch, walk `section_submitted`, and either
+                    // admit exactly one more section turn or assemble the
+                    // final and continue through the ordinary verify→render
+                    // path. Batch retention and assembly failures ride the
+                    // same bounded repair lanes as any typed answer.
+                    let assembled = candidate.and_then(|_| {
+                        retain_section_batch(
+                            self.config.max_conversation_bytes,
+                            input,
+                            state,
+                            episode,
+                            &section_pin,
+                            &output_contract,
+                            &output,
+                        )
+                    });
+                    match assembled {
+                        Ok(Some((final_output, answer_ir, completion, rendered_content))) => {
+                            // The compose→verify artifact carries the batch
+                            // itself; the assembled final below is the
+                            // committed output.
+                            (
+                                final_output,
+                                Some(answer_ir),
+                                completion,
+                                rendered_content,
+                                Some(output),
+                            )
+                        }
+                        Ok(None) => return Ok(None),
+                        Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
+                            let code = answer_error_code(&error);
+                            tracing::warn!(%code, "section batch repair: answer validation");
+                            state.append_assistant(episode);
+                            state.append_repair_feedback(&section_pin.id, code);
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                        Err(error) if state.reserve_repair()? => {
+                            state.append_assistant(episode);
+                            state
+                                .append_repair_feedback(&section_pin.id, answer_error_code(&error));
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                        Err(error) => return Err(error),
                     }
-                    // A contract-shaped mistake inside the compose state has
-                    // no verify-state repair transition; give it the same
-                    // bounded conversational retry used for canonical
-                    // violations instead of failing the run terminally.
-                    Err(error) if state.reserve_repair()? => {
-                        state.append_assistant(episode);
-                        state
-                            .append_repair_feedback(&output_contract.id, answer_error_code(&error));
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                    Err(error) => return Err(error),
-                };
-                let rendered_content = render_typed_output(
-                    &output_contract,
-                    &output,
-                    answer_ir.as_ref(),
-                    &state.ledger,
-                )?;
-                // `bind_kernel_goal_ids` may normalize kernel-owned linkage
-                // after the model response is parsed. Persist that normalized
-                // AnswerIR as the canonical output too, otherwise the final
-                // answer hash and the session-memory hash would disagree at
-                // the durable commit boundary.
-                let normalized_output = match &answer_ir {
-                    Some(answer_ir) => serde_json::to_value(answer_ir)?,
-                    // Product runs such as routing, notebook, and display
-                    // planning intentionally do not produce AnswerIR. Keep
-                    // their already-validated typed payload as the state
-                    // artifact instead of serializing `None` to `null` and
-                    // failing the product contract at the commit boundary.
-                    None => output.clone(),
-                };
-                (normalized_output, answer_ir, completion, rendered_content)
+                } else {
+                    let (answer_ir, completion) = match candidate {
+                        Ok(Some((answer_ir, completion))) => (Some(answer_ir), completion),
+                        // Product outputs (routing, notebook, display planning)
+                        // intentionally produce no AnswerIR and no research
+                        // completion class beyond the default.
+                        Ok(None) => (None, ResearchCompletion::Accepted),
+                        Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
+                            let code = answer_error_code(&error);
+                            tracing::warn!(%code, "typed answer repair: answer validation");
+                            state.append_assistant(episode);
+                            state.append_repair_feedback(&output_contract.id, code);
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                        // A contract-shaped mistake inside the compose state has
+                        // no verify-state repair transition; give it the same
+                        // bounded conversational retry used for canonical
+                        // violations instead of failing the run terminally.
+                        Err(error) if state.reserve_repair()? => {
+                            state.append_assistant(episode);
+                            state.append_repair_feedback(
+                                &output_contract.id,
+                                answer_error_code(&error),
+                            );
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    let rendered_content = render_typed_output(
+                        &output_contract,
+                        &output,
+                        answer_ir.as_ref(),
+                        &state.ledger,
+                    )?;
+                    // `bind_kernel_goal_ids` may normalize kernel-owned linkage
+                    // after the model response is parsed. Persist that normalized
+                    // AnswerIR as the canonical output too, otherwise the final
+                    // answer hash and the session-memory hash would disagree at
+                    // the durable commit boundary.
+                    let normalized_output = match &answer_ir {
+                        Some(answer_ir) => serde_json::to_value(answer_ir)?,
+                        // Product runs such as routing, notebook, and display
+                        // planning intentionally do not produce AnswerIR. Keep
+                        // their already-validated typed payload as the state
+                        // artifact instead of serializing `None` to `null` and
+                        // failing the product contract at the commit boundary.
+                        None => output.clone(),
+                    };
+                    (normalized_output, answer_ir, completion, rendered_content, None)
+                }
             }
             _ => {
                 return Err(EngineError::WorkflowResolution {
@@ -1713,26 +1931,33 @@ where
             }
         };
 
-        let verification_event = state.program.unique_transition_event(
-            state.interpreter.current_state(),
-            &output,
-            |candidate| {
-                matches!(
-                    candidate.operation,
-                    StateOperation::Builtin {
-                        handler: BuiltinHandler::ValidateArtifact | BuiltinHandler::VerifyOutput,
-                        ..
-                    }
-                )
-            },
-            "typed output verification",
-        )?;
-        state.apply_model_artifact(
-            &verification_event,
-            output_contract.clone(),
-            &output,
-            ContentHash::sha256(serde_jcs::to_vec(episode)?),
-        )?;
+        // The sectioned compose flow already walked compose→verify inside
+        // `retain_section_batch` (its `section_submitted` model artifact
+        // carries the retained batch); every ordinary output applies its own
+        // compose→verify model artifact with the final payload here. Both
+        // then share the same verification→render→commit chain below.
+        if section_batch.is_none() {
+            let verification_event = state.program.unique_transition_event(
+                state.interpreter.current_state(),
+                &output,
+                |candidate| {
+                    matches!(
+                        candidate.operation,
+                        StateOperation::Builtin {
+                            handler: BuiltinHandler::ValidateArtifact | BuiltinHandler::VerifyOutput,
+                            ..
+                        }
+                    )
+                },
+                "typed output verification",
+            )?;
+            state.apply_model_artifact(
+                &verification_event,
+                output_contract.clone(),
+                &output,
+                ContentHash::sha256(serde_jcs::to_vec(episode)?),
+            )?;
+        }
 
         let verification_handler = match state.interpreter.current_operation()? {
             StateOperation::Builtin { handler, .. }

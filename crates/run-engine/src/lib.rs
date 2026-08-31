@@ -119,7 +119,8 @@ use krw_agent_contracts::{
     KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1,
     NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2,
     NotebookTransformInputV1, NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1,
-    RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2, ROUTING_DECISION_V2, ROUTING_REQUEST_V1,
+    REPORT_SECTIONS_V1, RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2, ROUTING_DECISION_V2,
+    ROUTING_REQUEST_V1,
     ResearchProposalRepairDirective, ResearchProposalViolation, RoutingDecisionV2,
     RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1, build_company_brief_input,
     build_company_research_context, build_evidence_review_input, compile_guru_research_frame,
@@ -10463,5 +10464,110 @@ mod tests {
             }),
             "glm_model_mismatch"
         );
+    }
+
+    fn fixture_active_run() -> ActiveRun {
+        let fixture = fixture();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.enter_initial_model_state().unwrap();
+        state
+    }
+
+    fn fixture_image() -> AgentImageManifest {
+        fixture().image.manifest.clone()
+    }
+
+    fn section(section_id: impl Into<String>, order_hint: u8) -> Value {
+        let section_id = section_id.into();
+        serde_json::json!({
+            "section_id": section_id,
+            "order_hint": order_hint,
+            "heading": format!("{section_id} 결론"),
+            "body_markdown": format!("{section_id} 본문 문단입니다."),
+            "claim_ids": [],
+        })
+    }
+
+    fn section_batch(sections: Vec<Value>, continuation: &str) -> Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "batch_kind": if continuation == "report_done" { "final_batch" } else { "section_batch" },
+            "continuation": continuation,
+            "sections": sections,
+            "claims": [],
+            "calculations": [],
+        })
+    }
+
+    fn final_batch_with_follow_ups() -> Value {
+        let mut batch = section_batch(vec![section("final", 63)], "report_done");
+        batch["follow_up_questions"] = serde_json::json!([
+            "다음 분기 매출 전망은?",
+            "경쟁사 대비 마진 추이는?",
+            "증가 자본 배치 계획은?"
+        ]);
+        batch
+    }
+
+    fn policy() -> AnswerPolicy {
+        AnswerPolicy {
+            forbidden_terms: Vec::new(),
+            require_direct_strong_claims: false,
+            require_period_for_numbers: true,
+            require_unit_for_numbers: true,
+            require_counter_signal_for_interpretation: false,
+            exact_follow_up_count: 3,
+        }
+    }
+
+    #[test]
+    fn composed_sections_accumulate_dedup_and_enforce_caps() {
+        let mut state = fixture_active_run();
+        let first = section_batch(vec![section("s0", 0), section("s1", 1)], "more_sections");
+        let duplicate = section_batch(vec![section("s0", 0)], "more_sections");
+        let second = section_batch(vec![section("s1", 1), section("s2", 2)], "report_done");
+        assert!(state.retain_composed_section(&first).is_ok());
+        // 같은 section_id 재발행은 거부 not 병합 — 작성기 반복을 루프 오류로 노출.
+        assert!(state.retain_composed_section(&duplicate).is_err());
+        assert!(state.retain_composed_section(&second).is_ok());
+        assert_eq!(state.composed_sections_len(), 3);
+    }
+
+    #[test]
+    fn section_loop_stops_when_budget_reaches_the_reserve_floor() {
+        let mut state = fixture_active_run();
+        state.limits.max_output_tokens = 36_000;
+        state.usage.output_tokens = 36_000 - 16_384 - 2_048; // floor 도달
+        assert!(
+            !state.section_loop_may_continue(&fixture_image()).unwrap(),
+            "engine ends the loop at the same floor the reserve protects, before dispatching another section turn"
+        );
+        // 루프 종료는 answer-always: 이미 확보한 섹션으로 조립한다.
+        state
+            .retain_composed_section(&final_batch_with_follow_ups())
+            .unwrap();
+        let assembled = state.assemble_answer_ir(&policy()).unwrap();
+        assert!(!assembled.sections.is_empty());
+        assert_eq!(assembled.follow_up_questions.len(), 3);
+    }
+
+    #[test]
+    fn oversized_batch_of_17_sections_is_rejected_and_repaired() {
+        let mut state = fixture_active_run();
+        let oversized = section_batch(
+            (0..17).map(|i| section(format!("s{i}"), i)).collect(),
+            "more_sections",
+        );
+        assert!(state.retain_composed_section(&oversized).is_err());
     }
 }

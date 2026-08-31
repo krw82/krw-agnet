@@ -6,6 +6,7 @@
 //! state.
 
 use super::*;
+use krw_agent_evidence::{AnswerSection, Claim, MAX_ANSWER_SECTIONS};
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +41,13 @@ pub(crate) struct ActiveRun {
     /// retained facts, which is the pre-B behavior.
     pub(crate) analyst_judgment: Vec<AnalystJudgmentNote>,
     pub(crate) presentation_packs: Vec<Value>,
+    /// E1 sectioned compose: report-sections/v1 batches accepted by
+    /// `retain_composed_section` across the engine-owned compose→verify
+    /// loop. Batches accumulate verbatim; assembly into the final answer IR
+    /// happens once the loop ends (writer `report_done` or the engine's own
+    /// budget floor). Checkpoint projection of this field lands with the
+    /// bundle/checkpoint task.
+    pub(crate) composed_sections: Vec<Value>,
     pub(crate) program: Arc<ProgramRuntime>,
     pub(crate) interpreter: StateInterpreter,
     pub(crate) artifact_validator: ArtifactValidator,
@@ -236,6 +244,7 @@ impl ActiveRun {
             calculations: BTreeMap::new(),
             analyst_judgment: Vec::new(),
             presentation_packs: Vec::new(),
+            composed_sections: Vec::new(),
             program,
             interpreter,
             artifact_validator: ArtifactValidator::default(),
@@ -552,6 +561,14 @@ impl ActiveRun {
         image: &AgentImageManifest,
     ) -> Result<bool, EngineError> {
         let answer_contract = ContractPin::canonical(&image.body.answer_policy.internal_format)?;
+        // E1 sectioned compose: a compose state whose declared output grammar
+        // is the report-sections/v1 batch contract emits the answer surface
+        // one section turn at a time. Treating those turns as answer turns is
+        // what keeps every output-reserve trigger off the loop: the section
+        // composer draws the full remaining output budget (not the
+        // reserve-reduced research lane) and the answer-turn exclusions in
+        // `should_finalize_for_output_reserve` hold mid-loop.
+        let section_contract = ContractPin::canonical(REPORT_SECTIONS_V1)?;
         Ok(matches!(
             self.interpreter.current_operation()?,
             StateOperation::ModelDecision {
@@ -559,7 +576,24 @@ impl ActiveRun {
                 output_contracts,
                 ..
             } if output_contracts.contains(&answer_contract)
+                || output_contracts.contains(&section_contract)
         ))
+    }
+
+    /// The per-state sectioned compose grammar: `Some(REPORT_SECTIONS_V1)`
+    /// when the current compose state declares the report-sections/v1 batch
+    /// contract as its model-output grammar, `None` for every ordinary
+    /// compose/product state.
+    pub(crate) fn section_output_contract(&self) -> Result<Option<ContractPin>, EngineError> {
+        let section_contract = ContractPin::canonical(REPORT_SECTIONS_V1)?;
+        Ok(
+            matches!(
+                self.interpreter.current_operation()?,
+                StateOperation::ModelDecision { output_contracts, .. }
+                    if output_contracts.contains(&section_contract)
+            )
+            .then_some(section_contract),
+        )
     }
 
     pub(crate) fn lifecycle_stage_for_checkpoint(
@@ -1491,6 +1525,14 @@ impl ActiveRun {
     pub(crate) fn append_repair_feedback(&mut self, contract_id: &str, code: &'static str) {
         self.messages.push(RunEngineMessage::user(format!(
             "KRW kernel rejected the previous {contract_id} output with code {code}. Repair only that draft; do not add unsupported facts. Return only corrected {contract_id} JSON."
+        )));
+    }
+
+    /// Acknowledge one retained report-sections/v1 batch so the next compose
+    /// turn continues the report instead of re-proposing the same sections.
+    pub(crate) fn append_section_batch_ack(&mut self, retained: usize) {
+        self.messages.push(RunEngineMessage::user(format!(
+            "KRW kernel retained the submitted report-sections/v1 batch ({retained} sections accumulated). Continue the report: emit the next batch with new section_ids only, or finish with continuation \"report_done\" and exactly three follow_up_questions."
         )));
     }
 
@@ -2484,6 +2526,234 @@ impl ActiveRun {
         {
             self.presentation_packs.push(pack.clone());
         }
+    }
+
+    /// Number of distinct section ids retained across every accepted
+    /// report-sections/v1 batch (the assembler's deduplicated section count).
+    pub(crate) fn composed_sections_len(&self) -> usize {
+        self.composed_section_ids().len()
+    }
+
+    /// Every section id already retained by earlier batches.
+    fn composed_section_ids(&self) -> BTreeSet<String> {
+        self.composed_sections
+            .iter()
+            .filter_map(|batch| batch.get("sections").and_then(Value::as_array))
+            .flat_map(|sections| sections.iter())
+            .filter_map(|section| section.get("section_id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Retain one validated report-sections/v1 batch. Bounded per batch by
+    /// the contract (16 sections), per run by `MAX_ANSWER_SECTIONS`, and by
+    /// bytes so a runaway composer cannot balloon the checkpoint. A batch
+    /// that re-issues only already-retained section ids is an error (repair
+    /// lane), never a silent merge: pure composer repetition must surface as
+    /// a loop error. Partial overlap with earlier batches is tolerated and
+    /// deduplicated at assembly.
+    pub(crate) fn retain_composed_section(&mut self, batch: &Value) -> Result<(), EngineError> {
+        const MAX_BATCH_BYTES: usize = 256 * 1024;
+        const MAX_SECTIONS_PER_BATCH: usize = 16;
+        if batch.get("schema_version").and_then(Value::as_u64) != Some(1) {
+            return Err(EngineError::AnswerValidation(vec![
+                "unsupported_section_schema".to_owned(),
+            ]));
+        }
+        let sections = batch
+            .get("sections")
+            .and_then(Value::as_array)
+            .ok_or_else(|| EngineError::AnswerValidation(vec!["missing_sections".into()]))?;
+        if sections.len() > MAX_SECTIONS_PER_BATCH {
+            return Err(EngineError::AnswerValidation(vec![
+                "too_many_sections_in_batch".into(),
+            ]));
+        }
+        let bytes = serde_jcs::to_vec(batch)?;
+        if bytes.len() > MAX_BATCH_BYTES {
+            return Err(EngineError::AnswerValidation(vec![
+                "section_batch_too_large".into(),
+            ]));
+        }
+        let retained = self.composed_section_ids();
+        let mut incoming = BTreeSet::new();
+        for section in sections {
+            let id = section
+                .get("section_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // An empty or repeated id inside one batch is malformed repetition.
+            if id.trim().is_empty() || !incoming.insert(id.to_owned()) {
+                return Err(EngineError::AnswerValidation(vec![
+                    "duplicate_section_id".into(),
+                ]));
+            }
+        }
+        if incoming.iter().all(|id| retained.contains(id)) {
+            // Every section of this batch is a re-issue: the composer is
+            // looping. Reject the batch so the bounded repair lane can name
+            // the repetition instead of accumulating a no-op.
+            return Err(EngineError::AnswerValidation(vec![
+                "duplicate_section_id".into(),
+            ]));
+        }
+        if self.composed_sections_len() + sections.len() > MAX_ANSWER_SECTIONS {
+            return Err(EngineError::AnswerValidation(vec![
+                "too_many_sections".into(),
+            ]));
+        }
+        self.composed_sections.push(batch.clone());
+        Ok(())
+    }
+
+    /// Engine-owned loop bound: one more section turn is dispatched only
+    /// while the reserve floor (effective final output reserve + the
+    /// minimum research turn) is still available. The four output-reserve
+    /// triggers never fire mid-loop; this check IS the loop's budget
+    /// termination and uses exactly the threshold trigger 2 protects.
+    pub(crate) fn section_loop_may_continue(
+        &self,
+        image: &AgentImageManifest,
+    ) -> Result<bool, EngineError> {
+        let Some(reserve) =
+            image.effective_final_output_reserve_tokens(&self.program.workflow.id)?
+        else {
+            return Ok(true);
+        };
+        let minimum = image
+            .body
+            .answer_policy
+            .minimum_research_turn_tokens
+            .unwrap_or_default();
+        Ok(self.remaining_output_tokens()? > reserve.saturating_add(minimum))
+    }
+
+    /// Assemble the final answer IR from every retained section batch. The
+    /// result flows through the ordinary `validate_answer` / `sanitize_answer`
+    /// pipeline unchanged: the evidence doctrine and the claim↔ledger
+    /// binding invariants are enforced at the same place as a single-shot
+    /// typed answer.
+    pub(crate) fn assemble_answer_ir(&self, policy: &AnswerPolicy) -> Result<AnswerIr, EngineError> {
+        Self::assemble_answer_ir_from(&self.composed_sections, policy)
+    }
+
+    /// Merge report-sections/v1 batches in `order_hint` / arrival order:
+    /// sections deduplicate by id (first issue wins), claims and
+    /// calculations merge by id, and follow-up questions are taken from the
+    /// last `final_batch` (the sanitizer's existing rules enforce the exact
+    /// policy count at validation time — the assembler never invents any).
+    pub(crate) fn assemble_answer_ir_from(
+        batches: &[Value],
+        policy: &AnswerPolicy,
+    ) -> Result<AnswerIr, EngineError> {
+        let mut ordered_sections = Vec::new();
+        let mut claims: Vec<Claim> = Vec::new();
+        let mut calculations: Vec<Calculation> = Vec::new();
+        let mut seen_claim_ids = BTreeSet::new();
+        let mut seen_calculation_ids = BTreeSet::new();
+        let mut follow_up_questions = Vec::new();
+        let mut arrival = 0usize;
+        for batch in batches {
+            if let Some(sections) = batch.get("sections").and_then(Value::as_array) {
+                for section in sections {
+                    let order_hint = section
+                        .get("order_hint")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default();
+                    ordered_sections.push((order_hint, arrival, section.clone()));
+                    arrival = arrival.saturating_add(1);
+                }
+            }
+            for claim in batch
+                .get("claims")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                let claim: Claim = serde_json::from_value(claim.clone()).map_err(|_| {
+                    EngineError::AnswerValidation(vec!["section_claim_unparseable".into()])
+                })?;
+                if seen_claim_ids.insert(claim.claim_id.clone()) {
+                    claims.push(claim);
+                }
+            }
+            for calculation in batch
+                .get("calculations")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                let calculation: Calculation = serde_json::from_value(calculation.clone())
+                    .map_err(|_| {
+                        EngineError::AnswerValidation(vec![
+                            "section_calculation_unparseable".into(),
+                        ])
+                    })?;
+                if seen_calculation_ids.insert(calculation.calculation_id.clone()) {
+                    calculations.push(calculation);
+                }
+            }
+            if batch.get("batch_kind").and_then(Value::as_str) == Some("final_batch") {
+                follow_up_questions = batch
+                    .get("follow_up_questions")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+            }
+        }
+        ordered_sections.sort_by_key(|(order_hint, arrival, _)| (*order_hint, *arrival));
+        let mut seen_section_ids = BTreeSet::new();
+        let mut sections = Vec::new();
+        for (_, _, section) in ordered_sections {
+            let section_id = section
+                .get("section_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !seen_section_ids.insert(section_id.clone()) {
+                continue;
+            }
+            let heading = section
+                .get("heading")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            // The assembled IR keeps the batch's own heading; `intent` is the
+            // answer-ir's short section label, bounded to its contract limit.
+            let intent: String = heading.chars().take(128).collect();
+            let claim_ids = section
+                .get("claim_ids")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            sections.push(AnswerSection {
+                section_id,
+                heading,
+                intent,
+                claim_ids,
+                disclosed_uncertainty: None,
+            });
+        }
+        // Defensive cardinality only: a final_batch cannot exceed the
+        // contract's three follow-ups, and the sanitizer's existing policy
+        // rules (warn/truncate) stay the single enforcement point.
+        follow_up_questions.truncate(policy.exact_follow_up_count);
+        Ok(AnswerIr {
+            schema_version: 2,
+            locale: "ko-KR".to_owned(),
+            sections,
+            claims,
+            calculations,
+            follow_up_questions,
+        })
     }
 
     pub(crate) fn ingest_scope_projection(
