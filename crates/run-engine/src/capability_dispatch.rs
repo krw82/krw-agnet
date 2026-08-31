@@ -216,6 +216,7 @@ pub(crate) fn model_visible_capability_result(
     call: &PreparedCall,
     result: &CapabilityResult,
     ladder_dispatched: bool,
+    ontology_targeted_dispatched: bool,
 ) -> Value {
     let Some(receipt) = &call.research_intent_receipt else {
         return result.provider_content.clone();
@@ -260,6 +261,15 @@ pub(crate) fn model_visible_capability_result(
                 .expect("JSON object literal")
                 .insert("kernel_event_ladder_hint".into(), hint);
         }
+        if let Some(hint) = model_cross_plane_hint(
+            &call.capability.id,
+            ontology_targeted_dispatched,
+        ) {
+            visible
+                .as_object_mut()
+                .expect("JSON object literal")
+                .insert("kernel_cross_plane_hint".into(), hint);
+        }
     }
     visible
 }
@@ -274,6 +284,54 @@ pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
     "news.feed_context",
     "news.web_search",
 ];
+
+/// Observation-plane read capabilities: the store-backed series lookups and
+/// the curated openbb data plane (rounds 1-2). Their results are advisory
+/// observations — the cross-plane note reminds the analyst that anything
+/// observation-derived which the answer relies on still needs an ontology
+/// (filing) confirmation read.
+pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 15] = [
+    "market.series",
+    "macro.series",
+    "openbb.price_history",
+    "openbb.macro_series",
+    "openbb.macro_cpi",
+    "openbb.quote",
+    "openbb.metrics",
+    "openbb.income_statement",
+    "openbb.balance_statement",
+    "openbb.cash_statement",
+    "openbb.consensus",
+    "openbb.peers",
+    "openbb.earnings_calendar",
+    "openbb.yield_curve",
+    "openbb.macro_calendar",
+];
+
+/// Kernel-owned cross-plane note, mirroring `model_event_ladder_hint`: the
+/// current result is an observation-plane read (macro or company) and no
+/// ontology targeted query or trace has been dispatched yet. Context only —
+/// it does not force a tool choice, never carries question or retrieval
+/// text, and clears itself once the ontology-side read has happened. This
+/// is the "macro observed on openbb first → confirm the related sector or
+/// company on the ontology plane" nudge of the E5 compass.
+pub(crate) fn model_cross_plane_hint(
+    capability_id: &str,
+    ontology_targeted_dispatched: bool,
+) -> Option<Value> {
+    if ontology_targeted_dispatched
+        || !OBSERVATION_PLANE_CAPABILITY_IDS.contains(&capability_id)
+    {
+        return None;
+    }
+    Some(serde_json::json!({
+        "schema_version": 1,
+        "kind": "observation_cross_plane_hint",
+        "observation_capability": capability_id,
+        "ontology_confirmation_dispatched": false,
+        "note": "This result is an advisory observation, not filing evidence. If the answer will rely on a metric, sector, or company fact surfaced here, confirm it with one exact ontology targeted query (or trace of an observed record) before composing; observation data alone never supports a strong claim.",
+    }))
+}
 
 /// Kernel-owned note mirroring `model_research_gap_hint`: the committed plan
 /// marks an event-premise goal and no event/news ladder rung has run. Context

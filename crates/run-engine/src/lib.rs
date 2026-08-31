@@ -73,7 +73,8 @@ use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 use capability_dispatch::{
     TargetedQueryAttribution, assemble_company_context_request, assemble_openbb_request,
     canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
-    model_event_ladder_hint, model_research_gap_hint, normalize_physical_capability_arguments,
+    model_cross_plane_hint, model_event_ladder_hint, model_research_gap_hint,
+    normalize_physical_capability_arguments,
     normalize_provider_model_input, selected_targeted_response_detail,
 };
 #[cfg(test)]
@@ -2298,6 +2299,30 @@ mod tests {
     #[test]
     fn event_ladder_hint_absent_when_unmarked() {
         assert!(model_event_ladder_hint(&ladder_test_receipt(false), false).is_none());
+    }
+
+    #[test]
+    fn cross_plane_hint_present_on_observation_results_before_ontology_confirmation() {
+        for capability_id in ["openbb.yield_curve", "openbb.quote", "macro.series"] {
+            let hint =
+                model_cross_plane_hint(capability_id, false).unwrap_or_else(|| {
+                    panic!("{capability_id} is an observation-plane capability")
+                });
+            assert_eq!(hint["kind"], "observation_cross_plane_hint");
+            assert_eq!(hint["observation_capability"], capability_id);
+            assert_eq!(hint["ontology_confirmation_dispatched"], false);
+        }
+    }
+
+    #[test]
+    fn cross_plane_hint_clears_once_ontology_targeted_read_ran() {
+        assert!(model_cross_plane_hint("openbb.yield_curve", true).is_none());
+    }
+
+    #[test]
+    fn cross_plane_hint_never_fires_on_non_observation_results() {
+        assert!(model_cross_plane_hint("ontology.query_context", false).is_none());
+        assert!(model_cross_plane_hint("quant.dcf", false).is_none());
     }
 
     #[test]
