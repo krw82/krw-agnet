@@ -155,8 +155,14 @@ impl std::fmt::Debug for FrontRunState {
             .field("verified_filing_count", &self.verified_filings.len())
             .field("section_membership_count", &self.sections.len())
             .field("document_membership_count", &self.documents.len())
-            .field("observed_filing_event_count", &self.observed_filing_events.len())
-            .field("observed_feed_issue_count", &self.observed_feed_issues.len())
+            .field(
+                "observed_filing_event_count",
+                &self.observed_filing_events.len(),
+            )
+            .field(
+                "observed_feed_issue_count",
+                &self.observed_feed_issues.len(),
+            )
             .finish()
     }
 }
@@ -338,12 +344,18 @@ impl FrontRunState {
             .get("ticker")
             .and_then(Value::as_str)
             .ok_or_else(|| reject("filing_input_shape", "filing search lost its ticker"))?;
-        let rows = payload
-            .as_array()
-            .ok_or_else(|| reject("filing_search_shape", "filing search result must be an array"))?;
+        let rows = payload.as_array().ok_or_else(|| {
+            reject(
+                "filing_search_shape",
+                "filing search result must be an array",
+            )
+        })?;
         for row in rows {
             let Some(object) = row.as_object() else {
-                return Err(reject("filing_search_shape", "filing row must be an object"));
+                return Err(reject(
+                    "filing_search_shape",
+                    "filing row must be an object",
+                ));
             };
             let event_id = required_str(object, "filing_event_id")?;
             let ticker = required_str(object, "ticker")?;
@@ -443,7 +455,9 @@ impl FrontRunState {
 /// One-way key for supplemental ladder observations. Raw identifiers never
 /// become map keys or log values.
 fn ladder_id_key(identifier: &str) -> String {
-    ContentHash::sha256(identifier.as_bytes()).as_str().to_owned()
+    ContentHash::sha256(identifier.as_bytes())
+        .as_str()
+        .to_owned()
 }
 
 pub(crate) fn validate_exchange(

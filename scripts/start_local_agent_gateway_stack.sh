@@ -135,10 +135,20 @@ source "$krw_secrets"
 if [[ -f "$krw_state/mcp-gateways-ca.pem" ]]; then
   export KRW_AGENT_MCP_CA_PEM="$(< "$krw_state/mcp-gateways-ca.pem")"
 fi
+# The curated openbb-mcp data plane is another operator-provided external
+# gateway: its streamable-http endpoint, readiness probe, pinned CA, and
+# server identity (tool-bundle hash, build id, release hash) are supplied by
+# name from the invoking environment. No value is defaulted or fabricated.
+if [[ -f "$krw_state/mcp-openbb-ca.pem" ]]; then
+  export KRW_OPENBB_CA_PEM="$(< "$krw_state/mcp-openbb-ca.pem")"
+fi
 export KRW_AGENT_GATEWAY_TOKEN KRW_AGENT_ARTIFACT_KEY_V1 \
   KRW_FEED_MCP_URL KRW_FEED_MCP_READY_URL KRW_FEED_MCP_TOKEN \
   KRW_FILINGS_MCP_URL KRW_FILINGS_MCP_READY_URL KRW_FILINGS_MCP_TOKEN \
-  KRW_AGENT_MCP_CA_PEM KRW_WEB_NEWS_API_KEY KRW_WEB_NEWS_API_BASE
+  KRW_AGENT_MCP_CA_PEM KRW_WEB_NEWS_API_KEY KRW_WEB_NEWS_API_BASE \
+  KRW_OPENBB_MCP_URL KRW_OPENBB_MCP_READY_URL KRW_OPENBB_CA_PEM \
+  KRW_OPENBB_MCP_TOOL_SCHEMA_SHA256 KRW_OPENBB_MCP_BUILD_ID \
+  KRW_OPENBB_MCP_RELEASE_SHA256
 
 cleanup() {
   set +e
@@ -310,11 +320,50 @@ chmod 700 "$krw_cache_dir"
 # Optional release-manifest hash of the external feed/filings MCP gateways,
 # supplied by name through the operator's environment (never a value here).
 krw_gateways_release=${KRW_MCP_GATEWAYS_RELEASE_MANIFEST_SHA256:-}
-python3 - "$krw_deployment_binding_source" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" "$krw_gateways_release" <<'PY'
+# The curated openbb-mcp endpoint is an operator-provided external gateway.
+# Its server identity (tool-bundle hash, build id, release hash) must come
+# from the environment; substituting the ontology capabilityd identity here
+# would silently pin the wrong server, so fail closed when any is missing.
+for krw_openbb_env_name in \
+  KRW_OPENBB_MCP_URL KRW_OPENBB_MCP_READY_URL \
+  KRW_OPENBB_MCP_TOOL_SCHEMA_SHA256 KRW_OPENBB_MCP_BUILD_ID \
+  KRW_OPENBB_MCP_RELEASE_SHA256; do
+  [[ -n "${!krw_openbb_env_name:-}" ]] || {
+    echo "start_local_agent_gateway_stack: export $krw_openbb_env_name (openbb-mcp gateway env) before running" >&2
+    exit 1
+  }
+done
+python3 - "$krw_deployment_binding_source" "$krw_state/deployment-binding.yaml" "$krw_state/endpoint-registry.yaml" "$krw_build" "$krw_schema_hash" "$krw_release_hash" "$krw_gateways_release" \
+  "$KRW_OPENBB_MCP_TOOL_SCHEMA_SHA256" "$KRW_OPENBB_MCP_BUILD_ID" "$KRW_OPENBB_MCP_RELEASE_SHA256" <<'PY'
 import pathlib, re, sys
 import json
-source, output, endpoint_output, build, schema, release, gateways_release = sys.argv[1:8]
+source, output, endpoint_output, build, schema, release, gateways_release, openbb_schema, openbb_build, openbb_release = sys.argv[1:11]
 text = pathlib.Path(source).read_text(encoding="utf-8")
+# The curated openbb bindings are the first blocks rewritten: their zero
+# placeholders (schema hash, build, release) are replaced with the openbb
+# gateway's own identity so the later blanket substitution of this stack's
+# ontology identity can never reach them.
+openbb_rewritten = []
+openbb_block = False
+for line in text.splitlines(keepends=True):
+    matched = re.search(r"^\s*endpoint_ref:\s*(\S+)\s*$", line)
+    if matched:
+        openbb_block = matched.group(1) == "krw-openbb-local"
+    if openbb_block:
+        if re.match(r"^\s*server_schema_bundle_hash:\s*sha256:0{64}\s*$", line):
+            indent = line[: len(line) - len(line.lstrip())]
+            openbb_rewritten.append(f"{indent}server_schema_bundle_hash: sha256:{openbb_schema}\n")
+            continue
+        if re.match(r"^\s*server_build:\s*fixture\s*$", line):
+            indent = line[: len(line) - len(line.lstrip())]
+            openbb_rewritten.append(f"{indent}server_build: {openbb_build}\n")
+            continue
+        if re.match(r"^\s*data_release_hash:\s*sha256:0{64}\s*$", line):
+            indent = line[: len(line) - len(line.lstrip())]
+            openbb_rewritten.append(f"{indent}data_release_hash: sha256:{openbb_release}\n")
+            continue
+    openbb_rewritten.append(line)
+text = "".join(openbb_rewritten)
 # The feed and filings endpoints are served by the external MCP gateways,
 # whose readiness documents pin their own front-contract release manifest.
 # Their bindings must therefore not inherit this stack's local release hash;
@@ -371,6 +420,16 @@ endpoint = {
             "credential_version": "filings-service-v1",
             "tls_profile": "system-plus-pinned-ca-v1",
             "tls_ca_pem_env": "KRW_AGENT_MCP_CA_PEM",
+        },
+        {
+            "endpoint_ref": "krw-openbb-local",
+            "url_env": "KRW_OPENBB_MCP_URL",
+            "readiness_url_env": "KRW_OPENBB_MCP_READY_URL",
+            "protocol_version": "2025-06-18",
+            "origin": "https://127.0.0.1",
+            "credential_version": "openbb-public-v1",
+            "tls_profile": "system-plus-pinned-ca-v1",
+            "tls_ca_pem_env": "KRW_OPENBB_CA_PEM",
         },
     ],
 }

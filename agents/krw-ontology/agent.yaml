@@ -90,6 +90,33 @@ contracts:
     schema_ref: canonical:krw-agent/macro-series-request-v1
     content_hash: sha256:7f64997070484801b60b899977692a0ddfa8125a5ea97e08dd38889169f5e0dc
     semantic_authority: krw-agent-market-router
+  # Curated openbb-mcp data-plane contracts (model/physical pairs). The
+  # model-facing requests are vendor-neutral; the physical inputs carry the
+  # single kernel-pinned transport provider.
+  - id: openbb-price-history-request/v1
+    schema_ref: canonical:krw-agent/openbb-price-history-request-v1
+    content_hash: sha256:09af03ef257649141e02b0ccca3978ec0b6295162bc9a5837c79bd11d40dca39
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-macro-series-request/v1
+    schema_ref: canonical:krw-agent/openbb-macro-series-request-v1
+    content_hash: sha256:bb31318d1e814f5b29c3925b33f926b8cab1d01c24fae034934e1228fb35224b
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cpi-request/v1
+    schema_ref: canonical:krw-agent/openbb-cpi-request-v1
+    content_hash: sha256:b7574c9e2fdff4c1840b2fbf4777f1094c0031bab438e98ebf55c1d494af8afa
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-price-historical-input/v1
+    schema_ref: canonical:krw-agent/openbb-price-historical-input-v1
+    content_hash: sha256:2103c9087595b4449b31e42e811360b0950f8b388de8ef09962500951d68632d
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-fred-series-input/v1
+    schema_ref: canonical:krw-agent/openbb-fred-series-input-v1
+    content_hash: sha256:9c8cdbecb9fed56b953478a0c7cfadf43309a670b7cb86af88efc93b5edf59b9
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cpi-input/v1
+    schema_ref: canonical:krw-agent/openbb-cpi-input-v1
+    content_hash: sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4
+    semantic_authority: krw-agent-capability-runtime
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -440,6 +467,55 @@ capabilities:
     scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # Curated external openbb-mcp data plane (closed three-tool starter set).
+  # Like the observation series these are advisory_only research context and
+  # carry no research_action policy: the planner's action kinds stay closed
+  # to the canonical query/trace surfaces. The kernel pins the transport
+  # provider during input derivation; the model never sees a vendor name.
+  - id: openbb.price_history
+    execution: { kind: remote, binding_key: openbb_equity_price_historical }
+    permission: read
+    input_contract: openbb-price-historical-input/v1
+    model_input_contract: openbb-price-history-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.macro_series
+    execution: { kind: remote, binding_key: openbb_economy_fred_series }
+    permission: read
+    # FRED macro series are not company-scoped: the model names only a FRED
+    # series id, an optional date window, and a bounded observation limit.
+    input_contract: openbb-fred-series-input/v1
+    model_input_contract: openbb-macro-series-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fred }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.macro_cpi
+    execution: { kind: remote, binding_key: openbb_economy_cpi }
+    permission: read
+    # CPI backdrop (country/transform/frequency knobs, kernel-pinned
+    # defaults). Not company-scoped.
+    input_contract: openbb-cpi-input/v1
+    model_input_contract: openbb-cpi-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fred }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
@@ -674,9 +750,9 @@ workflows:
       # This is a kernel builtin (not an additional model turn). It must be
       # able to accept every already-advertised evidence-producing read:
       # query_context x2, targeted query x2, trace, chain, market x1, each
-      # of the five event/news ladder reads x1, and the two observation
-      # series lookups x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 14 }
+      # of the five event/news ladder reads x1, the two observation series
+      # lookups x1, and the three curated openbb lookups x1.
+      - { id: ingest_evidence, kind: ingest, max_visits: 17 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # Observation-plane series lookups (advisory market/macro backdrop).
@@ -684,6 +760,12 @@ workflows:
       # per capability as a second validator layer below the state bound.
       - { id: market_series_lookup, kind: capability, capability_id: market.series, max_visits: 1 }
       - { id: macro_series_lookup, kind: capability, capability_id: macro.series, max_visits: 1 }
+      # Curated external openbb lookups (advisory live-data fallback for the
+      # same market/macro backdrop). Same one-visit state bound as the
+      # store-backed series lookups, with action_limits as the second layer.
+      - { id: openbb_price_lookup, kind: capability, capability_id: openbb.price_history, max_visits: 1 }
+      - { id: openbb_macro_lookup, kind: capability, capability_id: openbb.macro_series, max_visits: 1 }
+      - { id: openbb_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
       # A broad company question can have two independent, material evidence
       # gaps (for example, revenue mix and cash conversion). The analyst may
       # still stop after zero or one query; this only leaves room for a second
@@ -729,6 +811,9 @@ workflows:
       - { from: assess_obligations, on: market_snapshot_has_value, to: market_snapshot }
       - { from: assess_obligations, on: market_series_has_value, to: market_series_lookup }
       - { from: assess_obligations, on: macro_series_has_value, to: macro_series_lookup }
+      - { from: assess_obligations, on: openbb_price_has_value, to: openbb_price_lookup }
+      - { from: assess_obligations, on: openbb_macro_has_value, to: openbb_macro_lookup }
+      - { from: assess_obligations, on: openbb_cpi_has_value, to: openbb_cpi_lookup }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
@@ -750,6 +835,9 @@ workflows:
       - { from: market_snapshot, on: evidence_observed, to: ingest_evidence }
       - { from: market_series_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: macro_series_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_price_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_macro_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_cpi_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
       - { from: news_feed_lookup, on: evidence_observed, to: ingest_evidence }
@@ -1077,6 +1165,9 @@ validators:
       - { op: max_calls, capability_id: market.snapshot, max: 1, code: market_snapshot_limit }
       - { op: max_calls, capability_id: market.series, max: 2, code: market_series_limit }
       - { op: max_calls, capability_id: macro.series, max: 2, code: macro_series_limit }
+      - { op: max_calls, capability_id: openbb.price_history, max: 2, code: openbb_price_limit }
+      - { op: max_calls, capability_id: openbb.macro_series, max: 2, code: openbb_macro_limit }
+      - { op: max_calls, capability_id: openbb.macro_cpi, max: 2, code: openbb_cpi_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
@@ -1093,6 +1184,9 @@ validators:
       - { op: state_precedes, before: query_context, after: chain_selected, code: context_before_chain }
       - { op: state_precedes, before: query_context, after: market_series_lookup, code: context_before_market_series }
       - { op: state_precedes, before: query_context, after: macro_series_lookup, code: context_before_macro_series }
+      - { op: state_precedes, before: query_context, after: openbb_price_lookup, code: context_before_openbb_price }
+      - { op: state_precedes, before: query_context, after: openbb_macro_lookup, code: context_before_openbb_macro }
+      - { op: state_precedes, before: query_context, after: openbb_cpi_lookup, code: context_before_openbb_cpi }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
       - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }

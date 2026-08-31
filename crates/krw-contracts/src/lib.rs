@@ -82,6 +82,30 @@ const MACRO_SERIES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/macro-series-request-v1.json"
 ));
+const OPENBB_PRICE_HISTORY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-history-request-v1.json"
+));
+const OPENBB_MACRO_SERIES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-macro-series-request-v1.json"
+));
+const OPENBB_CPI_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-cpi-request-v1.json"
+));
+const OPENBB_PRICE_HISTORICAL_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-historical-input-v1.json"
+));
+const OPENBB_FRED_SERIES_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-fred-series-input-v1.json"
+));
+const OPENBB_CPI_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-cpi-input-v1.json"
+));
 const GURU_QUERY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/guru-query-request-v1.json"
@@ -159,6 +183,24 @@ pub const MARKET_SERIES_REQUEST_V1: &str = "market-series-request/v1";
 /// series are not company-scoped; the model names only a canonical metric id
 /// and a recent-point limit of at most 24.
 pub const MACRO_SERIES_REQUEST_V1: &str = "macro-series-request/v1";
+/// Model-authored request for a bounded openbb historical price lookup. The
+/// provider (transport credential routing) is deliberately absent: the kernel
+/// pins it during input derivation so the model can never select a vendor.
+pub const OPENBB_PRICE_HISTORY_REQUEST_V1: &str = "openbb-price-history-request/v1";
+/// Model-authored request for a bounded openbb FRED macro series lookup.
+/// Macro series are not company-scoped; the model names only a FRED series
+/// id plus an optional date window and a point limit of at most 260.
+pub const OPENBB_MACRO_SERIES_REQUEST_V1: &str = "openbb-macro-series-request/v1";
+/// Model-authored request for a bounded openbb CPI lookup. Country,
+/// transform, and frequency are optional; the kernel pins the provider.
+pub const OPENBB_CPI_REQUEST_V1: &str = "openbb-cpi-request/v1";
+/// Physical MCP input for the curated openbb `equity_price_historical` tool.
+/// The `provider` field is kernel-injected and closed to one pinned vendor.
+pub const OPENBB_PRICE_HISTORICAL_INPUT_V1: &str = "openbb-price-historical-input/v1";
+/// Physical MCP input for the curated openbb `economy_fred_series` tool.
+pub const OPENBB_FRED_SERIES_INPUT_V1: &str = "openbb-fred-series-input/v1";
+/// Physical MCP input for the curated openbb `economy_cpi` tool.
+pub const OPENBB_CPI_INPUT_V1: &str = "openbb-cpi-input/v1";
 /// Empty model-authored trigger for a fixed-author Guru retrieval. The kernel
 /// owns the actual question, author, ticker, and orientation context.
 pub const GURU_QUERY_REQUEST_V1: &str = "guru-query-request/v1";
@@ -219,6 +261,18 @@ pub const MARKET_SERIES_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:0bd37520778b3825a2af019ce39cfee57fcbaa23fc0dde345c55b514af4f021b";
 pub const MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:7f64997070484801b60b899977692a0ddfa8125a5ea97e08dd38889169f5e0dc";
+pub const OPENBB_PRICE_HISTORY_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:09af03ef257649141e02b0ccca3978ec0b6295162bc9a5837c79bd11d40dca39";
+pub const OPENBB_MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:bb31318d1e814f5b29c3925b33f926b8cab1d01c24fae034934e1228fb35224b";
+pub const OPENBB_CPI_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:b7574c9e2fdff4c1840b2fbf4777f1094c0031bab438e98ebf55c1d494af8afa";
+pub const OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:2103c9087595b4449b31e42e811360b0950f8b388de8ef09962500951d68632d";
+pub const OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:9c8cdbecb9fed56b953478a0c7cfadf43309a670b7cb86af88efc93b5edf59b9";
+pub const OPENBB_CPI_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4";
 pub const GURU_QUERY_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
@@ -299,6 +353,36 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             id: MACRO_SERIES_REQUEST_V1,
             schema_sha256: MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256,
             schema: MACRO_SERIES_REQUEST_BYTES,
+        }),
+        OPENBB_PRICE_HISTORY_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_HISTORY_REQUEST_V1,
+            schema_sha256: OPENBB_PRICE_HISTORY_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_HISTORY_REQUEST_BYTES,
+        }),
+        OPENBB_MACRO_SERIES_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_MACRO_SERIES_REQUEST_V1,
+            schema_sha256: OPENBB_MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_MACRO_SERIES_REQUEST_BYTES,
+        }),
+        OPENBB_CPI_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_CPI_REQUEST_V1,
+            schema_sha256: OPENBB_CPI_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_CPI_REQUEST_BYTES,
+        }),
+        OPENBB_PRICE_HISTORICAL_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_HISTORICAL_INPUT_V1,
+            schema_sha256: OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_HISTORICAL_INPUT_BYTES,
+        }),
+        OPENBB_FRED_SERIES_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_FRED_SERIES_INPUT_V1,
+            schema_sha256: OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_FRED_SERIES_INPUT_BYTES,
+        }),
+        OPENBB_CPI_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_CPI_INPUT_V1,
+            schema_sha256: OPENBB_CPI_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_CPI_INPUT_BYTES,
         }),
         GURU_QUERY_REQUEST_V1 => Some(ContractDescriptor {
             id: GURU_QUERY_REQUEST_V1,
@@ -387,6 +471,12 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(MARKET_SNAPSHOT_REQUEST_V1).expect("static contract"),
         contract(MARKET_SERIES_REQUEST_V1).expect("static contract"),
         contract(MACRO_SERIES_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PRICE_HISTORY_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_MACRO_SERIES_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_CPI_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PRICE_HISTORICAL_INPUT_V1).expect("static contract"),
+        contract(OPENBB_FRED_SERIES_INPUT_V1).expect("static contract"),
+        contract(OPENBB_CPI_INPUT_V1).expect("static contract"),
         contract(GURU_QUERY_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
@@ -472,6 +562,12 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         MARKET_SNAPSHOT_REQUEST_V1 => validate_market_snapshot_request(value),
         MARKET_SERIES_REQUEST_V1 => validate_market_series_request(value),
         MACRO_SERIES_REQUEST_V1 => validate_macro_series_request(value),
+        OPENBB_PRICE_HISTORY_REQUEST_V1 => validate_openbb_price_history_request(value),
+        OPENBB_MACRO_SERIES_REQUEST_V1 => validate_openbb_macro_series_request(value),
+        OPENBB_CPI_REQUEST_V1 => validate_openbb_cpi_request(value),
+        OPENBB_PRICE_HISTORICAL_INPUT_V1 => validate_openbb_price_historical_input(value),
+        OPENBB_FRED_SERIES_INPUT_V1 => validate_openbb_fred_series_input(value),
+        OPENBB_CPI_INPUT_V1 => validate_openbb_cpi_input(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
@@ -862,14 +958,8 @@ fn nullable_string(value: Option<&Value>) -> bool {
 /// ticker (required, 1..=16 chars) plus an optional bounded result limit.
 fn validate_web_news_search_input(value: &Value) -> Result<(), ContractValueError> {
     let body = object(value, KRW_WEB_NEWS_SEARCH_INPUT_V1)?;
-    exact_keys(
-        body,
-        &["ticker", "limit"],
-        KRW_WEB_NEWS_SEARCH_INPUT_V1,
-    )?;
-    if !bounded_string(body.get("ticker"), 1, 16)
-        || !integer_range(body.get("limit"), 1, 10)
-    {
+    exact_keys(body, &["ticker", "limit"], KRW_WEB_NEWS_SEARCH_INPUT_V1)?;
+    if !bounded_string(body.get("ticker"), 1, 16) || !integer_range(body.get("limit"), 1, 10) {
         return Err(ContractValueError::Shape(KRW_WEB_NEWS_SEARCH_INPUT_V1));
     }
     Ok(())
@@ -893,13 +983,7 @@ fn validate_web_news_search_result(value: &Value) -> Result<(), ContractValueErr
         };
         exact_keys(
             item,
-            &[
-                "headline",
-                "publisher",
-                "published_at",
-                "url",
-                "summary",
-            ],
+            &["headline", "publisher", "published_at", "url", "summary"],
             KRW_WEB_NEWS_SEARCH_RESULT_V1,
         )?;
         if !bounded_string(item.get("headline"), 1, 300)
@@ -1788,6 +1872,203 @@ fn validate_macro_series_request(value: &Value) -> Result<(), ContractValueError
     Ok(())
 }
 
+/// A calendar-plausible ISO date (`YYYY-MM-DD`). The remote openbb tool
+/// performs exact calendar parsing; this bound keeps obviously malformed
+/// values from being dispatched at all.
+fn canonical_openbb_date(value: Option<&Value>) -> bool {
+    let Some(value) = value.and_then(Value::as_str) else {
+        return false;
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let digits = |slice: &[u8]| slice.iter().all(u8::is_ascii_digit);
+    let (year, rest) = bytes.split_at(4);
+    let (month, day) = rest[1..].split_at(2);
+    if !digits(year) || !digits(&month[..2]) || !digits(&day[1..]) {
+        return false;
+    }
+    let month = u32::from_str_radix(&value[5..7], 10).unwrap_or(0);
+    let day = u32::from_str_radix(&value[8..], 10).unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+fn optional_openbb_date(value: Option<&Value>) -> bool {
+    value.is_none_or(|value| value.is_null() || canonical_openbb_date(Some(value)))
+}
+
+/// FRED series identifiers: uppercase alphanumerics with dots/underscores
+/// (`CPIAUCSL`, `DGS10`, `MORTGAGE30US`-style), at most 24 bytes.
+fn canonical_fred_series_id(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_uppercase() || first.is_ascii_digit())
+        && (1..=24).contains(&value.len())
+        && bytes.all(|byte| {
+            byte.is_ascii_uppercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+        })
+}
+
+fn canonical_openbb_country(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+}
+
+/// Shared optional CPI knobs across the model request and the physical input.
+fn openbb_cpi_knobs(request: &serde_json::Map<String, Value>) -> bool {
+    let country_ok = request
+        .get("country")
+        .is_none_or(|value| value.as_str().is_some_and(canonical_openbb_country));
+    let transform_ok = request
+        .get("transform")
+        .is_none_or(|value| matches!(value.as_str(), Some("index" | "yoy" | "period")));
+    let frequency_ok = request
+        .get("frequency")
+        .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarter" | "monthly")));
+    country_ok
+        && transform_ok
+        && frequency_ok
+        && optional_openbb_date(request.get("start_date"))
+        && optional_openbb_date(request.get("end_date"))
+}
+
+/// Validate the model-authored openbb price-history request: one already
+/// trusted ticker plus an optional date window. No provider field exists on
+/// the model surface; the kernel pins the vendor during input derivation.
+fn validate_openbb_price_history_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_PRICE_HISTORY_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["ticker", "start_date", "end_date"],
+        OPENBB_PRICE_HISTORY_REQUEST_V1,
+    )?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+    {
+        return Err(ContractValueError::Shape(OPENBB_PRICE_HISTORY_REQUEST_V1));
+    }
+    Ok(())
+}
+
+/// Validate the model-authored openbb FRED macro series request: one FRED
+/// series id, an optional date window, and at most 260 recent observations.
+fn validate_openbb_macro_series_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_MACRO_SERIES_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["series_id", "start_date", "end_date", "limit"],
+        OPENBB_MACRO_SERIES_REQUEST_V1,
+    )?;
+    if !request
+        .get("series_id")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_fred_series_id)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+        || !integer_range(request.get("limit"), 1, 260)
+    {
+        return Err(ContractValueError::Shape(OPENBB_MACRO_SERIES_REQUEST_V1));
+    }
+    Ok(())
+}
+
+/// Validate the model-authored openbb CPI request. Every field is optional;
+/// the kernel pins the provider and the derivation supplies defaults.
+fn validate_openbb_cpi_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_CPI_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &[
+            "country",
+            "transform",
+            "frequency",
+            "start_date",
+            "end_date",
+        ],
+        OPENBB_CPI_REQUEST_V1,
+    )?;
+    if !openbb_cpi_knobs(request) {
+        return Err(ContractValueError::Shape(OPENBB_CPI_REQUEST_V1));
+    }
+    Ok(())
+}
+
+/// Validate the physical MCP input for `equity_price_historical`. The
+/// provider is kernel-injected and closed to the single pinned vendor; a
+/// model-authored value never reaches this contract directly.
+fn validate_openbb_price_historical_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_PRICE_HISTORICAL_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "start_date", "end_date"],
+        OPENBB_PRICE_HISTORICAL_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+    {
+        return Err(ContractValueError::Shape(OPENBB_PRICE_HISTORICAL_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Validate the physical MCP input for `economy_fred_series`.
+fn validate_openbb_fred_series_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_FRED_SERIES_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "start_date", "end_date", "limit"],
+        OPENBB_FRED_SERIES_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fred")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_fred_series_id)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+        || !integer_range(request.get("limit"), 1, 260)
+    {
+        return Err(ContractValueError::Shape(OPENBB_FRED_SERIES_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Validate the physical MCP input for `economy_cpi`.
+fn validate_openbb_cpi_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_CPI_INPUT_V1)?;
+    exact_keys(
+        request,
+        &[
+            "provider",
+            "country",
+            "transform",
+            "frequency",
+            "start_date",
+            "end_date",
+        ],
+        OPENBB_CPI_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fred") || !openbb_cpi_knobs(request)
+    {
+        return Err(ContractValueError::Shape(OPENBB_CPI_INPUT_V1));
+    }
+    Ok(())
+}
+
 fn validate_trace_input(value: &Value) -> Result<(), ContractValueError> {
     let trace = object(value, ONTOLOGY_TRACE_INPUT_V1)?;
     exact_keys(
@@ -2178,7 +2459,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 65);
+        assert_eq!(descriptors().len(), 69);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -2202,6 +2483,119 @@ mod tests {
                 .unwrap()
                 .as_str(),
             FINAL_MARKDOWN_V1_SCHEMA_SHA256
+        );
+    }
+
+    /// The curated openbb contracts are model/physical pairs: the model-facing
+    /// request exposes no provider field, while the physical input pins the
+    /// single vendored transport identity the kernel may inject.
+    #[test]
+    fn openbb_contracts_are_hash_bound_and_vendor_closed() {
+        for (contract_id, pinned_hash) in [
+            (
+                OPENBB_PRICE_HISTORY_REQUEST_V1,
+                OPENBB_PRICE_HISTORY_REQUEST_V1_SCHEMA_SHA256,
+            ),
+            (
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                OPENBB_MACRO_SERIES_REQUEST_V1_SCHEMA_SHA256,
+            ),
+            (OPENBB_CPI_REQUEST_V1, OPENBB_CPI_REQUEST_V1_SCHEMA_SHA256),
+            (
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256,
+            ),
+            (
+                OPENBB_FRED_SERIES_INPUT_V1,
+                OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256,
+            ),
+            (OPENBB_CPI_INPUT_V1, OPENBB_CPI_INPUT_V1_SCHEMA_SHA256),
+        ] {
+            assert_eq!(
+                contract(contract_id)
+                    .unwrap()
+                    .content_hash()
+                    .unwrap()
+                    .as_str(),
+                pinned_hash,
+                "{contract_id} must match its pinned canonical hash"
+            );
+        }
+
+        // Model requests stay vendor-neutral: no provider field is accepted.
+        let model_request = serde_json::json!({"ticker": "AAPL"});
+        validate_value(OPENBB_PRICE_HISTORY_REQUEST_V1, &model_request).unwrap();
+        let model_with_provider = serde_json::json!({
+            "ticker": "AAPL",
+            "provider": "fmp",
+        });
+        assert!(validate_value(OPENBB_PRICE_HISTORY_REQUEST_V1, &model_with_provider).is_err());
+
+        // Bounded args: series ids, limits, and dates fail closed.
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL", "limit": 261})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "cpi~bad"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL", "start_date": "2026-13-01"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_MACRO_SERIES_REQUEST_V1,
+                &serde_json::json!({"series_id": "CPIAUCSL"})
+            )
+            .is_ok()
+        );
+
+        // Physical inputs accept exactly one pinned provider per tool.
+        assert!(
+            validate_value(
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                &serde_json::json!({"provider": "fmp", "symbol": "AAPL"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_PRICE_HISTORICAL_INPUT_V1,
+                &serde_json::json!({"provider": "yfinance", "symbol": "AAPL"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_FRED_SERIES_INPUT_V1,
+                &serde_json::json!({"provider": "fred", "symbol": "CPIAUCSL", "limit": 260})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_CPI_INPUT_V1,
+                &serde_json::json!({"provider": "fred"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_CPI_INPUT_V1,
+                &serde_json::json!({"provider": "fred", "transform": "sqrt"})
+            )
+            .is_err()
         );
     }
 
@@ -2628,8 +3022,11 @@ mod tests {
             &serde_json::json!({"ticker": "LRCX", "limit": 5}),
         )
         .unwrap();
-        validate_value(KRW_WEB_NEWS_SEARCH_INPUT_V1, &serde_json::json!({"ticker": "LRCX"}))
-            .unwrap();
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_INPUT_V1,
+            &serde_json::json!({"ticker": "LRCX"}),
+        )
+        .unwrap();
         // The model cannot widen the request surface or the result limit.
         assert!(matches!(
             validate_value(
@@ -2667,8 +3064,11 @@ mod tests {
             }]}),
         )
         .unwrap();
-        validate_value(KRW_WEB_NEWS_SEARCH_RESULT_V1, &serde_json::json!({"items": []}))
-            .unwrap();
+        validate_value(
+            KRW_WEB_NEWS_SEARCH_RESULT_V1,
+            &serde_json::json!({"items": []}),
+        )
+        .unwrap();
         assert!(matches!(
             validate_value(
                 KRW_WEB_NEWS_SEARCH_RESULT_V1,

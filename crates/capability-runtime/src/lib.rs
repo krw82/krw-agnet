@@ -15,8 +15,9 @@ use async_trait::async_trait;
 use krw_agent_contracts::{
     MACRO_SERIES_REQUEST_V1, MARKET_SERIES_REQUEST_V1, MARKET_SNAPSHOT_REQUEST_V1,
     NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1, ONTOLOGY_TARGETED_QUERY_V1,
-    ONTOLOGY_TRACE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2,
-    SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
+    ONTOLOGY_TRACE_INPUT_V1, OPENBB_CPI_INPUT_V1, OPENBB_FRED_SERIES_INPUT_V1,
+    OPENBB_PRICE_HISTORICAL_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2,
+    SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
@@ -34,7 +35,7 @@ use krw_agent_tool_mcp::{
 };
 use krw_ontology_adapter::{
     MappingContext, map_company_context, map_macro_series, map_market_series, map_market_snapshot,
-    map_research_state, map_targeted_query, map_trace, parse_research_state,
+    map_openbb_series, map_research_state, map_targeted_query, map_trace, parse_research_state,
     sanitize_research_state_scope,
 };
 use serde_json::Value;
@@ -49,7 +50,9 @@ use guru_mapping::{
     GuruMapping, GuruRunState, is_correction as is_guru_correction, validate_correction_for_mapping,
 };
 mod ladder_mapping;
-use ladder_mapping::{LadderMapping, apply_ladder_committed, authorize_ladder, map_ladder_evidence};
+use ladder_mapping::{
+    LadderMapping, apply_ladder_committed, authorize_ladder, map_ladder_evidence,
+};
 mod web_news;
 
 const MAX_MCP_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
@@ -127,6 +130,11 @@ enum EvidenceMapping {
     /// Bounded, latest-vintage macro indicator series. Not company-scoped,
     /// so there is no ticker identity to pin.
     MacroSeriesV1,
+    /// Bounded series read from the curated external openbb endpoint. One
+    /// mapping covers the three curated tools: the per-tool physical input
+    /// contract is validated against a closed trio, and only the
+    /// ticker-bound price tool attributes records to the trusted scope.
+    OpenbbSeriesV1,
     TargetedEvidenceV1,
     TraceLineageV1,
     Front(FrontMapping),
@@ -149,6 +157,7 @@ impl EvidenceMapping {
             CapabilityResultIngest::MarketSnapshotV1 => Self::MarketSnapshotV1,
             CapabilityResultIngest::MarketSeriesV1 => Self::MarketSeriesV1,
             CapabilityResultIngest::MacroSeriesV1 => Self::MacroSeriesV1,
+            CapabilityResultIngest::OpenbbSeriesV1 => Self::OpenbbSeriesV1,
             CapabilityResultIngest::TargetedEvidenceV1 => Self::TargetedEvidenceV1,
             CapabilityResultIngest::TraceLineageV1 => Self::TraceLineageV1,
             CapabilityResultIngest::FrontFeedListItemsV1 => {
@@ -207,9 +216,25 @@ impl EvidenceMapping {
             | Self::MarketSnapshotV1
             | Self::MarketSeriesV1
             | Self::MacroSeriesV1
+            | Self::OpenbbSeriesV1
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1
             | Self::SkillContent => false,
+        }
+    }
+
+    /// Closed per-mapping input-contract admission. Most mappings accept
+    /// exactly one contract; the openbb mapping accepts the three curated
+    /// physical tool inputs.
+    fn accepts_input_contract(self, contract_id: &str) -> bool {
+        match self {
+            Self::OpenbbSeriesV1 => matches!(
+                contract_id,
+                OPENBB_PRICE_HISTORICAL_INPUT_V1
+                    | OPENBB_FRED_SERIES_INPUT_V1
+                    | OPENBB_CPI_INPUT_V1
+            ),
+            _ => contract_id == self.input_contract(),
         }
     }
 
@@ -220,6 +245,9 @@ impl EvidenceMapping {
             Self::MarketSnapshotV1 => MARKET_SNAPSHOT_REQUEST_V1,
             Self::MarketSeriesV1 => MARKET_SERIES_REQUEST_V1,
             Self::MacroSeriesV1 => MACRO_SERIES_REQUEST_V1,
+            // The openbb mapping spans three curated tools; per-contract
+            // admission is handled by [`Self::accepts_input_contract`].
+            Self::OpenbbSeriesV1 => OPENBB_PRICE_HISTORICAL_INPUT_V1,
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,
             Self::TraceLineageV1 => ONTOLOGY_TRACE_INPUT_V1,
             Self::SkillContent => SKILL_LOAD_V1,
@@ -240,6 +268,7 @@ impl EvidenceMapping {
             | Self::MarketSnapshotV1
             | Self::MarketSeriesV1
             | Self::MacroSeriesV1
+            | Self::OpenbbSeriesV1
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
             Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
@@ -395,9 +424,10 @@ impl CapabilityCatalog {
                 .content_hash
                 .clone();
             if capability.remote_binding_key().is_some() {
-                let resolved = runtime.capabilities.get(&capability.id).ok_or_else(|| {
-                    CatalogError::MissingResolvedBinding(capability.id.clone())
-                })?;
+                let resolved = runtime
+                    .capabilities
+                    .get(&capability.id)
+                    .ok_or_else(|| CatalogError::MissingResolvedBinding(capability.id.clone()))?;
                 validate_resolved_binding(capability, resolved)?;
             } else {
                 // Local builtins carry no deployment binding. Closedness: a
@@ -406,7 +436,10 @@ impl CapabilityCatalog {
                 // than failing per dispatch.
                 match capability.local_builtin() {
                     Some(LocalCapability::WebNewsSearch)
-                        if matches!(mapping, EvidenceMapping::Ladder(LadderMapping::WebNewsSearch)) => {}
+                        if matches!(
+                            mapping,
+                            EvidenceMapping::Ladder(LadderMapping::WebNewsSearch)
+                        ) => {}
                     Some(LocalCapability::SkillLoad)
                         if matches!(mapping, EvidenceMapping::SkillContent) => {}
                     _ => {
@@ -536,7 +569,8 @@ fn compile_guru_runtime_policy(
                 | InputDerivation::CompanyContextRequestV1
                 | InputDerivation::SealedGuruQueryContextV1
                 | InputDerivation::ResearchProposalToSearchPlanV4
-                | InputDerivation::SealedGuruCompanyBriefV1 { .. } => None,
+                | InputDerivation::SealedGuruCompanyBriefV1 { .. }
+                | InputDerivation::OpenbbRequestV1 { .. } => None,
             },
         )
         .collect::<Vec<_>>();
@@ -604,7 +638,7 @@ fn validate_capability_semantics(
 ) -> Result<(), CatalogError> {
     if capability.permission != Permission::Read
         || capability.idempotency != IdempotencyPolicy::CanonicalArgs
-        || capability.input_contract != mapping.input_contract()
+        || !mapping.accepts_input_contract(&capability.input_contract)
         || capability
             .output_contracts
             .iter()
@@ -620,7 +654,14 @@ fn verify_contracts(
     contracts: &ResolvedCapabilityContracts,
     mapping: EvidenceMapping,
 ) -> Result<(), CatalogError> {
-    verify_pin(mapping.input_contract(), &contracts.input.content_hash)?;
+    let input_contract_id = match mapping {
+        // The openbb mapping admits three curated contracts; pin whichever
+        // physical tool this capability declared (already validated against
+        // the closed trio by `validate_capability_semantics`).
+        EvidenceMapping::OpenbbSeriesV1 => contracts.input.id.as_str(),
+        _ => mapping.input_contract(),
+    };
+    verify_pin(input_contract_id, &contracts.input.content_hash)?;
     for output in &contracts.outputs {
         verify_pin(&output.id, &output.content_hash)?;
     }
@@ -939,8 +980,13 @@ impl PooledMcpCapabilityRuntime {
     fn lookup_invocation<'a>(
         &'a self,
         invocation: &CapabilityInvocation,
-    ) -> Result<(&'a CapabilityDescriptor, Option<&'a Arc<ResolvedCapability>>), DependencyFailure>
-    {
+    ) -> Result<
+        (
+            &'a CapabilityDescriptor,
+            Option<&'a Arc<ResolvedCapability>>,
+        ),
+        DependencyFailure,
+    > {
         if invocation.run_id != self.pool_scope.run_id {
             return Err(reject(
                 "run_scope_mismatch",
@@ -956,10 +1002,8 @@ impl PooledMcpCapabilityRuntime {
             // Local builtins have no deployment binding. The invocation must
             // instead carry the canonical synthetic binding both the engine
             // and this runtime derive from the immutable image.
-            let expected = local_builtin_binding(
-                &descriptor.specification,
-                &self.catalog.image_hash,
-            );
+            let expected =
+                local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
             if invocation.binding != expected
                 || invocation.input_schema_hash != descriptor.contracts.input.content_hash
                 || invocation.output_schema_hash != descriptor.contracts.output_contract_set_hash
@@ -1312,6 +1356,35 @@ impl PooledMcpCapabilityRuntime {
                     truncation: None,
                 }
             }
+            EvidenceMapping::OpenbbSeriesV1 => {
+                // Only the ticker-bound price tool attributes records; the
+                // macro tools pass an empty trusted scope so records stay
+                // unattributed. The request symbol is the already authorized
+                // scope for the price tool.
+                let trusted =
+                    if descriptor.contracts.input.id == OPENBB_PRICE_HISTORICAL_INPUT_V1 {
+                        invocation
+                            .arguments
+                            .get("symbol")
+                            .and_then(Value::as_str)
+                            .filter(|ticker| is_canonical_ticker(ticker))
+                            .map(|ticker| vec![ticker.to_owned()])
+                    } else {
+                        None
+                    }
+                    .unwrap_or_default();
+                let trusted_refs: Vec<&str> = trusted.iter().map(String::as_str).collect();
+                let delta = map_openbb_series(&payload, &trusted_refs, &context)
+                    .map_err(|error| reject("openbb_series_mapping", format!("{error:?}")))?;
+                CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.evidence_records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                }
+            }
             EvidenceMapping::TargetedEvidenceV1 => {
                 let delta = map_targeted_query(&payload, &context)
                     .map_err(|error| reject("targeted_evidence_mapping", format!("{error:?}")))?;
@@ -1466,17 +1539,14 @@ impl PooledMcpCapabilityRuntime {
                 let EvidenceMapping::Guru(mapping) = descriptor.mapping else {
                     unreachable!("match arm establishes Guru mapping")
                 };
-                validate_correction_for_mapping(
-                    mapping,
-                    binding.mcp_tool_name.as_str(),
-                    &payload,
-                )?;
+                validate_correction_for_mapping(mapping, binding.mcp_tool_name.as_str(), &payload)?;
             }
             EvidenceMapping::Guru(GuruMapping::QueryContext)
             | EvidenceMapping::CompanyContextV1
             | EvidenceMapping::MarketSnapshotV1
             | EvidenceMapping::MarketSeriesV1
             | EvidenceMapping::MacroSeriesV1
+            | EvidenceMapping::OpenbbSeriesV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
@@ -1604,11 +1674,10 @@ impl PooledMcpCapabilityRuntime {
                 // normalized projection must match the deterministic
                 // re-derivation, and the producer folds its observed ids
                 // into the authorization state.
-                let observed_bytes = Zeroizing::new(
-                    serde_jcs::to_vec(result).map_err(|error| {
+                let observed_bytes =
+                    Zeroizing::new(serde_jcs::to_vec(result).map_err(|error| {
                         reject("front_result_canonicalization", format!("{error:?}"))
-                    })?,
-                );
+                    })?);
                 let observed_hash = ContentHash::sha256(observed_bytes.as_slice());
                 let pending = pending_front_result
                     .lock()
@@ -1660,7 +1729,12 @@ impl PooledMcpCapabilityRuntime {
                         "front authorization state is unavailable",
                     )
                 })?;
-                apply_ladder_committed(mapping, &mut state, &invocation.arguments, &result.provider_content)
+                apply_ladder_committed(
+                    mapping,
+                    &mut state,
+                    &invocation.arguments,
+                    &result.provider_content,
+                )
             }
             EvidenceMapping::Guru(mapping) => {
                 let expected = if is_guru_correction(&result.provider_content) {
@@ -1733,6 +1807,7 @@ impl PooledMcpCapabilityRuntime {
             | EvidenceMapping::MarketSnapshotV1
             | EvidenceMapping::MarketSeriesV1
             | EvidenceMapping::MacroSeriesV1
+            | EvidenceMapping::OpenbbSeriesV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::SkillContent => Ok(()),
@@ -1916,7 +1991,9 @@ impl CapabilityRuntime for PooledMcpCapabilityRuntime {
         // image/deployment contract pins apply identically on both paths.
         let (descriptor, resolved) = self.lookup_invocation(invocation)?;
         if resolved.is_none() {
-            return self.invoke_local_builtin(descriptor.clone(), invocation).await;
+            return self
+                .invoke_local_builtin(descriptor.clone(), invocation)
+                .await;
         }
         let _stateful_order = if descriptor.requires_run_order(self.guru_policy.as_deref()) {
             Some(self.stateful_order.lock().await)
@@ -2631,11 +2708,11 @@ mod tests {
         KRW_FEED_CONTEXT_INPUT_V2, KRW_FEED_CONTEXT_V2, KRW_FEED_LIST_ITEMS_INPUT_V1,
         KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_INPUT_V1, KRW_FILING_BRIEF_RESULT_V1,
         KRW_FILING_GET_INPUT_V1, KRW_FILING_METADATA_V1, KRW_FILING_READ_SECTION_INPUT_V1,
-        KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SEARCH_INPUT_V1,
-        KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_INPUT_V1,
-        KRW_FILING_SECTIONS_RESULT_V1, KRW_GURU_COMPANY_BRIEF_INPUT_V1,
-        KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_QUERY_CONTEXT_INPUT_V1,
-        KRW_GURU_QUERY_CONTEXT_RESULT_V1, KRW_WEB_NEWS_SEARCH_RESULT_V1, validate_value,
+        KRW_FILING_READ_SECTION_RESULT_V1, KRW_FILING_SEARCH_INPUT_V1, KRW_FILING_SEARCH_RESULT_V1,
+        KRW_FILING_SECTIONS_INPUT_V1, KRW_FILING_SECTIONS_RESULT_V1,
+        KRW_GURU_COMPANY_BRIEF_INPUT_V1, KRW_GURU_COMPANY_BRIEF_RESULT_V1,
+        KRW_GURU_QUERY_CONTEXT_INPUT_V1, KRW_GURU_QUERY_CONTEXT_RESULT_V1,
+        KRW_WEB_NEWS_SEARCH_RESULT_V1, validate_value,
     };
     use krw_agent_evidence::{Answerability, Directness, EvidenceGrade, EvidenceLedger};
     use krw_agent_image::compile_agent_dir;
@@ -3103,6 +3180,106 @@ mod tests {
         })
     }
 
+    /// Real openbb-mcp envelope shape captured from the spike server.
+    fn openbb_price_envelope() -> Value {
+        serde_json::json!({
+            "id": "0c1d4a3e",
+            "results": [
+                {"date": "2026-08-27", "open": 263.1, "high": 265.0, "low": 262.2, "close": 264.4, "volume": 41233901},
+                {"date": "2026-08-28", "open": 264.4, "high": 266.3, "low": 263.9, "close": 265.9, "volume": 38002144}
+            ],
+            "provider": "fmp",
+            "warnings": null,
+            "chart": null,
+            "extra": {"metadata": {"route": "/equity/price/historical"}}
+        })
+    }
+
+    #[tokio::test]
+    async fn openbb_series_mapping_projects_advisory_vendor_scrubbed_records() {
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = CapabilityCatalog::compile(&image, resolved).expect("catalog");
+        let transport = FakeTransport::new([
+            envelope(&openbb_price_envelope(), false),
+            envelope(
+                &serde_json::json!({
+                    "results": [{"date": "2026-07-01", "value": 321.351}],
+                    "provider": "fred",
+                    "warnings": null,
+                    "chart": null,
+                    "extra": {"metadata": {"route": "/economy/fred_series"}}
+                }),
+                false,
+            ),
+            envelope(
+                &serde_json::json!({
+                    "results": [{"date": "2026-08-28", "close": 265.9, "note": "via fmp"}],
+                    "provider": "fmp",
+                    "warnings": null,
+                    "chart": null,
+                    "extra": {"metadata": {"route": "/equity/price/historical"}}
+                }),
+                false,
+            ),
+        ]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
+
+        // Ticker-bound price tool: the derived physical args carry the pinned
+        // provider; records attribute to the trusted request symbol.
+        let price = runtime
+            .invoke(&invocation(
+                &catalog,
+                "openbb.price_history",
+                serde_json::json!({"provider": "fmp", "symbol": "AAPL"}),
+            ))
+            .await
+            .expect("openbb price history mapping");
+        assert_eq!(price.provider_content["status"], "available");
+        assert_eq!(price.provider_content["ticker"], "AAPL");
+        let encoded = serde_json::to_vec(&price.provider_content).unwrap();
+        let lowered = encoded.to_ascii_lowercase();
+        for token in ["fmp", "fred", "polygon"] {
+            assert!(
+                !lowered
+                    .windows(token.len())
+                    .any(|window| window == token.as_bytes()),
+                "provider content must not leak vendor token {token}"
+            );
+        }
+        let [record] = price.evidence.as_slice() else {
+            panic!("one advisory record covers the openbb series");
+        };
+        assert!(!record.strong_claim_allowed);
+        assert_eq!(record.entity.as_deref(), Some("AAPL"));
+        assert_eq!(record.facts.len(), 2);
+
+        // Macro tool: no ticker scope, records stay unattributed.
+        let series = runtime
+            .invoke(&invocation(
+                &catalog,
+                "openbb.macro_series",
+                serde_json::json!({"provider": "fred", "symbol": "CPIAUCSL", "limit": 260}),
+            ))
+            .await
+            .expect("openbb fred series mapping");
+        assert!(series.provider_content["ticker"].is_null());
+        assert_eq!(series.evidence[0].entity, None);
+
+        // A vendor token surviving the scrub withholds the read whole: no
+        // evidence, an unavailable marker, and no upstream error leak.
+        let withheld = runtime
+            .invoke(&invocation(
+                &catalog,
+                "openbb.price_history",
+                serde_json::json!({"provider": "fmp", "symbol": "AAPL"}),
+            ))
+            .await
+            .expect("withheld openbb read still maps to a result");
+        assert!(withheld.evidence.is_empty());
+        assert_eq!(withheld.provider_content["status"], "unavailable");
+    }
+
     fn valid_macro_series_payload() -> Value {
         serde_json::json!({
             "format": "macro-series/v1",
@@ -3182,7 +3359,10 @@ mod tests {
             ))
             .await
             .expect("market series with presentation pack");
-        assert!(!market.evidence.is_empty(), "market series mapping is unchanged");
+        assert!(
+            !market.evidence.is_empty(),
+            "market series mapping is unchanged"
+        );
         assert!(
             market.presentation.is_some(),
             "the authoritative result channel carries the pack for the compiler"
@@ -4175,7 +4355,6 @@ mod tests {
         );
     }
 
-
     // --- Supplemental ladder: filing events, news, and the web-news builtin ---
 
     fn ladder_catalog() -> Arc<CapabilityCatalog> {
@@ -4233,18 +4412,11 @@ mod tests {
                 == KRW_FILING_SEARCH_INPUT_V1
         );
         let transport = FakeTransport::new([]);
-        let runtime = PooledMcpCapabilityRuntime::for_run(
-            Arc::clone(&catalog),
-            transport.clone(),
-            scope(),
-        )
-        .expect("run runtime");
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
         let error = runtime
-            .invoke(&invocation(
-                &catalog,
-                "filing.search_events",
-                invalid,
-            ))
+            .invoke(&invocation(&catalog, "filing.search_events", invalid))
             .await
             .expect_err("form type outside the pinned enum must fail closed");
         assert_eq!(error.code, "canonical_input_invalid");
@@ -4252,9 +4424,8 @@ mod tests {
 
         let output = front_vector(KRW_FILING_SEARCH_RESULT_V1);
         let transport = FakeTransport::new([envelope(&output, false)]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let result = runtime
             .invoke(&invocation(
                 &catalog,
@@ -4295,16 +4466,17 @@ mod tests {
         let brief_input = front_vector(KRW_FILING_BRIEF_INPUT_V1);
         let brief_output = front_vector(KRW_FILING_BRIEF_RESULT_V1);
         let transport = FakeTransport::new([envelope(&brief_output, false)]);
-        let runtime = PooledMcpCapabilityRuntime::for_run(
-            Arc::clone(&catalog),
-            transport.clone(),
-            scope(),
-        )
-        .expect("run runtime");
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
         // Unobserved event id: fail-closed before any dispatch.
         assert_eq!(
             runtime
-                .invoke(&invocation(&catalog, "filing.event_brief", brief_input.clone()))
+                .invoke(&invocation(
+                    &catalog,
+                    "filing.event_brief",
+                    brief_input.clone()
+                ))
                 .await
                 .expect_err("brief target must be observed by a prior search")
                 .code,
@@ -4319,9 +4491,8 @@ mod tests {
             envelope(&search_output, false),
             envelope(&brief_output, false),
         ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let search_invocation = invocation(
             &catalog,
             "filing.search_events",
@@ -4340,7 +4511,10 @@ mod tests {
             .invoke(&invocation(&catalog, "filing.event_brief", brief_input))
             .await
             .expect("observed event brief");
-        assert_eq!(brief_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(
+            brief_result.answerability,
+            Some(Answerability::StrongAllowed)
+        );
         assert_eq!(brief_result.evidence.len(), 1);
         let record = &brief_result.evidence[0];
         assert!(record.strong_claim_allowed);
@@ -4349,10 +4523,12 @@ mod tests {
         // type into the public citation.
         assert_eq!(record.entity.as_deref(), Some("ACME"));
         assert_eq!(record.citation.document_type.as_deref(), Some("8-K"));
-        assert!(record
-            .facts
-            .iter()
-            .any(|fact| fact.predicate == "filing_form_type"));
+        assert!(
+            record
+                .facts
+                .iter()
+                .any(|fact| fact.predicate == "filing_form_type")
+        );
     }
 
     #[tokio::test]
@@ -4375,15 +4551,16 @@ mod tests {
             envelope(&list_output, false),
             envelope(&context_output, false),
         ]);
-        let runtime = PooledMcpCapabilityRuntime::for_run(
-            Arc::clone(&catalog),
-            transport.clone(),
-            scope(),
-        )
-        .expect("run runtime");
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
         assert_eq!(
             runtime
-                .invoke(&invocation(&catalog, "news.feed_context", context_input.clone()))
+                .invoke(&invocation(
+                    &catalog,
+                    "news.feed_context",
+                    context_input.clone()
+                ))
                 .await
                 .expect_err("issue ids must be observed by a prior list")
                 .code,
@@ -4396,7 +4573,10 @@ mod tests {
             .invoke(&list_invocation)
             .await
             .expect("feed issue list");
-        assert_eq!(list_result.answerability, Some(Answerability::QualifiedOnly));
+        assert_eq!(
+            list_result.answerability,
+            Some(Answerability::QualifiedOnly)
+        );
         assert!(!list_result.evidence.is_empty());
         assert!(list_result.evidence.iter().all(|record| {
             !record.strong_claim_allowed
@@ -4418,14 +4598,20 @@ mod tests {
             Some(Answerability::QualifiedOnly)
         );
         assert!(!context_result.evidence.is_empty());
-        assert!(context_result
-            .evidence
-            .iter()
-            .all(|record| !record.strong_claim_allowed
-                && record.entity.as_deref() == Some("ACME")));
+        assert!(
+            context_result
+                .evidence
+                .iter()
+                .all(|record| !record.strong_claim_allowed
+                    && record.entity.as_deref() == Some("ACME"))
+        );
         runtime
             .restore_committed_result(
-                &invocation(&catalog, "news.feed_context", front_vector(KRW_FEED_CONTEXT_INPUT_V2)),
+                &invocation(
+                    &catalog,
+                    "news.feed_context",
+                    front_vector(KRW_FEED_CONTEXT_INPUT_V2),
+                ),
                 &context_result,
             )
             .await
@@ -4460,8 +4646,9 @@ mod tests {
         let lrcx_arguments = serde_json::json!({"ticker": "LRCX", "limit": 10});
 
         let (image, resolved) = fixture_image_and_runtime();
-        let catalog =
-            Arc::new(CapabilityCatalog::compile(&image, resolved).expect("ontology ladder catalog"));
+        let catalog = Arc::new(
+            CapabilityCatalog::compile(&image, resolved).expect("ontology ladder catalog"),
+        );
         let guard = CanonicalContractGuard::new(&image).expect("engine contract guard");
         let capability = |id: &str| {
             image
@@ -4475,9 +4662,8 @@ mod tests {
         // (a) Empty live catalog: a bare `[]` is contract-valid and must ride
         // the ingest path with zero evidence records.
         let transport = FakeTransport::new([envelope(&serde_json::json!([]), false)]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let empty_invocation = invocation(&catalog, "filing.search_events", lrcx_arguments.clone());
         let empty_result = runtime
             .invoke(&empty_invocation)
@@ -4499,15 +4685,17 @@ mod tests {
 
         // (b) Realistic non-empty live catalog row: direct, strong evidence.
         let transport = FakeTransport::new([envelope(&lrcx_search, false)]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let search_invocation = invocation(&catalog, "filing.search_events", lrcx_arguments);
         let search_result = runtime
             .invoke(&search_invocation)
             .await
             .expect("live filing catalog search dispatch");
-        assert_eq!(search_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(
+            search_result.answerability,
+            Some(Answerability::StrongAllowed)
+        );
         assert_eq!(search_result.evidence.len(), 1);
         assert!(search_result.evidence.iter().all(|record| {
             record.directness == Directness::Direct
@@ -4536,9 +4724,8 @@ mod tests {
             envelope(&acme_search, false),
             envelope(&front_vector(KRW_FILING_BRIEF_RESULT_V1), false),
         ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let acme_invocation = invocation(&catalog, "filing.search_events", acme_arguments);
         let acme_result = runtime
             .invoke(&acme_invocation)
@@ -4564,7 +4751,10 @@ mod tests {
             .invoke(&brief_invocation)
             .await
             .expect("observed event brief");
-        assert_eq!(brief_result.answerability, Some(Answerability::StrongAllowed));
+        assert_eq!(
+            brief_result.answerability,
+            Some(Answerability::StrongAllowed)
+        );
         assert_eq!(brief_result.evidence.len(), 1);
         guard
             .validate_result(
@@ -4593,9 +4783,8 @@ mod tests {
             envelope(&list_output, false),
             envelope(&front_vector(KRW_FEED_CONTEXT_V2), false),
         ]);
-        let runtime =
-            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
-                .expect("run runtime");
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
         let list_arguments = front_vector(KRW_FEED_LIST_ITEMS_INPUT_V1);
         let empty_list_invocation = invocation(&catalog, "news.feed_list", list_arguments.clone());
         let empty_list_result = runtime
@@ -4663,7 +4852,10 @@ mod tests {
             .invoke(&web_invocation)
             .await
             .expect("disabled web news lookup is a successful dispatch");
-        assert_eq!(web_result.provider_content, serde_json::json!({"items": []}));
+        assert_eq!(
+            web_result.provider_content,
+            serde_json::json!({"items": []})
+        );
         assert!(web_result.evidence.is_empty());
         guard
             .validate_result(
@@ -4696,10 +4888,7 @@ mod tests {
             .expect("disabled builtin is a normal empty result, never an error");
         assert_eq!(result.provider_content, serde_json::json!({"items": []}));
         assert!(result.evidence.is_empty());
-        assert_eq!(
-            result.answerability,
-            Some(Answerability::QualifiedOnly)
-        );
+        assert_eq!(result.answerability, Some(Answerability::QualifiedOnly));
         // The local builtin never touches the MCP transport.
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
         runtime
@@ -4781,7 +4970,8 @@ mod tests {
         // Citations stay vendor-neutral: the original publisher and headline
         // only, with no retrieval-engine naming.
         assert_eq!(
-            record.citation.title, "Market Wire: Lamcal ships new chamber"
+            record.citation.title,
+            "Market Wire: Lamcal ships new chamber"
         );
         assert_eq!(result.answerability, Some(Answerability::QualifiedOnly));
         web_news::clear_test_config();
@@ -4792,9 +4982,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("local listener");
-        let address = listener
-            .local_addr()
-            .expect("local listener address");
+        let address = listener.local_addr().expect("local listener address");
         let server = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let (mut socket, _) = listener.accept().await.expect("local connection");
@@ -4862,11 +5050,9 @@ mod tests {
             key: "test-key".into(),
             base: format!("http://{address}"),
         };
-        let normalized = web_news::fetch_with_config(
-            &serde_json::json!({"ticker": "LRCX"}),
-            Some(&config),
-        )
-        .await;
+        let normalized =
+            web_news::fetch_with_config(&serde_json::json!({"ticker": "LRCX"}), Some(&config))
+                .await;
         server.await.expect("local endpoint served");
         assert_eq!(normalized, serde_json::json!({"items": []}));
         // Unset configuration behaves identically.
@@ -4933,12 +5119,9 @@ mod tests {
     async fn feed_list_input_identity_is_closed_to_the_schema() {
         let catalog = ladder_catalog();
         let transport = FakeTransport::new([]);
-        let runtime = PooledMcpCapabilityRuntime::for_run(
-            Arc::clone(&catalog),
-            transport.clone(),
-            scope(),
-        )
-        .expect("run runtime");
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
         // Six tickers exceed the pinned maxItems of five.
         let oversized = serde_json::json!({
             "tickers": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
@@ -4967,12 +5150,9 @@ mod tests {
         }));
         let catalog = ladder_catalog();
         let transport = FakeTransport::new([]);
-        let runtime = PooledMcpCapabilityRuntime::for_run(
-            Arc::clone(&catalog),
-            transport.clone(),
-            scope(),
-        )
-        .expect("run runtime");
+        let runtime =
+            PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport.clone(), scope())
+                .expect("run runtime");
         // A limit above the pinned bound is invalid input, not a fail-open
         // lookup: the builtin validates before any network egress.
         assert_eq!(

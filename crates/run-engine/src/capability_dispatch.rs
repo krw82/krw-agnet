@@ -825,6 +825,92 @@ fn assemble_guru_query_context(
 /// against the user's question. Internal router controls are kernel-owned: they
 /// are never part of the model contract and the raw response is sanitized by
 /// capability-runtime before it is retained in the transcript.
+/// Expand the vendor-neutral model request for one curated openbb tool into
+/// its physical MCP input. The pinned provider is image-owned routing data —
+/// the model surface has no provider field, so no open provider surface can
+/// ever be model-authored. The caller has already validated `proposed`
+/// against the model-facing contract; a failure here is a bounded, declared
+/// repair edge exactly like the company-context assembly.
+pub(crate) fn assemble_openbb_request(
+    proposed: &Value,
+    pinned_provider: &krw_agent_image::OpenbbPinnedProvider,
+    input_contract: &str,
+) -> Result<Value, EngineError> {
+    let invalid = || {
+        EngineError::ModelProposalRejected(ModelProposalRejection::generic(
+            "openbb_request_invalid",
+        ))
+    };
+    let request = proposed.as_object().ok_or_else(invalid)?;
+    let bounded_optional_str = |key: &str| -> Option<String> {
+        request
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+            .map(ToOwned::to_owned)
+    };
+    let mut physical = serde_json::Map::new();
+    physical.insert(
+        "provider".into(),
+        Value::String(pinned_provider.as_str().to_owned()),
+    );
+    match input_contract {
+        "openbb-price-historical-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
+        }
+        "openbb-fred-series-input/v1" => {
+            let series_id = request
+                .get("series_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 24)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(series_id.to_owned()));
+            let limit = request
+                .get("limit")
+                .and_then(Value::as_u64)
+                .filter(|limit| (1..=260).contains(limit))
+                .unwrap_or(260);
+            physical.insert("limit".into(), Value::from(limit));
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
+        }
+        "openbb-cpi-input/v1" => {
+            let knob = |key: &str, default: &str| {
+                bounded_optional_str(key).unwrap_or_else(|| default.to_owned())
+            };
+            physical.insert(
+                "country".into(),
+                Value::String(knob("country", "united_states")),
+            );
+            physical.insert("transform".into(), Value::String(knob("transform", "yoy")));
+            physical.insert(
+                "frequency".into(),
+                Value::String(knob("frequency", "monthly")),
+            );
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(Value::Object(physical))
+}
+
 pub(crate) fn assemble_company_context_request(proposed: &Value) -> Result<Value, EngineError> {
     let request = proposed.as_object().ok_or_else(|| {
         EngineError::ModelProposalRejected(ModelProposalRejection::generic(
@@ -1007,6 +1093,14 @@ fn assemble_capability_arguments(
                     research_intent_receipt: None,
                 }
             })
+        }
+        InputDerivation::OpenbbRequestV1 { pinned_provider } => {
+            assemble_openbb_request(proposed, pinned_provider, &capability.input_contract).map(
+                |arguments| AssembledCapabilityArguments {
+                    arguments,
+                    research_intent_receipt: None,
+                },
+            )
         }
         InputDerivation::SealedGuruQueryContextV1 => {
             assemble_guru_query_context(proposed, request, entrypoint).map(|arguments| {
@@ -1197,43 +1291,38 @@ pub(crate) fn prepare_calls(
         // no separate data-release pin applies. Every other capability
         // must resolve its pinned physical binding before dispatch.
         let local_builtin_binding_storage;
-        let binding: &krw_agent_protocol::CapabilityBinding = if capability.local_builtin()
-            .is_some()
-        {
-            local_builtin_binding_storage =
-                krw_agent_execution_contracts::local_builtin_binding(
-                    capability,
-                    &input.image.content_hash,
-                );
-            &local_builtin_binding_storage
-        } else {
-            let binding_key = capability
-                .remote_binding_key()
-                .ok_or(EngineError::Invariant(
-                    "local capability reached external dispatch preparation",
-                ))?;
-            let binding = input
-                .deployment
-                .capabilities
-                .iter()
-                .find(|binding| binding.binding_key == binding_key)
-                .ok_or_else(|| {
-                    EngineError::MissingCapabilityBinding(capability.id.clone())
-                })?;
-            let pinned_release = input
-                .snapshot
-                .capability_release_hashes
-                .get(&capability.id)
-                .ok_or_else(|| {
-                    EngineError::MissingPinnedRelease(capability.id.clone())
-                })?;
-            if pinned_release != &binding.data_release_hash {
-                return Err(EngineError::CapabilityReleaseMismatch(
-                    capability.id.clone(),
-                ));
-            }
-            binding
-        };
+        let binding: &krw_agent_protocol::CapabilityBinding =
+            if capability.local_builtin().is_some() {
+                local_builtin_binding_storage =
+                    krw_agent_execution_contracts::local_builtin_binding(
+                        capability,
+                        &input.image.content_hash,
+                    );
+                &local_builtin_binding_storage
+            } else {
+                let binding_key = capability
+                    .remote_binding_key()
+                    .ok_or(EngineError::Invariant(
+                        "local capability reached external dispatch preparation",
+                    ))?;
+                let binding = input
+                    .deployment
+                    .capabilities
+                    .iter()
+                    .find(|binding| binding.binding_key == binding_key)
+                    .ok_or_else(|| EngineError::MissingCapabilityBinding(capability.id.clone()))?;
+                let pinned_release = input
+                    .snapshot
+                    .capability_release_hashes
+                    .get(&capability.id)
+                    .ok_or_else(|| EngineError::MissingPinnedRelease(capability.id.clone()))?;
+                if pinned_release != &binding.data_release_hash {
+                    return Err(EngineError::CapabilityReleaseMismatch(
+                        capability.id.clone(),
+                    ));
+                }
+                binding
+            };
         let raw_arguments: Value =
             serde_json::from_str(&call.function.arguments).map_err(|_| {
                 EngineError::ModelProposalRejected(ModelProposalRejection::generic(

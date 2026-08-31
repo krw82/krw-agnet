@@ -2587,6 +2587,276 @@ fn unavailable_macro_series() -> ObservationSeriesDelta {
     }
 }
 
+/// Upper bound on raw openbb result records admitted into projection. The
+/// physical tools are requested with a limit of at most 260 observations; a
+/// payload claiming more is withheld whole rather than truncated by guess.
+const MAX_OPENBB_RESULT_RECORDS: usize = 260;
+/// Retained advisory facts per projected openbb record set (the evidence
+/// ledger accepts at most 128 facts per record).
+const MAX_OPENBB_RECORD_FACTS: usize = 128;
+/// Per-record projection bounds: a bounded set of fields, each string at
+/// most 256 bytes, and a serialized record below 2 KiB.
+const MAX_OPENBB_RECORD_FIELDS: usize = 16;
+const MAX_OPENBB_RECORD_FIELD_BYTES: usize = 256;
+const MAX_OPENBB_RECORD_BYTES: usize = 2 * 1024;
+/// Envelope/record keys that are dropped before projection. openbb result
+/// envelopes carry the transport provider (`"provider": "fred"`-style) and
+/// record rows can carry symbol/ticker identifiers; both are collection
+/// routing material, never advisory content, and are removed so the
+/// projected record is vendor-neutral and cannot fabricate an entity.
+const OPENBB_REDACTED_KEYS: [&str; 6] = [
+    "provider",
+    "providers",
+    "vendor",
+    "source",
+    "symbol",
+    "ticker",
+];
+
+/// Generic, advisory-only projection of one curated openbb tool result. The
+/// openbb envelope is validated structurally (JSON object with a bounded
+/// `results` list of record objects); every retained record is scrubbed of
+/// transport identifiers, bounded in field count and size, and numerically
+/// coerced before it can become an `Unverified` advisory fact. Any violation
+/// — missing envelope, oversized records, a vendor token surviving the
+/// scrub, or a foreign ticker on a ticker-bound read — withholds the whole
+/// read as an `unavailable` marker; nothing is promoted to filing evidence
+/// and no strong claim is ever allowed.
+///
+/// `trusted_tickers` is the already authorized company scope for a
+/// ticker-bound tool (empty for the macro tools): records stay unattributed
+/// unless the caller pinned exactly that scope, so a payload can never
+/// fabricate an entity attribution.
+pub fn map_openbb_series(
+    payload: &Value,
+    trusted_tickers: &[&str],
+    context: &MappingContext,
+) -> Result<ObservationSeriesDelta, AdapterError> {
+    let unavailable = |ticker: Option<&str>| ObservationSeriesDelta {
+        provider_content: serde_json::json!({
+            "format": "openbb-series-context/v1",
+            "ticker": ticker,
+            "status": "unavailable",
+            "record_count": 0,
+            "records": [],
+            "source_usage": "research_only",
+            "advisory_only": true,
+            "usage": "No safe external series was available. Continue with filing-derived research."
+        }),
+        evidence_records: Vec::new(),
+    };
+    let trusted_ticker = trusted_tickers.first().copied();
+    if serde_json::to_vec(payload)
+        .map_or(true, |bytes| bytes.len() > MAX_SUPPLEMENTAL_PAYLOAD_BYTES)
+    {
+        return Ok(unavailable(trusted_ticker));
+    }
+    let Some(root) = payload.as_object() else {
+        return Ok(unavailable(trusted_ticker));
+    };
+    let Some(raw_records) = root.get("results").and_then(Value::as_array) else {
+        return Ok(unavailable(trusted_ticker));
+    };
+    if raw_records.len() > MAX_OPENBB_RESULT_RECORDS {
+        return Ok(unavailable(trusted_ticker));
+    }
+
+    // A ticker-bound read attributes its records to the already trusted
+    // scope only. Macro reads stay unattributed; a record naming a company
+    // on a macro read is dropped as unshapeful rather than re-labeled.
+    let mut records: Vec<Value> = Vec::with_capacity(raw_records.len());
+    for raw in raw_records {
+        let Some(record) = raw.as_object() else {
+            return Ok(unavailable(trusted_ticker));
+        };
+        let Some(projected) = scrub_openbb_record(record) else {
+            return Ok(unavailable(trusted_ticker));
+        };
+        records.push(projected);
+    }
+    let status = if records.is_empty() {
+        "no_data"
+    } else {
+        "available"
+    };
+    let provider_content = serde_json::json!({
+        "format": "openbb-series-context/v1",
+        "ticker": trusted_ticker,
+        "status": status,
+        "record_count": records.len(),
+        "records": records,
+        "source_usage": "research_only",
+        "advisory_only": true,
+        "usage": "Timestamped advisory external market/macro context only. Do not treat it as filing evidence or support a recommendation with it."
+    });
+    // Defense in depth: the scrub above removes provider-ish keys, and this
+    // asserts the surviving projection is actually vendor-neutral.
+    if payload_leaks_vendor_token(&provider_content) {
+        return Ok(unavailable(trusted_ticker));
+    }
+    let evidence_records = if status == "available" {
+        vec![openbb_series_record(
+            &provider_content,
+            trusted_ticker,
+            context,
+        )?]
+    } else {
+        Vec::new()
+    };
+    Ok(ObservationSeriesDelta {
+        provider_content,
+        evidence_records,
+    })
+}
+
+/// Project one raw openbb record object into a bounded, vendor-neutral,
+/// ticker-scrubbed value. Numeric strings are coerced to JSON numbers so
+/// downstream consumers never re-parse text; bounded single-line strings
+/// pass through; nulls and every redacted/oversized/foreign field is
+/// dropped. Returns `None` when the record cannot be projected safely.
+fn scrub_openbb_record(record: &serde_json::Map<String, Value>) -> Option<Value> {
+    let mut projected = serde_json::Map::new();
+    for (key, value) in record.iter().take(MAX_OPENBB_RECORD_FIELDS) {
+        if OPENBB_REDACTED_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if key.len() > MAX_OPENBB_RECORD_FIELD_BYTES || key.chars().any(char::is_control) {
+            return None;
+        }
+        let value = match value {
+            Value::Null => continue,
+            Value::Number(number) => {
+                let finite = number
+                    .as_f64()
+                    .is_none_or(|value| value.is_finite() && value.abs() <= MAX_MARKET_METRIC_ABS);
+                if finite {
+                    Value::Number(number.clone())
+                } else {
+                    // A non-finite or absurd magnitude scalar cannot be
+                    // safely coerced; withhold the whole record.
+                    return None;
+                }
+            }
+            Value::Bool(flag) => Value::Bool(*flag),
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.len() > MAX_OPENBB_RECORD_FIELD_BYTES
+                    || trimmed.chars().any(char::is_control)
+                {
+                    // A scalar string that is not safe to retain fails the
+                    // whole record: partial field dropping could silently
+                    // change its meaning.
+                    return None;
+                }
+                if let Ok(number) = serde_json::from_str::<f64>(trimmed) {
+                    // Numeric coercion only for finite values; anything else
+                    // stays a bounded string.
+                    if number.is_finite() && number.abs() <= MAX_MARKET_METRIC_ABS {
+                        Value::from(number)
+                    } else {
+                        Value::String(trimmed.to_owned())
+                    }
+                } else {
+                    Value::String(trimmed.to_owned())
+                }
+            }
+            // Nested structures are not part of the curated record shapes.
+            _ => return None,
+        };
+        projected.insert(key.clone(), value);
+    }
+    if projected.is_empty() {
+        return None;
+    }
+    let value = Value::Object(projected);
+    let bytes = serde_json::to_vec(&value).ok()?;
+    (bytes.len() <= MAX_OPENBB_RECORD_BYTES).then_some(value)
+}
+
+/// One advisory record covering the whole projected openbb result set. Each
+/// retained fact is one scrubbed record row (with its own date period when
+/// the row carries one), mirroring the store-backed observation series:
+/// `Unverified`, never filing evidence, never strong-claim eligible. The
+/// head of an over-long set is dropped so the ledger fact bound holds.
+fn openbb_series_record(
+    provider_content: &Value,
+    trusted_ticker: Option<&str>,
+    context: &MappingContext,
+) -> Result<EvidenceRecord, AdapterError> {
+    let rows = provider_content
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or(AdapterError::InvalidSupplementalPayload(
+            "openbb series records",
+        ))?;
+    let subject = trusted_ticker.unwrap_or("external_series").to_owned();
+    let retained = if rows.len() > MAX_OPENBB_RECORD_FACTS {
+        &rows[rows.len() - MAX_OPENBB_RECORD_FACTS..]
+    } else {
+        &rows[..]
+    };
+    let facts = retained
+        .iter()
+        .map(|row| {
+            let period = market_timestamp(row.get("date"));
+            NormalizedFact {
+                subject: subject.clone(),
+                predicate: "external_series_observation".into(),
+                value: row.clone(),
+                unit: None,
+                period,
+            }
+        })
+        .collect::<Vec<_>>();
+    if facts.is_empty() {
+        return Err(AdapterError::InvalidSupplementalPayload(
+            "openbb series records",
+        ));
+    }
+    let content_hash = ContentHash::sha256(serde_jcs::to_vec(provider_content)?);
+    let evidence_id = format!(
+        "openbb-advisory:{}",
+        content_hash
+            .as_str()
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(40)
+            .collect::<String>()
+    );
+    let record = EvidenceRecord {
+        evidence_id,
+        content_hash,
+        source: EvidenceSource {
+            capability_id: context.capability_id.clone(),
+            action_key: context.action_key.clone(),
+            server_build: context.server_build.clone(),
+            normalized_contract_hash: context.normalized_contract_hash.clone(),
+            server_schema_bundle_hash: context.server_schema_bundle_hash.clone(),
+            data_release_hash: context.data_release_hash.clone(),
+        },
+        scope: context.scope.clone(),
+        entity: trusted_ticker.map(str::to_owned),
+        period: None,
+        as_of: None,
+        directness: Directness::Unverified,
+        grade: EvidenceGrade::Unverified,
+        strong_claim_allowed: false,
+        payload_ref: context.payload_ref.clone(),
+        citation: PublicCitation {
+            title: "External market data series (advisory only)".into(),
+            document_type: Some("external_series".into()),
+            period: None,
+        },
+        facts,
+        supports: Vec::new(),
+        refutes: Vec::new(),
+        qualifies: Vec::new(),
+        source_object_ids: Vec::new(),
+    };
+    ensure_record_bound(&record)?;
+    Ok(record)
+}
+
 /// One advisory record that survives transcript compaction. Every retained
 /// fact keeps its observation pointer so a later trace can name the exact
 /// stored observation; the record itself never gains claim eligibility.
@@ -2740,7 +3010,11 @@ pub fn map_filing_event_search(
         let Some(map) = item.as_object() else {
             continue;
         };
-        if map.get("ticker").and_then(Value::as_str).is_some_and(|value| value != ticker) {
+        if map
+            .get("ticker")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value != ticker)
+        {
             continue;
         }
         let Some(shape) = filing_event_shape(map) else {
@@ -2797,10 +3071,20 @@ fn filing_event_record(
         shape.filing_date.clone(),
     )];
     if let Some(date) = shape.filing_date.clone() {
-        facts.push(filing_fact(ticker, "filing_date", Value::String(date.clone()), Some(date)));
+        facts.push(filing_fact(
+            ticker,
+            "filing_date",
+            Value::String(date.clone()),
+            Some(date),
+        ));
     }
     if let Some(tag) = shape.event_tag.clone() {
-        facts.push(filing_fact(ticker, "filing_event_tag", Value::String(tag), shape.filing_date.clone()));
+        facts.push(filing_fact(
+            ticker,
+            "filing_event_tag",
+            Value::String(tag),
+            shape.filing_date.clone(),
+        ));
     }
     if let Some(headline) = shape.headline.clone() {
         facts.push(filing_fact(
@@ -3027,7 +3311,12 @@ pub fn map_web_news(
             ));
         }
         if let Some(summary) = summary.clone() {
-            facts.push(filing_fact(ticker, "news_summary", Value::String(summary), None));
+            facts.push(filing_fact(
+                ticker,
+                "news_summary",
+                Value::String(summary),
+                None,
+            ));
         }
         facts.truncate(MAX_NEWS_FACTS);
         let record = EvidenceRecord {
@@ -3770,6 +4059,170 @@ mod tests {
             },
             payload_ref: ContentHash::sha256("payload"),
         }
+    }
+
+    /// Real openbb-mcp envelope shape captured from the spike server
+    /// (openbb 4.7.2 / openbb-mcp-server 1.4.1): a JSON object with `results`
+    /// as a list of record dicts, a transport `provider` field, `warnings`,
+    /// `chart`, and `extra.metadata`. Price rows carry date/OHLCV fields.
+    fn openbb_price_envelope() -> serde_json::Value {
+        serde_json::json!({
+            "id": "0c1d4a3e",
+            "results": [
+                {"date": "2026-08-27", "open": 263.1, "high": 265.0, "low": 262.2, "close": 264.4, "volume": 41_233_901},
+                {"date": "2026-08-28", "open": 264.4, "high": 266.3, "low": 263.9, "close": 265.9, "volume": 38_002_144}
+            ],
+            "provider": "fmp",
+            "warnings": null,
+            "chart": null,
+            "extra": {"metadata": {"route": "/equity/price/historical", "timestamp": "2026-08-31T07:24:35.236392"}}
+        })
+    }
+
+    #[test]
+    fn openbb_series_projects_advisory_records_with_vendor_redaction() {
+        let payload = openbb_price_envelope();
+        let delta =
+            map_openbb_series(&payload, &["AAPL"], &context("openbb.price_history")).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        assert_eq!(delta.provider_content["status"], "available");
+        assert_eq!(delta.provider_content["record_count"], 2);
+        assert_eq!(delta.provider_content["ticker"], "AAPL");
+        let projected = serde_json::to_vec(&delta.provider_content).unwrap();
+        let lowered = projected.to_ascii_lowercase();
+        for token in ["fmp", "fred", "polygon"] {
+            assert!(
+                !lowered
+                    .windows(token.len())
+                    .any(|window| window == token.as_bytes()),
+                "projected openbb content must not leak vendor token {token}"
+            );
+        }
+        let [record] = delta.evidence_records.as_slice() else {
+            panic!("one advisory record covers the projected series");
+        };
+        assert_eq!(record.grade, EvidenceGrade::Unverified);
+        assert_eq!(record.directness, Directness::Unverified);
+        assert!(!record.strong_claim_allowed);
+        assert_eq!(record.entity.as_deref(), Some("AAPL"));
+        assert_eq!(record.facts.len(), 2);
+        assert_eq!(record.facts[0].period.as_deref(), Some("2026-08-27"));
+        // Numeric strings are coerced; date fields stay bounded strings.
+        assert_eq!(record.facts[1].value["close"], 265.9);
+        assert_eq!(record.facts[1].value["date"], "2026-08-28");
+    }
+
+    #[test]
+    fn openbb_series_macro_records_stay_unattributed() {
+        let payload = serde_json::json!({
+            "results": [
+                {"date": "2026-07-01", "value": "321.351"},
+                {"date": "2026-06-01", "value": 319.101}
+            ],
+            "provider": "fred",
+            "warnings": null,
+            "chart": null,
+            "extra": {"metadata": {"route": "/economy/fred_series"}}
+        });
+        let delta = map_openbb_series(&payload, &[], &context("openbb.macro_series")).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        assert!(delta.provider_content["ticker"].is_null());
+        let [record] = delta.evidence_records.as_slice() else {
+            panic!("one advisory record covers the projected series");
+        };
+        assert!(record.entity.is_none());
+        // Numeric-string coercion keeps FRED text values usable as numbers.
+        assert_eq!(record.facts[0].value["value"], 321.351);
+    }
+
+    #[test]
+    fn openbb_series_forgeries_are_withheld_whole() {
+        let context = context("openbb.price_history");
+
+        // Missing envelope (no results list).
+        let missing = serde_json::json!({"provider": "fmp", "warnings": null});
+        let delta = map_openbb_series(&missing, &["AAPL"], &context).unwrap();
+        assert!(delta.contains_unavailable_marker());
+        assert!(delta.evidence_records.is_empty());
+
+        // Oversized record set (bound: 260).
+        let oversized = serde_json::json!({
+            "results": (0..261)
+                .map(|index| serde_json::json!({"date": "2026-08-01", "close": index}))
+                .collect::<Vec<_>>(),
+            "provider": "fmp",
+        });
+        let delta = map_openbb_series(&oversized, &["AAPL"], &context).unwrap();
+        assert!(delta.contains_unavailable_marker());
+
+        // Vendor token surviving the scrub inside a retained field value.
+        let leaky = serde_json::json!({
+            "results": [{"date": "2026-08-28", "close": 265.9, "note": "via fmp"}],
+            "provider": "fmp",
+        });
+        let delta = map_openbb_series(&leaky, &["AAPL"], &context).unwrap();
+        assert!(delta.contains_unavailable_marker());
+
+        // Nested record structure is not a curated shape.
+        let nested = serde_json::json!({
+            "results": [{"date": "2026-08-28", "close": {"raw": 265.9}}],
+            "provider": "fmp",
+        });
+        let delta = map_openbb_series(&nested, &["AAPL"], &context).unwrap();
+        assert!(delta.contains_unavailable_marker());
+
+        // A non-object root cannot be an openbb envelope.
+        let scalar = serde_json::json!([1, 2, 3]);
+        let delta = map_openbb_series(&scalar, &["AAPL"], &context).unwrap();
+        assert!(delta.contains_unavailable_marker());
+    }
+
+    #[test]
+    fn openbb_series_drops_transport_and_entity_keys_without_attribution() {
+        let context = context("openbb.price_history");
+        let payload = serde_json::json!({
+            "results": [{
+                "date": "2026-08-28",
+                "close": 265.9,
+                "provider": "fmp",
+                "symbol": "AAPL",
+                "ticker": "AAPL",
+                "source": "realtime"
+            }],
+            "provider": "fmp",
+        });
+        let delta = map_openbb_series(&payload, &["AAPL"], &context).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        // The context envelope keeps its own trusted-scope `ticker` field;
+        // the projected RECORDS must carry none of the transport/entity keys.
+        let encoded = serde_json::to_vec(&delta.provider_content["records"]).unwrap();
+        let text = String::from_utf8(encoded).unwrap();
+        for key in ["\"provider\"", "\"symbol\"", "\"ticker\"", "\"source\""] {
+            assert!(
+                !text.contains(key),
+                "redacted key {key} must not survive record projection"
+            );
+        }
+        // Entity attribution comes only from the trusted scope argument.
+        assert_eq!(delta.evidence_records[0].entity.as_deref(), Some("AAPL"));
+        // A macro read of the same payload cannot fabricate an entity.
+        let macro_delta = map_openbb_series(&payload, &[], &context).unwrap();
+        assert!(macro_delta.provider_content["ticker"].is_null());
+        assert!(macro_delta.evidence_records[0].entity.is_none());
+    }
+
+    #[test]
+    fn openbb_series_overlong_sets_keep_only_the_recent_tail() {
+        let payload = serde_json::json!({
+            "results": (0..140)
+                .map(|index| serde_json::json!({"date": format!("2026-{month:02}-01", month = (index % 12) + 1), "close": index}))
+                .collect::<Vec<_>>(),
+            "provider": "fmp",
+        });
+        let delta =
+            map_openbb_series(&payload, &["AAPL"], &context("openbb.price_history")).unwrap();
+        assert!(!delta.contains_unavailable_marker());
+        assert_eq!(delta.evidence_records[0].facts.len(), 128);
     }
 
     fn answerable_fixture() -> ResearchStateV2 {
@@ -4733,11 +5186,13 @@ mod tests {
         let cited = format!("{:?}", record.citation.title);
         assert!(cited.contains("8-K"));
         assert!(!cited.contains("FMP") && !cited.contains("Yahoo"));
-        assert!(record.facts.iter().any(|fact| fact.predicate == "filing_excerpt"
-            && fact
-                .value
-                .as_str()
-                .is_some_and(|text| text.contains("directors"))));
+        assert!(record.facts.iter().any(|fact| {
+            fact.predicate == "filing_excerpt"
+                && fact
+                    .value
+                    .as_str()
+                    .is_some_and(|text| text.contains("directors"))
+        }));
         EvidenceLedger::from_records(vec![record]).unwrap();
     }
 
@@ -4771,8 +5226,12 @@ mod tests {
                 .count(),
             3
         );
-        assert!(record.facts.iter().all(|fact| fact.value.as_str()
-            != Some("일부 기관의 매도 관측")));
+        assert!(
+            record
+                .facts
+                .iter()
+                .all(|fact| fact.value.as_str() != Some("일부 기관의 매도 관측"))
+        );
         EvidenceLedger::from_records(vec![record]).unwrap();
     }
 
@@ -4801,10 +5260,12 @@ mod tests {
             assert!(!record.strong_claim_allowed);
         }
         assert!(records[0].citation.title.contains("Reuters"));
-        assert!(records[0]
-            .facts
-            .iter()
-            .any(|fact| fact.predicate == "news_publisher"));
+        assert!(
+            records[0]
+                .facts
+                .iter()
+                .any(|fact| fact.predicate == "news_publisher")
+        );
         EvidenceLedger::from_records(records).unwrap();
     }
 
@@ -4823,21 +5284,23 @@ mod tests {
         )
         .unwrap();
         let mut records = news;
-        records.extend(map_filing_event_search(
-            &serde_json::json!({
-                "items": [{
-                    "filing_event_id": "lrcx-20260827-8k",
-                    "form_type": "8-K",
-                    "filing_date": "2026-08-27",
-                    "sec_items": ["5.02"],
-                    "event_tag": "leadership_or_board_change",
-                    "title": "Director departures"
-                }]
-            }),
-            "LRCX",
-            &context("filing.search_events"),
-        )
-        .unwrap());
+        records.extend(
+            map_filing_event_search(
+                &serde_json::json!({
+                    "items": [{
+                        "filing_event_id": "lrcx-20260827-8k",
+                        "form_type": "8-K",
+                        "filing_date": "2026-08-27",
+                        "sec_items": ["5.02"],
+                        "event_tag": "leadership_or_board_change",
+                        "title": "Director departures"
+                    }]
+                }),
+                "LRCX",
+                &context("filing.search_events"),
+            )
+            .unwrap(),
+        );
         records.push(
             map_feed_issue_context(
                 &serde_json::json!({
@@ -4909,9 +5372,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(web_news.len(), MAX_SUPPLEMENTAL_RECORDS);
-        assert!(web_news
-            .iter()
-            .all(|record| record.facts.len() <= MAX_NEWS_FACTS));
+        assert!(
+            web_news
+                .iter()
+                .all(|record| record.facts.len() <= MAX_NEWS_FACTS)
+        );
     }
 
     #[test]

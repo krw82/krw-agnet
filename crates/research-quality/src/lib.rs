@@ -45,7 +45,7 @@ use krw_agent_run_engine::{
 };
 use krw_ontology_adapter::{
     MappingContext, map_company_context, map_macro_series, map_market_series, map_market_snapshot,
-    map_research_state, map_targeted_query, map_trace, parse_research_state,
+    map_openbb_series, map_research_state, map_targeted_query, map_trace, parse_research_state,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1307,6 +1307,10 @@ fn shape_keys(
 struct FixtureCapabilityResponse {
     capability_id: String,
     result_ingest: CapabilityResultIngest,
+    /// Physical input contract of the fixture's capability. The openbb
+    /// fixture mapping uses it to decide ticker attribution exactly like
+    /// the production runtime (price tool only).
+    input_contract: String,
     payload: Value,
     mode: FixtureResponseMode,
 }
@@ -1361,6 +1365,7 @@ fn load_fixture_capability(
                 | CapabilityResultIngest::MarketSnapshotV1
                 | CapabilityResultIngest::MarketSeriesV1
                 | CapabilityResultIngest::MacroSeriesV1
+                | CapabilityResultIngest::OpenbbSeriesV1
                 | CapabilityResultIngest::TargetedEvidenceV1
                 | CapabilityResultIngest::TraceLineageV1 => read_json_value(
                     &resolve_case_path(root, &response.payload, "supplemental payload")?,
@@ -1383,6 +1388,7 @@ fn load_fixture_capability(
         responses.push_back(FixtureCapabilityResponse {
             capability_id: response.capability_id.clone(),
             result_ingest: specification.result_ingest,
+            input_contract: specification.input_contract.clone(),
             payload,
             mode: response.mode,
         });
@@ -1535,6 +1541,36 @@ impl FixtureCapabilityRuntime {
             CapabilityResultIngest::MacroSeriesV1 => {
                 let delta = map_macro_series(&payload, &context)
                     .map_err(|_| fixture_dependency("quality_fixture_macro_series_mapping"))?;
+                Ok(CapabilityResult {
+                    provider_content: delta.provider_content,
+                    evidence: delta.evidence_records,
+                    answerability: None,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                })
+            }
+            CapabilityResultIngest::OpenbbSeriesV1 => {
+                // Quality fixtures drive the openbb tools through the same
+                // generic advisory projection the runtime uses. Only the
+                // ticker-bound price tool attributes records to the request
+                // symbol; the macro tools stay unattributed.
+                let trusted = if response.input_contract
+                    == krw_agent_contracts::OPENBB_PRICE_HISTORICAL_INPUT_V1
+                {
+                    invocation
+                        .arguments
+                        .get("symbol")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|ticker| krw_agent_protocol::is_canonical_ticker(ticker))
+                        .map(|ticker| vec![ticker.to_owned()])
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let trusted_refs: Vec<&str> = trusted.iter().map(String::as_str).collect();
+                let delta = map_openbb_series(&payload, &trusted_refs, &context)
+                    .map_err(|_| fixture_dependency("quality_fixture_openbb_series_mapping"))?;
                 Ok(CapabilityResult {
                     provider_content: delta.provider_content,
                     evidence: delta.evidence_records,
