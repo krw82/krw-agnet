@@ -201,6 +201,16 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-macro-calendar-input-v1
     content_hash: sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5
     semantic_authority: krw-agent-capability-runtime
+  # Deterministic local quant computation (financial-services P2/P4: the
+  # tools compute, the model interprets).
+  - id: quant-dcf-request/v1
+    schema_ref: canonical:krw-agent/quant-dcf-request-v1
+    content_hash: sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772
+    semantic_authority: krw-agent-capability-runtime
+  - id: quant-dcf-result/v1
+    schema_ref: canonical:krw-agent/quant-dcf-result-v1
+    content_hash: sha256:c0fa9e4564b8134e618f940e4ab36572200da4ab47f0b2fc8b625fb52912362b
+    semantic_authority: krw-agent-capability-runtime
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -771,6 +781,25 @@ capabilities:
     scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # Deterministic DCF computation builtin: the model supplies labeled inputs
+  # it already collected; the engine owns every arithmetic step (present
+  # values, terminal value, equity bridge, base-centered 5x5 sensitivity)
+  # and fails closed on terminal_growth >= wacc. The result is an advisory
+  # computation artifact, never evidence.
+  - id: quant.dcf
+    execution: { kind: local, builtin: quant_dcf }
+    permission: read
+    input_contract: quant-dcf-request/v1
+    output_contracts: [quant-dcf-result/v1, normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: quant_model_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
@@ -1007,7 +1036,7 @@ workflows:
       # query_context x2, targeted query x2, trace, chain, market x1, each
       # of the five event/news ladder reads x1, the two observation series
       # lookups x1, and the three curated openbb lookups x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 27 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 28 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # Observation-plane series lookups (advisory market/macro backdrop).
@@ -1035,6 +1064,9 @@ workflows:
       - { id: openbb_earnings_calendar_lookup, kind: capability, capability_id: openbb.earnings_calendar, max_visits: 1 }
       - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
       - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
+      # Deterministic valuation computation (advisory artifact, no ledger
+      # entries): the analyst supplies labeled inputs, the engine computes.
+      - { id: quant_dcf_lookup, kind: capability, capability_id: quant.dcf, max_visits: 1 }
       # A broad company question can have two independent, material evidence
       # gaps (for example, revenue mix and cash conversion). The analyst may
       # still stop after zero or one query; this only leaves room for a second
@@ -1093,6 +1125,7 @@ workflows:
       - { from: assess_obligations, on: openbb_earnings_calendar_has_value, to: openbb_earnings_calendar_lookup }
       - { from: assess_obligations, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
       - { from: assess_obligations, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
+      - { from: assess_obligations, on: quant_dcf_has_value, to: quant_dcf_lookup }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
@@ -1127,6 +1160,7 @@ workflows:
       - { from: openbb_earnings_calendar_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: quant_dcf_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
       - { from: news_feed_lookup, on: evidence_observed, to: ingest_evidence }
@@ -1467,6 +1501,7 @@ validators:
       - { op: max_calls, capability_id: openbb.earnings_calendar, max: 2, code: openbb_earnings_calendar_limit }
       - { op: max_calls, capability_id: openbb.yield_curve, max: 2, code: openbb_yield_curve_limit }
       - { op: max_calls, capability_id: openbb.macro_calendar, max: 2, code: openbb_macro_calendar_limit }
+      - { op: max_calls, capability_id: quant.dcf, max: 2, code: quant_dcf_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
@@ -1496,6 +1531,7 @@ validators:
       - { op: state_precedes, before: query_context, after: openbb_earnings_calendar_lookup, code: context_before_openbb_earnings_calendar }
       - { op: state_precedes, before: query_context, after: openbb_yield_curve_lookup, code: context_before_openbb_yield_curve }
       - { op: state_precedes, before: query_context, after: openbb_macro_calendar_lookup, code: context_before_openbb_macro_calendar }
+      - { op: state_precedes, before: query_context, after: quant_dcf_lookup, code: context_before_quant_dcf }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
       - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }

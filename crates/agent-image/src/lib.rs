@@ -561,6 +561,13 @@ pub enum CapabilityResultIngest {
     /// Local skill body loaded on demand from the immutable image blob store.
     /// No MCP round trip; the result is a passthrough of the pinned Markdown.
     SkillContentV1,
+    /// Deterministic local quant computation (DCF). The builtin owns every
+    /// arithmetic step (present values, terminal value, EV→equity bridge,
+    /// base-centered 5×5 sensitivity) and fails closed on invariant
+    /// violations. The result is an advisory computation artifact — not
+    /// evidence, not an observation, never strong-claim support; the
+    /// provenance of every input stays with the reads that produced it.
+    QuantModelV1,
 }
 
 impl CapabilityResultIngest {
@@ -618,6 +625,9 @@ impl CapabilityResultIngest {
             }
             Self::SkillContentV1 => {
                 "Load the full body of a skill listed in the skill catalog. Call this only for skills you intend to follow, then act on the loaded instructions. The body is resolved locally — no external lookup."
+            }
+            Self::QuantModelV1 => {
+                "Run the deterministic DCF computation over inputs you have already collected and can attribute (projected free cash flows, WACC, terminal growth or exit multiple, net debt, shares). The engine performs every arithmetic step — present values, the terminal value, the equity bridge, and a base-centered sensitivity grid — and rejects inputs where terminal growth is not below WACC. Never do this arithmetic yourself; quote each input from its own source and treat the computed output as an advisory derived figure, never as filing evidence or direct support for a target price."
             }
         }
     }
@@ -973,6 +983,11 @@ pub enum LocalCapability {
     /// touches the MCP transport and returns an empty item list on any
     /// failure.
     WebNewsSearch,
+    /// Deterministic local DCF valuation. Executed by the capability
+    /// runtime as pure computation over the model-labeled request; invariant
+    /// violations (terminal growth ≥ WACC, non-positive shares) reject
+    /// instead of computing wrong numbers.
+    QuantDcf,
 }
 
 impl CapabilitySpec {

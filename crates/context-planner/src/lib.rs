@@ -1010,12 +1010,15 @@ mod tests {
                 .iter()
                 .map(|schema| schema.capability_id.as_str())
                 .collect::<BTreeSet<_>>(),
-            // The filing-event/news fallback ladder is reachable from the
-            // analyst assessment, so its five reads are advertised alongside
-            // the core ontology surface.
+            // The filing-event/news fallback ladder, the observation series
+            // (store-backed and openbb, rounds 1-2), and the deterministic
+            // quant builtin are all reachable from the analyst assessment,
+            // so they are advertised alongside the core ontology surface.
             BTreeSet::from([
                 "ontology.query_context",
                 "market.snapshot",
+                "market.series",
+                "macro.series",
                 "ontology.query",
                 "ontology.trace",
                 "ontology.chain",
@@ -1024,6 +1027,20 @@ mod tests {
                 "news.feed_list",
                 "news.feed_context",
                 "news.web_search",
+                "openbb.price_history",
+                "openbb.macro_series",
+                "openbb.macro_cpi",
+                "openbb.quote",
+                "openbb.metrics",
+                "openbb.income_statement",
+                "openbb.balance_statement",
+                "openbb.cash_statement",
+                "openbb.consensus",
+                "openbb.peers",
+                "openbb.earnings_calendar",
+                "openbb.yield_curve",
+                "openbb.macro_calendar",
+                "quant.dcf",
                 "skill.load",
             ])
         );

@@ -1392,6 +1392,14 @@ mod tests {
                     Ok(Zeroizing::new("https://filings.invalid/readyz".into()))
                 }
                 "KRW_FILINGS_MCP_TOKEN" => Ok(Zeroizing::new("filings-token".into())),
+                // The curated openbb endpoint's fixture URLs, mirroring the
+                // runtime-config fixture secret set. The round-1 openbb
+                // merge taught the endpoint to the deployment binding but
+                // missed this executor fixture, leaving its preflight red.
+                "KRW_OPENBB_MCP_URL" => Ok(Zeroizing::new("https://openbb.invalid/mcp".into())),
+                "KRW_OPENBB_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://openbb.invalid/readyz".into()))
+                }
                 _ => Err(ConfigError::MissingSecret(name.into())),
             }
         }

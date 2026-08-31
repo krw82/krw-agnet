@@ -19,9 +19,9 @@ use krw_agent_contracts::{
     OPENBB_CONSENSUS_INPUT_V1, OPENBB_CPI_INPUT_V1, OPENBB_EARNINGS_CALENDAR_INPUT_V1,
     OPENBB_FRED_SERIES_INPUT_V1, OPENBB_INCOME_INPUT_V1, OPENBB_MACRO_CALENDAR_INPUT_V1,
     OPENBB_METRICS_INPUT_V1, OPENBB_PEER_INPUT_V1, OPENBB_PRICE_HISTORICAL_INPUT_V1,
-    OPENBB_QUOTE_INPUT_V1, OPENBB_YIELD_CURVE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
-    RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value,
-    verify_pin,
+    OPENBB_QUOTE_INPUT_V1, OPENBB_YIELD_CURVE_INPUT_V1, QUANT_DCF_REQUEST_V1,
+    QUANT_DCF_RESULT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2,
+    SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
@@ -58,6 +58,8 @@ use ladder_mapping::{
     LadderMapping, apply_ladder_committed, authorize_ladder, map_ladder_evidence,
 };
 mod web_news;
+mod quant_dcf;
+pub use quant_dcf::{QuantDcfError, run_quant_dcf};
 
 const MAX_MCP_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SCOPE_ID_BYTES: usize = 128;
@@ -151,6 +153,10 @@ enum EvidenceMapping {
     /// Local skill body passthrough. Produces no evidence ledger entries; the
     /// raw Markdown is forwarded as the provider-visible content.
     SkillContent,
+    /// Deterministic local quant computation (DCF valuation). Passthrough
+    /// like the skill body: the computed artifact is provider-visible
+    /// content with an embedded audit trail, never evidence.
+    QuantModel,
 }
 
 impl EvidenceMapping {
@@ -204,6 +210,7 @@ impl EvidenceMapping {
             CapabilityResultIngest::GuruCompanyBriefV1 => Self::Guru(GuruMapping::CompanyBrief),
             CapabilityResultIngest::GuruEvidenceReviewV1 => Self::Guru(GuruMapping::EvidenceReview),
             CapabilityResultIngest::SkillContentV1 => Self::SkillContent,
+            CapabilityResultIngest::QuantModelV1 => Self::QuantModel,
         }
     }
 
@@ -223,7 +230,8 @@ impl EvidenceMapping {
             | Self::OpenbbSeriesV1
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1
-            | Self::SkillContent => false,
+            | Self::SkillContent
+            | Self::QuantModel => false,
         }
     }
 
@@ -266,6 +274,7 @@ impl EvidenceMapping {
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,
             Self::TraceLineageV1 => ONTOLOGY_TRACE_INPUT_V1,
             Self::SkillContent => SKILL_LOAD_V1,
+            Self::QuantModel => QUANT_DCF_REQUEST_V1,
             Self::Front(mapping) => mapping.input_contract(),
             Self::Guru(mapping) => mapping.input_contract(),
             Self::Ladder(mapping) => mapping.input_contract(),
@@ -287,6 +296,7 @@ impl EvidenceMapping {
             | Self::TargetedEvidenceV1
             | Self::TraceLineageV1 => &[NORMALIZED_CAPABILITY_RESULT_V1],
             Self::SkillContent => &[SKILL_CONTENT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
+            Self::QuantModel => &[QUANT_DCF_RESULT_V1, NORMALIZED_CAPABILITY_RESULT_V1],
             Self::Front(mapping) => mapping.output_contracts(),
             Self::Guru(mapping) => mapping.output_contracts(),
             Self::Ladder(mapping) => mapping.output_contracts(),
@@ -457,6 +467,8 @@ impl CapabilityCatalog {
                         ) => {}
                     Some(LocalCapability::SkillLoad)
                         if matches!(mapping, EvidenceMapping::SkillContent) => {}
+                    Some(LocalCapability::QuantDcf)
+                        if matches!(mapping, EvidenceMapping::QuantModel) => {}
                     _ => {
                         return Err(CatalogError::IncompatibleCapability(capability.id.clone()));
                     }
@@ -1521,6 +1533,24 @@ impl PooledMcpCapabilityRuntime {
                     truncation: None,
                 }
             }
+            EvidenceMapping::QuantModel => {
+                // Deterministic local computation, not evidence. The computed
+                // artifact (present values, bridge, base-centered sensitivity
+                // grid, warnings) is forwarded as provider-visible content;
+                // input provenance stays with the observation reads the model
+                // quoted, so no ledger entries are created here either.
+                validate_value(QUANT_DCF_RESULT_V1, &payload).map_err(|error| {
+                    reject("quant_result_contract_invalid", format!("{error:?}"))
+                })?;
+                CapabilityResult {
+                    provider_content: payload,
+                    evidence: Vec::new(),
+                    answerability: None,
+                    calculations: Vec::new(),
+                    presentation: None,
+                    truncation: None,
+                }
+            }
         };
         apply_result_size_budget(&mut result, payload_selection)?;
         validate_normalized_result(&result)?;
@@ -1566,7 +1596,8 @@ impl PooledMcpCapabilityRuntime {
             | EvidenceMapping::TraceLineageV1
             | EvidenceMapping::Front(_)
             | EvidenceMapping::Ladder(_)
-            | EvidenceMapping::SkillContent => {
+            | EvidenceMapping::SkillContent
+            | EvidenceMapping::QuantModel => {
                 return Err(retryable_tool_error(
                     "untyped_tool_error",
                     "the capability has no declared typed error result",
@@ -1825,7 +1856,8 @@ impl PooledMcpCapabilityRuntime {
             | EvidenceMapping::OpenbbSeriesV1
             | EvidenceMapping::TargetedEvidenceV1
             | EvidenceMapping::TraceLineageV1
-            | EvidenceMapping::SkillContent => Ok(()),
+            | EvidenceMapping::SkillContent
+            | EvidenceMapping::QuantModel => Ok(()),
         }
     }
 
@@ -1935,8 +1967,7 @@ impl PooledMcpCapabilityRuntime {
             None
         };
         match descriptor.specification.local_builtin() {
-            Some(LocalCapability::WebNewsSearch) => {
-                let binding =
+            Some(LocalCapability::WebNewsSearch) => {                let binding =
                     local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
                 let image_hash = self.catalog.image_hash.clone();
                 let pool_scope = self.pool_scope.clone();
@@ -1980,6 +2011,55 @@ impl PooledMcpCapabilityRuntime {
                 "local_builtin_unsupported",
                 "skill bodies resolve in the engine before pooled dispatch",
             )),
+            Some(LocalCapability::QuantDcf) => {
+                let binding =
+                    local_builtin_binding(&descriptor.specification, &self.catalog.image_hash);
+                let image_hash = self.catalog.image_hash.clone();
+                let pool_scope = self.pool_scope.clone();
+                let cpu_invocation = invocation.clone();
+                let cpu_descriptor = descriptor.clone();
+                let cpu_binding = binding.clone();
+                self.cpu_work
+                    .execute(DeliveryCertainty::NotDispatched, move || {
+                        Self::validate_invocation_cpu(
+                            &image_hash,
+                            &cpu_invocation,
+                            &cpu_descriptor,
+                            &cpu_binding,
+                        )
+                    })
+                    .await?;
+                // Fail-closed computation: unlike the web-news lookup, a
+                // semantic violation (terminal growth ≥ WACC, non-positive
+                // shares) must never yield "near-miss" numbers — it rejects
+                // with the quant-specific code so the model gets a bounded
+                // repair edge.
+                let arguments = invocation.arguments.clone();
+                let payload = self
+                    .cpu_work
+                    .execute(DeliveryCertainty::NotDispatched, move || {
+                        run_quant_dcf(&arguments).map_err(|error| {
+                            reject(error.code(), "quant dcf invariant violated")
+                        })
+                    })
+                    .await?;
+                let cpu_invocation = invocation.clone();
+                self.cpu_work
+                    .execute(DeliveryCertainty::NotDispatched, move || {
+                        Self::map_success_cpu(
+                            &pool_scope,
+                            None,
+                            None,
+                            &cpu_invocation,
+                            &descriptor,
+                            &binding,
+                            payload,
+                            None,
+                        )
+                    })
+                    .await
+                    .map(|(result, _)| result)
+            }
             None => Err(reject(
                 "local_builtin_unsupported",
                 "capability is not a local builtin",

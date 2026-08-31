@@ -67,6 +67,8 @@ partner-built(LSEG·S&P)는 참고만: LSEG의 "툴 이름 정확 지정+역할�
 
 ### Task B — 관측 액션 개방 (플래너 게이트, E5·후보3 통합 설계)
 
+**2026-08-31 실측 정정**: `research_action` 폐쇄는 *플랜 시점*(research-proposal/v4 → search-plan/v2의 액션 종류)만 제한한다. assess_obligations의 역할 메뉴는 `state_output_contracts`가 직접 전이하는 capability의 model_input_contract를 광고하며, 파일링/뉴스 사다리(역시 research_action 없음)가 r7a에서 실제 호출됐다 — 즉 **Task A만으로 assess 지점의 openbb 호출 경로는 이미 열려 있다**. Task B는 이를 플랜 시점(작성 플래너가 관측 의무를 계획)으로 확장하는 후속 증강이다.
+
 - `ResearchActionKind` 폐쇄집합 {Context, Targeted, Trace}에 **`Observation`** 추가: 계약 표면 = openbb 모델 요청 계약(폐쇄 목록) + `OpenbbSeriesV1` ingest + normalized-capability-result/v1 출력, permission Read, idempotency canonical_args, conflict_domain `openbb.<도구별 리소스>`.
 - research-planner `ResearchActionKind` {QueryContext, TargetedQuery, Trace}에 `Observation` 대응 추가, capability_dispatch 매핑, 점수·충돌 도메인은 선언적 estimate로 (커널 조건문 없음 — 기존 설계 원칙 유지).
 - 교차평면 힌트: 관측 결과 ingest 후 온톨로지 쪽 미해결 조항이 있으면 ladder-hint 패턴(29ad96b와 동일 경로, 지문 중복 제거·자기소거)으로 "오픈 의무" 힌트 — 매크로→관련 업종/기업 온톨로지 조회 유도. 역방향(온톨로지→관측)은 ExternalFactorExposure 힌트(기존 E5 설계 §3).

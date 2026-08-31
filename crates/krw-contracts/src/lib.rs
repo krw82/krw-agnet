@@ -186,6 +186,14 @@ const OPENBB_MACRO_CALENDAR_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-macro-calendar-input-v1.json"
 ));
+const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
+));
+const QUANT_DCF_RESULT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/quant-dcf-result-v1.json"
+));
 const GURU_QUERY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/guru-query-request-v1.json"
@@ -333,6 +341,13 @@ pub const OPENBB_YIELD_CURVE_INPUT_V1: &str = "openbb-yield-curve-input/v1";
 pub const OPENBB_MACRO_CALENDAR_REQUEST_V1: &str = "openbb-macro-calendar-request/v1";
 /// Physical MCP input for the curated openbb `economy_calendar` tool.
 pub const OPENBB_MACRO_CALENDAR_INPUT_V1: &str = "openbb-macro-calendar-input/v1";
+/// Model-authored request for the deterministic local DCF builtin. The
+/// model supplies labeled inputs it already collected; the builtin owns
+/// every arithmetic step and fails closed on `terminal_growth >= wacc`.
+pub const QUANT_DCF_REQUEST_V1: &str = "quant-dcf-request/v1";
+/// Computation artifact returned by the local DCF builtin. Advisory work
+/// product, never evidence: input provenance stays with the inputs.
+pub const QUANT_DCF_RESULT_V1: &str = "quant-dcf-result/v1";
 /// Empty model-authored trigger for a fixed-author Guru retrieval. The kernel
 /// owns the actual question, author, ticker, and orientation context.
 pub const GURU_QUERY_REQUEST_V1: &str = "guru-query-request/v1";
@@ -445,6 +460,10 @@ pub const OPENBB_MACRO_CALENDAR_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:1c2dd39b615ad08691ff1227660d926ea7dd91fc253cdcaf0ec15dd65a91c7f7";
 pub const OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5";
+pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
+pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
+    "sha256:c0fa9e4564b8134e618f940e4ab36572200da4ab47f0b2fc8b625fb52912362b";
 pub const GURU_QUERY_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
@@ -656,6 +675,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_MACRO_CALENDAR_INPUT_BYTES,
         }),
+        QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
+            id: QUANT_DCF_REQUEST_V1,
+            schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
+            schema: QUANT_DCF_REQUEST_BYTES,
+        }),
+        QUANT_DCF_RESULT_V1 => Some(ContractDescriptor {
+            id: QUANT_DCF_RESULT_V1,
+            schema_sha256: QUANT_DCF_RESULT_V1_SCHEMA_SHA256,
+            schema: QUANT_DCF_RESULT_BYTES,
+        }),
         GURU_QUERY_REQUEST_V1 => Some(ContractDescriptor {
             id: GURU_QUERY_REQUEST_V1,
             schema_sha256: GURU_QUERY_REQUEST_V1_SCHEMA_SHA256,
@@ -770,6 +799,9 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(OPENBB_YIELD_CURVE_INPUT_V1).expect("static contract"),
         contract(OPENBB_MACRO_CALENDAR_REQUEST_V1).expect("static contract"),
         contract(OPENBB_MACRO_CALENDAR_INPUT_V1).expect("static contract"),
+        // Deterministic local quant computation (financial-services P2/P4).
+        contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
+        contract(QUANT_DCF_RESULT_V1).expect("static contract"),
         contract(GURU_QUERY_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
@@ -883,6 +915,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_YIELD_CURVE_INPUT_V1 => validate_openbb_yield_curve_input(value),
         OPENBB_MACRO_CALENDAR_REQUEST_V1 => validate_openbb_macro_calendar_request(value),
         OPENBB_MACRO_CALENDAR_INPUT_V1 => validate_openbb_macro_calendar_input(value),
+        QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
+        QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
@@ -2661,6 +2695,97 @@ fn validate_openbb_macro_calendar_input(value: &Value) -> Result<(), ContractVal
     Ok(())
 }
 
+/// Deterministic local DCF request: shape and range bounds only. The
+/// semantic invariant (`terminal_growth < wacc`) is enforced by the builtin
+/// itself so the rejection carries the quant-specific error code.
+fn validate_quant_dcf_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, QUANT_DCF_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &[
+            "ticker",
+            "fcfs",
+            "wacc",
+            "terminal_growth",
+            "method",
+            "exit_multiple",
+            "net_debt",
+            "shares",
+            "mid_year",
+        ],
+        QUANT_DCF_REQUEST_V1,
+    )?;
+    let ticker_ok = request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker);
+    let fcfs_ok = request.get("fcfs").and_then(Value::as_array).is_some_and(|values| {
+        (1..=10).contains(&values.len())
+            && values
+                .iter()
+                .all(|value| value.as_f64().is_some_and(f64::is_finite))
+    });
+    let wacc_ok = request
+        .get("wacc")
+        .and_then(Value::as_f64)
+        .is_some_and(|wacc| wacc.is_finite() && (0.005..=0.5).contains(&wacc));
+    let growth_ok = request
+        .get("terminal_growth")
+        .and_then(Value::as_f64)
+        .is_some_and(|growth| growth.is_finite() && (0.0..=0.08).contains(&growth));
+    let method = request.get("method").and_then(Value::as_str);
+    let method_ok = matches!(method, Some("perpetuity") | Some("exit_multiple"));
+    let multiple_ok = request
+        .get("exit_multiple")
+        .is_none_or(|value| {
+            value
+                .as_f64()
+                .is_some_and(|multiple| multiple.is_finite() && (0.5..=100.0).contains(&multiple))
+        });
+    let net_debt_ok = request
+        .get("net_debt")
+        .and_then(Value::as_f64)
+        .is_some_and(f64::is_finite);
+    let shares_ok = request
+        .get("shares")
+        .and_then(Value::as_f64)
+        .is_some_and(|shares| shares.is_finite() && shares > 0.0);
+    let mid_year_ok = request
+        .get("mid_year")
+        .is_none_or(|value| value.as_bool().is_some());
+    if ticker_ok
+        && fcfs_ok
+        && wacc_ok
+        && growth_ok
+        && method_ok
+        && multiple_ok
+        && net_debt_ok
+        && shares_ok
+        && mid_year_ok
+    {
+        Ok(())
+    } else {
+        Err(ContractValueError::Shape(QUANT_DCF_REQUEST_V1))
+    }
+}
+
+/// Computation artifact: structurally validated (the numbers themselves are
+/// produced by the deterministic builtin, not by the model).
+fn validate_quant_dcf_result(value: &Value) -> Result<(), ContractValueError> {
+    let result = object(value, QUANT_DCF_RESULT_V1)?;
+    exact_keys(
+        result,
+        &["format", "ticker", "equity_value_per_share", "sensitivity"],
+        QUANT_DCF_RESULT_V1,
+    )?;
+    if result.get("format").and_then(Value::as_str) != Some("quant-dcf-result/v1")
+        || !result.get("sensitivity").is_some_and(|grid| grid.is_object())
+    {
+        return Err(ContractValueError::Shape(QUANT_DCF_RESULT_V1));
+    }
+    Ok(())
+}
+
 fn validate_trace_input(value: &Value) -> Result<(), ContractValueError> {
     let trace = object(value, ONTOLOGY_TRACE_INPUT_V1)?;
     exact_keys(
@@ -3052,9 +3177,8 @@ mod tests {
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
         // Round-1 registry (71 descriptors including front/guru/product) +
-        // 20 openbb round-2 contracts (10 model requests + 10 physical
-        // inputs).
-        assert_eq!(descriptors().len(), 91);
+        // 20 openbb round-2 contracts + the 2 quant DCF contracts.
+        assert_eq!(descriptors().len(), 93);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
