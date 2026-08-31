@@ -109,7 +109,8 @@ use krw_agent_bounded_child::{
     CancelChildMutation, CompleteChildMutation, InvokeChildMutation, ReserveChildMutation,
 };
 use krw_agent_contracts::{
-    ANSWER_IR_V1, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1, DISPLAY_PLAN_V2,
+    ANSWER_IR_V1, ANSWER_IR_V2, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1,
+    DISPLAY_PLAN_V2,
     DisplayPlanV2, FINAL_MARKDOWN_V1, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult,
     KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1,
     KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1,
@@ -5866,6 +5867,71 @@ mod tests {
         let clean = sanitize_answer(&sanitized, &ledger, &policy).expect("clean answer");
         assert_eq!(clean.1, ResearchCompletion::Accepted);
         assert_eq!(clean.0, sanitized);
+    }
+
+    /// E1T3: the sanitizer truncates claims at exactly the v2 typed cap
+    /// (256), proving finalization stays aligned with the evidence-crate
+    /// constants after the answer-ir/v2 raise.
+    #[test]
+    fn sanitizer_truncates_claims_at_the_v2_cap_of_256() {
+        let mut ledger = EvidenceLedger::default();
+        ledger
+            .append(sanitizer_evidence("evidence-sanitizer"))
+            .expect("valid evidence");
+        let policy = AnswerPolicy {
+            forbidden_terms: Vec::new(),
+            require_direct_strong_claims: true,
+            require_period_for_numbers: true,
+            require_unit_for_numbers: true,
+            require_counter_signal_for_interpretation: true,
+            exact_follow_up_count: 1,
+        };
+        let valid_claim = |index: usize| Claim {
+            claim_id: format!("c{index}"),
+            kind: ClaimKind::Fact,
+            strength: ClaimStrength::Qualified,
+            text: format!("c{index} 본문입니다."),
+            goal_ids: Vec::new(),
+            evidence_ids: vec!["evidence-sanitizer".into()],
+            counter_evidence_ids: Vec::new(),
+            calculation_ids: Vec::new(),
+            subject: Some("AAPL".into()),
+            predicate: Some("metric".into()),
+            value: None,
+            unit: None,
+            period: Some("FY2025".into()),
+            comparison_basis: None,
+        };
+        // Five sections of 64 render all 300 claims before truncation, so the
+        // only cardinality defect is the claim-count overflow itself.
+        let mut answer = AnswerIr {
+            schema_version: 2,
+            locale: "ko-KR".into(),
+            sections: (0..5)
+                .map(|batch| AnswerSection {
+                    section_id: format!("s{batch}"),
+                    heading: format!("핵심 {batch}"),
+                    intent: "answer".into(),
+                    claim_ids: (0..64)
+                        .map(|offset| format!("c{}", batch * 64 + offset))
+                        .collect(),
+                    disclosed_uncertainty: None,
+                })
+                .collect(),
+            claims: (0..300).map(valid_claim).collect(),
+            calculations: Vec::new(),
+            follow_up_questions: vec!["후속 질문?".into()],
+        };
+        // Keep section references within the actual claim range (300 claims,
+        // the last batch only has 44).
+        answer.sections[4].claim_ids.truncate(300 - 4 * 64);
+        let (sanitized, completion) = sanitize_answer(&answer, &ledger, &policy)
+            .expect("cardinality defects degrade, never fail");
+        assert_eq!(
+            sanitized.claims.len(),
+            krw_agent_evidence::MAX_ANSWER_CLAIMS
+        );
+        assert_eq!(completion, ResearchCompletion::AcceptedWithWarnings);
     }
 
     fn sanitizer_evidence(evidence_id: &str) -> EvidenceRecord {

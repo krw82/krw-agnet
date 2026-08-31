@@ -14,10 +14,11 @@ const MAX_CALCULATION_INPUTS: usize = 128;
 
 /// Bounded answer-shape limits shared with the run-engine answer sanitizer.
 /// The sanitizer must truncate to exactly these limits, so they are public
-/// while every other bound stays crate-private.
-pub const MAX_ANSWER_SECTIONS: usize = 16;
-pub const MAX_ANSWER_CLAIMS: usize = 64;
-pub const MAX_ANSWER_CALCULATIONS: usize = 64;
+/// while every other bound stays crate-private. Raised by E1 to the
+/// answer-ir/v2 caps; v1 answers validate unchanged under the same limits.
+pub const MAX_ANSWER_SECTIONS: usize = 64;
+pub const MAX_ANSWER_CLAIMS: usize = 256;
+pub const MAX_ANSWER_CALCULATIONS: usize = 256;
 pub const MAX_CLAIMS_PER_SECTION: usize = 64;
 const MAX_EVIDENCE_PER_CLAIM: usize = 64;
 const MAX_GOALS_PER_CLAIM: usize = 32;
@@ -507,6 +508,10 @@ pub struct AnswerSection {
     pub disclosed_uncertainty: Option<String>,
 }
 
+/// Typed intermediate answer representation. `schema_version` 1 (legacy
+/// bundles) and 2 (answer-ir/v2, whose only change is the raised typed caps
+/// of 64 sections / 256 claims / 256 calculations) share this one structure;
+/// the sanitizer and the Markdown render contract treat them identically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerIr {
@@ -543,12 +548,12 @@ pub fn validate_answer(
     policy: &AnswerPolicy,
 ) -> Result<(), Vec<ValidationIssue>> {
     let mut issues = Vec::new();
-    if answer.schema_version != 1 {
+    if answer.schema_version != 1 && answer.schema_version != 2 {
         issues.push(ValidationIssue {
             code: "unsupported_answer_schema",
             claim_id: None,
             detail: format!(
-                "expected AnswerIR schema 1, observed {}",
+                "expected AnswerIR schema 1 or 2, observed {}",
                 answer.schema_version
             ),
         });
@@ -1353,6 +1358,106 @@ mod tests {
         )
         .unwrap_err();
         assert!(issues.iter().any(|issue| issue.code == "too_many_claims"));
+    }
+
+    fn base_section() -> AnswerSection {
+        AnswerSection {
+            section_id: "summary".into(),
+            heading: "핵심".into(),
+            intent: "answer".into(),
+            claim_ids: vec!["c0".into()],
+            disclosed_uncertainty: None,
+        }
+    }
+
+    fn base_section_with_id(section_id: &str) -> AnswerSection {
+        AnswerSection {
+            section_id: section_id.into(),
+            ..base_section()
+        }
+    }
+
+    fn base_claim(claim_id: String) -> Claim {
+        Claim {
+            claim_id,
+            kind: ClaimKind::Fact,
+            strength: ClaimStrength::Qualified,
+            text: "회사는 안정적으로 현금을 창출했습니다.".into(),
+            goal_ids: Vec::new(),
+            evidence_ids: vec!["e1".into()],
+            counter_evidence_ids: Vec::new(),
+            calculation_ids: Vec::new(),
+            subject: Some("AAPL".into()),
+            predicate: Some("generated_cash".into()),
+            value: None,
+            unit: None,
+            period: Some("FY2025".into()),
+            comparison_basis: None,
+        }
+    }
+
+    fn base_answer_ir() -> AnswerIr {
+        AnswerIr {
+            schema_version: 1,
+            locale: "ko-KR".into(),
+            sections: vec![base_section()],
+            claims: vec![base_claim("c0".into())],
+            calculations: Vec::new(),
+            follow_up_questions: vec!["질문 1?".into(), "질문 2?".into(), "질문 3?".into()],
+        }
+    }
+
+    fn ledger_with_claims(_: &AnswerIr) -> EvidenceLedger {
+        EvidenceLedger::from_records([evidence("e1", "tenant-a")]).unwrap()
+    }
+
+    fn policy() -> AnswerPolicy {
+        AnswerPolicy {
+            forbidden_terms: Vec::new(),
+            require_direct_strong_claims: true,
+            require_period_for_numbers: true,
+            require_unit_for_numbers: true,
+            require_counter_signal_for_interpretation: true,
+            exact_follow_up_count: 3,
+        }
+    }
+
+    #[test]
+    fn v2_answer_admits_64_sections_and_256_claims() {
+        let mut answer = base_answer_ir();
+        answer.schema_version = 2;
+        answer.sections = (0..64)
+            .map(|index| AnswerSection {
+                section_id: format!("s{index}"),
+                heading: format!("섹션 {index}"),
+                claim_ids: vec![format!("c{index}")],
+                ..base_section()
+            })
+            .collect();
+        answer.claims = (0..256)
+            .map(|index| base_claim(format!("c{index}")))
+            .collect();
+        // Sections only render c0..=c63, so residual `unrendered_claim` issues
+        // are expected; the typed caps themselves must no longer fire at v2.
+        let issues = match validate_answer(&answer, &ledger_with_claims(&answer), &policy()) {
+            Ok(()) => Vec::new(),
+            Err(issues) => issues,
+        };
+        assert!(!issues.iter().any(|issue| issue.code == "too_many_sections"));
+        assert!(!issues.iter().any(|issue| issue.code == "too_many_claims"));
+
+        answer.sections.push(base_section_with_id("s64"));
+        answer.claims.push(base_claim("c256".into()));
+        let issues = validate_answer(&answer, &ledger_with_claims(&answer), &policy()).unwrap_err();
+        assert!(issues.iter().any(|issue| issue.code == "too_many_sections"));
+        assert!(issues.iter().any(|issue| issue.code == "too_many_claims"));
+    }
+
+    #[test]
+    fn v1_answers_still_validate_after_the_v2_bump() {
+        let mut answer = base_answer_ir();
+        answer.schema_version = 1; // 과거 번들에서 읽은 v1 IR — 여전히 유효
+        assert!(validate_answer(&answer, &ledger_with_claims(&answer), &policy()).is_ok());
     }
 
     #[test]

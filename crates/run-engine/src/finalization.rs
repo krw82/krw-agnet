@@ -1282,7 +1282,9 @@ fn validate_typed_output(
         .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
     validate_fixed_guru_author_payload(selected_entrypoint(input.image, input.request)?, output)?;
 
-    let answer_ir = if contract.id == ANSWER_IR_V1 {
+    // answer-ir/v2 is structurally identical to v1 — only the typed caps
+    // differ — so both share one typed parse/sanitize pipeline.
+    let answer_ir = if contract.id == ANSWER_IR_V1 || contract.id == ANSWER_IR_V2 {
         let mut answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
         let policy = answer_policy(input.image);
         bind_kernel_goal_ids(&mut answer_ir, state);
@@ -1442,7 +1444,7 @@ fn render_typed_output(
     answer_ir: Option<&AnswerIr>,
     ledger: &EvidenceLedger,
 ) -> Result<String, EngineError> {
-    if contract.id == ANSWER_IR_V1 {
+    if contract.id == ANSWER_IR_V1 || contract.id == ANSWER_IR_V2 {
         return render_markdown(
             answer_ir.ok_or(EngineError::Invariant(
                 "AnswerIR contract was validated without typed AnswerIR",

@@ -94,6 +94,10 @@ const ANSWER_IR_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/answer-ir-v1.json"
 ));
+const ANSWER_IR_V2_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/answer-ir-v2.json"
+));
 const REPORT_SECTIONS_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/report-sections-v1.json"
@@ -162,6 +166,11 @@ pub const ONTOLOGY_TARGETED_QUERY_V1: &str = "ontology-targeted-query/v1";
 pub const ONTOLOGY_TRACE_INPUT_V1: &str = "ontology-trace-input/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1: &str = "normalized-capability-result/v1";
 pub const ANSWER_IR_V1: &str = "answer-ir/v1";
+/// Structurally identical to [`ANSWER_IR_V1`] with the E1 typed caps raised
+/// to 64 sections / 256 claims / 256 calculations. The internal parse and
+/// sanitizer pipeline — and the final Markdown render contract — are
+/// unchanged, so v2 outputs flow through the same typed branch.
+pub const ANSWER_IR_V2: &str = "answer-ir/v2";
 /// One model-authored section batch for the sectioned compose loop. The
 /// engine accumulates validated batches into the assembled answer IR; this
 /// contract is never the committed final output.
@@ -186,6 +195,8 @@ pub const NORMALIZED_CAPABILITY_RESULT_V1_SCHEMA_SHA256: &str =
     "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151";
 pub const ANSWER_IR_V1_SCHEMA_SHA256: &str =
     "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634";
+pub const ANSWER_IR_V2_SCHEMA_SHA256: &str =
+    "sha256:649fa912b73683696a76dd8336760873ad17b3041273da802c63aef80c200a9b";
 pub const REPORT_SECTIONS_V1_SCHEMA_SHA256: &str =
     "sha256:2271cce6a7ed45bb69429093c0757cf66a1ffce2a2043ce33246f452beea9e2b";
 pub const FINAL_MARKDOWN_V1_SCHEMA_SHA256: &str =
@@ -314,6 +325,11 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: ANSWER_IR_V1_SCHEMA_SHA256,
             schema: ANSWER_IR_BYTES,
         }),
+        ANSWER_IR_V2 => Some(ContractDescriptor {
+            id: ANSWER_IR_V2,
+            schema_sha256: ANSWER_IR_V2_SCHEMA_SHA256,
+            schema: ANSWER_IR_V2_BYTES,
+        }),
         REPORT_SECTIONS_V1 => Some(ContractDescriptor {
             id: REPORT_SECTIONS_V1,
             schema_sha256: REPORT_SECTIONS_V1_SCHEMA_SHA256,
@@ -376,6 +392,7 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
         contract(NORMALIZED_CAPABILITY_RESULT_V1).expect("static contract"),
         contract(ANSWER_IR_V1).expect("static contract"),
+        contract(ANSWER_IR_V2).expect("static contract"),
         contract(REPORT_SECTIONS_V1).expect("static contract"),
         contract(FINAL_MARKDOWN_V1).expect("static contract"),
         contract(STATE_OPERATION_OUTPUT_V1).expect("static contract"),
@@ -464,7 +481,7 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         SKILL_CONTENT_V1 => validate_skill_content(value),
         KRW_WEB_NEWS_SEARCH_INPUT_V1 => validate_web_news_search_input(value),
         KRW_WEB_NEWS_SEARCH_RESULT_V1 => validate_web_news_search_result(value),
-        NORMALIZED_CAPABILITY_RESULT_V1 | ANSWER_IR_V1 => Ok(()),
+        NORMALIZED_CAPABILITY_RESULT_V1 | ANSWER_IR_V1 | ANSWER_IR_V2 => Ok(()),
         FINAL_MARKDOWN_V1 if bounded_string(Some(value), 1, 64_000) => Ok(()),
         FINAL_MARKDOWN_V1 => Err(ContractValueError::Shape(FINAL_MARKDOWN_V1)),
         _ => Err(ContractValueError::UnknownContract(contract_id.to_owned())),
@@ -1992,7 +2009,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 64);
+        assert_eq!(descriptors().len(), 65);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -2038,6 +2055,35 @@ mod tests {
         // v1과 동일 문형으로 배치 수준 claim/calculation을 운반한다.
         assert!(schema["$defs"]["claim"].is_object());
         assert!(schema["$defs"]["calculation"].is_object());
+    }
+
+    #[test]
+    fn answer_ir_v2_is_pinned_and_reachable() {
+        let descriptor = contract(ANSWER_IR_V2).expect("canonical descriptor");
+        assert_eq!(
+            descriptor.schema_sha256, ANSWER_IR_V2_SCHEMA_SHA256,
+            "pin must equal the canonical schema hash"
+        );
+        assert!(verify_pin(ANSWER_IR_V2, &descriptor.content_hash().unwrap()).is_ok());
+        assert!(descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == ANSWER_IR_V2));
+        let schema: serde_json::Value =
+            serde_json::from_slice(descriptor.schema).expect("valid json schema");
+        assert_eq!(schema["$id"], "krw-agent/kernel/answer-ir/v2");
+        assert_eq!(schema["properties"]["schema_version"]["const"], 2);
+        // E1 상한: 섹션 64 · 클레임 256 · 계산 256 — 렌더 계약은 불변.
+        assert_eq!(schema["properties"]["sections"]["maxItems"], 64);
+        assert_eq!(schema["properties"]["claims"]["maxItems"], 256);
+        assert_eq!(schema["properties"]["calculations"]["maxItems"], 256);
+        assert_eq!(
+            schema["description"],
+            "caps raised by E1; render contract unchanged"
+        );
+        // v1과 동일 문형의 클레임/계산/섹션 정의를 공유한다.
+        assert!(schema["$defs"]["claim"].is_object());
+        assert!(schema["$defs"]["calculation"].is_object());
+        assert!(schema["$defs"]["section"].is_object());
     }
 
     #[test]
