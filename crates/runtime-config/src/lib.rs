@@ -1734,13 +1734,13 @@ mod tests {
 
     /// The curated openbb endpoint feeds the daemon's startup tools/list
     /// preflight exactly like feed/filings: the resolved release set carries
-    /// the three bound openbb tool names grouped under one endpoint, so the
+    /// the bound openbb tool names grouped under one endpoint, so the
     /// preflight rejects a server that does not advertise them. This test
     /// pins the data the preflight consumes (endpoint_ref, exact MCP tool
     /// names, no bearer on the local no-credential profile) and proves the
     /// fail-closed path when the endpoint registry omits the openbb entry.
     #[test]
-    fn openbb_endpoint_resolves_the_three_curated_tools_for_preflight() {
+    fn openbb_endpoint_resolves_the_thirteen_curated_tools_for_preflight() {
         let (image, binding, registry, budget, endpoints, _request, secrets) = fixture();
         let runtime = resolve_runtime(
             &image,
@@ -1765,6 +1765,52 @@ mod tests {
                 "economy_fred_series",
             ),
             ("openbb.macro_cpi", "openbb_economy_cpi", "economy_cpi"),
+            ("openbb.quote", "openbb_equity_price_quote", "equity_price_quote"),
+            (
+                "openbb.metrics",
+                "openbb_equity_fundamental_metrics",
+                "equity_fundamental_metrics",
+            ),
+            (
+                "openbb.income_statement",
+                "openbb_equity_fundamental_income",
+                "equity_fundamental_income",
+            ),
+            (
+                "openbb.balance_statement",
+                "openbb_equity_fundamental_balance",
+                "equity_fundamental_balance",
+            ),
+            (
+                "openbb.cash_statement",
+                "openbb_equity_fundamental_cash",
+                "equity_fundamental_cash",
+            ),
+            (
+                "openbb.consensus",
+                "openbb_equity_estimates_consensus",
+                "equity_estimates_consensus",
+            ),
+            (
+                "openbb.peers",
+                "openbb_equity_compare_peers",
+                "equity_compare_peers",
+            ),
+            (
+                "openbb.earnings_calendar",
+                "openbb_equity_calendar_earnings",
+                "equity_calendar_earnings",
+            ),
+            (
+                "openbb.yield_curve",
+                "openbb_fixedincome_government_yield_curve",
+                "fixedincome_government_yield_curve",
+            ),
+            (
+                "openbb.macro_calendar",
+                "openbb_economy_calendar",
+                "economy_calendar",
+            ),
         ];
         for (capability_id, binding_key, tool_name) in expected {
             let resolved = runtime
@@ -1832,8 +1878,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            15,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, and the curated openbb endpoint three more physical bindings"
+            25,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, and the curated openbb endpoint thirteen more physical bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1865,7 +1911,7 @@ mod tests {
         .expect("local skill.load must not depend on a physical MCP deployment binding");
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
-        assert_eq!(runtime.physical_binding_count(), 15);
+        assert_eq!(runtime.physical_binding_count(), 25);
     }
 
     /// The observation series bindings are held to the same fail-closed

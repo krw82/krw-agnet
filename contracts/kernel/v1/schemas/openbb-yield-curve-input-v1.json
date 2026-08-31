@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"date":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$","type":"string"},"provider":{"const":"fmp","type":"string"}},"required":["provider"],"title":"OpenbbYieldCurveInputV1","type":"object"}

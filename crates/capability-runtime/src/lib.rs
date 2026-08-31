@@ -15,9 +15,13 @@ use async_trait::async_trait;
 use krw_agent_contracts::{
     MACRO_SERIES_REQUEST_V1, MARKET_SERIES_REQUEST_V1, MARKET_SNAPSHOT_REQUEST_V1,
     NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1, ONTOLOGY_TARGETED_QUERY_V1,
-    ONTOLOGY_TRACE_INPUT_V1, OPENBB_CPI_INPUT_V1, OPENBB_FRED_SERIES_INPUT_V1,
-    OPENBB_PRICE_HISTORICAL_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2,
-    SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
+    ONTOLOGY_TRACE_INPUT_V1, OPENBB_BALANCE_INPUT_V1, OPENBB_CASH_INPUT_V1,
+    OPENBB_CONSENSUS_INPUT_V1, OPENBB_CPI_INPUT_V1, OPENBB_EARNINGS_CALENDAR_INPUT_V1,
+    OPENBB_FRED_SERIES_INPUT_V1, OPENBB_INCOME_INPUT_V1, OPENBB_MACRO_CALENDAR_INPUT_V1,
+    OPENBB_METRICS_INPUT_V1, OPENBB_PEER_INPUT_V1, OPENBB_PRICE_HISTORICAL_INPUT_V1,
+    OPENBB_QUOTE_INPUT_V1, OPENBB_YIELD_CURVE_INPUT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1,
+    RESEARCH_STATE_V2, SEARCH_PLAN_V2, SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value,
+    verify_pin,
 };
 use krw_agent_evidence::EvidenceScope;
 use krw_agent_execution_contracts::{
@@ -224,8 +228,9 @@ impl EvidenceMapping {
     }
 
     /// Closed per-mapping input-contract admission. Most mappings accept
-    /// exactly one contract; the openbb mapping accepts the three curated
-    /// physical tool inputs.
+    /// exactly one contract; the openbb mapping accepts the curated physical
+    /// tool inputs (round 1: three series tools; round 2: the financial-
+    /// services company/macro record tools).
     fn accepts_input_contract(self, contract_id: &str) -> bool {
         match self {
             Self::OpenbbSeriesV1 => matches!(
@@ -233,6 +238,16 @@ impl EvidenceMapping {
                 OPENBB_PRICE_HISTORICAL_INPUT_V1
                     | OPENBB_FRED_SERIES_INPUT_V1
                     | OPENBB_CPI_INPUT_V1
+                    | OPENBB_QUOTE_INPUT_V1
+                    | OPENBB_METRICS_INPUT_V1
+                    | OPENBB_INCOME_INPUT_V1
+                    | OPENBB_BALANCE_INPUT_V1
+                    | OPENBB_CASH_INPUT_V1
+                    | OPENBB_CONSENSUS_INPUT_V1
+                    | OPENBB_PEER_INPUT_V1
+                    | OPENBB_EARNINGS_CALENDAR_INPUT_V1
+                    | OPENBB_YIELD_CURVE_INPUT_V1
+                    | OPENBB_MACRO_CALENDAR_INPUT_V1
             ),
             _ => contract_id == self.input_contract(),
         }
@@ -245,7 +260,7 @@ impl EvidenceMapping {
             Self::MarketSnapshotV1 => MARKET_SNAPSHOT_REQUEST_V1,
             Self::MarketSeriesV1 => MARKET_SERIES_REQUEST_V1,
             Self::MacroSeriesV1 => MACRO_SERIES_REQUEST_V1,
-            // The openbb mapping spans three curated tools; per-contract
+            // The openbb mapping spans the curated tools; per-contract
             // admission is handled by [`Self::accepts_input_contract`].
             Self::OpenbbSeriesV1 => OPENBB_PRICE_HISTORICAL_INPUT_V1,
             Self::TargetedEvidenceV1 => ONTOLOGY_TARGETED_QUERY_V1,

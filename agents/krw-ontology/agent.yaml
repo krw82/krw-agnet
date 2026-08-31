@@ -117,6 +117,90 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-cpi-input-v1
     content_hash: sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4
     semantic_authority: krw-agent-capability-runtime
+  # ── openbb curation round 2 (financial-services patterns, 2026-08-31) ──
+  # Company plane: quote, TTM metrics, the three statements, consensus/price
+  # targets, peers, and the ticker-scoped earnings calendar. Macro plane:
+  # government yield curve and the bounded macro event calendar.
+  - id: openbb-quote-request/v1
+    schema_ref: canonical:krw-agent/openbb-quote-request-v1
+    content_hash: sha256:fc10820610a4e76b636d762a86651b0f8e9673883b91dd2fd72aad4de86eace3
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-quote-input/v1
+    schema_ref: canonical:krw-agent/openbb-quote-input-v1
+    content_hash: sha256:6d8c37687480c3eec7c0cceb4f4f7e5a76dcd31dd84044a8a43dea0ccd36108a
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-metrics-request/v1
+    schema_ref: canonical:krw-agent/openbb-metrics-request-v1
+    content_hash: sha256:ef640c9f81c5ba44d5df70043138b3aa32e299e578c368a94367a9df2307fce9
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-metrics-input/v1
+    schema_ref: canonical:krw-agent/openbb-metrics-input-v1
+    content_hash: sha256:d2b15418f877e07d349af189050255c4b3c881c4ee84af17d07428f2b8c7489e
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-income-request/v1
+    schema_ref: canonical:krw-agent/openbb-income-request-v1
+    content_hash: sha256:645782f7cc8e1c76f48427ab18ae4588d4f91265fcf88d7d46eef82f01a6923b
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-income-input/v1
+    schema_ref: canonical:krw-agent/openbb-income-input-v1
+    content_hash: sha256:2328d489e814fe1826d7a1b6067ef8408d2faf72e6eaf45d22ecf70ff274cac9
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-balance-request/v1
+    schema_ref: canonical:krw-agent/openbb-balance-request-v1
+    content_hash: sha256:c68b3edfdfdeb5e8c2ad9fc83d792963732c38b05277ce20985fa421ae51f562
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-balance-input/v1
+    schema_ref: canonical:krw-agent/openbb-balance-input-v1
+    content_hash: sha256:40d57579162715a2444f2b44e60911531e93e68a3b40adfe4d01c541a3a291a6
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cash-request/v1
+    schema_ref: canonical:krw-agent/openbb-cash-request-v1
+    content_hash: sha256:d0130ca76f7beb49779d7a8271fb69f03195230201c062aeeb24d55ab8813ac3
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cash-input/v1
+    schema_ref: canonical:krw-agent/openbb-cash-input-v1
+    content_hash: sha256:64c6a021d38ee7eefa479b89c7a104f077444f25d74a2403b9d16770f0478431
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-consensus-request/v1
+    schema_ref: canonical:krw-agent/openbb-consensus-request-v1
+    content_hash: sha256:744d59d4a2815fd2371e814a90e97723867bd0edf178872548e9fa6dca88dba2
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-consensus-input/v1
+    schema_ref: canonical:krw-agent/openbb-consensus-input-v1
+    content_hash: sha256:315964c3d1a112c55ec1b62d439b84b96fab835547b102fbba6c4a213563f5e3
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-peer-request/v1
+    schema_ref: canonical:krw-agent/openbb-peer-request-v1
+    content_hash: sha256:bcd842b823ef903100af8fb3b6b6e75fe913bc71e454109f9bd5b1a2936360b4
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-peer-input/v1
+    schema_ref: canonical:krw-agent/openbb-peer-input-v1
+    content_hash: sha256:32a670a9146de5a6bca4d4f0e0cb66ac88cfa6888ae2dcedcadf161720d92846
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-earnings-calendar-request/v1
+    schema_ref: canonical:krw-agent/openbb-earnings-calendar-request-v1
+    content_hash: sha256:7dc9165d634d404271d43b715dfdd05c5bbeb0925dc5f760ed29d468d62b160c
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-earnings-calendar-input/v1
+    schema_ref: canonical:krw-agent/openbb-earnings-calendar-input-v1
+    content_hash: sha256:0e2c2d2f4105dafacf21b972bc76b756ef65fc66d44f61e41f6435b27bd358ef
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-yield-curve-request/v1
+    schema_ref: canonical:krw-agent/openbb-yield-curve-request-v1
+    content_hash: sha256:6aecaf56821639e6434c1abdafa320b3bac415d8fbd919c3ff2ceffc01326242
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-yield-curve-input/v1
+    schema_ref: canonical:krw-agent/openbb-yield-curve-input-v1
+    content_hash: sha256:12acaafda9ca2425e3d3ad3ed21729f3c3e32a52f9609b11acc517894eadbd83
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-macro-calendar-request/v1
+    schema_ref: canonical:krw-agent/openbb-macro-calendar-request-v1
+    content_hash: sha256:1c2dd39b615ad08691ff1227660d926ea7dd91fc253cdcaf0ec15dd65a91c7f7
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-macro-calendar-input/v1
+    schema_ref: canonical:krw-agent/openbb-macro-calendar-input-v1
+    content_hash: sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5
+    semantic_authority: krw-agent-capability-runtime
   - id: ontology-targeted-query/v1
     schema_ref: canonical:krw-ontology/ontology-targeted-query-v1
     content_hash: sha256:35b3d67567b5241972c733c9e760ae62d7b6ca5ccd5a4c2193ab34cc7d7a5f63
@@ -516,6 +600,177 @@ capabilities:
     scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # ── openbb curation round 2: company plane (financial-services patterns) ──
+  # Same doctrine as the round-1 trio: advisory_only observation reads with
+  # no research_action (the planner's action kinds stay closed to the
+  # canonical query/trace surfaces), kernel-pinned fmp transport, and
+  # ticker-scoped bindings so a payload can never fabricate an entity.
+  - id: openbb.quote
+    execution: { kind: remote, binding_key: openbb_equity_price_quote }
+    permission: read
+    # One current-quote snapshot for the already trusted ticker.
+    input_contract: openbb-quote-input/v1
+    model_input_contract: openbb-quote-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.metrics
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_metrics }
+    permission: read
+    # Bounded TTM key-metric snapshots (margins, multiples, capital returns).
+    input_contract: openbb-metrics-input/v1
+    model_input_contract: openbb-metrics-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.income_statement
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_income }
+    permission: read
+    # Bounded income statements; the kernel pins the default period count.
+    input_contract: openbb-income-input/v1
+    model_input_contract: openbb-income-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.balance_statement
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_balance }
+    permission: read
+    # Bounded balance sheets (net-debt bridge material for valuations).
+    input_contract: openbb-balance-input/v1
+    model_input_contract: openbb-balance-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.cash_statement
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_cash }
+    permission: read
+    # Bounded cash-flow statements (FCF material for deterministic models).
+    input_contract: openbb-cash-input/v1
+    model_input_contract: openbb-cash-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.consensus
+    execution: { kind: remote, binding_key: openbb_equity_estimates_consensus }
+    permission: read
+    # Consensus price-target snapshot (high/low/consensus/median).
+    input_contract: openbb-consensus-input/v1
+    model_input_contract: openbb-consensus-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.peers
+    execution: { kind: remote, binding_key: openbb_equity_compare_peers }
+    permission: read
+    # Named peer set for the already trusted ticker (comps material).
+    input_contract: openbb-peer-input/v1
+    model_input_contract: openbb-peer-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.earnings_calendar
+    execution: { kind: remote, binding_key: openbb_equity_calendar_earnings }
+    permission: read
+    # Ticker-scoped earnings calendar window; the kernel always injects the
+    # symbol so an unscoped calendar read cannot be authored.
+    input_contract: openbb-earnings-calendar-input/v1
+    model_input_contract: openbb-earnings-calendar-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  # ── openbb curation round 2: macro plane ──
+  - id: openbb.yield_curve
+    execution: { kind: remote, binding_key: openbb_fixedincome_government_yield_curve }
+    permission: read
+    # Government yield-curve snapshot (risk-free anchor material). Not
+    # company-scoped; the kernel pins the provider and optional as-of date.
+    input_contract: openbb-yield-curve-input/v1
+    model_input_contract: openbb-yield-curve-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.macro_calendar
+    execution: { kind: remote, binding_key: openbb_economy_calendar }
+    permission: read
+    # Bounded macro event-calendar window (≤31 days, required importance
+    # filter) so the projected record set stays far below the adapter bound.
+    input_contract: openbb-macro-calendar-input/v1
+    model_input_contract: openbb-macro-calendar-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   - id: ontology.query
     execution: { kind: remote, binding_key: krw_ontology_query }
     permission: read
@@ -752,7 +1007,7 @@ workflows:
       # query_context x2, targeted query x2, trace, chain, market x1, each
       # of the five event/news ladder reads x1, the two observation series
       # lookups x1, and the three curated openbb lookups x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 17 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 27 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # Observation-plane series lookups (advisory market/macro backdrop).
@@ -766,6 +1021,20 @@ workflows:
       - { id: openbb_price_lookup, kind: capability, capability_id: openbb.price_history, max_visits: 1 }
       - { id: openbb_macro_lookup, kind: capability, capability_id: openbb.macro_series, max_visits: 1 }
       - { id: openbb_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
+      # Curated openbb round 2 (financial-services patterns): quote,
+      # fundamentals, statements, consensus, peers, and the earnings calendar
+      # for the company plane; the yield curve and macro calendar for the
+      # macro plane. Same one-visit state bound and action_limits layer.
+      - { id: openbb_quote_lookup, kind: capability, capability_id: openbb.quote, max_visits: 1 }
+      - { id: openbb_metrics_lookup, kind: capability, capability_id: openbb.metrics, max_visits: 1 }
+      - { id: openbb_income_lookup, kind: capability, capability_id: openbb.income_statement, max_visits: 1 }
+      - { id: openbb_balance_lookup, kind: capability, capability_id: openbb.balance_statement, max_visits: 1 }
+      - { id: openbb_cash_lookup, kind: capability, capability_id: openbb.cash_statement, max_visits: 1 }
+      - { id: openbb_consensus_lookup, kind: capability, capability_id: openbb.consensus, max_visits: 1 }
+      - { id: openbb_peers_lookup, kind: capability, capability_id: openbb.peers, max_visits: 1 }
+      - { id: openbb_earnings_calendar_lookup, kind: capability, capability_id: openbb.earnings_calendar, max_visits: 1 }
+      - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
+      - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
       # A broad company question can have two independent, material evidence
       # gaps (for example, revenue mix and cash conversion). The analyst may
       # still stop after zero or one query; this only leaves room for a second
@@ -814,6 +1083,16 @@ workflows:
       - { from: assess_obligations, on: openbb_price_has_value, to: openbb_price_lookup }
       - { from: assess_obligations, on: openbb_macro_has_value, to: openbb_macro_lookup }
       - { from: assess_obligations, on: openbb_cpi_has_value, to: openbb_cpi_lookup }
+      - { from: assess_obligations, on: openbb_quote_has_value, to: openbb_quote_lookup }
+      - { from: assess_obligations, on: openbb_metrics_has_value, to: openbb_metrics_lookup }
+      - { from: assess_obligations, on: openbb_income_has_value, to: openbb_income_lookup }
+      - { from: assess_obligations, on: openbb_balance_has_value, to: openbb_balance_lookup }
+      - { from: assess_obligations, on: openbb_cash_has_value, to: openbb_cash_lookup }
+      - { from: assess_obligations, on: openbb_consensus_has_value, to: openbb_consensus_lookup }
+      - { from: assess_obligations, on: openbb_peers_has_value, to: openbb_peers_lookup }
+      - { from: assess_obligations, on: openbb_earnings_calendar_has_value, to: openbb_earnings_calendar_lookup }
+      - { from: assess_obligations, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
+      - { from: assess_obligations, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
       - { from: assess_obligations, on: selected_chain_has_value, to: chain_selected }
@@ -838,6 +1117,16 @@ workflows:
       - { from: openbb_price_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_cpi_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_quote_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_metrics_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_income_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_balance_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_cash_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_consensus_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_peers_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_earnings_calendar_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
       - { from: news_feed_lookup, on: evidence_observed, to: ingest_evidence }
@@ -1168,6 +1457,16 @@ validators:
       - { op: max_calls, capability_id: openbb.price_history, max: 2, code: openbb_price_limit }
       - { op: max_calls, capability_id: openbb.macro_series, max: 2, code: openbb_macro_limit }
       - { op: max_calls, capability_id: openbb.macro_cpi, max: 2, code: openbb_cpi_limit }
+      - { op: max_calls, capability_id: openbb.quote, max: 2, code: openbb_quote_limit }
+      - { op: max_calls, capability_id: openbb.metrics, max: 2, code: openbb_metrics_limit }
+      - { op: max_calls, capability_id: openbb.income_statement, max: 2, code: openbb_income_limit }
+      - { op: max_calls, capability_id: openbb.balance_statement, max: 2, code: openbb_balance_limit }
+      - { op: max_calls, capability_id: openbb.cash_statement, max: 2, code: openbb_cash_limit }
+      - { op: max_calls, capability_id: openbb.consensus, max: 2, code: openbb_consensus_limit }
+      - { op: max_calls, capability_id: openbb.peers, max: 2, code: openbb_peers_limit }
+      - { op: max_calls, capability_id: openbb.earnings_calendar, max: 2, code: openbb_earnings_calendar_limit }
+      - { op: max_calls, capability_id: openbb.yield_curve, max: 2, code: openbb_yield_curve_limit }
+      - { op: max_calls, capability_id: openbb.macro_calendar, max: 2, code: openbb_macro_calendar_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
       - { op: max_calls, capability_id: ontology.chain, max: 1, code: chain_limit }
@@ -1187,6 +1486,16 @@ validators:
       - { op: state_precedes, before: query_context, after: openbb_price_lookup, code: context_before_openbb_price }
       - { op: state_precedes, before: query_context, after: openbb_macro_lookup, code: context_before_openbb_macro }
       - { op: state_precedes, before: query_context, after: openbb_cpi_lookup, code: context_before_openbb_cpi }
+      - { op: state_precedes, before: query_context, after: openbb_quote_lookup, code: context_before_openbb_quote }
+      - { op: state_precedes, before: query_context, after: openbb_metrics_lookup, code: context_before_openbb_metrics }
+      - { op: state_precedes, before: query_context, after: openbb_income_lookup, code: context_before_openbb_income }
+      - { op: state_precedes, before: query_context, after: openbb_balance_lookup, code: context_before_openbb_balance }
+      - { op: state_precedes, before: query_context, after: openbb_cash_lookup, code: context_before_openbb_cash }
+      - { op: state_precedes, before: query_context, after: openbb_consensus_lookup, code: context_before_openbb_consensus }
+      - { op: state_precedes, before: query_context, after: openbb_peers_lookup, code: context_before_openbb_peers }
+      - { op: state_precedes, before: query_context, after: openbb_earnings_calendar_lookup, code: context_before_openbb_earnings_calendar }
+      - { op: state_precedes, before: query_context, after: openbb_yield_curve_lookup, code: context_before_openbb_yield_curve }
+      - { op: state_precedes, before: query_context, after: openbb_macro_calendar_lookup, code: context_before_openbb_macro_calendar }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
       - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }

@@ -518,11 +518,13 @@ pub enum CapabilityResultIngest {
     /// Bounded, latest-vintage macro indicator series. Not company-scoped;
     /// advisory research context only, never filing evidence.
     MacroSeriesV1,
-    /// Bounded series read from the curated external openbb-mcp endpoint.
-    /// Like the store-backed observation series it is advisory research
-    /// context: the retained records are unverified, never filing evidence,
-    /// and never support a strong claim. The raw envelope is projected by
-    /// the generic openbb adapter with vendor material scrubbed.
+    /// Bounded advisory record-set read from the curated external openbb-mcp
+    /// endpoint: a time series, a structured snapshot (quote, metrics,
+    /// statements, consensus), a peer set, or a bounded event calendar. Like
+    /// the store-backed observation series it is advisory research context:
+    /// the retained records are unverified, never filing evidence, and never
+    /// support a strong claim. The raw envelope is projected by the generic
+    /// openbb adapter with vendor and identifier material scrubbed.
     OpenbbSeriesV1,
     TargetedEvidenceV1,
     TraceLineageV1,
@@ -583,7 +585,7 @@ impl CapabilityResultIngest {
                 "Retrieve a bounded recent macro indicator series (inflation, rates, labor, growth) only when the macro backdrop materially improves the question. It is timestamped advisory research data, never filing evidence or recommendation support."
             }
             Self::OpenbbSeriesV1 => {
-                "Retrieve a bounded historical price or macro series for the already in-scope ticker or a named macro series only when the trend materially improves the question. The series is timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
+                "Retrieve one bounded openbb observation read (historical price, quote, fundamentals, statements, consensus, peers, earnings calendar, macro series, yield curve, or macro calendar) for the already in-scope ticker or a named macro series only when the live observation materially improves the question. The records are timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
@@ -3428,9 +3430,11 @@ fn validate_capability_input_abi(
                 )
         }
         InputDerivation::OpenbbRequestV1 { pinned_provider } => {
-            // The three curated openbb tools are the only allowed pairs, and
-            // each physical contract pins exactly one transport provider so a
-            // swapped vendor cannot ride an existing capability.
+            // The curated openbb tools are the only allowed pairs, and each
+            // physical contract pins exactly one transport provider so a
+            // swapped vendor cannot ride an existing capability. Round 2
+            // (financial-services patterns, 2026-08-31) grows the set from
+            // three tools to thirteen with the same closed-pair rule.
             let (input_contract, model_contract, expected_provider, ticker_scoped) =
                 match capability.input_contract.as_str() {
                     "openbb-price-historical-input/v1" => (
@@ -3449,6 +3453,66 @@ fn validate_capability_input_abi(
                         "openbb-cpi-input/v1",
                         "openbb-cpi-request/v1",
                         OpenbbPinnedProvider::Fred,
+                        false,
+                    ),
+                    "openbb-quote-input/v1" => (
+                        "openbb-quote-input/v1",
+                        "openbb-quote-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-metrics-input/v1" => (
+                        "openbb-metrics-input/v1",
+                        "openbb-metrics-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-income-input/v1" => (
+                        "openbb-income-input/v1",
+                        "openbb-income-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-balance-input/v1" => (
+                        "openbb-balance-input/v1",
+                        "openbb-balance-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-cash-input/v1" => (
+                        "openbb-cash-input/v1",
+                        "openbb-cash-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-consensus-input/v1" => (
+                        "openbb-consensus-input/v1",
+                        "openbb-consensus-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-peer-input/v1" => (
+                        "openbb-peer-input/v1",
+                        "openbb-peer-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-earnings-calendar-input/v1" => (
+                        "openbb-earnings-calendar-input/v1",
+                        "openbb-earnings-calendar-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-yield-curve-input/v1" => (
+                        "openbb-yield-curve-input/v1",
+                        "openbb-yield-curve-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        false,
+                    ),
+                    "openbb-macro-calendar-input/v1" => (
+                        "openbb-macro-calendar-input/v1",
+                        "openbb-macro-calendar-request/v1",
+                        OpenbbPinnedProvider::Fmp,
                         false,
                     ),
                     _ => (
@@ -5368,6 +5432,72 @@ mod tests {
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),
         );
+        // Round-2 company plane: quote, TTM metrics, the three statements,
+        // consensus/price targets, peers, and the ticker-scoped earnings
+        // calendar — all fmp-pinned and ticker-scoped.
+        for (capability_id, input_contract, model_contract) in [
+            ("openbb.quote", "openbb-quote-input/v1", "openbb-quote-request/v1"),
+            ("openbb.metrics", "openbb-metrics-input/v1", "openbb-metrics-request/v1"),
+            (
+                "openbb.income_statement",
+                "openbb-income-input/v1",
+                "openbb-income-request/v1",
+            ),
+            (
+                "openbb.balance_statement",
+                "openbb-balance-input/v1",
+                "openbb-balance-request/v1",
+            ),
+            (
+                "openbb.cash_statement",
+                "openbb-cash-input/v1",
+                "openbb-cash-request/v1",
+            ),
+            (
+                "openbb.consensus",
+                "openbb-consensus-input/v1",
+                "openbb-consensus-request/v1",
+            ),
+            ("openbb.peers", "openbb-peer-input/v1", "openbb-peer-request/v1"),
+            (
+                "openbb.earnings_calendar",
+                "openbb-earnings-calendar-input/v1",
+                "openbb-earnings-calendar-request/v1",
+            ),
+        ] {
+            expected.insert(
+                capability_id,
+                (
+                    input_contract,
+                    model_contract,
+                    OpenbbPinnedProvider::Fmp,
+                    CapabilityResultIngest::OpenbbSeriesV1,
+                ),
+            );
+        }
+        // Round-2 macro plane: yield curve and the bounded macro calendar.
+        for (capability_id, input_contract, model_contract) in [
+            (
+                "openbb.yield_curve",
+                "openbb-yield-curve-input/v1",
+                "openbb-yield-curve-request/v1",
+            ),
+            (
+                "openbb.macro_calendar",
+                "openbb-macro-calendar-input/v1",
+                "openbb-macro-calendar-request/v1",
+            ),
+        ] {
+            expected.insert(
+                capability_id,
+                (
+                    input_contract,
+                    model_contract,
+                    OpenbbPinnedProvider::Fmp,
+                    CapabilityResultIngest::OpenbbSeriesV1,
+                ),
+            );
+        }
         for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
             let capability = image
                 .body
@@ -5390,7 +5520,8 @@ mod tests {
             );
             assert!(capability.research_action.is_none());
         }
-        // The price lookup is ticker-scoped; both macro lookups are unscoped.
+        // The price lookup and the round-2 company plane are ticker-scoped;
+        // the macro lookups (round 1 and round 2) are unscoped.
         let scoped = image
             .body
             .capabilities
@@ -5401,7 +5532,33 @@ mod tests {
             &scoped.scope_binding,
             CapabilityScopeBinding::TrustedTickerSet { .. }
         ));
-        for capability_id in ["openbb.macro_series", "openbb.macro_cpi"] {
+        for capability_id in [
+            "openbb.quote",
+            "openbb.metrics",
+            "openbb.income_statement",
+            "openbb.balance_statement",
+            "openbb.cash_statement",
+            "openbb.consensus",
+            "openbb.peers",
+            "openbb.earnings_calendar",
+        ] {
+            let capability = image
+                .body
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == capability_id)
+                .unwrap_or_else(|| panic!("{capability_id} ticker scope"));
+            assert!(matches!(
+                &capability.scope_binding,
+                CapabilityScopeBinding::TrustedTickerSet { .. }
+            ));
+        }
+        for capability_id in [
+            "openbb.macro_series",
+            "openbb.macro_cpi",
+            "openbb.yield_curve",
+            "openbb.macro_calendar",
+        ] {
             let capability = image
                 .body
                 .capabilities
@@ -5418,6 +5575,16 @@ mod tests {
             ("openbb_price_lookup", "openbb.price_history"),
             ("openbb_macro_lookup", "openbb.macro_series"),
             ("openbb_cpi_lookup", "openbb.macro_cpi"),
+            ("openbb_quote_lookup", "openbb.quote"),
+            ("openbb_metrics_lookup", "openbb.metrics"),
+            ("openbb_income_lookup", "openbb.income_statement"),
+            ("openbb_balance_lookup", "openbb.balance_statement"),
+            ("openbb_cash_lookup", "openbb.cash_statement"),
+            ("openbb_consensus_lookup", "openbb.consensus"),
+            ("openbb_peers_lookup", "openbb.peers"),
+            ("openbb_earnings_calendar_lookup", "openbb.earnings_calendar"),
+            ("openbb_yield_curve_lookup", "openbb.yield_curve"),
+            ("openbb_macro_calendar_lookup", "openbb.macro_calendar"),
         ];
         for (state_id, capability_id) in state_ids {
             let state = workflow

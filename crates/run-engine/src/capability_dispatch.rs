@@ -906,6 +906,72 @@ pub(crate) fn assemble_openbb_request(
                 }
             }
         }
+        // Round-2 company plane: ticker-only tools carry just the symbol.
+        "openbb-quote-input/v1" | "openbb-consensus-input/v1" | "openbb-peer-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+        }
+        // Round-2 statement tools: the kernel pins the default limit and
+        // period so the physical read is always bounded.
+        "openbb-metrics-input/v1"
+        | "openbb-income-input/v1"
+        | "openbb-balance-input/v1"
+        | "openbb-cash-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            let limit = request
+                .get("limit")
+                .and_then(Value::as_u64)
+                .filter(|limit| (1..=4).contains(limit))
+                .unwrap_or(3);
+            physical.insert("limit".into(), Value::from(limit));
+            let period = request
+                .get("period")
+                .and_then(Value::as_str)
+                .filter(|period| matches!(*period, "annual" | "quarterly"))
+                .unwrap_or("annual");
+            physical.insert("period".into(), Value::String(period.to_owned()));
+        }
+        "openbb-earnings-calendar-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            // The physical tool accepts an unscoped calendar read; the
+            // symbol is always injected so the read stays ticker-scoped.
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
+        }
+        "openbb-yield-curve-input/v1" => {
+            if let Some(date) = bounded_optional_str("date") {
+                physical.insert("date".into(), Value::String(date));
+            }
+        }
+        "openbb-macro-calendar-input/v1" => {
+            let start_date = bounded_optional_str("start_date").ok_or_else(invalid)?;
+            let end_date = bounded_optional_str("end_date").ok_or_else(invalid)?;
+            let importance = request
+                .get("importance")
+                .and_then(Value::as_str)
+                .filter(|importance| matches!(*importance, "high" | "medium"))
+                .ok_or_else(invalid)?;
+            physical.insert("start_date".into(), Value::String(start_date));
+            physical.insert("end_date".into(), Value::String(end_date));
+            physical.insert("importance".into(), Value::String(importance.to_owned()));
+        }
         _ => return Err(invalid()),
     }
     Ok(Value::Object(physical))

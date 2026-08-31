@@ -106,6 +106,86 @@ const OPENBB_CPI_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-cpi-input-v1.json"
 ));
+const OPENBB_QUOTE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-quote-request-v1.json"
+));
+const OPENBB_QUOTE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-quote-input-v1.json"
+));
+const OPENBB_METRICS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-metrics-request-v1.json"
+));
+const OPENBB_METRICS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-metrics-input-v1.json"
+));
+const OPENBB_INCOME_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-income-request-v1.json"
+));
+const OPENBB_INCOME_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-income-input-v1.json"
+));
+const OPENBB_BALANCE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-balance-request-v1.json"
+));
+const OPENBB_BALANCE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-balance-input-v1.json"
+));
+const OPENBB_CASH_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-cash-request-v1.json"
+));
+const OPENBB_CASH_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-cash-input-v1.json"
+));
+const OPENBB_CONSENSUS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-consensus-request-v1.json"
+));
+const OPENBB_CONSENSUS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-consensus-input-v1.json"
+));
+const OPENBB_PEER_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-peer-request-v1.json"
+));
+const OPENBB_PEER_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-peer-input-v1.json"
+));
+const OPENBB_EARNINGS_CALENDAR_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-earnings-calendar-request-v1.json"
+));
+const OPENBB_EARNINGS_CALENDAR_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-earnings-calendar-input-v1.json"
+));
+const OPENBB_YIELD_CURVE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-yield-curve-request-v1.json"
+));
+const OPENBB_YIELD_CURVE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-yield-curve-input-v1.json"
+));
+const OPENBB_MACRO_CALENDAR_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-macro-calendar-request-v1.json"
+));
+const OPENBB_MACRO_CALENDAR_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-macro-calendar-input-v1.json"
+));
 const GURU_QUERY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/guru-query-request-v1.json"
@@ -201,6 +281,58 @@ pub const OPENBB_PRICE_HISTORICAL_INPUT_V1: &str = "openbb-price-historical-inpu
 pub const OPENBB_FRED_SERIES_INPUT_V1: &str = "openbb-fred-series-input/v1";
 /// Physical MCP input for the curated openbb `economy_cpi` tool.
 pub const OPENBB_CPI_INPUT_V1: &str = "openbb-cpi-input/v1";
+// ── openbb curation round 2 (financial-services patterns, 2026-08-31) ──
+// Company plane (ticker-scoped): quote snapshot, TTM metrics, the three
+// statements, consensus/price targets, peers, and the ticker-scoped earnings
+// calendar. Macro plane (unscoped): government yield curve and the bounded
+// macro event calendar. All advisory observation reads; provider is
+// kernel-pinned per physical input exactly like the round-1 trio.
+/// Model-authored request for a bounded openbb current-quote lookup.
+pub const OPENBB_QUOTE_REQUEST_V1: &str = "openbb-quote-request/v1";
+/// Physical MCP input for the curated openbb `equity_price_quote` tool.
+pub const OPENBB_QUOTE_INPUT_V1: &str = "openbb-quote-input/v1";
+/// Model-authored request for bounded openbb TTM key-metric snapshots.
+pub const OPENBB_METRICS_REQUEST_V1: &str = "openbb-metrics-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_metrics` tool.
+pub const OPENBB_METRICS_INPUT_V1: &str = "openbb-metrics-input/v1";
+/// Model-authored request for bounded openbb income statements.
+pub const OPENBB_INCOME_REQUEST_V1: &str = "openbb-income-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_income` tool.
+pub const OPENBB_INCOME_INPUT_V1: &str = "openbb-income-input/v1";
+/// Model-authored request for bounded openbb balance sheets.
+pub const OPENBB_BALANCE_REQUEST_V1: &str = "openbb-balance-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_balance` tool.
+pub const OPENBB_BALANCE_INPUT_V1: &str = "openbb-balance-input/v1";
+/// Model-authored request for bounded openbb cash-flow statements.
+pub const OPENBB_CASH_REQUEST_V1: &str = "openbb-cash-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_cash` tool.
+pub const OPENBB_CASH_INPUT_V1: &str = "openbb-cash-input/v1";
+/// Model-authored request for a bounded openbb consensus/price-target lookup.
+pub const OPENBB_CONSENSUS_REQUEST_V1: &str = "openbb-consensus-request/v1";
+/// Physical MCP input for the curated openbb `equity_estimates_consensus` tool.
+pub const OPENBB_CONSENSUS_INPUT_V1: &str = "openbb-consensus-input/v1";
+/// Model-authored request for a bounded openbb peer-set lookup.
+pub const OPENBB_PEER_REQUEST_V1: &str = "openbb-peer-request/v1";
+/// Physical MCP input for the curated openbb `equity_compare_peers` tool.
+pub const OPENBB_PEER_INPUT_V1: &str = "openbb-peer-input/v1";
+/// Model-authored request for a bounded, ticker-scoped openbb earnings
+/// calendar window (the model must name the ticker; an unscoped calendar
+/// read is not a curatable surface).
+pub const OPENBB_EARNINGS_CALENDAR_REQUEST_V1: &str = "openbb-earnings-calendar-request/v1";
+/// Physical MCP input for the curated openbb `equity_calendar_earnings` tool
+/// with the symbol always present so the read stays ticker-scoped.
+pub const OPENBB_EARNINGS_CALENDAR_INPUT_V1: &str = "openbb-earnings-calendar-input/v1";
+/// Model-authored request for a bounded openbb government yield-curve snapshot.
+pub const OPENBB_YIELD_CURVE_REQUEST_V1: &str = "openbb-yield-curve-request/v1";
+/// Physical MCP input for the curated openbb
+/// `fixedincome_government_yield_curve` tool.
+pub const OPENBB_YIELD_CURVE_INPUT_V1: &str = "openbb-yield-curve-input/v1";
+/// Model-authored request for a bounded openbb macro event-calendar window.
+/// The window is at most 31 days and the importance filter is required so the
+/// projected record set stays far below the adapter's record bound.
+pub const OPENBB_MACRO_CALENDAR_REQUEST_V1: &str = "openbb-macro-calendar-request/v1";
+/// Physical MCP input for the curated openbb `economy_calendar` tool.
+pub const OPENBB_MACRO_CALENDAR_INPUT_V1: &str = "openbb-macro-calendar-input/v1";
 /// Empty model-authored trigger for a fixed-author Guru retrieval. The kernel
 /// owns the actual question, author, ticker, and orientation context.
 pub const GURU_QUERY_REQUEST_V1: &str = "guru-query-request/v1";
@@ -273,6 +405,46 @@ pub const OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:9c8cdbecb9fed56b953478a0c7cfadf43309a670b7cb86af88efc93b5edf59b9";
 pub const OPENBB_CPI_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4";
+pub const OPENBB_QUOTE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:fc10820610a4e76b636d762a86651b0f8e9673883b91dd2fd72aad4de86eace3";
+pub const OPENBB_QUOTE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:6d8c37687480c3eec7c0cceb4f4f7e5a76dcd31dd84044a8a43dea0ccd36108a";
+pub const OPENBB_METRICS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:ef640c9f81c5ba44d5df70043138b3aa32e299e578c368a94367a9df2307fce9";
+pub const OPENBB_METRICS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:d2b15418f877e07d349af189050255c4b3c881c4ee84af17d07428f2b8c7489e";
+pub const OPENBB_INCOME_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:645782f7cc8e1c76f48427ab18ae4588d4f91265fcf88d7d46eef82f01a6923b";
+pub const OPENBB_INCOME_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:2328d489e814fe1826d7a1b6067ef8408d2faf72e6eaf45d22ecf70ff274cac9";
+pub const OPENBB_BALANCE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:c68b3edfdfdeb5e8c2ad9fc83d792963732c38b05277ce20985fa421ae51f562";
+pub const OPENBB_BALANCE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:40d57579162715a2444f2b44e60911531e93e68a3b40adfe4d01c541a3a291a6";
+pub const OPENBB_CASH_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:d0130ca76f7beb49779d7a8271fb69f03195230201c062aeeb24d55ab8813ac3";
+pub const OPENBB_CASH_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:64c6a021d38ee7eefa479b89c7a104f077444f25d74a2403b9d16770f0478431";
+pub const OPENBB_CONSENSUS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:744d59d4a2815fd2371e814a90e97723867bd0edf178872548e9fa6dca88dba2";
+pub const OPENBB_CONSENSUS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:315964c3d1a112c55ec1b62d439b84b96fab835547b102fbba6c4a213563f5e3";
+pub const OPENBB_PEER_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:bcd842b823ef903100af8fb3b6b6e75fe913bc71e454109f9bd5b1a2936360b4";
+pub const OPENBB_PEER_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:32a670a9146de5a6bca4d4f0e0cb66ac88cfa6888ae2dcedcadf161720d92846";
+pub const OPENBB_EARNINGS_CALENDAR_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:7dc9165d634d404271d43b715dfdd05c5bbeb0925dc5f760ed29d468d62b160c";
+pub const OPENBB_EARNINGS_CALENDAR_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:0e2c2d2f4105dafacf21b972bc76b756ef65fc66d44f61e41f6435b27bd358ef";
+pub const OPENBB_YIELD_CURVE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:6aecaf56821639e6434c1abdafa320b3bac415d8fbd919c3ff2ceffc01326242";
+pub const OPENBB_YIELD_CURVE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:12acaafda9ca2425e3d3ad3ed21729f3c3e32a52f9609b11acc517894eadbd83";
+pub const OPENBB_MACRO_CALENDAR_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:1c2dd39b615ad08691ff1227660d926ea7dd91fc253cdcaf0ec15dd65a91c7f7";
+pub const OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5";
 pub const GURU_QUERY_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:b20223e1c52bf28f5ac713322bd26bf6ffd0c229b8ff429535bf1fa215173474";
 pub const SKILL_LOAD_V1_SCHEMA_SHA256: &str =
@@ -384,6 +556,106 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_CPI_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_CPI_INPUT_BYTES,
         }),
+        OPENBB_QUOTE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_QUOTE_REQUEST_V1,
+            schema_sha256: OPENBB_QUOTE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_QUOTE_REQUEST_BYTES,
+        }),
+        OPENBB_QUOTE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_QUOTE_INPUT_V1,
+            schema_sha256: OPENBB_QUOTE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_QUOTE_INPUT_BYTES,
+        }),
+        OPENBB_METRICS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_METRICS_REQUEST_V1,
+            schema_sha256: OPENBB_METRICS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_METRICS_REQUEST_BYTES,
+        }),
+        OPENBB_METRICS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_METRICS_INPUT_V1,
+            schema_sha256: OPENBB_METRICS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_METRICS_INPUT_BYTES,
+        }),
+        OPENBB_INCOME_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_INCOME_REQUEST_V1,
+            schema_sha256: OPENBB_INCOME_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_INCOME_REQUEST_BYTES,
+        }),
+        OPENBB_INCOME_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_INCOME_INPUT_V1,
+            schema_sha256: OPENBB_INCOME_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_INCOME_INPUT_BYTES,
+        }),
+        OPENBB_BALANCE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_BALANCE_REQUEST_V1,
+            schema_sha256: OPENBB_BALANCE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_BALANCE_REQUEST_BYTES,
+        }),
+        OPENBB_BALANCE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_BALANCE_INPUT_V1,
+            schema_sha256: OPENBB_BALANCE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_BALANCE_INPUT_BYTES,
+        }),
+        OPENBB_CASH_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_CASH_REQUEST_V1,
+            schema_sha256: OPENBB_CASH_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_CASH_REQUEST_BYTES,
+        }),
+        OPENBB_CASH_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_CASH_INPUT_V1,
+            schema_sha256: OPENBB_CASH_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_CASH_INPUT_BYTES,
+        }),
+        OPENBB_CONSENSUS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_CONSENSUS_REQUEST_V1,
+            schema_sha256: OPENBB_CONSENSUS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_CONSENSUS_REQUEST_BYTES,
+        }),
+        OPENBB_CONSENSUS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_CONSENSUS_INPUT_V1,
+            schema_sha256: OPENBB_CONSENSUS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_CONSENSUS_INPUT_BYTES,
+        }),
+        OPENBB_PEER_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_PEER_REQUEST_V1,
+            schema_sha256: OPENBB_PEER_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_PEER_REQUEST_BYTES,
+        }),
+        OPENBB_PEER_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_PEER_INPUT_V1,
+            schema_sha256: OPENBB_PEER_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_PEER_INPUT_BYTES,
+        }),
+        OPENBB_EARNINGS_CALENDAR_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_EARNINGS_CALENDAR_REQUEST_V1,
+            schema_sha256: OPENBB_EARNINGS_CALENDAR_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_EARNINGS_CALENDAR_REQUEST_BYTES,
+        }),
+        OPENBB_EARNINGS_CALENDAR_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_EARNINGS_CALENDAR_INPUT_V1,
+            schema_sha256: OPENBB_EARNINGS_CALENDAR_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_EARNINGS_CALENDAR_INPUT_BYTES,
+        }),
+        OPENBB_YIELD_CURVE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_YIELD_CURVE_REQUEST_V1,
+            schema_sha256: OPENBB_YIELD_CURVE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_YIELD_CURVE_REQUEST_BYTES,
+        }),
+        OPENBB_YIELD_CURVE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_YIELD_CURVE_INPUT_V1,
+            schema_sha256: OPENBB_YIELD_CURVE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_YIELD_CURVE_INPUT_BYTES,
+        }),
+        OPENBB_MACRO_CALENDAR_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_MACRO_CALENDAR_REQUEST_V1,
+            schema_sha256: OPENBB_MACRO_CALENDAR_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_MACRO_CALENDAR_REQUEST_BYTES,
+        }),
+        OPENBB_MACRO_CALENDAR_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_MACRO_CALENDAR_INPUT_V1,
+            schema_sha256: OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_MACRO_CALENDAR_INPUT_BYTES,
+        }),
         GURU_QUERY_REQUEST_V1 => Some(ContractDescriptor {
             id: GURU_QUERY_REQUEST_V1,
             schema_sha256: GURU_QUERY_REQUEST_V1_SCHEMA_SHA256,
@@ -477,6 +749,27 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(OPENBB_PRICE_HISTORICAL_INPUT_V1).expect("static contract"),
         contract(OPENBB_FRED_SERIES_INPUT_V1).expect("static contract"),
         contract(OPENBB_CPI_INPUT_V1).expect("static contract"),
+        // openbb curation round 2 (financial-services patterns).
+        contract(OPENBB_QUOTE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_QUOTE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_METRICS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_METRICS_INPUT_V1).expect("static contract"),
+        contract(OPENBB_INCOME_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_INCOME_INPUT_V1).expect("static contract"),
+        contract(OPENBB_BALANCE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_BALANCE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_CASH_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_CASH_INPUT_V1).expect("static contract"),
+        contract(OPENBB_CONSENSUS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_CONSENSUS_INPUT_V1).expect("static contract"),
+        contract(OPENBB_PEER_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PEER_INPUT_V1).expect("static contract"),
+        contract(OPENBB_EARNINGS_CALENDAR_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_EARNINGS_CALENDAR_INPUT_V1).expect("static contract"),
+        contract(OPENBB_YIELD_CURVE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_YIELD_CURVE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_MACRO_CALENDAR_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_MACRO_CALENDAR_INPUT_V1).expect("static contract"),
         contract(GURU_QUERY_REQUEST_V1).expect("static contract"),
         contract(ONTOLOGY_TARGETED_QUERY_V1).expect("static contract"),
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
@@ -568,6 +861,28 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_PRICE_HISTORICAL_INPUT_V1 => validate_openbb_price_historical_input(value),
         OPENBB_FRED_SERIES_INPUT_V1 => validate_openbb_fred_series_input(value),
         OPENBB_CPI_INPUT_V1 => validate_openbb_cpi_input(value),
+        OPENBB_QUOTE_REQUEST_V1 => validate_openbb_quote_request(value),
+        OPENBB_QUOTE_INPUT_V1 => validate_openbb_quote_input(value),
+        OPENBB_METRICS_REQUEST_V1 => validate_openbb_metrics_request(value),
+        OPENBB_METRICS_INPUT_V1 => validate_openbb_metrics_input(value),
+        OPENBB_INCOME_REQUEST_V1 => validate_openbb_income_request(value),
+        OPENBB_INCOME_INPUT_V1 => validate_openbb_income_input(value),
+        OPENBB_BALANCE_REQUEST_V1 => validate_openbb_balance_request(value),
+        OPENBB_BALANCE_INPUT_V1 => validate_openbb_balance_input(value),
+        OPENBB_CASH_REQUEST_V1 => validate_openbb_cash_request(value),
+        OPENBB_CASH_INPUT_V1 => validate_openbb_cash_input(value),
+        OPENBB_CONSENSUS_REQUEST_V1 => validate_openbb_consensus_request(value),
+        OPENBB_CONSENSUS_INPUT_V1 => validate_openbb_consensus_input(value),
+        OPENBB_PEER_REQUEST_V1 => validate_openbb_peer_request(value),
+        OPENBB_PEER_INPUT_V1 => validate_openbb_peer_input(value),
+        OPENBB_EARNINGS_CALENDAR_REQUEST_V1 => {
+            validate_openbb_earnings_calendar_request(value)
+        }
+        OPENBB_EARNINGS_CALENDAR_INPUT_V1 => validate_openbb_earnings_calendar_input(value),
+        OPENBB_YIELD_CURVE_REQUEST_V1 => validate_openbb_yield_curve_request(value),
+        OPENBB_YIELD_CURVE_INPUT_V1 => validate_openbb_yield_curve_input(value),
+        OPENBB_MACRO_CALENDAR_REQUEST_V1 => validate_openbb_macro_calendar_request(value),
+        OPENBB_MACRO_CALENDAR_INPUT_V1 => validate_openbb_macro_calendar_input(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
         ONTOLOGY_TARGETED_QUERY_V1 => validate_targeted_query(value),
         ONTOLOGY_TRACE_INPUT_V1 => validate_trace_input(value),
@@ -2069,6 +2384,283 @@ fn validate_openbb_cpi_input(value: &Value) -> Result<(), ContractValueError> {
     Ok(())
 }
 
+// ── openbb curation round 2 validators ─────────────────────────────────────
+// Shared shapes: the round-2 company tools reduce to three model-request
+// shapes (ticker-only, ticker + statement knobs, ticker + date window) and
+// matching physical shapes with the kernel-injected provider. The macro pair
+// (yield curve, macro calendar) carries its own bounded-window checks.
+
+/// Shared ticker-only model request used by the quote, consensus, and peer
+/// lookups.
+fn openbb_ticker_only_request(
+    value: &Value,
+    contract: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract)?;
+    exact_keys(request, &["ticker"], contract)?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(contract));
+    }
+    Ok(())
+}
+
+/// Shared physical shape for the ticker-only tools: kernel-injected fmp
+/// provider plus the symbol.
+fn openbb_ticker_only_input(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
+    let request = object(value, contract)?;
+    exact_keys(request, &["provider", "symbol"], contract)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(contract));
+    }
+    Ok(())
+}
+
+/// Optional statement knobs shared by the metrics/income/balance/cash model
+/// requests: a 1..=4 period limit and an annual/quarterly period selector.
+fn openbb_statement_knobs(request: &serde_json::Map<String, Value>) -> bool {
+    let limit_ok = request
+        .get("limit")
+        .is_none_or(|value| integer_range(Some(value), 1, 4));
+    let period_ok = request
+        .get("period")
+        .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarterly")));
+    limit_ok && period_ok
+}
+
+/// Shared model request for the four statement-shaped lookups.
+fn openbb_statement_request(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
+    let request = object(value, contract)?;
+    exact_keys(request, &["ticker", "limit", "period"], contract)?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        || !openbb_statement_knobs(request)
+    {
+        return Err(ContractValueError::Shape(contract));
+    }
+    Ok(())
+}
+
+/// Shared physical input for the four statement-shaped tools: the limit is
+/// always present (the kernel pins the default when the model omits it).
+fn openbb_statement_input(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
+    let request = object(value, contract)?;
+    exact_keys(request, &["provider", "symbol", "limit", "period"], contract)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !integer_range(request.get("limit"), 1, 4)
+        || !request
+            .get("period")
+            .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarterly")))
+    {
+        return Err(ContractValueError::Shape(contract));
+    }
+    Ok(())
+}
+
+/// Exact day ordinal for a canonical openbb date so the macro-calendar window
+/// bound is checked without a calendar crate. Uses the civil-days algorithm;
+/// returns `None` for non-canonical shapes (already rejected earlier).
+fn openbb_date_ordinal(value: &str) -> Option<i64> {
+    if !canonical_openbb_date(Some(&Value::String(value.to_owned()))) {
+        return None;
+    }
+    let year = i64::from_str_radix(&value[0..4], 10).ok()?;
+    let month = i64::from_str_radix(&value[5..7], 10).ok()?;
+    let day = i64::from_str_radix(&value[8..10], 10).ok()?;
+    // Howard Hinnant's days_from_civil.
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_shift = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_shift + 2) / 5 + day - 1;
+    let era_days = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + era_days - 719_468)
+}
+
+/// Maximum macro-calendar window the model may request, in days. The physical
+/// tool returns one record per event; the window plus the required importance
+/// filter keeps the projected record set far below the adapter bound.
+const OPENBB_MACRO_CALENDAR_MAX_WINDOW_DAYS: i64 = 31;
+
+/// Shared macro-calendar fields: a required ≤31-day window in calendar order
+/// and a required high/medium importance filter.
+fn openbb_macro_calendar_fields(request: &serde_json::Map<String, Value>) -> bool {
+    let Some(start) = request.get("start_date").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(end) = request.get("end_date").and_then(Value::as_str) else {
+        return false;
+    };
+    let importance_ok = matches!(
+        request.get("importance").and_then(Value::as_str),
+        Some("high" | "medium")
+    );
+    match (openbb_date_ordinal(start), openbb_date_ordinal(end)) {
+        (Some(start_day), Some(end_day)) => {
+            importance_ok && end_day >= start_day && end_day - start_day <= OPENBB_MACRO_CALENDAR_MAX_WINDOW_DAYS
+        }
+        _ => false,
+    }
+}
+
+fn validate_openbb_quote_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_request(value, OPENBB_QUOTE_REQUEST_V1)
+}
+
+fn validate_openbb_quote_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_input(value, OPENBB_QUOTE_INPUT_V1)
+}
+
+fn validate_openbb_metrics_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_request(value, OPENBB_METRICS_REQUEST_V1)
+}
+
+fn validate_openbb_metrics_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_input(value, OPENBB_METRICS_INPUT_V1)
+}
+
+fn validate_openbb_income_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_request(value, OPENBB_INCOME_REQUEST_V1)
+}
+
+fn validate_openbb_income_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_input(value, OPENBB_INCOME_INPUT_V1)
+}
+
+fn validate_openbb_balance_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_request(value, OPENBB_BALANCE_REQUEST_V1)
+}
+
+fn validate_openbb_balance_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_input(value, OPENBB_BALANCE_INPUT_V1)
+}
+
+fn validate_openbb_cash_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_request(value, OPENBB_CASH_REQUEST_V1)
+}
+
+fn validate_openbb_cash_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_statement_input(value, OPENBB_CASH_INPUT_V1)
+}
+
+fn validate_openbb_consensus_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_request(value, OPENBB_CONSENSUS_REQUEST_V1)
+}
+
+fn validate_openbb_consensus_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_input(value, OPENBB_CONSENSUS_INPUT_V1)
+}
+
+fn validate_openbb_peer_request(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_request(value, OPENBB_PEER_REQUEST_V1)
+}
+
+fn validate_openbb_peer_input(value: &Value) -> Result<(), ContractValueError> {
+    openbb_ticker_only_input(value, OPENBB_PEER_INPUT_V1)
+}
+
+fn validate_openbb_earnings_calendar_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_EARNINGS_CALENDAR_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["ticker", "start_date", "end_date"],
+        OPENBB_EARNINGS_CALENDAR_REQUEST_V1,
+    )?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+    {
+        return Err(ContractValueError::Shape(
+            OPENBB_EARNINGS_CALENDAR_REQUEST_V1,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_openbb_earnings_calendar_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_EARNINGS_CALENDAR_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "start_date", "end_date"],
+        OPENBB_EARNINGS_CALENDAR_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+    {
+        return Err(ContractValueError::Shape(OPENBB_EARNINGS_CALENDAR_INPUT_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_yield_curve_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_YIELD_CURVE_REQUEST_V1)?;
+    exact_keys(request, &["date"], OPENBB_YIELD_CURVE_REQUEST_V1)?;
+    if !optional_openbb_date(request.get("date")) {
+        return Err(ContractValueError::Shape(OPENBB_YIELD_CURVE_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_yield_curve_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_YIELD_CURVE_INPUT_V1)?;
+    exact_keys(request, &["provider", "date"], OPENBB_YIELD_CURVE_INPUT_V1)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !optional_openbb_date(request.get("date"))
+    {
+        return Err(ContractValueError::Shape(OPENBB_YIELD_CURVE_INPUT_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_macro_calendar_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_MACRO_CALENDAR_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["start_date", "end_date", "importance"],
+        OPENBB_MACRO_CALENDAR_REQUEST_V1,
+    )?;
+    if !openbb_macro_calendar_fields(request) {
+        return Err(ContractValueError::Shape(OPENBB_MACRO_CALENDAR_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_macro_calendar_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_MACRO_CALENDAR_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "start_date", "end_date", "importance"],
+        OPENBB_MACRO_CALENDAR_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !openbb_macro_calendar_fields(request)
+    {
+        return Err(ContractValueError::Shape(OPENBB_MACRO_CALENDAR_INPUT_V1));
+    }
+    Ok(())
+}
+
 fn validate_trace_input(value: &Value) -> Result<(), ContractValueError> {
     let trace = object(value, ONTOLOGY_TRACE_INPUT_V1)?;
     exact_keys(
@@ -2459,7 +3051,10 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 69);
+        // Round-1 registry (71 descriptors including front/guru/product) +
+        // 20 openbb round-2 contracts (10 model requests + 10 physical
+        // inputs).
+        assert_eq!(descriptors().len(), 91);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()

@@ -2135,6 +2135,83 @@ mod tests {
         assert_eq!(cpi["transform"], "yoy");
         assert_eq!(cpi["frequency"], "monthly");
 
+        // Round-2 ticker-only tools: symbol injection with no extra knobs.
+        let quote = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-quote-input/v1",
+        )
+        .unwrap();
+        assert_eq!(quote["provider"], "fmp");
+        assert_eq!(quote["symbol"], "AAPL");
+        assert_eq!(quote.as_object().unwrap().len(), 2);
+
+        // Round-2 statement tools: kernel-pinned bounded defaults.
+        let income = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-income-input/v1",
+        )
+        .unwrap();
+        assert_eq!(income["provider"], "fmp");
+        assert_eq!(income["symbol"], "AAPL");
+        assert_eq!(income["limit"], 3);
+        assert_eq!(income["period"], "annual");
+        let income_explicit = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL", "limit": 4, "period": "quarterly"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-income-input/v1",
+        )
+        .unwrap();
+        assert_eq!(income_explicit["limit"], 4);
+        assert_eq!(income_explicit["period"], "quarterly");
+
+        // Round-2 earnings calendar: the symbol is always injected so the
+        // read stays ticker-scoped even though the tool allows an unscoped
+        // calendar call.
+        let calendar = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL", "start_date": "2026-09-01"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-earnings-calendar-input/v1",
+        )
+        .unwrap();
+        assert_eq!(calendar["symbol"], "AAPL");
+        assert_eq!(calendar["start_date"], "2026-09-01");
+        assert!(calendar.get("end_date").is_none());
+
+        // Round-2 yield curve: fully kernel-defaulted apart from the date.
+        let curve = assemble_openbb_request(
+            &serde_json::json!({}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-yield-curve-input/v1",
+        )
+        .unwrap();
+        assert_eq!(curve["provider"], "fmp");
+        assert_eq!(curve.as_object().unwrap().len(), 1);
+
+        // Round-2 macro calendar: the bounded window and importance filter
+        // are mandatory model fields; the lowerer fails closed without them.
+        let macro_calendar = assemble_openbb_request(
+            &serde_json::json!({
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-14",
+                "importance": "high"
+            }),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-macro-calendar-input/v1",
+        )
+        .unwrap();
+        assert_eq!(macro_calendar["provider"], "fmp");
+        assert_eq!(macro_calendar["importance"], "high");
+        assert!(
+            assemble_openbb_request(
+                &serde_json::json!({"start_date": "2026-09-01"}),
+                &OpenbbPinnedProvider::Fmp,
+                "openbb-macro-calendar-input/v1",
+            )
+            .is_err()
+        );
+
         // A shape the model contract already rejects cannot be lowered.
         assert!(
             assemble_openbb_request(

@@ -2601,16 +2601,19 @@ const MAX_OPENBB_RECORD_FIELD_BYTES: usize = 256;
 const MAX_OPENBB_RECORD_BYTES: usize = 2 * 1024;
 /// Envelope/record keys that are dropped before projection. openbb result
 /// envelopes carry the transport provider (`"provider": "fred"`-style) and
-/// record rows can carry symbol/ticker identifiers; both are collection
-/// routing material, never advisory content, and are removed so the
-/// projected record is vendor-neutral and cannot fabricate an entity.
-const OPENBB_REDACTED_KEYS: [&str; 6] = [
+/// record rows can carry symbol/ticker/CIK identifiers; all of these are
+/// collection routing material, never advisory content, and are removed so
+/// the projected record is vendor-neutral and cannot fabricate an entity.
+/// Round-2 statement records (`equity_fundamental_*`) carry the issuer CIK,
+/// so it joins the same routing-identifier redaction set.
+const OPENBB_REDACTED_KEYS: [&str; 7] = [
     "provider",
     "providers",
     "vendor",
     "source",
     "symbol",
     "ticker",
+    "cik",
 ];
 
 /// Generic, advisory-only projection of one curated openbb tool result. The
