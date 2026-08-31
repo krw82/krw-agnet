@@ -46,6 +46,7 @@ pub(crate) fn research_candidate(
             ImageResearchActionKind::Context => ResearchActionKind::QueryContext,
             ImageResearchActionKind::Targeted => ResearchActionKind::TargetedQuery,
             ImageResearchActionKind::Trace => ResearchActionKind::Trace,
+            ImageResearchActionKind::Observation => ResearchActionKind::Observation,
         },
         fingerprint: research_fingerprint(call),
         arguments: call.arguments.clone(),
@@ -91,6 +92,12 @@ pub(crate) fn capability_result_cacheable(
     };
     match kind {
         ImageResearchActionKind::Context => true,
+        ImageResearchActionKind::Observation => {
+            // Observation results are advisory context like the research
+            // state: a completed read is durably cacheable, and whether it
+            // moved any clause stays the evidence ledger's decision.
+            true
+        }
         ImageResearchActionKind::Targeted => {
             supplemental_status_for_targeted_payload(&result.provider_content)
                 .map(|status| {

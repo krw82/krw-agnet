@@ -74,6 +74,10 @@ pub enum ResearchActionKind {
     QueryContext,
     TargetedQuery,
     Trace,
+    /// Advisory observation read (ticker-scoped openbb plane). Mappable
+    /// exactly when a frontier clause shares the proposal's trusted ticker:
+    /// the observation informs the clause, the filing read resolves it.
+    Observation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1623,6 +1627,20 @@ fn map_goals(
                 .find(|clause| clause.retrieval_query == topic)
                 .map(|clause| clause.clause_id.as_str())?
         }
+    } else if proposal.kind == ResearchActionKind::Observation {
+        // The observation lane is ticker-scoped by construction: the openbb
+        // model requests carry a trusted ticker, and the only honest clause
+        // mapping is an exact query candidate scoped to the same ticker.
+        // An observation carries no benefits — no server recommendation, no
+        // directness ceiling raise, no calculation coverage — so the filing
+        // read always outcompetes it on the clause it serves, and it never
+        // resolves the clause on its own.
+        let ticker = proposal.arguments.get("ticker").and_then(Value::as_str)?;
+        let candidate = projection
+            .exact_precise_query_candidates
+            .iter()
+            .find(|candidate| candidate.ticker == ticker)?;
+        candidate.clause_id.as_str()
     } else {
         return None;
     };
@@ -2053,6 +2071,21 @@ mod tests {
         state
     }
 
+    /// Partial coverage plus a server-reported missing part for the
+    /// `cash_generation` clause — the realistic shape an observation lane
+    /// sees: the exact query candidates exist, so a ticker-scoped openbb
+    /// read has an in-scope clause to inform.
+    fn observation_fixture() -> ResearchStateV2 {
+        let mut state = partial_fixture();
+        state.missing_parts.push(MissingPart {
+            code: "clause_not_covered".into(),
+            detail: "cash generation evidence incomplete".into(),
+            clause_id: Some("cash_generation".into()),
+            ticker: Some("VG".into()),
+        });
+        state
+    }
+
     fn fixture_proposal() -> Value {
         serde_json::json!({
             "intent":"company_research",
@@ -2177,6 +2210,8 @@ mod tests {
                 ResearchActionKind::QueryContext
             } else if capability_id.ends_with("trace") {
                 ResearchActionKind::Trace
+            } else if capability_id.starts_with("openbb.") {
+                ResearchActionKind::Observation
             } else {
                 ResearchActionKind::TargetedQuery
             },
@@ -2343,6 +2378,77 @@ mod tests {
                 reason: SelectionReason::PositiveExpectedValue,
                 evaluated: 1,
             } if proposal_id == "chain" && score > 0
+        ));
+    }
+
+    #[test]
+    fn observation_maps_when_a_frontier_clause_shares_the_trusted_ticker() {
+        let mut planner = ResearchPlanner::default();
+        planner
+            .ingest_research_state(&observation_fixture(), &[])
+            .unwrap();
+        let observation = proposal(
+            "quote",
+            "openbb.quote",
+            serde_json::json!({"ticker": "VG"}),
+            100,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&observation)).unwrap(),
+            PlannerDecision::Execute {
+                proposal_id,
+                score: Some(score),
+                reason: SelectionReason::PositiveExpectedValue,
+                evaluated: 1,
+            } if proposal_id == "quote" && score > 0
+        ));
+    }
+
+    #[test]
+    fn observation_with_a_foreign_ticker_is_unmapped() {
+        let mut planner = ResearchPlanner::default();
+        planner
+            .ingest_research_state(&observation_fixture(), &[])
+            .unwrap();
+        let observation = proposal(
+            "quote",
+            "openbb.quote",
+            serde_json::json!({"ticker": "AAPL"}),
+            0,
+        );
+        assert_eq!(
+            planner.select(std::slice::from_ref(&observation)).unwrap(),
+            PlannerDecision::NoPositiveValue {
+                evaluated: 1,
+                reason: NoPositiveReason::ProposalUnmapped,
+            }
+        );
+    }
+
+    #[test]
+    fn filing_targeted_query_outcompetes_observation_on_the_same_clause() {
+        let mut planner = ResearchPlanner::default();
+        planner
+            .ingest_research_state(&observation_fixture(), &[])
+            .unwrap();
+        let query = proposal(
+            "filing",
+            "ontology.query",
+            serde_json::json!({"topic": "VG cash generation"}),
+            100,
+        );
+        let observation = proposal(
+            "quote",
+            "openbb.quote",
+            serde_json::json!({"ticker": "VG"}),
+            100,
+        );
+        // The compass: the observation informs the clause, the filing read
+        // resolves it — same clause, same cost, the filing evidence path
+        // must win the selection.
+        assert!(matches!(
+            planner.select(&[query, observation]).unwrap(),
+            PlannerDecision::Execute { proposal_id, .. } if proposal_id == "filing"
         ));
     }
 

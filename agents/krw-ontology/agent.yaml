@@ -562,10 +562,13 @@ capabilities:
     parallel_safe: false
     prerequisites: [ontology.query_context]
   # Curated external openbb-mcp data plane (closed three-tool starter set).
-  # Like the observation series these are advisory_only research context and
-  # carry no research_action policy: the planner's action kinds stay closed
-  # to the canonical query/trace surfaces. The kernel pins the transport
-  # provider during input derivation; the model never sees a vendor name.
+  # The planner's action kinds stay closed to the canonical query/trace
+  # surfaces for the macro tools: unscoped reads have no clause-scoped
+  # mapping, so they ride the direct assess lane (with the kernel cross-
+  # plane hint) instead of the scored planner lane. The ticker-scoped price
+  # tool carries the observation action like the round-2 company plane.
+  # The kernel pins the transport provider during input derivation; the
+  # model never sees a vendor name.
   - id: openbb.price_history
     execution: { kind: remote, binding_key: openbb_equity_price_historical }
     permission: read
@@ -575,6 +578,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 2500
+        expected_tool_cost_micros: 500
+        expected_result_bytes: 12288
+      conflict_domain: openbb.equity_price_historical
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -612,9 +626,12 @@ capabilities:
     prerequisites: [ontology.query_context]
   # ── openbb curation round 2: company plane (financial-services patterns) ──
   # Same doctrine as the round-1 trio: advisory_only observation reads with
-  # no research_action (the planner's action kinds stay closed to the
-  # canonical query/trace surfaces), kernel-pinned fmp transport, and
-  # ticker-scoped bindings so a payload can never fabricate an entity.
+  # the kernel-pinned fmp transport, ticker-scoped bindings so a payload can
+  # never fabricate an entity. Round 2 also declares the observation research
+  # action (planner-selectable when a frontier clause shares the trusted
+  # ticker): estimates are image-pinned reviewable fallbacks; the filing
+  # reads keep every directness/calculation bonus, so an observation informs
+  # a clause but never outcompetes its filing resolution.
   - id: openbb.quote
     execution: { kind: remote, binding_key: openbb_equity_price_quote }
     permission: read
@@ -625,6 +642,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 900000
+        expected_duplicate_ppm: 20000
+        failure_risk_upper_ppm: 100000
+        expected_latency_ms: 1500
+        expected_tokens: 600
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 2048
+      conflict_domain: openbb.equity_price_quote
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -642,6 +670,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 2000
+        expected_tool_cost_micros: 500
+        expected_result_bytes: 8192
+      conflict_domain: openbb.equity_fundamental_metrics
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -659,6 +698,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 3000
+        expected_tokens: 3000
+        expected_tool_cost_micros: 600
+        expected_result_bytes: 16384
+      conflict_domain: openbb.equity_fundamental_income
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -676,6 +726,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 3000
+        expected_tokens: 3000
+        expected_tool_cost_micros: 600
+        expected_result_bytes: 16384
+      conflict_domain: openbb.equity_fundamental_balance
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -693,6 +754,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 3000
+        expected_tokens: 3000
+        expected_tool_cost_micros: 600
+        expected_result_bytes: 16384
+      conflict_domain: openbb.equity_fundamental_cash
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -710,6 +782,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2000
+        expected_tokens: 800
+        expected_tool_cost_micros: 400
+        expected_result_bytes: 2048
+      conflict_domain: openbb.equity_estimates_consensus
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -727,6 +810,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 800000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 130000
+        expected_latency_ms: 2500
+        expected_tokens: 1500
+        expected_tool_cost_micros: 500
+        expected_result_bytes: 6144
+      conflict_domain: openbb.equity_compare_peers
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
@@ -745,6 +839,17 @@ capabilities:
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1200
+        expected_tool_cost_micros: 400
+        expected_result_bytes: 4096
+      conflict_domain: openbb.equity_calendar_earnings
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:

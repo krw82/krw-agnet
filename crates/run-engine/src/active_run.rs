@@ -1967,6 +1967,13 @@ impl ActiveRun {
                     }
                 }
             }
+            ImageResearchActionKind::Observation => {
+                // An observation completes its own action fingerprint only:
+                // whether the clause it informed moved stays the evidence
+                // ledger's decision, and the openbb envelope is not a
+                // supplemental filing read status.
+                next.record_completed(fingerprint)?;
+            }
         }
         self.research_planner = next;
         Ok(())
@@ -1986,7 +1993,7 @@ impl ActiveRun {
                 supplemental_status_for_targeted_payload(payload).ok()
             }
             ImageResearchActionKind::Trace => supplemental_status_for_trace_payload(payload).ok(),
-            ImageResearchActionKind::Context => None,
+            ImageResearchActionKind::Context | ImageResearchActionKind::Observation => None,
         }
     }
 
@@ -2007,8 +2014,11 @@ impl ActiveRun {
             (_, SupplementalReadKind::Retrieved) if status.has_more => match kind {
                 ImageResearchActionKind::Targeted => "supplemental_targeted_query_truncated",
                 ImageResearchActionKind::Trace => "supplemental_trace_truncated",
-                ImageResearchActionKind::Context => return None,
+                ImageResearchActionKind::Context | ImageResearchActionKind::Observation => {
+                    return None
+                }
             },
+            (ImageResearchActionKind::Observation, _) => return None,
             (ImageResearchActionKind::Targeted, SupplementalReadKind::Empty) => {
                 "supplemental_targeted_query_empty"
             }

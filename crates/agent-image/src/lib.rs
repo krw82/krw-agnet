@@ -467,6 +467,12 @@ pub enum ResearchActionKind {
     Context,
     Targeted,
     Trace,
+    /// Advisory observation read (curated openbb data plane). Selectable by
+    /// the research planner exactly when a frontier clause is scoped to the
+    /// same trusted ticker: the observation informs the clause, the filing
+    /// read resolves it. Results stay advisory (`OpenbbSeriesV1`) — a
+    /// completed observation never upgrades evidence directness.
+    Observation,
 }
 
 /// Fixed-point, image-pinned fallback estimate used until a signed deployment
@@ -3543,7 +3549,14 @@ fn validate_capability_input_abi(
                 && capability.permission == Permission::Read
                 && capability.idempotency == IdempotencyPolicy::CanonicalArgs
                 && capability.result_ingest == CapabilityResultIngest::OpenbbSeriesV1
-                && capability.research_action.is_none()
+                // The observation lane (planner-selectable advisory reads)
+                // is the one research action an openbb capability may carry;
+                // every other policy kind would smuggle a filing-evidence
+                // semantics onto an advisory transport.
+                && matches!(
+                    capability.research_action.as_ref().map(|policy| policy.kind),
+                    None | Some(ResearchActionKind::Observation)
+                )
                 && pinned_provider == &expected_provider
                 && if ticker_scoped {
                     matches!(
@@ -3753,6 +3766,22 @@ fn validate_research_action_policy(capability: &CapabilitySpec) -> Result<(), Im
                 && capability.idempotency == IdempotencyPolicy::CanonicalArgs
                 && capability.input_contract == "ontology-trace-input/v1"
                 && capability.result_ingest == CapabilityResultIngest::TraceLineageV1
+                && capability
+                    .output_contracts
+                    .iter()
+                    .any(|contract| contract == "normalized-capability-result/v1")
+        }
+        ResearchActionKind::Observation => {
+            // The observation lane is closed to the curated openbb plane by
+            // construction: the `OpenbbSeriesV1` ingest admits only the
+            // closed set of openbb physical inputs (capability-runtime
+            // admission), and the `OpenbbRequestV1` derivation matcher pins
+            // the model/physical contract pairs. This arm adds the policy
+            // surface on top: read-only, canonical-args, advisory ingest,
+            // normalized result. No vendor name is model-visible.
+            capability.permission == Permission::Read
+                && capability.idempotency == IdempotencyPolicy::CanonicalArgs
+                && capability.result_ingest == CapabilityResultIngest::OpenbbSeriesV1
                 && capability
                     .output_contracts
                     .iter()
@@ -5533,7 +5562,22 @@ mod tests {
                     pinned_provider: *provider,
                 }
             );
-            assert!(capability.research_action.is_none());
+            // Ticker-scoped tools carry the observation research action (the
+            // planner lane); unscoped macro tools stay policy-less (the
+            // direct assess lane). No openbb capability may carry any other
+            // action kind.
+            match capability_id.as_ref() {
+                "openbb.macro_series" | "openbb.macro_cpi" | "openbb.yield_curve"
+                | "openbb.macro_calendar" => {
+                    assert!(capability.research_action.is_none());
+                }
+                _ => {
+                    assert!(matches!(
+                        capability.research_action.as_ref().map(|policy| policy.kind),
+                        Some(ResearchActionKind::Observation)
+                    ));
+                }
+            }
         }
         // The price lookup and the round-2 company plane are ticker-scoped;
         // the macro lookups (round 1 and round 2) are unscoped.
