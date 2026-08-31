@@ -67,7 +67,9 @@ partner-built(LSEG·S&P)는 참고만: LSEG의 "툴 이름 정확 지정+역할�
 
 ### Task B — 관측 액션 개방 (플래너 게이트, E5·후보3 통합 설계)
 
-**2026-08-31 실측 정정**: `research_action` 폐쇄는 *플랜 시점*(research-proposal/v4 → search-plan/v2의 액션 종류)만 제한한다. assess_obligations의 역할 메뉴는 `state_output_contracts`가 직접 전이하는 capability의 model_input_contract를 광고하며, 파일링/뉴스 사다리(역시 research_action 없음)가 r7a에서 실제 호출됐다 — 즉 **Task A만으로 assess 지점의 openbb 호출 경로는 이미 열려 있다**. Task B는 이를 플랜 시점(작성 플래너가 관측 의무를 계획)으로 확장하는 후속 증강이다.
+**2026-08-31 완결 (dda04e7)**: assess 경로는 라운드2 배선(1c21d35)으로 즉시 열렸고, 플랜 시점도 Observation 액션 종류로 확장 완료. 티커 스코프 9개 도구(시세·회사평면 8)만 정책 보유 — map_goals가 "같은 티커의 미해결 조항 존재"로만 매핑하고 혜택 0개(서버추천·직접성·계산 커버리지 없음)라 동일 조항에서 파일링 정밀조회가 항상 우선. 비스코프 거시 4도구는 매핑 불가능하므로 정책 없이 assess 직접 경로 유지(플래너 경로 이동 시 항상 unmapped 거부 = 회귀 방지). 관측 완료는 자기 지문만 소거, 조항 해소는 근거장부 판단.
+
+**품질 게이트 상태 (2026-08-31)**: 구현 5커밋 전부 녹색(Rust 68 스위트 + Python 19 테스트). GLM 스모크 시도 → 샌드박스 dev 스택이 **P1/B7 대기 상태**(릴리스 검증 실패: manifest_builder_binding·metric_dictionary 핀 불일치, dev 릴리스 선택 env 부재 시 prod/current 폴백)로 기동 불가 — 본 스레드 변경과 무관(16:52 크래시와 동일 계열, 온톨로지 데이터 릴리스 검증 단계에서 사전 차단). 해제 조건: B7 해시 범프 + v2-dev 신규 릴리스(P1 스레드) 후 `dev-stack.sh up && dev-stack.sh test quality --provider glm`.
 
 - `ResearchActionKind` 폐쇄집합 {Context, Targeted, Trace}에 **`Observation`** 추가: 계약 표면 = openbb 모델 요청 계약(폐쇄 목록) + `OpenbbSeriesV1` ingest + normalized-capability-result/v1 출력, permission Read, idempotency canonical_args, conflict_domain `openbb.<도구별 리소스>`.
 - research-planner `ResearchActionKind` {QueryContext, TargetedQuery, Trace}에 `Observation` 대응 추가, capability_dispatch 매핑, 점수·충돌 도메인은 선언적 estimate로 (커널 조건문 없음 — 기존 설계 원칙 유지).
