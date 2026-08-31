@@ -182,10 +182,10 @@ roles:
     # Evidence selection and gap analysis are complete before this state.
     # Composition is a compute task — section structure, arithmetic
     # narration, and counter-hedging in one pass — so thinking stays enabled
-    # (release A′). The cap stays 16,384: the kernel's admission math holds
-    # at max(8192, 2x cap) = 32,768 and every budget tail passes, while any
-    # larger cap either fails image compile or collapses the research
-    # runway. GLM bills thinking and visible output against this one
+    # (release A′). The cap stays 16,384 for now: the admission math holds
+    # at the declared compose_retry_reserve_tokens (16,384); caps above the
+    # legacy 32,000 ceiling compile while the reserve stays decoupled.
+    # GLM bills thinking and visible output against this one
     # ceiling; a halved visible worst case lands in the bounded direct-retry
     # lane instead of a truncated answer.
     execution: { reasoning: standard, max_output_tokens: 16384 }
@@ -1024,6 +1024,12 @@ period_policy:
 answer_policy:
   internal_format: final-markdown/v1
   final_output_reserve_tokens: 8192
+  # E1: the retry reserve is declared, not derived. One full retry of the
+  # largest composer turn (16,384). Raising a compose cap no longer doubles
+  # the held-back reserve (previously max(8192, 2x cap) = 32,768, which
+  # capped compose caps at 32,000 and cut the research runway by 2x per
+  # +1x cap). effective reserve: max(8192, 16384) = 16384.
+  compose_retry_reserve_tokens: 16384
   minimum_research_turn_tokens: 2048
   # Thinking-enabled research turns (analyst) consume reasoning tokens
   # (~2k-4k) before producing a tool call or assessment. 16384 leaves room

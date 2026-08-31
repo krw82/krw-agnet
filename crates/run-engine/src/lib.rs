@@ -8699,12 +8699,12 @@ mod tests {
     #[tokio::test]
     async fn thinking_floor_routes_evidence_poor_research_to_composition() {
         let mut fixture = fixture();
-        // The effective company-composition reserve is 32,768. After the
+        // The declared company-composition retry reserve is 16,384. After the
         // orienter and planner use 2,800 tokens, an analyst would receive
-        // only 432 tokens (33,200 - 32,768), below the provider's
+        // only 816 tokens (17,200 - 16,384), below the provider's
         // 1,025-token thinking minimum. The old engine failed while building
         // that analyst request.
-        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.request.budget.max_output_tokens = 20_000;
         fixture.snapshot.budget = fixture.request.budget.clone();
         let rig = engine_with_script_results_and_usage(
             VecDeque::from([
@@ -8893,10 +8893,10 @@ mod tests {
         )
         .unwrap();
         state.enter_initial_model_state().unwrap();
-        // 32,768 reserved for two full company-composition attempts plus the
-        // 2,048 minimum viable research turn means the kernel must stop at
-        // 34,816 remaining.
-        state.usage.output_tokens = 21_184;
+        // 16,384 reserved for one declared full company-composition retry
+        // plus the 2,048 minimum viable research turn means the kernel must
+        // stop at 18,432 remaining.
+        state.usage.output_tokens = 37_568;
         assert!(
             state
                 .should_finalize_for_output_reserve(&fixture.image.manifest)

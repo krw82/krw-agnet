@@ -1157,6 +1157,13 @@ pub struct AnswerPolicySpec {
     /// completion quality, not a deployment-specific model selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_output_reserve_tokens: Option<u32>,
+    /// E1: retry reserve for the terminal answer, declared instead of derived.
+    /// When present it replaces the legacy implicit `2 x max compose cap`
+    /// derivation, so raising a composer cap no longer doubles the tokens
+    /// held back from research turns. Must cover one full retry of the
+    /// workflow's largest composer turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_retry_reserve_tokens: Option<u32>,
     /// Smallest viable research-decision turn. Once admitted evidence exists
     /// and this much room is no longer available outside the final reserve,
     /// the kernel enters the image-declared composition fallback instead of
@@ -1773,10 +1780,12 @@ impl AgentImageManifest {
     }
 
     /// Return the output budget held back while a particular workflow is still
-    /// researching.  The image-wide policy is a floor, while the workflow's
-    /// largest composer determines the extra room needed for one complete
-    /// retry.  This keeps a long-form company answer from being cut off by the
-    /// cap chosen for a short-form workflow in the same image.
+    /// researching.  The image-wide policy is a floor, while the retry room is
+    /// the declared `compose_retry_reserve_tokens` when present (it must cover
+    /// one full retry of the largest composer) and otherwise the legacy
+    /// implicit `2 x` the workflow's largest composer cap.  This keeps a
+    /// long-form company answer from being cut off by the cap chosen for a
+    /// short-form workflow in the same image.
     pub fn effective_final_output_reserve_tokens(
         &self,
         workflow_id: &str,
@@ -1819,9 +1828,12 @@ impl AgentImageManifest {
             .into_iter()
             .max()
             .unwrap_or_default();
-        let retry_reserve = max_composer_cap
-            .checked_mul(2)
-            .ok_or_else(|| ImageError::InvalidSpec("compose retry reserve overflow".into()))?;
+        let retry_reserve = match self.body.answer_policy.compose_retry_reserve_tokens {
+            Some(explicit) => explicit,
+            None => max_composer_cap
+                .checked_mul(2)
+                .ok_or_else(|| ImageError::InvalidSpec("compose retry reserve overflow".into()))?,
+        };
         Ok(Some(base_reserve.max(retry_reserve)))
     }
 
@@ -3029,9 +3041,11 @@ pub fn validate_spec(spec: &AgentSpec) -> Result<(), ImageError> {
 /// An image that reserves output for its terminal response must prove that the
 /// reserve can actually be reached. Without this check a long research turn
 /// could consume the last token and strand the run before composition. The
-/// declared reserve is the common floor. Each workflow raises it to two times
-/// its own composer cap, so a long-form answer does not force every shorter
-/// workflow to carry the same reserve.
+/// declared `final_output_reserve_tokens` is the common floor. A declared
+/// `compose_retry_reserve_tokens` must cover one full retry of every compose
+/// cap; without it the legacy implicit derivation holds each workflow to two
+/// times its own composer cap, so a long-form answer does not force every
+/// shorter workflow to carry the same reserve.
 fn validate_final_output_reserve(
     spec: &AgentSpec,
     reserve: u32,
@@ -3084,11 +3098,26 @@ fn validate_final_output_reserve(
                     "compose role {role_id} must declare an output token cap when final output is reserved"
                 ))
             })?;
-            let required_reserve = cap.checked_mul(2).ok_or_else(|| {
-                ImageError::InvalidSpec(format!(
-                    "compose role {role_id} output cap is too large to reserve a full retry"
-                ))
-            })?;
+            let required_reserve = match spec.answer_policy.compose_retry_reserve_tokens {
+                Some(explicit) => {
+                    if !(256..=64_000).contains(&explicit) {
+                        return Err(ImageError::InvalidSpec(format!(
+                            "compose retry reserve must be between 256 and 64000 tokens (declared {explicit})"
+                        )));
+                    }
+                    if cap > explicit {
+                        return Err(ImageError::InvalidSpec(format!(
+                            "compose role {role_id} output cap {cap} exceeds the declared retry reserve {explicit}"
+                        )));
+                    }
+                    explicit
+                }
+                None => cap.checked_mul(2).ok_or_else(|| {
+                    ImageError::InvalidSpec(format!(
+                        "compose role {role_id} output cap is too large to reserve a full retry"
+                    ))
+                })?,
+            };
             if required_reserve > 64_000 {
                 return Err(ImageError::InvalidSpec(format!(
                     "compose role {role_id} output cap exceeds the 64,000-token two-attempt reserve"
@@ -4682,17 +4711,77 @@ mod tests {
             image
                 .effective_final_output_reserve_tokens("company_research_v2")
                 .unwrap(),
-            Some(32_768)
+            Some(16_384)
         );
         // The rich-answer revision (2026-08-16) raised the specialized
-        // composers from 4096 to 16384 output tokens; the final reserve
-        // keeps tracking twice the composer ceiling.
+        // composers from 4096 to 16384 output tokens; the declared retry
+        // reserve tracks one full composer retry instead of doubling the cap.
         assert_eq!(
             image
                 .effective_final_output_reserve_tokens("idea_generation_v1")
                 .unwrap(),
-            Some(32_768)
+            Some(16_384)
         );
+    }
+
+    #[test]
+    fn legacy_reserve_doubling_rejects_caps_above_the_two_attempt_ceiling() {
+        // 실측 진단: cap > 32_000 이면 2 x cap > 64_000 이라 image compile 실패.
+        // Clearing the declared reserve exercises the legacy implicit path.
+        let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        spec.answer_policy.compose_retry_reserve_tokens = None;
+        for role in &mut spec.roles {
+            if role.id == "composer" {
+                role.execution.max_output_tokens = Some(40_000);
+            }
+        }
+        let error = validate_spec(&spec).unwrap_err();
+        assert!(format!("{error:?}").contains("64,000-token two-attempt reserve"));
+    }
+
+    #[test]
+    fn explicit_retry_reserve_decouples_compose_cap_from_the_reserve() {
+        let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        // The declared reserve must cover one full retry of the largest
+        // composer turn, so admitting a 40,000-token compose cap requires
+        // declaring 40,000 — not the legacy 2 x cap = 80,000, which can no
+        // longer compile. The reserve follows the declaration, not the cap.
+        spec.answer_policy.compose_retry_reserve_tokens = Some(40_000);
+        for role in &mut spec.roles {
+            if role.id == "composer" {
+                role.execution.max_output_tokens = Some(40_000);
+            }
+        }
+        // 명시적 리저브가 있으면 cap 40_000도 컴파일을 통과하고,
+        // 리저브는 cap이 아니라 선언값을 따른다.
+        validate_spec(&spec).expect("explicit retry reserve admits larger compose caps");
+        for workflow in &spec.workflows {
+            if workflow.id == "company_research_v2" {
+                let max_cap = workflow
+                    .states
+                    .iter()
+                    .filter(|state| state.kind == StateKind::Compose)
+                    .filter_map(|state| state.role_id.as_deref())
+                    .filter_map(|role_id| {
+                        spec.roles
+                            .iter()
+                            .find(|role| role.id == role_id)
+                            .and_then(|role| role.execution.max_output_tokens)
+                    })
+                    .max()
+                    .unwrap_or_default();
+                assert_eq!(max_cap, 40_000);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_retry_reserve_must_cover_one_full_composer_retry() {
+        let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        // composer cap(16_384)보다 작은 리저브는 "1회 전체 재시도"를 보장 못 함.
+        spec.answer_policy.compose_retry_reserve_tokens = Some(8_192);
+        let error = validate_spec(&spec).unwrap_err();
+        assert!(format!("{error:?}").contains("exceeds the declared retry reserve"));
     }
 
     #[test]
