@@ -94,6 +94,10 @@ const ANSWER_IR_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/answer-ir-v1.json"
 ));
+const REPORT_SECTIONS_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/report-sections-v1.json"
+));
 const FINAL_MARKDOWN_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/final-markdown-v1.json"
@@ -158,6 +162,10 @@ pub const ONTOLOGY_TARGETED_QUERY_V1: &str = "ontology-targeted-query/v1";
 pub const ONTOLOGY_TRACE_INPUT_V1: &str = "ontology-trace-input/v1";
 pub const NORMALIZED_CAPABILITY_RESULT_V1: &str = "normalized-capability-result/v1";
 pub const ANSWER_IR_V1: &str = "answer-ir/v1";
+/// One model-authored section batch for the sectioned compose loop. The
+/// engine accumulates validated batches into the assembled answer IR; this
+/// contract is never the committed final output.
+pub const REPORT_SECTIONS_V1: &str = "report-sections/v1";
 /// Direct user-facing Markdown emitted after evidence collection.  The
 /// `EvidenceLedger` remains kernel-owned; this contract deliberately carries
 /// no model-authored claim graph or presentation wrapper.
@@ -178,6 +186,8 @@ pub const NORMALIZED_CAPABILITY_RESULT_V1_SCHEMA_SHA256: &str =
     "sha256:8c44e23d6a2e0b565b7eed9e31cfd702dc5cbd5f139a99f9b55aa903f28cc151";
 pub const ANSWER_IR_V1_SCHEMA_SHA256: &str =
     "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634";
+pub const REPORT_SECTIONS_V1_SCHEMA_SHA256: &str =
+    "sha256:2271cce6a7ed45bb69429093c0757cf66a1ffce2a2043ce33246f452beea9e2b";
 pub const FINAL_MARKDOWN_V1_SCHEMA_SHA256: &str =
     "sha256:8e747a3d70dc03decffa17a7f90ab1f8026bd0464322ccfb975c39f8f3a3ec8e";
 pub const STATE_OPERATION_OUTPUT_V1_SCHEMA_SHA256: &str =
@@ -304,6 +314,11 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: ANSWER_IR_V1_SCHEMA_SHA256,
             schema: ANSWER_IR_BYTES,
         }),
+        REPORT_SECTIONS_V1 => Some(ContractDescriptor {
+            id: REPORT_SECTIONS_V1,
+            schema_sha256: REPORT_SECTIONS_V1_SCHEMA_SHA256,
+            schema: REPORT_SECTIONS_BYTES,
+        }),
         FINAL_MARKDOWN_V1 => Some(ContractDescriptor {
             id: FINAL_MARKDOWN_V1,
             schema_sha256: FINAL_MARKDOWN_V1_SCHEMA_SHA256,
@@ -361,6 +376,7 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(ONTOLOGY_TRACE_INPUT_V1).expect("static contract"),
         contract(NORMALIZED_CAPABILITY_RESULT_V1).expect("static contract"),
         contract(ANSWER_IR_V1).expect("static contract"),
+        contract(REPORT_SECTIONS_V1).expect("static contract"),
         contract(FINAL_MARKDOWN_V1).expect("static contract"),
         contract(STATE_OPERATION_OUTPUT_V1).expect("static contract"),
         contract(STATE_FACTS_V1).expect("static contract"),
@@ -1976,7 +1992,7 @@ mod tests {
     #[test]
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
-        assert_eq!(descriptors().len(), 63);
+        assert_eq!(descriptors().len(), 64);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -2001,6 +2017,27 @@ mod tests {
                 .as_str(),
             FINAL_MARKDOWN_V1_SCHEMA_SHA256
         );
+    }
+
+    #[test]
+    fn report_sections_v1_is_pinned_and_reachable() {
+        let descriptor = contract(REPORT_SECTIONS_V1).expect("canonical descriptor");
+        assert_eq!(
+            descriptor.schema_sha256, REPORT_SECTIONS_V1_SCHEMA_SHA256,
+            "pin must equal the canonical schema hash"
+        );
+        assert!(verify_pin(REPORT_SECTIONS_V1, &descriptor.content_hash().unwrap()).is_ok());
+        assert!(descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == REPORT_SECTIONS_V1));
+        let schema: serde_json::Value =
+            serde_json::from_slice(descriptor.schema).expect("valid json schema");
+        assert_eq!(schema["$id"], "krw-agent/kernel/report-sections/v1");
+        assert_eq!(schema["properties"]["schema_version"]["const"], 1);
+        assert_eq!(schema["properties"]["sections"]["maxItems"], 16);
+        // v1과 동일 문형으로 배치 수준 claim/calculation을 운반한다.
+        assert!(schema["$defs"]["claim"].is_object());
+        assert!(schema["$defs"]["calculation"].is_object());
     }
 
     #[test]
