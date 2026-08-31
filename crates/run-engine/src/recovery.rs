@@ -294,6 +294,7 @@ where
                     || declared.logical_action_keys != rebuilt.logical_action_keys
                     || declared.evidence_ledger_hash != rebuilt.evidence_ledger_hash
                     || declared.presentation_packs_hash != rebuilt.presentation_packs_hash
+                    || declared.composed_sections_hash != rebuilt.composed_sections_hash
                     || declared.calculations_hash != rebuilt.calculations_hash
                     || declared.action_cache_hash != rebuilt.action_cache_hash
                     || declared.accepted_actions_hash != rebuilt.accepted_actions_hash
@@ -496,6 +497,20 @@ where
                 ));
             }
             ProviderOutputDisposition::TypedJson => {
+                // E1 sectioned compose: a committed mid-loop section batch is
+                // resumable state, not a terminal final. Rebuild the exact
+                // compose→verify→acknowledgement walk and the composed-sections
+                // retention from the committed episode so the
+                // recovery-equivalence check below (which compares
+                // `composed_sections_hash`) compares like with like.
+                if state.section_output_contract()?.is_some() {
+                    return replay_committed_section_batch(
+                        self.config.max_conversation_bytes,
+                        input,
+                        state,
+                        &episode,
+                    );
+                }
                 return Err(EngineError::InvalidRecoverySnapshot(
                     "terminal final output was checkpointed as resumable state",
                 ));
@@ -1077,5 +1092,63 @@ pub(crate) fn model_recovery_directive(error: &EngineError) -> Option<ModelRecov
             "provider_dependency_retryable",
         )),
         _ => None,
+    }
+}
+
+/// Rebuild one committed mid-loop sectioned-compose episode onto the
+/// recovering state: parse the report-sections/v1 batch out of the committed
+/// episode bytes and push it through the same `retain_section_batch` walk the
+/// live run used (validation, the `section_submitted` model artifact, the
+/// `more_sections_required` continuation, the transcript acknowledgement, and
+/// the composed-sections retention). Usage for the episode has already been
+/// recorded by the caller in the same order the live orchestrator records it,
+/// so the loop-continuation floor decision replays identically.
+///
+/// A batch that ends the loop (`report_done`, or the engine's own reserve
+/// floor) cannot be part of the checkpointed base history — the live path
+/// checkpoints active state only after `finish` reports the loop still
+/// running — so an assembled final here is the historical terminal-final
+/// snapshot error, and any retention failure fails recovery closed.
+pub(crate) fn replay_committed_section_batch(
+    max_conversation_bytes: usize,
+    input: &RunInput<'_>,
+    state: &mut ActiveRun,
+    episode: &ProviderEpisodeV1,
+) -> Result<(), EngineError> {
+    let section_pin =
+        state
+            .section_output_contract()?
+            .ok_or(EngineError::InvalidRecoverySnapshot(
+                "episode is not a section batch",
+            ))?;
+    let content = episode
+        .assistant
+        .content
+        .as_deref()
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .ok_or(EngineError::InvalidRecoverySnapshot(
+            "section episode has no committed content",
+        ))?;
+    let batch = parse_typed_json_content(content).map_err(|_| {
+        EngineError::InvalidRecoverySnapshot("section episode content is not typed JSON")
+    })?;
+    let final_contract = ContractPin::canonical(&input.image.body.answer_policy.internal_format)?;
+    match retain_section_batch(
+        max_conversation_bytes,
+        input,
+        state,
+        episode,
+        &section_pin,
+        &final_contract,
+        &batch,
+    ) {
+        // The loop continued: retention, the interpreter walk, and the
+        // acknowledgement are all rebuilt; the state is resumable.
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(EngineError::InvalidRecoverySnapshot(
+            "terminal final output was checkpointed as resumable state",
+        )),
+        Err(error) => Err(error),
     }
 }

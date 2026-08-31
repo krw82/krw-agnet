@@ -45,8 +45,10 @@ pub(crate) struct ActiveRun {
     /// `retain_composed_section` across the engine-owned compose→verify
     /// loop. Batches accumulate verbatim; assembly into the final answer IR
     /// happens once the loop ends (writer `report_done` or the engine's own
-    /// budget floor). Checkpoint projection of this field lands with the
-    /// bundle/checkpoint task.
+    /// budget floor). Checkpoint v15 projects this field as
+    /// `composed_sections_hash`; replay rebuilds the accumulation from the
+    /// committed section artifacts (recovery.rs), so crash-recovery
+    /// equivalence holds mid-loop.
     pub(crate) composed_sections: Vec<Value>,
     pub(crate) program: Arc<ProgramRuntime>,
     pub(crate) interpreter: StateInterpreter,
@@ -78,7 +80,7 @@ pub(crate) struct DerivedTickerScope {
     pub(crate) tickers: Vec<String>,
 }
 
-pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 14;
+pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION: u16 = 15;
 pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -94,6 +96,7 @@ pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "compacted_context_hash": {"type": ["string", "null"]},
     "compaction_receipts": {"items": {"type": "object"}, "type": "array"},
     "completed_capabilities": {"items": {"type": "string"}, "type": "array"},
+    "composed_sections_hash": {"type": "string"},
     "conversation_hash": {"type": "string"},
     "derived_ticker_scope_hash": {"type": ["string", "null"]},
     "evidence_ledger_hash": {"type": "string"},
@@ -103,7 +106,7 @@ pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "logical_action_keys": {"items": {"type": "string"}, "type": "array"},
     "prompt_receipt_hashes": {"items": {"type": "string"}, "type": "array"},
     "research_planner_hash": {"type": "string"},
-    "schema_version": {"const": 14},
+    "schema_version": {"const": 15},
     "session_memory_hash": {"type": ["string", "null"]},
     "state_trace": {"items": {"type": "string"}, "type": "array"},
     "direct_answer_retry_requested": {"type": "boolean"},
@@ -122,6 +125,7 @@ pub(crate) const ACTIVE_RUN_CHECKPOINT_SCHEMA: &str = r#"
     "conversation_hash",
     "evidence_ledger_hash",
     "presentation_packs_hash",
+    "composed_sections_hash",
     "calculations_hash",
     "action_cache_hash",
     "accepted_actions_hash",
@@ -156,6 +160,11 @@ pub(crate) struct ActiveRunCheckpoint {
     pub(crate) conversation_hash: ContentHash,
     pub(crate) evidence_ledger_hash: ContentHash,
     pub(crate) presentation_packs_hash: ContentHash,
+    /// E1 sectioned compose: content hash over the accumulated
+    /// report-sections/v1 batches retained so far. Like
+    /// `presentation_packs_hash`, the payload itself is rebuilt during
+    /// replay from the committed section artifacts and compared here.
+    pub(crate) composed_sections_hash: ContentHash,
     pub(crate) calculations_hash: ContentHash,
     pub(crate) action_cache_hash: ContentHash,
     pub(crate) accepted_actions_hash: ContentHash,
@@ -2855,6 +2864,9 @@ impl ActiveRun {
             evidence_ledger_hash: ContentHash::sha256(serde_jcs::to_vec(&self.ledger)?),
             presentation_packs_hash: ContentHash::sha256(serde_jcs::to_vec(
                 &self.presentation_packs,
+            )?),
+            composed_sections_hash: ContentHash::sha256(serde_jcs::to_vec(
+                &self.composed_sections,
             )?),
             calculations_hash: ContentHash::sha256(serde_jcs::to_vec(&self.calculations)?),
             action_cache_hash: ContentHash::sha256(serde_jcs::to_vec(&action_cache_hashes)?),

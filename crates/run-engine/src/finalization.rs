@@ -2040,12 +2040,13 @@ where
             .collect::<Vec<_>>();
         let visualizations = self.compile_visualizations(&state.presentation_packs, &state.ledger);
         let answer_bundle = AnswerBundle {
-            schema_version: 4,
+            schema_version: 5,
             output_contract: output_contract.clone(),
             output: output.clone(),
             evidence_ledger_hash,
             evidence_ids,
             answer_ir,
+            sections: state.composed_sections.clone(),
             rendered_content: rendered_content.clone(),
             rendered_markdown: rendered_content,
             visualizations,
@@ -2218,12 +2219,15 @@ where
             .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
         let evidence_ledger_hash = ContentHash::sha256(serde_jcs::to_vec(&state.ledger)?);
         let answer_bundle = AnswerBundle {
-            schema_version: 4,
+            schema_version: 5,
             output_contract: output_contract.clone(),
             output: output.clone(),
             evidence_ledger_hash,
             evidence_ids: fallback.cited_evidence_ids,
             answer_ir: None,
+            // The ledger fallback is answer-always: a sectioned run that
+            // escaped terminally still carries every batch it had committed.
+            sections: state.composed_sections.clone(),
             rendered_content: fallback.markdown.clone(),
             rendered_markdown: fallback.markdown,
             visualizations: Vec::new(),

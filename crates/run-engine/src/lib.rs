@@ -36,7 +36,8 @@ use capability_dispatch::{
 pub use capability_dispatch::{ModelProposalRejection, deterministic_action_key};
 use finalization::{
     derive_result_scope_projection, error_allows_ledger_fallback,
-    finalize_after_exhausted_ingest_successor, presentation_pack_matches_result,
+    finalize_after_exhausted_ingest_successor, parse_typed_json_content,
+    presentation_pack_matches_result, retain_section_batch,
 };
 pub use krw_agent_execution_contracts::{
     ActionIntent, CapabilityInvocation, CapabilityResult, CapabilityRuntime, DeliveryCertainty,
@@ -47,6 +48,8 @@ pub use krw_agent_execution_contracts::{
     RuntimeStageTimings,
 };
 pub use recovery::recovery_budget_usage;
+#[cfg(test)]
+use recovery::replay_committed_section_batch;
 use recovery::{
     ModelRecoveryDirective, RecoveryDetailV1, RecoveryEnvelopeV1, model_recovery_directive,
 };
@@ -75,8 +78,8 @@ use capability_dispatch::{
 };
 #[cfg(test)]
 use finalization::{
-    fallback_answer_from_ledger, parse_typed_json_content, retain_section_batch,
-    run_outcome_after_commit, sanitize_answer, validate_product_output_linkage,
+    fallback_answer_from_ledger, run_outcome_after_commit, sanitize_answer,
+    validate_product_output_linkage,
 };
 #[cfg(test)]
 use provider::{
@@ -650,6 +653,12 @@ pub struct AnswerBundle {
     /// bundle for quality replay; renderers must never expose these IDs.
     pub evidence_ids: Vec<String>,
     pub answer_ir: Option<AnswerIr>,
+    /// E1 sectioned-compose output: the validated report-sections/v1 batches
+    /// accumulated across the compose→verify loop. `#[serde(default)]`
+    /// keeps every v4 bundle (no sections field) parsing unchanged; v5 is
+    /// written only by sectioned workflows.
+    #[serde(default)]
+    pub sections: Vec<Value>,
     pub rendered_content: String,
     /// Compatibility alias retained for the existing host/SSE boundary. For
     /// non-Markdown outputs it is identical to `rendered_content`.
@@ -5657,6 +5666,7 @@ mod tests {
             evidence_ledger_hash: ContentHash::sha256("ledger"),
             evidence_ids: Vec::new(),
             answer_ir: None,
+            sections: Vec::new(),
             rendered_content: "fallback notice".into(),
             rendered_markdown: "fallback notice".into(),
             visualizations: Vec::new(),
@@ -9393,7 +9403,11 @@ mod tests {
             vec![pack.clone()],
         );
         let outcome = rig.engine.run(fixture.input()).await.unwrap();
-        assert_eq!(outcome.answer_bundle.schema_version, 4);
+        assert_eq!(outcome.answer_bundle.schema_version, 5);
+        assert!(
+            outcome.answer_bundle.sections.is_empty(),
+            "non-sectioned runs commit v5 with an empty sections list"
+        );
         assert_eq!(
             outcome.answer_bundle.visualizations,
             krw_presentation::compile(&pack).expect("trend pack compiles"),
@@ -9514,7 +9528,7 @@ mod tests {
     #[test]
     fn active_run_checkpoint_has_one_typed_workflow_authority() {
         let schema: Value = serde_json::from_str(ACTIVE_RUN_CHECKPOINT_SCHEMA).unwrap();
-        assert_eq!(schema["properties"]["schema_version"]["const"], 14);
+        assert_eq!(schema["properties"]["schema_version"]["const"], 15);
         assert!(schema["properties"].get("interpreter").is_some());
         assert!(schema["properties"].get("decision_projection").is_none());
         assert!(
@@ -9523,6 +9537,14 @@ mod tests {
                 .is_some()
         );
         assert!(schema["properties"].get("workflow").is_none());
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "composed_sections_hash"),
+            "checkpoint v15 projects the sectioned-compose accumulation"
+        );
         assert!(
             schema["required"]
                 .as_array()
@@ -10825,6 +10847,36 @@ mod tests {
         }
     }
 
+    fn fixture_contract_pin() -> Value {
+        serde_json::to_value(ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap()).unwrap()
+    }
+
+    fn fixture_content_hash() -> Value {
+        serde_json::to_value(ContentHash::sha256("fixture-e1t5")).unwrap()
+    }
+
+    fn fixture_budget_usage() -> Value {
+        serde_json::to_value(BudgetUsage::default()).unwrap()
+    }
+
+    fn fixture_bundle_with_sections(sections: Vec<Value>) -> AnswerBundle {
+        AnswerBundle {
+            schema_version: 5,
+            output_contract: ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap(),
+            output: Value::String("결론 우선 답변".into()),
+            evidence_ledger_hash: ContentHash::sha256("fixture-e1t5"),
+            evidence_ids: vec!["ev1".into()],
+            answer_ir: None,
+            sections,
+            rendered_content: "결론 우선 답변".into(),
+            rendered_markdown: "결론 우선 답변".into(),
+            visualizations: Vec::new(),
+            completion: ResearchCompletion::Accepted,
+            usage: BudgetUsage::default(),
+            agent_image_hash: ContentHash::sha256("fixture-e1t5"),
+        }
+    }
+
     #[test]
     fn output_reserve_fallback_never_fires_mid_section_loop_even_with_a_declared_edge() {
         let mut state = sectioned_active_run(true);
@@ -10906,5 +10958,108 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.composed_sections_len(), 1);
+    }
+
+    #[test]
+    fn answer_bundle_v4_still_parses_after_the_v5_bump() {
+        // 81ea033 시점 실측 형상: schema_version 4, sections 필드 없음.
+        let v4 = serde_json::json!({
+            "schema_version": 4,
+            "output_contract": fixture_contract_pin(),
+            "output": {"answer": "결론 우선 답변"},
+            "evidence_ledger_hash": fixture_content_hash(),
+            "evidence_ids": ["ev1"],
+            "answer_ir": null,
+            "rendered_content": "결론 우선 답변",
+            "rendered_markdown": "결론 우선 답변",
+            "visualizations": [],
+            "usage": fixture_budget_usage(),
+            "agent_image_hash": fixture_content_hash()
+        });
+        let bundle: AnswerBundle = serde_json::from_value(v4).expect("v4 is backward compatible");
+        assert_eq!(bundle.schema_version, 4);
+        assert!(
+            bundle.sections.is_empty(),
+            "absent v4 sections default to empty"
+        );
+    }
+
+    #[test]
+    fn v5_bundle_carries_accumulated_sections_and_round_trips() {
+        let bundle = fixture_bundle_with_sections(vec![section("s0", 0), section("s1", 1)]);
+        assert_eq!(bundle.schema_version, 5);
+        assert_eq!(bundle.sections.len(), 2);
+        let encoded = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(encoded["schema_version"], 5);
+        let decoded: AnswerBundle = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, bundle);
+    }
+
+    #[test]
+    fn checkpoint_declares_version_15_and_rebuilt_sections_match_on_recovery() {
+        let mut state = fixture_active_run();
+        state
+            .retain_composed_section(&section_batch(vec![section("s0", 0)], "more_sections"))
+            .unwrap();
+        let checkpoint = state.checkpoint_value().unwrap();
+        assert_eq!(
+            checkpoint.schema_version,
+            ACTIVE_RUN_CHECKPOINT_SCHEMA_VERSION
+        );
+        assert_eq!(checkpoint.schema_version, 15);
+        // recovery.rs:289-307 동치 검사가 composed_sections_hash까지 비교한다.
+        let rebuilt = state.checkpoint_value().unwrap();
+        assert_eq!(
+            checkpoint.composed_sections_hash,
+            rebuilt.composed_sections_hash
+        );
+    }
+
+    /// The crash-recovery half of checkpoint v15: a checkpointed (base) mid-loop
+    /// section episode must replay through the same retention path the live run
+    /// used, rebuilding both the interpreter walk and the composed-sections
+    /// accumulation so the recovery-equivalence chain compares like with like.
+    #[test]
+    fn replayed_section_batch_rebuilds_the_same_committed_state() {
+        let fixture = fixture();
+        let input = fixture.input();
+        let batch = section_batch(vec![section("s0", 0)], "more_sections");
+        let episode = section_episode(&batch);
+        let section_pin = ContractPin::canonical(REPORT_SECTIONS_V1).unwrap();
+        let final_pin = ContractPin::canonical(FINAL_MARKDOWN_V1).unwrap();
+        // Live path: the mid-loop batch was retained, walked
+        // `section_submitted` → `more_sections_required`, and acknowledged.
+        let mut live = sectioned_active_run(false);
+        retain_section_batch(
+            1 << 20,
+            &input,
+            &mut live,
+            &episode,
+            &section_pin,
+            &final_pin,
+            &batch,
+        )
+        .unwrap();
+        // Recovery path: the same committed episode replays onto a fresh
+        // state and must reconstruct exactly the same committed state.
+        let mut rebuilt = sectioned_active_run(false);
+        replay_committed_section_batch(1 << 20, &input, &mut rebuilt, &episode).unwrap();
+        assert_eq!(rebuilt.composed_sections_len(), 1);
+        let declared = live.checkpoint_value().unwrap();
+        let recovered = rebuilt.checkpoint_value().unwrap();
+        assert_eq!(
+            declared.composed_sections_hash, recovered.composed_sections_hash,
+            "replay must rebuild the retained section batches byte-for-byte"
+        );
+        assert_eq!(declared.interpreter, recovered.interpreter);
+        assert_eq!(declared.state_trace, recovered.state_trace);
+        // A loop-ending batch can never be a checkpointed base episode: the
+        // live path checkpoints active state only while the loop continues,
+        // so a replayed final batch is the historical terminal-final error.
+        let final_episode = section_episode(&final_batch_with_follow_ups());
+        assert!(matches!(
+            replay_committed_section_batch(1 << 20, &input, &mut rebuilt, &final_episode),
+            Err(EngineError::InvalidRecoverySnapshot(_))
+        ));
     }
 }
