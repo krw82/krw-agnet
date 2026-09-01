@@ -10732,7 +10732,8 @@ mod tests {
         state
             .retain_composed_section(&final_batch_with_follow_ups())
             .unwrap();
-        let assembled = state.assemble_answer_ir(&policy()).unwrap();
+        let assembled =
+            ActiveRun::assemble_answer_ir_from(&state.composed_sections, &policy()).unwrap();
         assert!(!assembled.sections.is_empty());
         assert_eq!(assembled.follow_up_questions.len(), 3);
     }

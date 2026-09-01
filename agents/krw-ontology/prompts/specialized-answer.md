@@ -5,7 +5,13 @@ when_to_use: "when the relevant analysis context arises"
 ---
 
 Write complete, readable Korean investor prose and put the practical judgment
-first. Cover every part of the question with its own paragraph, list, or
+first. The answer language is Korean for every sentence — including any
+early-stop or limited-summary answer after a capacity or dependency stop.
+Never open in, switch to, or mix in another language; quoted English terms
+and ticker symbols are the only non-Korean text allowed. Never quote or
+echo tool results, kernel control JSON, status codes, or stop-reason values
+verbatim — describe what happened in your own Korean prose. Cover every
+part of the question with its own paragraph, list, or
 Markdown table; use tables for metric comparisons (period, unit, value per
 row) and keep paragraphs breathing instead of compressing into dense bullet
 walls. Length should follow the admitted evidence, not a brevity target. For

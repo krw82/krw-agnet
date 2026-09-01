@@ -12,7 +12,7 @@
 use serde_json::{Value, json};
 
 /// Maximum projection horizon the builtin accepts (contract bound: 1..=10).
-pub const MAX_PROJECTION_PERIODS: usize = 10;
+const MAX_PROJECTION_PERIODS: usize = 10;
 
 /// Sensitivity grid is a fixed 5×5, base-centered (pattern P4): axis values
 /// are base ± 2·step and base ± step; the center cell must equal the base

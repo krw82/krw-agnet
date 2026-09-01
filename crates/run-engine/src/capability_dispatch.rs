@@ -1708,6 +1708,10 @@ pub(crate) fn prepare_calls(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelProposalRejection {
     Generic { reason_code: &'static str },
+    /// A proposal-time state-order violation (for example the news fallback
+    /// ladder). The violated rule codes ride along so the recovery directive
+    /// can teach the model which earlier rung to pick instead.
+    Order { codes: Vec<String> },
     ResearchProposalV4(ResearchProposalRepairDirective),
 }
 
@@ -1719,13 +1723,14 @@ impl ModelProposalRejection {
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Generic { reason_code } => reason_code,
+            Self::Order { .. } => "capability_order_violation",
             Self::ResearchProposalV4(directive) => directive.code(),
         }
     }
 
     pub(crate) fn repair_mode(&self) -> &'static str {
         match self {
-            Self::Generic { .. } => "replace",
+            Self::Generic { .. } | Self::Order { .. } => "replace",
             Self::ResearchProposalV4(directive) => match directive.repair_mode {
                 krw_agent_contracts::ResearchProposalRepairMode::Replace => "replace",
                 krw_agent_contracts::ResearchProposalRepairMode::Narrow => "narrow",
@@ -1741,7 +1746,7 @@ impl ModelProposalRejection {
     pub(crate) fn violation(&self) -> Option<&ResearchProposalViolation> {
         match self {
             Self::ResearchProposalV4(directive) => Some(&directive.violation),
-            Self::Generic { .. } => None,
+            Self::Generic { .. } | Self::Order { .. } => None,
         }
     }
 }

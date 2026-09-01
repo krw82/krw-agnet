@@ -565,6 +565,60 @@ pub fn validate_answer(
             detail: format!("expected ko-KR, observed {}", answer.locale),
         });
     }
+    // Process-leak backstop (measured 2026-08-31): a forced compose after a
+    // capacity stop once echoed kernel control JSON verbatim and opened in
+    // the wrong script. Both are integrity failures — they disclose process
+    // internals and break the locale contract — so they route to the
+    // bounded compose repair instead of being silently downgraded.
+    const CONTROL_PAYLOAD_TOKENS: [&str; 5] = [
+        "\"stop_reason\"",
+        "\"schema_version\": 1",
+        "\"not_dispatched\"",
+        "\"class\": \"kernel\"",
+        "\"reason_code\"",
+    ];
+    let answer_prose = answer
+        .sections
+        .iter()
+        .map(|section| section.heading.as_str())
+        .chain(answer.claims.iter().map(|claim| claim.text.as_str()))
+        .chain(answer.follow_up_questions.iter().map(String::as_str))
+        .collect::<String>();
+    if CONTROL_PAYLOAD_TOKENS
+        .iter()
+        .any(|token| answer_prose.contains(token))
+    {
+        issues.push(ValidationIssue {
+            code: "answer_control_payload_leak",
+            claim_id: None,
+            detail: "kernel control payload echoed into the answer".to_string(),
+        });
+    }
+    // Script dominance gate for the ko-KR contract: a non-Latin foreign
+    // script (Arabic, Cyrillic) outnumbering Hangul means the composer
+    // derailed into the wrong language. All-Latin answers are left alone —
+    // ticker symbols and quoted English terms are legitimate, and the
+    // locale metadata check above already covers the declared locale.
+    let hangul = answer_prose
+        .chars()
+        .filter(|character| ('\u{AC00}'..='\u{D7A3}').contains(character))
+        .count();
+    let foreign_script = answer_prose
+        .chars()
+        .filter(|character| {
+            ('\u{0600}'..='\u{06FF}').contains(character)
+                || ('\u{0400}'..='\u{04FF}').contains(character)
+        })
+        .count();
+    if foreign_script > 0 && foreign_script > hangul {
+        issues.push(ValidationIssue {
+            code: "answer_language_mismatch",
+            claim_id: None,
+            detail: format!(
+                "ko-KR answer prose is dominated by a foreign script ({foreign_script} foreign vs {hangul} Hangul characters)"
+            ),
+        });
+    }
     for (observed, limit, code, resource) in [
         (
             answer.sections.len(),
@@ -1358,6 +1412,72 @@ mod tests {
         )
         .unwrap_err();
         assert!(issues.iter().any(|issue| issue.code == "too_many_claims"));
+    }
+
+    #[test]
+    fn control_payload_echo_and_foreign_script_fail_as_integrity() {
+        let ledger = EvidenceLedger::default();
+        let policy = AnswerPolicy {
+            forbidden_terms: Vec::new(),
+            require_direct_strong_claims: false,
+            require_period_for_numbers: false,
+            require_unit_for_numbers: false,
+            require_counter_signal_for_interpretation: false,
+            exact_follow_up_count: 0,
+        };
+        let sectioned_claim = |text: &str| Claim {
+            claim_id: "c0".into(),
+            kind: ClaimKind::Uncertainty,
+            strength: ClaimStrength::Qualified,
+            text: text.into(),
+            goal_ids: Vec::new(),
+            evidence_ids: Vec::new(),
+            counter_evidence_ids: Vec::new(),
+            calculation_ids: Vec::new(),
+            subject: None,
+            predicate: None,
+            value: None,
+            unit: None,
+            period: None,
+            comparison_basis: None,
+        };
+        let answer_with = |claim: Claim| AnswerIr {
+            schema_version: 1,
+            locale: "ko-KR".into(),
+            sections: vec![AnswerSection {
+                section_id: "summary".into(),
+                heading: "결론".into(),
+                intent: "answer".into(),
+                claim_ids: vec!["c0".into()],
+                disclosed_uncertainty: None,
+            }],
+            claims: vec![claim],
+            calculations: Vec::new(),
+            follow_up_questions: Vec::new(),
+        };
+
+        // Kernel control JSON echoed verbatim (the 2026-08-31 abort-path
+        // compose leak).
+        let leaked = answer_with(sectioned_claim(
+            "결론: { \"stop_reason\": \"context_plan_capacity_reached\", \"class\": \"kernel\" }",
+        ));
+        let issues = validate_answer(&leaked, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_control_payload_leak"));
+
+        // Wrong-script dominance: Arabic prose outnumbering Hangul.
+        let derailed = answer_with(sectioned_claim(
+            "استنفد ميزانية الاسترجاع الآن. 결론은 제한적입니다.",
+        ));
+        let issues = validate_answer(&derailed, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_language_mismatch"));
+
+        // Korean prose with quoted English tickers stays clean.
+        let clean = answer_with(sectioned_claim("AAPL의 현금창출력은 안정적입니다."));
+        assert!(validate_answer(&clean, &ledger, &policy).is_ok());
     }
 
     fn base_section() -> AnswerSection {

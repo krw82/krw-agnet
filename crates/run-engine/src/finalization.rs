@@ -326,7 +326,12 @@ fn issue_is_integrity(issue: &ValidationIssue, answer: &AnswerIr, ledger: &Evide
         "unsupported_answer_schema"
         | "untrusted_calculation"
         | "calculation_mismatch"
-        | "calculation_unknown_evidence" => true,
+        | "calculation_unknown_evidence"
+        // Process leaks and wrong-script answers disclose internals or
+        // break the locale contract; both require a bounded compose repair
+        // (measured 2026-08-31 GLM smoke) rather than a silent downgrade.
+        | "answer_control_payload_leak"
+        | "answer_language_mismatch" => true,
         "number_not_equal_to_calculation" => issue
             .claim_id
             .as_deref()

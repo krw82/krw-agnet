@@ -647,7 +647,32 @@ where
                 .as_ref()
                 .map(|policy| bounded_child::authorize_call(policy, &state, &selected))
                 .transpose()?;
-            state.preflight_capability_calls(input.image, std::slice::from_ref(&selected))?;
+            // A pre-action rule violation (state-order discipline, for
+            // example the news ladder) is a correctable model mistake: route
+            // it through the same recovery directive the capability route
+            // uses instead of failing the run terminally.
+            if let Err(error) =
+                state.preflight_capability_calls(input.image, std::slice::from_ref(&selected))
+            {
+                let Some(directive) = model_recovery_directive(&error) else {
+                    return Err(error);
+                };
+                if recovered
+                    .as_ref()
+                    .is_some_and(|pending| pending.has_action_receipt)
+                {
+                    return Err(EngineError::RecoveryArtifactMismatch(
+                        "rejected capability preflight has an action receipt",
+                    ));
+                }
+                if !state.recover_model_decision(input.image, &episode, directive)? {
+                    return Err(error);
+                }
+                state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                self.checkpoint_active_state(&identity, &state, deadline)
+                    .await?;
+                continue;
+            }
             let pending_child_completion =
                 if child_call_kind == Some(bounded_child::ChildCallKind::TypedReturn) {
                     let receipt = child_receipt.as_ref().ok_or(EngineError::Invariant(

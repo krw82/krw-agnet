@@ -2291,7 +2291,23 @@ impl ActiveRun {
             candidate_trace.push(call.state_id.clone());
             let rule_input =
                 action_rule_input(&call.arguments, &candidate_trace, &capability_calls)?;
-            evaluate_rules(image, RulePhase::PreAction, &rule_input, None)?;
+            // A pre-action rule violation is a correctable proposal
+            // discipline error (for example calling the last-resort web-news
+            // rung before the filing-catalog or feed rungs), not a run
+            // integrity failure. Convert it to a bounded model rejection so
+            // the existing recovery machinery teaches the model the violated
+            // order and the run continues with the earlier rung — the
+            // terminal-failure behaviour measured 2026-08-31 killed runs
+            // that one steering mistake.
+            if let Err(EngineError::PhaseRuleViolations {
+                phase: RulePhase::PreAction,
+                violations,
+            }) = evaluate_rules(image, RulePhase::PreAction, &rule_input, None)
+            {
+                return Err(EngineError::ModelProposalRejected(
+                    ModelProposalRejection::Order { codes: violations },
+                ));
+            }
             state_trace = candidate_trace;
         }
         usage.ensure_within(&self.limits)?;
@@ -2694,20 +2710,12 @@ impl ActiveRun {
         Ok(self.remaining_output_tokens()? > reserve.saturating_add(minimum))
     }
 
-    /// Assemble the final answer IR from every retained section batch. The
-    /// result flows through the ordinary `validate_answer` / `sanitize_answer`
-    /// pipeline unchanged: the evidence doctrine and the claim↔ledger
-    /// binding invariants are enforced at the same place as a single-shot
-    /// typed answer.
-    pub(crate) fn assemble_answer_ir(&self, policy: &AnswerPolicy) -> Result<AnswerIr, EngineError> {
-        Self::assemble_answer_ir_from(&self.composed_sections, policy)
-    }
-
     /// Merge report-sections/v1 batches in `order_hint` / arrival order:
     /// sections deduplicate by id (first issue wins), claims and
     /// calculations merge by id, and follow-up questions are taken from the
     /// last `final_batch` (the sanitizer's existing rules enforce the exact
     /// policy count at validation time — the assembler never invents any).
+    /// Callers assemble from `composed_sections` directly.
     pub(crate) fn assemble_answer_ir_from(
         batches: &[Value],
         policy: &AnswerPolicy,
