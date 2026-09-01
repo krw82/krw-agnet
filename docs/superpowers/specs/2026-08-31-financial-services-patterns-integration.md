@@ -267,3 +267,18 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   227.98 급등 +5.7% → 9/1 218.21)을 날짜와 읽는 포인트와 함께 배달 — "급등락
   흐름" 질문에 실제 다일 흐름 분석 완성.
 - 워크스페이스 930/0. 루프4 후보: 거시(금리·CPI) 수치 폴드, GLM 풀매트릭스 재측정.
+
+## 16. 루프4 — 거시(금리) 수치 폴드 (2026-09-02)
+
+- 조사: FRED 계열(openbb.macro_series, openbb.macro_cpi)은 **openbb 서버에
+  `fred_api_key`가 없어 전면 차단**(라이브 프로브). 대신 **키프리 경로 발견**:
+  `openbb.yield_curve`(pinned fmp, 연준 커브 데이터)가 키프리 작동.
+- 구현: `TrustedMacroContext`(폐쇄 정규화: 시리즈 ≤3 × 포인트 ≤6) + sealed
+  `openbb_yield_curve_preflight_invocation`(provider=fmp) + executor 폴드가
+  3M/2Y/10Y 벤치마크 최근 2일치를 반입 + `<trusted-macro-context>` 프롬프트
+  (소수 표기 0.0441=4.41% 유닛 안내, 2Y-10Y 스프레드 활용 안내).
+- **라이브 실증(MSFT 동일 질문)**: 답변이 "8월 31일 기준 미 국채 10년물 4.75%,
+  2년물 4.34%, 2Y-10Y 스프레드 +0.41%p 양의 기울기" + 주가(501.30 vs 507.29) +
+  공시 수치표를 한 답변에 결합 — 거시·미시·온톨로지 삼각조사 완성.
+- 워크스페이스 931/0. 잔여: CPI(물가) 다리는 FRED 키 필요(또는 pinned provider
+  fred→oecd 변경 — 모델 경로 영향 검토 후 루프5+ 과제).

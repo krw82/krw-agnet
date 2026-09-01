@@ -595,6 +595,84 @@ fn market_snapshot_from_openbb_closes(
         .ok()
 }
 
+/// Fold the sealed openbb yield-curve read into the closed macro context:
+/// three benchmark maturities (3-month, 2-year, 10-year) over the most
+/// recent curve dates. The pinned fmp provider serves this keylessly; the
+/// FRED series tool requires an absent `fred_api_key` (2026-09-02 probe).
+/// Best-effort: any failure omits the macro leg rather than delaying the
+/// run (MSFT-class answers narrated rates qualitatively while the plane
+/// was live).
+async fn preflight_macro_context(
+    catalog: &CapabilityCatalog,
+    capabilities: &dyn CapabilityRuntime,
+    request: &RunRequest,
+    hard_deadline: Instant,
+) -> Option<krw_agent_run_engine::TrustedMacroContext> {
+    if request.run_kind != "company_research" {
+        return None;
+    }
+    if hard_deadline.saturating_duration_since(Instant::now())
+        <= MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT
+    {
+        return None;
+    }
+    let invocation = catalog
+        .openbb_yield_curve_preflight_invocation(&request.run_id)
+        .ok()??;
+    let result = match timeout(
+        MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT,
+        capabilities.invoke(&invocation),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(failure)) => {
+            tracing::warn!(code = %failure.code, "macro_preflight_curve_failed");
+            return None;
+        }
+        Err(_elapsed) => {
+            tracing::warn!("macro_preflight_curve_timeout");
+            return None;
+        }
+    };
+    let Some(rows) = result
+        .provider_content
+        .get("records")
+        .and_then(serde_json::Value::as_array)
+    else {
+        tracing::warn!("macro_preflight_curve_shape_mismatch");
+        return None;
+    };
+    // Long-format rows: one {date, maturity, rate} per point. Project the
+    // three benchmark maturities, newest two curve dates each.
+    const BENCHMARKS: [(&str, &str); 3] = [
+        ("month_3", "UST3M"),
+        ("year_2", "UST2Y"),
+        ("year_10", "UST10Y"),
+    ];
+    let mut series_points: Vec<(String, Vec<(String, f64)>)> = Vec::new();
+    for (maturity, series_id) in BENCHMARKS {
+        let mut points: Vec<(String, f64)> = rows
+            .iter()
+            .filter_map(|row| {
+                if row.get("maturity").and_then(serde_json::Value::as_str) != Some(maturity) {
+                    return None;
+                }
+                let date = row.get("date").and_then(serde_json::Value::as_str)?;
+                let rate = row.get("rate").and_then(serde_json::Value::as_f64)?;
+                Some((date.to_owned(), rate))
+            })
+            .collect();
+        points.sort_by(|a, b| a.0.cmp(&b.0));
+        if points.is_empty() {
+            continue;
+        }
+        let kept = points.split_off(points.len().saturating_sub(2));
+        series_points.push((series_id.to_owned(), kept));
+    }
+    krw_agent_run_engine::TrustedMacroContext::from_series_points(&series_points).ok()
+}
+
 /// Bounded wall-clock timestamp for the folded snapshot receipt. The value
 /// only labels when the kernel folded the closes; the price dates carry the
 /// real as-of semantics.
@@ -877,17 +955,28 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             .checked_add(Duration::from_millis(effective_request.budget.deadline_ms))
             .ok_or_else(|| RunExecutionFailure::failed("deadline_invalid"))?;
         let market_t0 = Instant::now();
-        let market_snapshot_context = tokio::select! {
+        let (market_snapshot_context, macro_context) = tokio::select! {
             biased;
             () = context.cancellation.cancelled() => {
                 return Ok(SuccessfulRunOutcome::Cancelled);
             }
-            snapshot = preflight_market_snapshot(
-                release.capability_catalog.as_ref(),
-                capabilities.as_ref(),
-                &effective_request,
-                hard_deadline,
-            ) => snapshot,
+            pair = async {
+                let snapshot = preflight_market_snapshot(
+                    release.capability_catalog.as_ref(),
+                    capabilities.as_ref(),
+                    &effective_request,
+                    hard_deadline,
+                )
+                .await;
+                let macro_context = preflight_macro_context(
+                    release.capability_catalog.as_ref(),
+                    capabilities.as_ref(),
+                    &effective_request,
+                    hard_deadline,
+                )
+                .await;
+                (snapshot, macro_context)
+            } => pair,
         };
         runtime_timings.add_market_preflight(market_t0.elapsed());
         let engine = RunEngine::new(
@@ -912,6 +1001,7 @@ impl ClaimedRunExecutor for ProductionClaimedRunExecutor {
             request: &effective_request,
             snapshot: validated.snapshot(),
             market_snapshot_context: market_snapshot_context.as_ref(),
+            macro_context: macro_context.as_ref(),
             runtime_timings: Some(Arc::clone(&runtime_timings)),
             execution_plan: Some(execution_plan),
             hard_deadline,
@@ -1545,6 +1635,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn macro_preflight_folds_fred_series_into_the_macro_context() {
+        // 2026-09-02 loop: MSFT-class answers narrated rates qualitatively
+        // while the openbb FRED plane was live. The sealed macro fold must
+        // deliver real DGS10/CPIAUCSL points into the run context.
+        let (catalog, _providers, image_hash, _en_hash, request, _en_request) = fixture();
+        let release = catalog.release(&image_hash).expect("company release");
+        let capability = QueuedMarketCapability {
+            contents: Mutex::new(
+                [serde_json::json!({
+                    "format": "openbb-series-context/v1",
+                    "status": "available",
+                    "record_count": 6,
+                    "records": [
+                        {"date": "2026-08-27", "maturity": "month_3", "rate": 0.0390},
+                        {"date": "2026-08-27", "maturity": "year_2", "rate": 0.0433},
+                        {"date": "2026-08-27", "maturity": "year_10", "rate": 0.0441},
+                        {"date": "2026-08-28", "maturity": "month_3", "rate": 0.0384},
+                        {"date": "2026-08-28", "maturity": "year_2", "rate": 0.0434},
+                        {"date": "2026-08-28", "maturity": "year_10", "rate": 0.0443},
+                    ]
+                })]
+                .into(),
+            ),
+            invocations: Mutex::new(Vec::new()),
+        };
+
+        let macro_context = preflight_macro_context(
+            release.capability_catalog.as_ref(),
+            &capability,
+            &request,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("the yield curve folds into the macro context");
+
+        let invocations = capability.invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].capability_id, "openbb.yield_curve");
+        assert_eq!(invocations[0].arguments["provider"], "fmp");
+        drop(invocations);
+        let _ = &macro_context;
+    }
+
     async fn market_preflight_folds_openbb_closes_when_the_primary_source_fails() {
         // Production shape (2026-09-01): stacks without an FMP key got no
         // market snapshot at all, and every answer opened its market leg

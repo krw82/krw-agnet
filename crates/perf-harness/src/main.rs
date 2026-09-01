@@ -2269,6 +2269,7 @@ async fn measure_active_level(
                 request: &request,
                 snapshot: &snapshot,
                 market_snapshot_context: None,
+                macro_context: None,
                 runtime_timings: None,
                 execution_plan: None,
                 hard_deadline: Instant::now() + Duration::from_secs(30),

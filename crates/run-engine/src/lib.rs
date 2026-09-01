@@ -317,6 +317,96 @@ impl fmt::Debug for TrustedMarketSnapshot {
     }
 }
 
+/// Kernel-fetched macro orientation (policy rates, price indexes) carried
+/// beside the market snapshot. Same doctrine as
+/// [`TrustedMarketSnapshot`]: a closed canonical projection of sealed
+/// openbb FRED reads — timestamped advisory observations, never filing
+/// evidence — so rate- and inflation-shaped questions answer with real
+/// numbers instead of qualitative macro narration (2026-09-02 loop: MSFT
+/// described rates qualitatively while the openbb FRED plane was live).
+#[derive(Clone, PartialEq, Eq)]
+pub struct TrustedMacroContext {
+    canonical: String,
+}
+
+impl fmt::Debug for TrustedMacroContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrustedMacroContext")
+            .field("content_hash", &ContentHash::sha256(&self.canonical))
+            .field("byte_len", &self.canonical.len())
+            .finish()
+    }
+}
+
+impl TrustedMacroContext {
+    /// Rebuild the macro context from one or more sealed series reads. Each
+    /// series contributes at most six dated points; values must be finite
+    /// bounded scalars and series ids a closed bounded vocabulary.
+    pub fn from_series_points(
+        series: &[(String, Vec<(String, f64)>)],
+    ) -> Result<Self, TrustedMarketSnapshotError> {
+        const MAX_MACRO_SERIES: usize = 3;
+        const MAX_MACRO_POINTS: usize = 6;
+        if series.is_empty() || series.len() > MAX_MACRO_SERIES {
+            return Err(TrustedMarketSnapshotError::InvalidShape);
+        }
+        let mut normalized = Vec::new();
+        for (series_id, points) in series.iter().take(MAX_MACRO_SERIES) {
+            if series_id.is_empty()
+                || series_id.len() > 16
+                || !series_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+            {
+                return Err(TrustedMarketSnapshotError::InvalidShape);
+            }
+            let mut kept = Vec::new();
+            for (date, value) in points.iter().rev().take(MAX_MACRO_POINTS) {
+                if date.len() != 10
+                    || !date
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || byte == b'-')
+                    || !value.is_finite()
+                    || value.abs() > MAX_TRUSTED_MARKET_METRIC_ABS
+                {
+                    continue;
+                }
+                kept.push(serde_json::json!({"date": date, "value": value}));
+            }
+            kept.reverse();
+            if kept.is_empty() {
+                continue;
+            }
+            normalized.push(serde_json::json!({
+                "series_id": series_id,
+                "points": kept,
+            }));
+        }
+        if normalized.is_empty() {
+            return Err(TrustedMarketSnapshotError::Unavailable);
+        }
+        let canonical_value = serde_json::json!({
+            "format": "macro-context/v1",
+            "series": normalized,
+            "source_usage": "research_only",
+            "advisory_only": true,
+        });
+        let canonical = serde_jcs::to_vec(&canonical_value)
+            .map_err(|_| TrustedMarketSnapshotError::Canonicalization)?;
+        if canonical.len() > MAX_TRUSTED_MARKET_SNAPSHOT_BYTES {
+            return Err(TrustedMarketSnapshotError::Limit);
+        }
+        let canonical = String::from_utf8(canonical)
+            .map_err(|_| TrustedMarketSnapshotError::Canonicalization)?;
+        Ok(Self { canonical })
+    }
+
+    pub(crate) fn canonical(&self) -> &str {
+        &self.canonical
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TrustedMarketSnapshotError {
     #[error("market snapshot has an invalid trusted ticker")]
@@ -486,6 +576,9 @@ pub struct RunInput<'a> {
     /// valuation orientation. It is deliberately outside the durable evidence
     /// ledger and is bound into every provider prompt receipt when present.
     pub market_snapshot_context: Option<&'a TrustedMarketSnapshot>,
+    /// Sealed macro orientation (rates, price indexes) fetched with the same
+    /// preflight discipline as the market snapshot.
+    pub macro_context: Option<&'a TrustedMacroContext>,
     /// Per-run diagnostic accumulator shared with the provider wrapper and
     /// persistence adapter. It is never used for admission or correctness.
     pub runtime_timings: Option<Arc<RuntimeStageTimings>>,
@@ -4226,6 +4319,7 @@ mod tests {
                 request: &self.request,
                 snapshot: &self.snapshot,
                 market_snapshot_context: None,
+                macro_context: None,
                 runtime_timings: None,
                 execution_plan: None,
                 hard_deadline: Instant::now() + Duration::from_secs(5),
@@ -9313,6 +9407,55 @@ mod tests {
             ),
             Err(TrustedMarketSnapshotError::InvalidShape)
         ));
+    }
+
+    #[tokio::test]
+    async fn macro_context_renders_with_unit_guidance_in_every_prompt() {
+        // 2026-09-02 loop: rate-shaped questions must see real FRED numbers
+        // with honest unit guidance (DGS10 = percent yield, CPIAUCSL = index
+        // level, never an inflation percentage by itself).
+        let fixture = fixture();
+        let macro_context = TrustedMacroContext::from_series_points(&[
+            (
+                "UST3M".to_owned(),
+                vec![
+                    ("2026-08-27".to_owned(), 0.039),
+                    ("2026-08-28".to_owned(), 0.0384),
+                ],
+            ),
+            (
+                "UST2Y".to_owned(),
+                vec![
+                    ("2026-08-27".to_owned(), 0.0433),
+                    ("2026-08-28".to_owned(), 0.0434),
+                ],
+            ),
+            (
+                "UST10Y".to_owned(),
+                vec![
+                    ("2026-08-27".to_owned(), 0.0441),
+                    ("2026-08-28".to_owned(), 0.0443),
+                ],
+            ),
+        ])
+        .expect("macro context");
+        let rig = engine(None, false);
+        let mut input = fixture.input();
+        input.macro_context = Some(&macro_context);
+        rig.engine.run(input).await.expect("research run succeeds");
+        let requests = rig.provider.requests.lock().unwrap();
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("<trusted-macro-context>")));
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("\"series_id\":\"UST10Y\"")));
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("decimal fractions")));
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("curve-steepness")));
     }
 
     #[tokio::test]
