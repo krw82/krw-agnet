@@ -132,8 +132,12 @@ A(기계적, 리스크 최소) → B(게이트 개방, 매트릭스 필요) → 
 
 ### 검증
 - 워크스페이스 919+ 테스트 녹색(`--no-fail-fast`). 재시도 예약 테스트는 수리 전 빨강(판별력 확인).
-- 라이브 재검: 수리 엔진으로 스택 리로드(PID 37205) 후 short_fix_dcf + short_aapl_price_drop
-  GLM 재실행 — 결과는 본 절 이하에 기록.
+- 라이브 재검(수리 엔진, 스택 리로드 PID 37205): **short_fix_dcf 완주** — 에피소드 증거로
+  수리 경로 실증: ep05 = finish `length`·본문 0자(9,798토큰 전부 thinking) → 직접재시도
+  발동(thinking 비활성) → ep06 = `stop`·본문 1,832자 완결. 이전 실패 런(run_bccaf2a5)은
+  정확히 이 지점에서 693토큰 재절단으로 사망. short_aapl_price_drop도 파이널라이즈
+  (오염 0·한글 클린·정직 강등). 두 케이스 모두 transport passed, 실패 클래스 없음.
+  24케이스 풀매트릭스(parallelism 8)는 별도 실행 — 판정은 커밋 시점 기준 진행 중.
 
 ### Mimosa 전체 감사 (2026-09-01, scan-job-mtiea6c8)
 완주·봉인(seal sha256:388fb31d…, 307 패키지, finding 51). 전 수 미완(enobufs) 문제 해소.
