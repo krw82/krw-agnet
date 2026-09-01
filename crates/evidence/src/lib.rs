@@ -570,7 +570,7 @@ pub fn validate_answer(
     // the wrong script. Both are integrity failures — they disclose process
     // internals and break the locale contract — so they route to the
     // bounded compose repair instead of being silently downgraded.
-    const CONTROL_PAYLOAD_TOKENS: [&str; 12] = [
+    const CONTROL_PAYLOAD_TOKENS: [&str; 14] = [
         "\"stop_reason\"",
         "\"schema_version\": 1",
         "\"not_dispatched\"",
@@ -588,6 +588,15 @@ pub fn validate_answer(
         // "커널이 거부했습니다" as its entire deliverable). An investor
         // answer never names the kernel.
         "커널",
+        // Class-level closures (2026-09-01 third variant: an AMZN answer
+        // opened with `kernel {"capability":"krw_ontology_query__…",…}`).
+        // Every engine control envelope carries the lowercase provider tool
+        // prefix `krw_` (the currency code is uppercase `KRW` without the
+        // underscore) or the English kernel noun. Investor prose contains
+        // neither, so these two tokens close the whole echo class instead
+        // of chasing individual keys.
+        "krw_",
+        "kernel",
     ];
     let answer_prose = answer
         .sections
@@ -1492,6 +1501,17 @@ mod tests {
         // matrix INTC shape: the entire answer was "커널이 거부했습니다").
         let narrated = answer_with(sectioned_claim("두 번째 시도도 커널이 거부했습니다."));
         let issues = validate_answer(&narrated, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_control_payload_leak"));
+
+        // Capability-call envelope echo (the 2026-09-01 third variant):
+        // `kernel {"capability":"krw_ontology_query__…"}` — the class-level
+        // `krw_` and `kernel` tokens close every envelope shape.
+        let envelope = answer_with(sectioned_claim(
+            "kernel {\"capability\":\"krw_ontology_query__f0c3c51ca8e7d557\",\"params\":{}}",
+        ));
+        let issues = validate_answer(&envelope, &ledger, &policy).unwrap_err();
         assert!(issues
             .iter()
             .any(|issue| issue.code == "answer_control_payload_leak"));
