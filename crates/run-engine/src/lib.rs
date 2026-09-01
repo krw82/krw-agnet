@@ -3421,6 +3421,10 @@ mod tests {
     struct ScriptedProvider {
         script: Mutex<VecDeque<AssistantMessage>>,
         usage_script: Mutex<VecDeque<TokenUsage>>,
+        /// When set, the NEXT scripted content-only turn (no tool calls)
+        /// reports a `length` truncation instead of `stop`, mirroring a
+        /// provider that burns the whole turn cap on private reasoning.
+        truncate_first_content_turn: AtomicBool,
         log: Arc<Mutex<Vec<String>>>,
         calls: AtomicUsize,
         requests: Mutex<Vec<MessagesRequest>>,
@@ -3441,10 +3445,15 @@ mod tests {
             Self {
                 script: Mutex::new(script),
                 usage_script: Mutex::new(usage_script),
+                truncate_first_content_turn: AtomicBool::new(false),
                 log,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
             }
+        }
+
+        fn truncate_first_content_turn(&self) {
+            self.truncate_first_content_turn.store(true, Ordering::SeqCst);
         }
     }
 
@@ -3479,7 +3488,13 @@ mod tests {
                         DeliveryCertainty::NotDispatched,
                     )
                 })?;
-            let finish_reason = if assistant.tool_calls.is_empty() {
+            let finish_reason = if assistant.tool_calls.is_empty()
+                && self
+                    .truncate_first_content_turn
+                    .swap(false, Ordering::SeqCst)
+            {
+                "length"
+            } else if assistant.tool_calls.is_empty() {
                 "stop"
             } else {
                 "tool_calls"
@@ -5083,6 +5098,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn truncated_compose_retry_receives_the_declared_retry_reserve() {
+        // Production shape (GLM DCF run, 2026-09-01): a thinking-heavy
+        // research lane and one full-cap compose turn leave the retry only a
+        // few hundred tokens, the retry truncates again on `length`, and the
+        // run dies with provider_protocol_failure without delivering the
+        // answer it had already earned. The direct-answer retry must instead
+        // be granted the declared compose retry reserve.
+        let mut fixture = fixture();
+        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let mut script = provider_script();
+        script.push_back(AssistantMessage {
+            content: Some(final_markdown()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        });
+        // The query-context research turn burns a full researcher cap, the
+        // compose turn burns a full composer cap: the remaining retry grant
+        // is 3,222 tokens — far below the 16,384 declared retry reserve.
+        let usage = VecDeque::from([
+            scripted_token_usage(5),
+            scripted_token_usage(16_384),
+            scripted_token_usage(5),
+            scripted_token_usage(16_384),
+            scripted_token_usage(1),
+        ]);
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+        );
+        rig.provider.truncate_first_content_turn();
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+
+        let requests = rig.provider.requests.lock().unwrap();
+        let retry = requests
+            .last()
+            .expect("the retry turn is the last provider request");
+        // Direct retry lane: thinking is disabled and the request carries
+        // the declared retry reserve, not the starved cumulative leftover.
+        assert_eq!(retry.thinking.kind, ThinkingMode::Disabled);
+        assert_eq!(retry.max_tokens, 16_384);
+    }
+
+    #[tokio::test]
     async fn guru_company_researcher_uses_parent_research_loop() {
         let fixture = guru_fixture();
         let script = VecDeque::from([
@@ -5694,19 +5760,68 @@ mod tests {
     fn ledger_fallback_reason_separates_dependency_unavailable_from_retrieval_empty() {
         let empty = EvidenceLedger::default();
         let no_calculations = BTreeMap::new();
-        let outage = fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 0);
+        let outage = fallback_answer_from_ledger(
+            "질문?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            false,
+        );
         assert_eq!(outage.reason_code, "dependency_unavailable");
         assert!(outage.markdown.contains("dependency_unavailable"));
         assert!(!outage.markdown.contains("retrieval_empty"));
 
-        let retrieval_ran_dry =
-            fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 3);
+        let retrieval_ran_dry = fallback_answer_from_ledger(
+            "질문?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            3,
+            false,
+        );
         assert_eq!(retrieval_ran_dry.reason_code, "retrieval_empty");
         assert!(retrieval_ran_dry.markdown.contains("retrieval_empty"));
 
         // Deterministic bytes for identical inputs.
-        let again = fallback_answer_from_ledger("질문?", &[], &empty, &no_calculations, None, 0);
+        let again = fallback_answer_from_ledger(
+            "질문?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            false,
+        );
         assert_eq!(outage.markdown, again.markdown);
+    }
+
+    /// A budget exhaustion is the run's own output allowance running dry, so
+    /// the fallback notice must not blame the provider/MCP transport
+    /// (production mislabel, 2026-09-01: mix run burned 36,000 output tokens
+    /// and the limited summary claimed an external dependency fault).
+    #[test]
+    fn ledger_fallback_names_output_budget_exhaustion_honestly() {
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let budget = fallback_answer_from_ledger(
+            "질문?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            true,
+        );
+        assert_eq!(budget.reason_code, "output_budget_exhausted");
+        assert!(budget.markdown.contains("output_budget_exhausted"));
+        assert!(budget.markdown.contains("응답 예산"));
+        assert!(
+            !budget.markdown.contains("외부 연결"),
+            "a budget exhaustion must not be narrated as a provider/MCP fault"
+        );
     }
 
     /// Wave 4c: with admitted evidence the renderer keeps the question scope,
@@ -5770,6 +5885,7 @@ mod tests {
             &calculations,
             None,
             2,
+            false,
         );
         assert_eq!(answer.reason_code, "dependency_unavailable");
         assert_eq!(
@@ -5792,6 +5908,7 @@ mod tests {
             &calculations,
             None,
             2,
+            false,
         );
         assert_eq!(answer.markdown, again.markdown);
         assert_eq!(answer.cited_evidence_ids, again.cited_evidence_ids);

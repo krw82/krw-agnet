@@ -906,6 +906,11 @@ pub(crate) fn markdown_content_gate_feedback(
 /// dependency, so the renderer never invents them.
 pub(crate) const LEDGER_FALLBACK_DEPENDENCY_UNAVAILABLE: &str = "dependency_unavailable";
 pub(crate) const LEDGER_FALLBACK_RETRIEVAL_EMPTY: &str = "retrieval_empty";
+/// The run's own output-token budget ran out before an answer turn could
+/// complete. Distinct from `dependency_unavailable` because nothing external
+/// failed: telling the user "provider/MCP 문제" for a budget exhaustion is a
+/// false diagnosis.
+pub(crate) const LEDGER_FALLBACK_OUTPUT_BUDGET_EXHAUSTED: &str = "output_budget_exhausted";
 
 const LEDGER_FALLBACK_MAX_RECORDS: usize = 16;
 const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 8;
@@ -1040,18 +1045,34 @@ pub(crate) fn fallback_answer_from_ledger(
     calculations: &BTreeMap<String, Calculation>,
     intent: Option<&IntentPlanningProjection>,
     accepted_capability_results: usize,
+    output_budget_exhausted: bool,
 ) -> LedgerFallbackAnswer {
-    let reason_code = ledger_fallback_reason_code(ledger, accepted_capability_results);
+    let reason_code = if output_budget_exhausted {
+        LEDGER_FALLBACK_OUTPUT_BUDGET_EXHAUSTED
+    } else {
+        ledger_fallback_reason_code(ledger, accepted_capability_results)
+    };
     let mut citations = FallbackCitations::new();
     let mut markdown = String::new();
 
     markdown.push_str("## 안내\n\n");
-    markdown.push_str(
-        "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
+    if output_budget_exhausted {
+        markdown.push_str(
+            "요청하신 연구가 응답 예산(출력 토큰) 소진으로 완료되지 못했습니다. \
+이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+        );
+    } else {
+        markdown.push_str(
+            "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
 정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
-    );
+        );
+    }
     markdown.push_str(&format!("- 사유 코드: {reason_code}\n"));
-    markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
+    if output_budget_exhausted {
+        markdown.push_str("- 이는 시스템 응답 예산 문제이며 기업의 공시 범위와 무관합니다.\n");
+    } else {
+        markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
+    }
 
     markdown.push_str("\n## 질문 범위\n\n");
     markdown.push_str(&format!("- 질문: {}\n", fallback_public_inline(question)));
@@ -1305,6 +1326,19 @@ pub(crate) fn error_allows_ledger_fallback(error: &EngineError) -> bool {
         EngineError::Contract(krw_agent_protocol::ContractError::BudgetExceeded { .. }) => true,
         _ => false,
     }
+}
+
+/// Whether the ledger fallback was triggered by the run's own output budget
+/// running dry rather than an external dependency fault. The user-facing
+/// notice must not blame the provider/MCP transport for a budget exhaustion.
+pub(crate) fn error_is_output_budget_exhaustion(error: &EngineError) -> bool {
+    matches!(
+        error,
+        EngineError::NoRemainingOutputBudget
+            | EngineError::FinalOutputReserveReached
+            | EngineError::CapabilityBudgetExceeded { .. }
+            | EngineError::Contract(krw_agent_protocol::ContractError::BudgetExceeded { .. })
+    )
 }
 
 fn validate_typed_output(
@@ -2244,6 +2278,7 @@ where
             &state.calculations,
             state.research_planner.intent_projection(),
             state.accepted_actions.len(),
+            error_is_output_budget_exhaustion(&error),
         );
         tracing::warn!(
             code = fallback.reason_code,

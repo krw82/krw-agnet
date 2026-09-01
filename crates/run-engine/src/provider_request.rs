@@ -280,7 +280,16 @@ pub(crate) fn build_provider_request(
     messages: Vec<RunEngineMessage>,
 ) -> Result<BuiltProviderRequest, EngineError> {
     let remaining_output = state.remaining_output_tokens()?;
-    if remaining_output == 0 {
+    // A due direct-answer retry carries its own declared reserve grant (see
+    // `provider_turn_policy`), so a fully exhausted cumulative budget must
+    // not kill the run before the one bounded retry that can still deliver
+    // an answer.
+    let retry_reserve_floor = if state.direct_answer_retry_requested() {
+        input.image.body.answer_policy.compose_retry_reserve_tokens
+    } else {
+        None
+    };
+    if remaining_output == 0 && retry_reserve_floor.is_none() {
         return Err(EngineError::NoRemainingOutputBudget);
     }
     let turn_policy = provider_turn_policy(input, state, remaining_output)?;
@@ -596,8 +605,25 @@ pub(crate) fn provider_turn_policy(
         RoleReasoningMode::Deep => (ThinkingMode::Enabled, Some(ReasoningEffort::Max)),
     };
     let answer_output = state.current_operation_emits_answer(input.image)?;
+    // The direct-answer retry holds an inviolable grant of the declared
+    // `compose_retry_reserve_tokens`. Research turns already pay the final
+    // reserve back before they run, but the checks run between turns: one
+    // thinking-heavy compose turn can still consume the whole first-turn cap
+    // and leave the retry a starved tail (production GLM run ended with a
+    // 693-token retry that truncated mid-answer and failed the run). Grant
+    // the declared reserve even when the cumulative budget is exhausted;
+    // the overshoot is bounded by one retry and the retry turn already
+    // disables private thinking, so the tokens land in visible content.
+    let retry_reserve_floor = if answer_output && state.direct_answer_retry_requested() {
+        input.image.body.answer_policy.compose_retry_reserve_tokens
+    } else {
+        None
+    };
     let available_output_tokens = if answer_output {
-        remaining_output_tokens
+        match retry_reserve_floor {
+            Some(floor) => remaining_output_tokens.max(floor),
+            None => remaining_output_tokens,
+        }
     } else if let Some(reserve) = input
         .image
         .effective_final_output_reserve_tokens(&state.program.workflow.id)?

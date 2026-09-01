@@ -1631,21 +1631,64 @@ fn map_goals(
         // The observation lane is ticker-scoped by construction: the openbb
         // model requests carry a trusted ticker, and the only honest clause
         // mapping is an exact query candidate scoped to the same ticker.
-        // An observation carries no benefits — no server recommendation, no
-        // directness ceiling raise, no calculation coverage — so the filing
-        // read always outcompetes it on the clause it serves, and it never
-        // resolves the clause on its own.
+        // The model proposed this read autonomously and the capability
+        // carries a one-visit state bound, so admit the first candidate for
+        // the ticker that still serves a frontier goal. Live plans map only
+        // a subset of clauses in the intent receipt, so when the intent
+        // mapping yields nothing the projection graph's `clause:*` goals are
+        // the honest fallback — without it the model's only market-data
+        // request is dropped as unmapped (production GLM DCF run: an
+        // `openbb.balance_statement` proposal with the filing query already
+        // completed was discarded and the composer had to hedge the answer).
         let ticker = proposal.arguments.get("ticker").and_then(Value::as_str)?;
-        let candidate = projection
+        let mut goal_ids = projection
             .exact_precise_query_candidates
             .iter()
-            .find(|candidate| candidate.ticker == ticker)?;
-        candidate.clause_id.as_str()
+            .filter(|candidate| candidate.ticker == ticker)
+            .find_map(|candidate| {
+                resolve_clause_frontier_goals(
+                    projection,
+                    intent_projection,
+                    &frontier,
+                    candidate.clause_id.as_str(),
+                    true,
+                    &mut benefits,
+                )
+            })?;
+        goal_ids.sort();
+        return Some((goal_ids, benefits));
     } else {
         return None;
     };
-    let mut goal_ids = if let Some(intent) = intent_projection {
-        intent
+    let mut goal_ids = resolve_clause_frontier_goals(
+        projection,
+        intent_projection,
+        &frontier,
+        clause_id,
+        false,
+        &mut benefits,
+    )?;
+    goal_ids.sort();
+    (!goal_ids.is_empty()).then_some((goal_ids, benefits))
+}
+
+/// Resolve one clause to the frontier goals an action would serve. With an
+/// intent projection the mapping is intent-only (the strict, pre-existing
+/// contract for filing reads); `allow_projection_fallback` additionally
+/// falls back to the projection graph's `clause:*` goals when the intent
+/// receipt does not cover the clause. `benefits` accumulates
+/// `FillsCalculationCoverage` when any served goal requires a calculation.
+fn resolve_clause_frontier_goals(
+    projection: &ResearchPlanningProjection,
+    intent_projection: Option<&IntentPlanningProjection>,
+    frontier: &BTreeSet<&str>,
+    clause_id: &str,
+    allow_projection_fallback: bool,
+    benefits: &mut BTreeSet<ActionBenefit>,
+) -> Option<Vec<String>> {
+    let mut goal_ids = Vec::new();
+    if let Some(intent) = intent_projection {
+        goal_ids = intent
             .clause_goal_ids
             .get(clause_id)
             .into_iter()
@@ -1658,30 +1701,50 @@ fn map_goals(
                 }
                 goal.goal_id.clone()
             })
-            .collect::<Vec<_>>()
-    } else {
-        let clause_goal = format!("clause:{clause_id}");
-        projection
-            .graph
-            .goals()
-            .filter(|goal| {
-                frontier.contains(goal.goal_id.as_str())
-                    && (goal.goal_id == clause_goal
-                        || goal
-                            .dependencies
-                            .iter()
-                            .any(|dependency| dependency == &clause_goal))
-            })
-            .map(|goal| {
-                if goal.calculation_required {
+            .collect::<Vec<_>>();
+    }
+    if goal_ids.is_empty() && (intent_projection.is_none() || allow_projection_fallback) {
+        if let Some(intent) = intent_projection {
+            // Under an intent projection the scoreable goal space is the
+            // intent graph's own IDs, so a projection `clause:*` fallback
+            // could never survive `score_actions`. The honest intent-space
+            // fallback for a ticker-scoped observation is the intent's open
+            // calculation goals: market and statement reads are calculation
+            // inputs, not filing substitutes. Qualitative-only frontiers
+            // keep the observation unmapped.
+            goal_ids = intent
+                .graph
+                .frontier()
+                .into_iter()
+                .filter(|goal| goal.calculation_required)
+                .map(|goal| {
                     benefits.insert(ActionBenefit::FillsCalculationCoverage);
-                }
-                goal.goal_id.clone()
-            })
-            .collect::<Vec<_>>()
-    };
-    goal_ids.sort();
-    (!goal_ids.is_empty()).then_some((goal_ids, benefits))
+                    goal.goal_id.clone()
+                })
+                .collect::<Vec<_>>();
+        } else {
+            let clause_goal = format!("clause:{clause_id}");
+            goal_ids = projection
+                .graph
+                .goals()
+                .filter(|goal| {
+                    frontier.contains(goal.goal_id.as_str())
+                        && (goal.goal_id == clause_goal
+                            || goal
+                                .dependencies
+                                .iter()
+                                .any(|dependency| dependency == &clause_goal))
+                })
+                .map(|goal| {
+                    if goal.calculation_required {
+                        benefits.insert(ActionBenefit::FillsCalculationCoverage);
+                    }
+                    goal.goal_id.clone()
+                })
+                .collect::<Vec<_>>();
+        }
+    }
+    (!goal_ids.is_empty()).then_some(goal_ids)
 }
 
 fn merge_projection(
@@ -2038,8 +2101,8 @@ mod tests {
     use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation};
     use krw_agent_protocol::RunContextV1;
     use krw_ontology_adapter::{
-        CalculationCoverage, MissingPart, RecommendedAction, SupplementalReadKind,
-        parse_research_state,
+        CalculationCoverage, ClauseCoverage, MissingPart, RecommendedAction,
+        SupplementalReadKind, parse_research_state,
     };
 
     use super::*;
@@ -2124,6 +2187,71 @@ mod tests {
         )
         .unwrap()
         .receipt
+    }
+
+    /// A metric-change intent receipt plus a server state that echoes the
+    /// receipt's compiled plan with PARTIAL clause coverage, so the intent
+    /// graph keeps an open calculation-required goal on the frontier and the
+    /// echoed clause is an exact-candidate source for the VG ticker.
+    fn calculation_intent_fixture() -> (ResearchIntentReceipt, ResearchStateV2) {
+        let proposal = serde_json::json!({
+            "intent":"company_research",
+            "answer_scope":"direct",
+            "uncertainty":"low",
+            "document_types":["10-K"],
+            "periods":[],
+            "objectives":[{
+                "priority":"required",
+                "alternatives":[{"terms":["VG", "operating cash flow"]}],
+                "directness":"direct_required",
+                "object_types":[],
+                "goal": {
+                    "kind":"metric_change",
+                    "metric":"operating_cash_flow",
+                    "metric_dimensions":[],
+                    "change":"growth_rate",
+                    "window":"year_over_year"
+                }
+            }]
+        });
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["VG".into()],
+        };
+        let compiled = compile_research_proposal(
+            &proposal,
+            InitialPlanScope {
+                question: "How fast did VG operating cash flow grow?",
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 1,
+                prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
+            },
+        )
+        .unwrap();
+        let clause_id = compiled.search_plan["clauses"][0]["clause_id"]
+            .as_str()
+            .expect("compiled clause id")
+            .to_owned();
+        let mut value: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/vertical-slice/v1/mcp/research-state-answerable.json"
+        )))
+        .unwrap();
+        value["plan"] = compiled.search_plan.clone();
+        replace_exact_clause_reference(&mut value, "cash_generation", &clause_id);
+        let mut state: ResearchStateV2 = serde_json::from_value(value).unwrap();
+        state.clause_coverage[0].status = "partial".into();
+        state.clause_coverage[0].strong_claim_ready = false;
+        state.answerability.status = "partial".into();
+        state.answerability.strong_claim_allowed = false;
+        state.missing_parts.push(MissingPart {
+            code: "clause_not_covered".into(),
+            detail: "calculation input incomplete".into(),
+            clause_id: Some(clause_id),
+            ticker: Some("VG".into()),
+        });
+        (compiled.receipt, state)
     }
 
     /// Existing ontology fixtures carry semantic clause names. The provider
@@ -2449,6 +2577,103 @@ mod tests {
         assert!(matches!(
             planner.select(&[query, observation]).unwrap(),
             PlannerDecision::Execute { proposal_id, .. } if proposal_id == "filing"
+        ));
+    }
+
+    #[test]
+    fn observation_serves_open_calculation_goals_when_intent_lacks_the_clause() {
+        // A metric-change intent keeps an open calculation goal, and the
+        // echoed plan clause carries the ticker: the model's openbb
+        // statement read must be selectable end-to-end.
+        let (receipt, state) = calculation_intent_fixture();
+        let mut planner = ResearchPlanner::default();
+        planner
+            .record_initial_context(ContentHash::sha256("fixture-context"))
+            .unwrap();
+        planner
+            .ingest_research_state_for_intent(&state, &receipt, &[])
+            .unwrap();
+        let observation = proposal(
+            "balance",
+            "openbb.balance_statement",
+            serde_json::json!({"ticker": "VG"}),
+            100,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&observation)).unwrap(),
+            PlannerDecision::Execute {
+                proposal_id,
+                score: Some(score),
+                reason: SelectionReason::PositiveExpectedValue,
+                evaluated: 1,
+            } if proposal_id == "balance" && score > 0
+        ));
+    }
+
+    #[test]
+    fn observation_skips_candidates_whose_clause_already_resolved() {
+        // The incident shape without an intent projection: the ticker's
+        // FIRST exact candidate belongs to a clause the filing read already
+        // resolved, while a later candidate still has an open clause. The
+        // observation must bind to the open one instead of dropping out.
+        let mut state = fixture();
+        let first_clause_id = state.plan["clauses"][0]["clause_id"]
+            .as_str()
+            .expect("fixture clause id")
+            .to_owned();
+        let mut second_clause = state.plan["clauses"][0].clone();
+        second_clause["clause_id"] = Value::String("clause-open-calc".into());
+        second_clause["retrieval_query"] = Value::String("total debt".into());
+        state
+            .plan
+            ["clauses"]
+            .as_array_mut()
+            .expect("clauses array")
+            .push(second_clause);
+        state.clause_coverage.push(ClauseCoverage {
+            clause_id: "clause-open-calc".into(),
+            required: true,
+            directness_required: "direct".into(),
+            status: "partial".into(),
+            evidence_ids: Vec::new(),
+            covered_tickers: vec!["VG".into()],
+            missing_tickers: Vec::new(),
+            best_directness: Some("direct".into()),
+            best_evidence_grade: Some("strong".into()),
+            strong_claim_ready: false,
+            reason: None,
+        });
+        // Both clauses are exact-candidate sources (required + missing), but
+        // the first clause's coverage stays satisfied, so only the second
+        // resolves to a frontier goal.
+        state.missing_parts.push(MissingPart {
+            code: "clause_not_covered".into(),
+            detail: "cash generation evidence incomplete".into(),
+            clause_id: Some(first_clause_id),
+            ticker: Some("VG".into()),
+        });
+        state.missing_parts.push(MissingPart {
+            code: "clause_not_covered".into(),
+            detail: "total debt evidence incomplete".into(),
+            clause_id: Some("clause-open-calc".into()),
+            ticker: Some("VG".into()),
+        });
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&state, &[]).unwrap();
+        let observation = proposal(
+            "balance",
+            "openbb.balance_statement",
+            serde_json::json!({"ticker": "VG"}),
+            100,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&observation)).unwrap(),
+            PlannerDecision::Execute {
+                proposal_id,
+                score: Some(score),
+                reason: SelectionReason::PositiveExpectedValue,
+                evaluated: 1,
+            } if proposal_id == "balance" && score > 0
         ));
     }
 
