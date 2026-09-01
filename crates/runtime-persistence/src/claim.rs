@@ -337,6 +337,10 @@ mod tests {
             match name {
                 "GLM_API_KEY" => Ok(Zeroizing::new("fixture-glm-key".into())),
                 "KRW_ONTOLOGY_MCP_URL" => Ok(Zeroizing::new("https://ontology.invalid/mcp".into())),
+                "KRW_OPENBB_MCP_URL" => Ok(Zeroizing::new("https://openbb.invalid/mcp".into())),
+                "KRW_OPENBB_MCP_READY_URL" => {
+                    Ok(Zeroizing::new("https://openbb.invalid/readyz".into()))
+                }
                 "KRW_ONTOLOGY_READY_URL" => {
                     Ok(Zeroizing::new("https://ontology.invalid/readyz".into()))
                 }

@@ -62,7 +62,7 @@ export async function prepareGatewayCompanyResearch(
     run_kind: request.advisor_lens
       ? GURU_RUN_KIND_BY_LENS[request.advisor_lens]
       : "company_research",
-    locale: "ko-KR",
+    locale: gatewayLocaleForQuestion(request.question, input.artifact.descriptor),
     question: request.question,
     context: { kind: "company_ticker_set", tickers: [request.ticker] },
   };
@@ -72,6 +72,42 @@ export async function prepareGatewayCompanyResearch(
     intent,
     materializers: input.materializers,
   });
+}
+
+/**
+ * Deterministic locale routing for the company-research entrypoint: the
+ * Korean and English agent images share one gateway, and the entrypoint
+ * previously hardcoded ko-KR, so an English question could never reach the
+ * English image (2026-09-02 quality loop). Rule: Hangul anywhere routes
+ * ko-KR; otherwise Latin letters route en-US, and anything else keeps the
+ * ko-KR default.
+ */
+export function gatewayLocaleForQuestion(
+  question: string,
+  descriptor: unknown,
+): "ko-KR" | "en-US" {
+  if (/\p{Script=Hangul}/u.test(question)) return "ko-KR";
+  if (/[A-Za-z]/.test(question) && releaseHasEnglishEntrypoint(descriptor)) {
+    return "en-US";
+  }
+  return "ko-KR";
+}
+
+/**
+ * The pinned release artifact decides whether an English entrypoint exists.
+ * Older pins carry only the Korean company-research image, so an English
+ * question must keep routing to the Korean image instead of failing the
+ * enqueue (2026-09-02 loop: a live English submit returned 400 against the
+ * month-old pin).
+ */
+function releaseHasEnglishEntrypoint(descriptor: unknown): boolean {
+  if (!isPlainObject(descriptor) || !Array.isArray(descriptor.entries)) return false;
+  return descriptor.entries.some(
+    (entry) =>
+      isPlainObject(entry) &&
+      entry.run_kind === "company_research" &&
+      entry.locale === "en-US",
+  );
 }
 
 /** Parse unknown HTTP JSON without accepting any future fields by accident. */

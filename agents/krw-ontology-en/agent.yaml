@@ -27,6 +27,30 @@ contracts:
   - { id: answer-ir/v1, schema_ref: canonical:krw-agent/answer-ir-v1, content_hash: "sha256:618de032c0f85bf332dc761779a2a040891aba27033d0761464d6bd212a4b634", semantic_authority: krw-agent-evidence, max_items: 32 }
   - { id: state-operation-output/v1, schema_ref: canonical:krw-agent/state-operation-output-v1, content_hash: "sha256:13817320290f727d29c80b8f485a75fcb717e6495236f6b650c3dd1213fa593c", semantic_authority: krw-agent-state-artifact, max_items: 64 }
   - { id: state-facts/v1, schema_ref: canonical:krw-agent/state-facts-v1, content_hash: "sha256:a38950f994e8f783d759d530e6c35026491da30e0cdd03a82d42fe10e76d8ce8", semantic_authority: krw-agent-state-artifact, max_items: 64 }
+  - id: openbb-price-history-request/v1
+    schema_ref: canonical:krw-agent/openbb-price-history-request-v1
+    content_hash: sha256:09af03ef257649141e02b0ccca3978ec0b6295162bc9a5837c79bd11d40dca39
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-price-historical-input/v1
+    schema_ref: canonical:krw-agent/openbb-price-historical-input-v1
+    content_hash: sha256:2103c9087595b4449b31e42e811360b0950f8b388de8ef09962500951d68632d
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-yield-curve-request/v1
+    schema_ref: canonical:krw-agent/openbb-yield-curve-request-v1
+    content_hash: sha256:6aecaf56821639e6434c1abdafa320b3bac415d8fbd919c3ff2ceffc01326242
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-yield-curve-input/v1
+    schema_ref: canonical:krw-agent/openbb-yield-curve-input-v1
+    content_hash: sha256:12acaafda9ca2425e3d3ad3ed21729f3c3e32a52f9609b11acc517894eadbd83
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cpi-request/v1
+    schema_ref: canonical:krw-agent/openbb-cpi-request-v1
+    content_hash: sha256:b7574c9e2fdff4c1840b2fbf4777f1094c0031bab438e98ebf55c1d494af8afa
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-cpi-input/v1
+    schema_ref: canonical:krw-agent/openbb-cpi-input-v1
+    content_hash: sha256:1fd213ec4b88038bdf79cc84c660e30071c735a43c0a3882cfd798a00b67f499
+    semantic_authority: krw-agent-capability-runtime
 
 roles:
   - { id: planner, prompt_segments: [security_boundary, kernel_runtime, company_scope, retrieval_planner], deterministic: false, execution: { reasoning: direct, max_output_tokens: 8192 } }
@@ -102,6 +126,64 @@ capabilities:
       ticker_references:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
       require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.price_history
+    execution: { kind: remote, binding_key: openbb_equity_price_historical }
+    permission: read
+    input_contract: openbb-price-historical-input/v1
+    model_input_contract: openbb-price-history-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 2500
+        expected_tool_cost_micros: 500
+        expected_result_bytes: 12288
+      conflict_domain: openbb.equity_price_historical
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.yield_curve
+    execution: { kind: remote, binding_key: openbb_fixedincome_government_yield_curve }
+    permission: read
+    # Government yield-curve snapshot (risk-free anchor material). Not
+    # company-scoped; the kernel pins the provider and optional as-of date.
+    input_contract: openbb-yield-curve-input/v1
+    model_input_contract: openbb-yield-curve-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.macro_cpi
+    execution: { kind: remote, binding_key: openbb_economy_cpi }
+    permission: read
+    # CPI backdrop (country/transform/frequency knobs, kernel-pinned
+    # defaults). Not company-scoped.
+    input_contract: openbb-cpi-input/v1
+    model_input_contract: openbb-cpi-request/v1
+    # OECD serves the same harmonised CPI keylessly (FRED requires an absent
+    # fred_api_key on this plane); transform=yoy returns the annual inflation
+    # rate directly (2026-09-02 probe).
+    input_derivation: { kind: openbb_request_v1, pinned_provider: oecd }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
 

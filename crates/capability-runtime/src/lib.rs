@@ -2994,6 +2994,31 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn en_image_catalog_builds_every_market_and_macro_preflight() {
+        // 2026-09-02 loop: the EN image carries the three sealed openbb
+        // capabilities so the market and macro preflight folds serve English
+        // runs identically (workflows stay model-minimal — the fold is a
+        // kernel seed, not a model lane).
+        let image = compile_agent_dir(root().join("agents/krw-ontology-en"))
+            .expect("compile EN AgentImage")
+            .manifest;
+        let runtime = fixture_runtime(&image);
+        let catalog = CapabilityCatalog::compile(&image, runtime).expect("EN catalog");
+        assert!(catalog
+            .openbb_price_history_preflight_invocation("run-en", "AAPL", "2026-08-01", "2026-09-01")
+            .expect("builder")
+            .is_some());
+        assert!(catalog
+            .openbb_yield_curve_preflight_invocation("run-en")
+            .expect("builder")
+            .is_some());
+        assert!(catalog
+            .openbb_cpi_preflight_invocation("run-en")
+            .expect("builder")
+            .is_some());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn saturated_cpu_limiter_keeps_async_heartbeat_live_and_never_exceeds_cap() {
         let limiter = Arc::new(CpuWorkLimiter::new(NonZeroUsize::new(1).unwrap()));

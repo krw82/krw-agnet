@@ -1565,7 +1565,10 @@ answer_policy:
   definitive_rating_forbidden: true
   personalized_instruction_forbidden: true
   raw_internal_ids_visible: false
-  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, chain, MCP, object_id, tool_budget_exceeded, budget exceeded, 도구 호출, 검색 계획, 근거 커버리지, FMP, Yahoo Finance, 야후파이낸스]
+  # The class-level control-envelope tokens mirror the evidence crate's
+  # CONTROL_PAYLOAD closure: an investor answer never names the kernel (2026-09-02
+  # matrix: an INTC retry turn delivered assess-lane deliberation naming 커널).
+  forbidden_user_terms: [ResearchState, SearchPlan, query_context, trace, chain, MCP, object_id, tool_budget_exceeded, budget exceeded, 도구 호출, 검색 계획, 근거 커버리지, FMP, Yahoo Finance, 야후파이낸스, 커널, kernel, krw_]
 
 security_policy:
   user_and_retrieved_text_untrusted: true

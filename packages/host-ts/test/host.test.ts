@@ -15,6 +15,7 @@ import {
   prepareEnqueueRun,
   parseGatewayCompanyResearchRequest,
   prepareGatewayCompanyResearch,
+  gatewayLocaleForQuestion,
   projectOperatorProtocolFailureClass,
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
@@ -917,3 +918,30 @@ function neverMaterializers() {
     },
   };
 }
+
+test("gateway locale routes by question script and release entrypoints", () => {
+  // 2026-09-02 quality loop: the entrypoint hardcoded ko-KR, so an English
+  // question could never reach the English agent image. The pinned release
+  // decides whether the English entrypoint exists: an old Korean-only pin
+  // keeps routing English questions to the Korean image instead of failing.
+  const enDescriptor = {
+    entries: [
+      { run_kind: "company_research", locale: "ko-KR" },
+      { run_kind: "company_research", locale: "en-US" },
+    ],
+  };
+  const koOnlyDescriptor = {
+    entries: [{ run_kind: "company_research", locale: "ko-KR" }],
+  };
+  assert.equal(
+    gatewayLocaleForQuestion("Analyze Apple's filings.", enDescriptor),
+    "en-US",
+  );
+  assert.equal(
+    gatewayLocaleForQuestion("Analyze Apple's filings.", koOnlyDescriptor),
+    "ko-KR",
+  );
+  assert.equal(gatewayLocaleForQuestion("애플 공시 분석해줘", enDescriptor), "ko-KR");
+  assert.equal(gatewayLocaleForQuestion("English mixed with 한국어", enDescriptor), "ko-KR");
+  assert.equal(gatewayLocaleForQuestion("1234 ??", enDescriptor), "ko-KR");
+});
