@@ -570,7 +570,7 @@ pub fn validate_answer(
     // the wrong script. Both are integrity failures — they disclose process
     // internals and break the locale contract — so they route to the
     // bounded compose repair instead of being silently downgraded.
-    const CONTROL_PAYLOAD_TOKENS: [&str; 8] = [
+    const CONTROL_PAYLOAD_TOKENS: [&str; 12] = [
         "\"stop_reason\"",
         "\"schema_version\": 1",
         "\"not_dispatched\"",
@@ -579,6 +579,15 @@ pub fn validate_answer(
         "answer_candidate_only",
         "\"topic\":",
         "KrwOntologyQuery",
+        // Assess-lane judgment envelope (2026-09-01 matrix: an AMZN answer
+        // was the raw `{"assessment":"user_judgment","goal_id":…}` object).
+        "\"assessment\"",
+        "user_judgment",
+        "goal_id",
+        // Korean process narration (same matrix: an INTC answer narrated
+        // "커널이 거부했습니다" as its entire deliverable). An investor
+        // answer never names the kernel.
+        "커널",
     ];
     let answer_prose = answer
         .sections
@@ -1465,6 +1474,24 @@ mod tests {
             "결론: { \"stop_reason\": \"context_plan_capacity_reached\", \"class\": \"kernel\" }",
         ));
         let issues = validate_answer(&leaked, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_control_payload_leak"));
+
+        // Assess-lane judgment envelope echoed as the answer (the 2026-09-01
+        // matrix AMZN shape).
+        let assess_leak = answer_with(sectioned_claim(
+            "{\"assessment\":\"user_judgment\",\"goal_id\":\"goal-abc\"}",
+        ));
+        let issues = validate_answer(&assess_leak, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_control_payload_leak"));
+
+        // Korean process narration of kernel rejections (the 2026-09-01
+        // matrix INTC shape: the entire answer was "커널이 거부했습니다").
+        let narrated = answer_with(sectioned_claim("두 번째 시도도 커널이 거부했습니다."));
+        let issues = validate_answer(&narrated, &ledger, &policy).unwrap_err();
         assert!(issues
             .iter()
             .any(|issue| issue.code == "answer_control_payload_leak"));
