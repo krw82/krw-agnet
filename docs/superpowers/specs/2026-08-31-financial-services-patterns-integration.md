@@ -146,3 +146,22 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
 러너(URL 검증 내장) · path-traversal 1건은 내부 신뢰 경로 — 전부 기존 코드 패턴이며
 금일 변경 파일(crates/run-engine·research-planner·artifact-store)에는 0건.
 "프로젝트 안전" 선언은 하지 않는다(정적 증거 경계, coverage=partial: 동적 파생 콜그래프 미완).
+
+## 10. 2026-09-01 풀매트릭스 판정 + 2차 결함 2건 (커밋 d55d525·사후)
+
+**풀매트릭스(18케이스, parallelism 4, 수리 1-3 탑재 빌드)**: **17 PASS / 1 FAIL**.
+- 17개 전부 `final`+`transport passed`, 한글 클린, control-토큰 누출 0. fix_dcf·mix_cost_cash 둘 다 완주.
+- `short_google_price_outlook`에서 **관측 시리즈(series) 라이브 발동 실증** (수리 2의 경로).
+- `complex_klac` 폴백이 **신규 정직 라벨**("응답 예산(출력 토큰) 소진")로 안내 — 수리 3 실전 확인.
+- 유일 FAIL = `short_google_pullback_long_term`: filing.search_events 응답이 계약 위반
+  (`ladder_exchange_invalid`, NotDispatched) → **시작된 액션 행이 begun으로 잔류** → 폴백
+  commit_final이 `pending_action` 거부 → answer-always 탈출로가 자기 트리거를 못 구함.
+  → **수리 4 (d55d525)**: 디스패치 실패의 양 확실성 레인이 모두 begun 행을 ambiguous로 해소.
+  이 매트릭스는 수리 전 빌드라 이 케이스만 죽음(판별 데이터 포인트).
+
+**2차 오염 변형 2건 (전달된 답변에서 포획, 어휘 확장 커밋)**:
+- AMZN: 답변 전체가 assess 판단 객체(`{"assessment":"user_judgment","goal_id":…}`) — 판단 레인
+  JSON이 그대로 배달. → CONTROL_PAYLOAD_TOKENS에 `"assessment"`·`user_judgment`·`goal_id` 추가.
+- INTC: 답변 전체가 "커널이 거부했습니다" 류의 프로세스 진술(한글이라 기존 영문 토큰을 우회).
+  → `커널` 토큰 추가(투자자 답변은 커널을 언급하지 않음).
+- 워크스페이스 921 녹색. 3케이스(구글 폴백·INTC·AMZN) 재검으로 폐쇄 루프.
