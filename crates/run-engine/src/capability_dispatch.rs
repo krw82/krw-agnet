@@ -2386,15 +2386,28 @@ where
                                 "error",
                                 dispatch_ms,
                             );
-                            if failure.delivery == DeliveryCertainty::MayHaveDispatched {
-                                self.record_ambiguous(
-                                    identity,
-                                    call,
-                                    "capability_failure",
-                                    deadline,
-                                )
-                                .await?;
-                            }
+                            // The action row is durably `begun` before the
+                            // invocation; any failure must void it or the
+                            // row stays pending forever. `commit_final`
+                            // rejects runs with a pending action, so leaving
+                            // it began would block the ledger fallback for
+                            // exactly the outage class that triggers it
+                            // (production 2026-09-01: a NotDispatched
+                            // `ladder_exchange_invalid` stranded the begun
+                            // row and the answer-always fallback died with
+                            // `pending_action`). Both certainty lanes void
+                            // the row; the reason_code records the lane.
+                            self.record_ambiguous(
+                                identity,
+                                call,
+                                if failure.delivery == DeliveryCertainty::MayHaveDispatched {
+                                    "capability_failure"
+                                } else {
+                                    "capability_failure_not_dispatched"
+                                },
+                                deadline,
+                            )
+                            .await?;
                             return Err(EngineError::Dependency {
                                 component: "capability",
                                 failure,

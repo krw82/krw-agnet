@@ -3527,10 +3527,19 @@ mod tests {
         cancel_after_dispatch: Arc<AtomicBool>,
         should_cancel: bool,
         presentation_packs: Vec<Value>,
+        /// When set, the NEXT invoke returns this dependency failure instead
+        /// of a scripted payload, replaying adapter contract rejections.
+        fail_invoke: Mutex<Option<DependencyFailure>>,
         /// Optional per-call committed calculation batches (one batch per
         /// capability call, in call order). Empty by default so ordinary
         /// fixtures are unaffected.
         calculation_batches: Mutex<VecDeque<Vec<Calculation>>>,
+    }
+
+    impl ScriptedCapability {
+        fn fail_next_invoke(&self, failure: DependencyFailure) {
+            *self.fail_invoke.lock().unwrap() = Some(failure);
+        }
     }
 
     #[async_trait]
@@ -3550,6 +3559,9 @@ mod tests {
                 .push("capability_dispatched".into());
             if self.should_cancel {
                 self.cancel_after_dispatch.store(true, Ordering::SeqCst);
+            }
+            if let Some(failure) = self.fail_invoke.lock().unwrap().take() {
+                return Err(failure);
             }
             let payload_hash = ContentHash::sha256(format!(
                 "fixture-capability-result:{}",
@@ -4844,6 +4856,7 @@ mod tests {
             cancel_after_dispatch: Arc::clone(&cancelled),
             should_cancel,
             presentation_packs,
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::from(calculation_batches)),
         });
         let persistence = Arc::new(ScriptedPersistence::new(
@@ -5336,6 +5349,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -5715,6 +5729,69 @@ mod tests {
         assert!(!markdown.contains("tenant-fixture"));
         assert!(!markdown.contains("http"));
         assert!(!markdown.contains("/Users/"));
+    }
+
+    /// Production 2026-09-01: a NotDispatched capability contract failure
+    /// (`ladder_exchange_invalid`) after `begin_action` left the action row
+    /// durably `begun`; `commit_final` then rejected the ledger fallback with
+    /// `pending_action`, so the answer-always escape died for exactly the
+    /// outage class it exists for. Every dispatch failure — both certainty
+    /// lanes — must void the begun row, and the fallback must still commit.
+    #[tokio::test]
+    async fn not_dispatched_capability_failure_voids_the_begun_action_and_still_falls_back() {
+        let fixture = fixture();
+        // Two capability calls succeed (company context, query context);
+        // the third dispatch (ontology.query) fails the adapter contract.
+        let script = VecDeque::from([
+            company_context_tool_call("company-context"),
+            query_context_tool_call("call-1", &partial_research_state()["plan"]),
+            research_tool_call(
+                "call-2",
+                "ontology.query",
+                &serde_json::json!({"topic": "VG cash generation"}),
+            ),
+        ]);
+        let usage_script = (0..script.len()).map(|_| scripted_token_usage(5)).collect();
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage_script,
+            VecDeque::from([fixture_company_context(), partial_research_state()]),
+            true,
+            None,
+            false,
+        );
+        rig.capability.fail_next_invoke(DependencyFailure::redacted(
+            "ladder_exchange_invalid",
+            "diag",
+            false,
+            DeliveryCertainty::NotDispatched,
+        ));
+        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
+            panic!(
+                "NotDispatched capability failure must commit the ledger fallback, got {error:?}; log={:?}",
+                *rig.log.lock().unwrap()
+            )
+        });
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert_eq!(
+            outcome.answer_bundle.completion,
+            ResearchCompletion::UnavailableButAnswerable
+        );
+        // The failed action's begun row was voided (ambiguous), so no
+        // pending action can block the final commit.
+        {
+            let state = rig.persistence.state.lock().unwrap();
+            let stuck = state
+                .actions
+                .values()
+                .filter(|receipt| receipt.stage == ActionStage::Begun)
+                .count();
+            assert_eq!(stuck, 0, "no action row may stay begun after a failure");
+        }
+        assert!(
+            rig.log.lock().unwrap().contains(&"action_ambiguous".to_owned()),
+            "the not-dispatched failure must record the ambiguous void"
+        );
     }
 
     /// Wave 4c: a dependency failure before any evidence was admitted commits
@@ -7096,6 +7173,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -7280,6 +7358,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -7627,6 +7706,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8075,6 +8155,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8159,6 +8240,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8349,6 +8431,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8403,6 +8486,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -9515,6 +9599,7 @@ mod tests {
             cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
             should_cancel: false,
             presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
