@@ -570,12 +570,15 @@ pub fn validate_answer(
     // the wrong script. Both are integrity failures — they disclose process
     // internals and break the locale contract — so they route to the
     // bounded compose repair instead of being silently downgraded.
-    const CONTROL_PAYLOAD_TOKENS: [&str; 5] = [
+    const CONTROL_PAYLOAD_TOKENS: [&str; 8] = [
         "\"stop_reason\"",
         "\"schema_version\": 1",
         "\"not_dispatched\"",
         "\"class\": \"kernel\"",
         "\"reason_code\"",
+        "answer_candidate_only",
+        "\"topic\":",
+        "KrwOntologyQuery",
     ];
     let answer_prose = answer
         .sections
@@ -594,11 +597,11 @@ pub fn validate_answer(
             detail: "kernel control payload echoed into the answer".to_string(),
         });
     }
-    // Script dominance gate for the ko-KR contract: a non-Latin foreign
-    // script (Arabic, Cyrillic) outnumbering Hangul means the composer
-    // derailed into the wrong language. All-Latin answers are left alone —
-    // ticker symbols and quoted English terms are legitimate, and the
-    // locale metadata check above already covers the declared locale.
+    // Script gate for the ko-KR contract: a real Korean answer always
+    // carries Hangul prose, so zero Hangul means the composer derailed into
+    // an internal artifact (for example a raw tool-proposal echo, which is
+    // all-Latin), and a non-Latin foreign script (Arabic, Cyrillic)
+    // outnumbering Hangul means it switched languages outright.
     let hangul = answer_prose
         .chars()
         .filter(|character| ('\u{AC00}'..='\u{D7A3}').contains(character))
@@ -610,7 +613,7 @@ pub fn validate_answer(
                 || ('\u{0400}'..='\u{04FF}').contains(character)
         })
         .count();
-    if foreign_script > 0 && foreign_script > hangul {
+    if hangul == 0 || (foreign_script > 0 && foreign_script > hangul) {
         issues.push(ValidationIssue {
             code: "answer_language_mismatch",
             claim_id: None,
