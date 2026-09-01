@@ -376,6 +376,7 @@ impl TrustedMarketSnapshot {
                 return Err(TrustedMarketSnapshotError::Unavailable);
             }
         }
+        let normalized_recent_closes = normalized_recent_closes(root);
         let canonical_value = serde_json::json!({
             "format": "market-snapshot-context/v1",
             "ticker": expected_ticker,
@@ -386,6 +387,7 @@ impl TrustedMarketSnapshot {
             "as_of": trusted_market_timestamp(root.get("as_of")),
             "currency": trusted_market_currency(root.get("currency")),
             "metrics": normalized_metrics,
+            "recent_closes": normalized_recent_closes,
             "advisory_only": true,
         });
         let canonical = serde_jcs::to_vec(&canonical_value)
@@ -414,6 +416,32 @@ impl TrustedMarketSnapshot {
     pub fn is_unavailable(&self) -> bool {
         self.unavailable
     }
+}
+
+/// Bounded daily-close series carried beside the scalar metrics: up to
+/// eight `{date, close}` rows from the sealed openbb fold. The series gives
+/// swing-shaped questions a real multi-day range instead of a single
+/// close-to-close pair (2026-09-02 loop: NVDA answered "하루치뿐" because the
+/// fold carried two points).
+fn normalized_recent_closes(root: &serde_json::Map<String, Value>) -> Vec<Value> {
+    const MAX_RECENT_CLOSES: usize = 8;
+    let Some(rows) = root.get("recent_closes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut normalized = Vec::new();
+    for row in rows.iter().rev().take(MAX_RECENT_CLOSES) {
+        let (Some(date), Some(close)) = (
+            row.get("date").and_then(Value::as_str),
+            row.get("close").and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        if close.is_finite() && close > 0.0 && trusted_market_timestamp(Some(&Value::String(date.to_owned()))).is_some() {
+            normalized.push(serde_json::json!({"date": date, "close": close}));
+        }
+    }
+    normalized.reverse();
+    normalized
 }
 
 fn trusted_market_timestamp(value: Option<&Value>) -> Option<String> {
@@ -9368,6 +9396,10 @@ mod tests {
         for request in requests.iter() {
             assert!(request.system.contains("<trusted-market-snapshot>"));
             assert!(request.system.contains("\"last_price\":125.5"));
+            assert!(
+                request.system.contains("recent_closes"),
+                "the series guidance rides the snapshot block"
+            );
             assert!(
                 request
                     .system

@@ -552,6 +552,26 @@ fn market_snapshot_from_openbb_closes(
     }
     let (last_price, as_of) = last?;
     let fetched_at = chrono_supply_default_timestamp();
+    // Carry the bounded recent-close series beside the scalar pair so
+    // swing-shaped questions receive a real multi-day range (the snapshot
+    // validator normalizes to at most eight rows).
+    let recent_closes: Vec<serde_json::Value> = rows
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .filter_map(|row| {
+            let close = row
+                .get("close")
+                .and_then(serde_json::Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0)?;
+            let date = row
+                .get("date")
+                .and_then(serde_json::Value::as_str)?
+                .to_owned();
+            Some(serde_json::json!({"date": date, "close": close}))
+        })
+        .collect();
     let provider_content = serde_json::json!({
         "format": "market-snapshot-context/v1",
         "ticker": ticker,
@@ -568,6 +588,7 @@ fn market_snapshot_from_openbb_closes(
             "last_price": last_price,
             "previous_close": previous.map(|(close, _)| close),
         },
+        "recent_closes": recent_closes,
         "advisory_only": true,
     });
     krw_agent_run_engine::TrustedMarketSnapshot::from_provider_content(ticker, &provider_content)
