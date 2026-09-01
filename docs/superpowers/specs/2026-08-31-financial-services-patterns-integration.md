@@ -318,3 +318,20 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   카탈로그 테스트로 3 프리페치 빌더 검증) — EN 라이브 e2e는 릴리즈 파이프라인이
   EN 엔트리를 싣는 순간 자동 활성(루프7 과제: 서명 릴리즈 재빌드).
 - 워크스페이스 932/0 · host-ts 30/0.
+
+## 19. 루프7 — 어세스 재시도 레인 + EN 엔트리 라이브 (2026-09-02)
+
+- **INTC 근본 수리(7-A)**: 어세스/decision 턴이 thinking에 전체 캡 소진해
+  절단(15,102자 reasoning, finish=length)되면 복구 턴이 오염되던 것 — One-shot
+  `decision_retry_requested`(AtomicBool) 플래그로 **다음 비답변 턴 1회 한정
+  thinking 비활성**(소멸성, build_provider_request에서 swap). 계측으로 라이브
+  컴포즈 턴이 이미 thinking=Disabled로 작동함도 실증(AAPL 라이브 로그).
+- **EN 엔트리 라이브(7-B)**: 스택 패키지 목록에 krw-ontology-en 추가 → 캐시
+  디스크립터가 (company_research_en, en-US) 엔트리 확보 → 게이트웨이 라우팅을
+  EN 질문→run_kind company_research_en로 정정(기존 감지는 존재하지 않는
+  (company_research, en-US) 엔트리를 목표했음). **영문 질문 라이브 202 +
+  en-US + company_research_en 라우팅 실증** — 폴드·연구 통과 후 컴포즈에서
+  신규 결함 포획: EN 모델이 answer IR을 `answer_ir` 래핑으로 내보내 파서가
+  거부(`unknown field answer_ir`) — EN 이미지가 한 번도 라이브였던 적 없어
+  처음 드러난 compose 형태 버그(루프8 과제).
+- 워크스페이스 **933/0** · host-ts 30/0.

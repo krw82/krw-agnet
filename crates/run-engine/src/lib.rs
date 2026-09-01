@@ -3600,6 +3600,7 @@ mod tests {
         /// reports a `length` truncation instead of `stop`, mirroring a
         /// provider that burns the whole turn cap on private reasoning.
         truncate_first_content_turn: AtomicBool,
+        truncate_nth_content_turn: AtomicUsize,
         log: Arc<Mutex<Vec<String>>>,
         calls: AtomicUsize,
         requests: Mutex<Vec<MessagesRequest>>,
@@ -3621,6 +3622,7 @@ mod tests {
                 script: Mutex::new(script),
                 usage_script: Mutex::new(usage_script),
                 truncate_first_content_turn: AtomicBool::new(false),
+                truncate_nth_content_turn: AtomicUsize::new(0),
                 log,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
@@ -3629,6 +3631,10 @@ mod tests {
 
         fn truncate_first_content_turn(&self) {
             self.truncate_first_content_turn.store(true, Ordering::SeqCst);
+        }
+
+        fn truncate_after_n_contentless_turns(&self, n: usize) {
+            self.truncate_nth_content_turn.store(n, Ordering::SeqCst);
         }
     }
 
@@ -6115,6 +6121,43 @@ mod tests {
     /// `pending_action`, so the answer-always escape died for exactly the
     /// outage class it exists for. Every dispatch failure — both certainty
     /// lanes — must void the begun row, and the fallback must still commit.
+    #[test]
+    fn decision_retry_flag_runs_the_next_non_answer_turn_thinking_disabled() {
+        // Production INTC (2026-09-02): an assess decision turn burned its
+        // whole cap on private reasoning (finish=length, zero content); the
+        // generic recovery turn then emitted assess-lane deliberation as
+        // prose. The one-shot decision retry forces the immediate next
+        // non-answer turn to thinking-disabled; answer turns were already
+        // covered by the compose policy.
+        let fixture = fixture();
+        let program =
+            Arc::new(ProgramRuntime::compile(&fixture.image.manifest, &fixture.request).unwrap());
+        let context_planner = Arc::new(ContextPlanner::compile(&fixture.image).unwrap());
+        let mut state = ActiveRun::new(
+            fixture.request.budget.clone(),
+            program,
+            context_planner,
+            None,
+            None,
+        )
+        .unwrap();
+        state.decision_retry_requested.store(true, Ordering::SeqCst);
+        // Park the run at a non-answer decision state (the plan author).
+        state.enter_initial_model_state().unwrap();
+        let policy = provider_turn_policy(
+            &fixture.input(),
+            &state,
+            state.remaining_output_tokens().unwrap(),
+            state.decision_retry_requested.load(Ordering::SeqCst),
+        )
+        .unwrap();
+        assert_eq!(
+            policy.thinking,
+            ThinkingMode::Disabled,
+            "the flagged decision retry must not burn the cap on reasoning again"
+        );
+    }
+
     #[tokio::test]
     async fn supplemental_batch_dispatches_every_call_without_extra_turns() {
         // Production shape (GOOGL 2026-09-01): the model batched the
@@ -9784,6 +9827,7 @@ mod tests {
             &fixture.input(),
             &state,
             state.remaining_output_tokens().unwrap(),
+            false,
         )
         .unwrap();
         assert_eq!(policy.max_output_tokens, 1_024);

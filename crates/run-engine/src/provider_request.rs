@@ -292,7 +292,10 @@ pub(crate) fn build_provider_request(
     if remaining_output == 0 && retry_reserve_floor.is_none() {
         return Err(EngineError::NoRemainingOutputBudget);
     }
-    let turn_policy = provider_turn_policy(input, state, remaining_output)?;
+    let decision_retry = state
+        .decision_retry_requested
+        .swap(false, std::sync::atomic::Ordering::SeqCst);
+    let turn_policy = provider_turn_policy(input, state, remaining_output, decision_retry)?;
     let role_id = state.current_role_id()?;
     let direct_answer_retry = state.direct_answer_retry_requested();
     let context = state
@@ -584,6 +587,7 @@ pub(crate) fn provider_turn_policy(
     input: &RunInput<'_>,
     state: &ActiveRun,
     remaining_output_tokens: u32,
+    decision_retry: bool,
 ) -> Result<ProviderTurnPolicy, EngineError> {
     let role_id = state.current_role_id()?;
     let role = input
@@ -673,6 +677,15 @@ pub(crate) fn provider_turn_policy(
         reasoning_effort = None;
     }
 
+    // A non-answer decision turn retrying after a mid-reasoning truncation
+    // runs with private thinking off for this one turn: the decision schema
+    // and the kernel notes already carry the context, and the provider that
+    // just burned a full cap on reasoning will do so again otherwise.
+    if !answer_output && decision_retry {
+        thinking = ThinkingMode::Disabled;
+        reasoning_effort = None;
+    }
+
     // Once the workflow is already at its answer-producing state, a tiny
     // remaining tail is still more useful as a concise direct answer than as
     // a fatal provider-input error. This does not add a turn or alter the
@@ -699,7 +712,12 @@ pub(crate) fn thinking_turn_is_below_provider_minimum(
     state: &ActiveRun,
 ) -> Result<bool, EngineError> {
     let remaining_output_tokens = state.remaining_output_tokens()?;
-    match provider_turn_policy(input, state, remaining_output_tokens) {
+    match provider_turn_policy(
+        input,
+        state,
+        remaining_output_tokens,
+        state.decision_retry_requested.load(std::sync::atomic::Ordering::SeqCst),
+    ) {
         Ok(policy) => Ok(policy.thinking == ThinkingMode::Enabled
             && policy.max_output_tokens < MIN_THINKING_TURN_MAX_TOKENS),
         // A non-answer turn that cannot preserve the configured final-output

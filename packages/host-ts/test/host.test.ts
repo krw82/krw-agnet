@@ -927,7 +927,7 @@ test("gateway locale routes by question script and release entrypoints", () => {
   const enDescriptor = {
     entries: [
       { run_kind: "company_research", locale: "ko-KR" },
-      { run_kind: "company_research", locale: "en-US" },
+      { run_kind: "company_research_en", locale: "en-US" },
     ],
   };
   const koOnlyDescriptor = {

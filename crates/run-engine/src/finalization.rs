@@ -1741,6 +1741,18 @@ where
                 ));
             }
             if episode.finish_reason == "length"
+                && !state.current_operation_emits_answer(input.image)?
+                && !state
+                    .decision_retry_requested
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                // One bounded thinking-off retry for a decision turn that
+                // truncated mid-reasoning (see ActiveRun::decision_retry_requested).
+                state
+                    .decision_retry_requested
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if episode.finish_reason == "length"
                 && state.current_operation_emits_answer(input.image)?
                 && !state.direct_answer_retry_requested()
             {

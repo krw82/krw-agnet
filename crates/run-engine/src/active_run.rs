@@ -63,6 +63,12 @@ pub(crate) struct ActiveRun {
     pub(crate) last_provider_episode_hash: Option<ContentHash>,
     pub(crate) state_trace: Vec<String>,
     pub(crate) direct_answer_retry_requested: bool,
+    /// One-shot: the next non-answer decision turn retries with private
+    /// thinking disabled after its predecessor truncated on `length`
+    /// mid-reasoning (production INTC 2026-09-02: an assess turn burned its
+    /// whole cap thinking; the generic recovery turn then emitted
+    /// assess-lane deliberation as prose).
+    pub(crate) decision_retry_requested: std::sync::atomic::AtomicBool,
     /// Supplemental reads the model batched into one committed episode. The
     /// statechart admits one non-research capability per decision, so the
     /// kernel drains the remainder at the next model-decision state — one
@@ -275,6 +281,7 @@ impl ActiveRun {
             last_provider_episode_hash: None,
             state_trace: vec![initial_state],
             direct_answer_retry_requested: false,
+            decision_retry_requested: std::sync::atomic::AtomicBool::new(false),
             pending_supplemental_calls: Vec::new(),
             research_planner: ResearchPlanner::new(ScoringWeights::default())?,
             derived_ticker_scope: None,

@@ -24,7 +24,7 @@ krw_database_mode=${KRW_AGENT_DATABASE_MODE:-local}
 krw_postgres_lifecycle=${KRW_AGENT_POSTGRES_LIFECYCLE:-persistent}
 krw_supabase_project_dir=${KRW_AGENT_SUPABASE_PROJECT_DIR:-}
 krw_provider=${KRW_AGENT_PROVIDER:-glm}
-krw_agent_packages=(krw-ontology krw-guru-advisor)
+krw_agent_packages=(krw-ontology krw-ontology-en krw-guru-advisor)
 krw_deployment_binding_source="$krw_root/deployments/local/deployment-binding.krw-ontology.example.yaml"
 krw_model_registry="$krw_root/deployments/local/model-registry.$krw_provider.yaml"
 # Source ontology root for build-time metric prose codegen. The Rust build

@@ -57,12 +57,18 @@ export async function prepareGatewayCompanyResearch(
   input: PrepareGatewayCompanyResearchInput,
 ): Promise<PreparedEnqueueRunV1> {
   const request = parseGatewayCompanyResearchRequest(input.request);
+  const locale = gatewayLocaleForQuestion(
+    request.question,
+    input.artifact.descriptor,
+  );
   const intent: EnqueueRunIntentV1 = {
     mutation_id: input.mutation_id,
     run_kind: request.advisor_lens
       ? GURU_RUN_KIND_BY_LENS[request.advisor_lens]
-      : "company_research",
-    locale: gatewayLocaleForQuestion(request.question, input.artifact.descriptor),
+      : locale === "en-US"
+        ? "company_research_en"
+        : "company_research",
+    locale,
     question: request.question,
     context: { kind: "company_ticker_set", tickers: [request.ticker] },
   };
@@ -94,18 +100,19 @@ export function gatewayLocaleForQuestion(
 }
 
 /**
- * The pinned release artifact decides whether an English entrypoint exists.
- * Older pins carry only the Korean company-research image, so an English
- * question must keep routing to the Korean image instead of failing the
- * enqueue (2026-09-02 loop: a live English submit returned 400 against the
- * month-old pin).
+ * The pinned release artifact decides whether an English entrypoint exists
+ * (the English image declares run_kind `company_research_en`, not a locale
+ * variant of `company_research`). Older pins carry only the Korean image, so
+ * an English question must keep routing to the Korean image instead of
+ * failing the enqueue (2026-09-02 loop: a live English submit returned 400
+ * against the month-old pin).
  */
 function releaseHasEnglishEntrypoint(descriptor: unknown): boolean {
   if (!isPlainObject(descriptor) || !Array.isArray(descriptor.entries)) return false;
   return descriptor.entries.some(
     (entry) =>
       isPlainObject(entry) &&
-      entry.run_kind === "company_research" &&
+      entry.run_kind === "company_research_en" &&
       entry.locale === "en-US",
   );
 }
