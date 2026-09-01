@@ -115,7 +115,7 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-cpi-input/v1
     schema_ref: canonical:krw-agent/openbb-cpi-input-v1
-    content_hash: sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4
+    content_hash: sha256:1fd213ec4b88038bdf79cc84c660e30071c735a43c0a3882cfd798a00b67f499
     semantic_authority: krw-agent-capability-runtime
   # ── openbb curation round 2 (financial-services patterns, 2026-08-31) ──
   # Company plane: quote, TTM metrics, the three statements, consensus/price
@@ -617,7 +617,10 @@ capabilities:
     # defaults). Not company-scoped.
     input_contract: openbb-cpi-input/v1
     model_input_contract: openbb-cpi-request/v1
-    input_derivation: { kind: openbb_request_v1, pinned_provider: fred }
+    # OECD serves the same harmonised CPI keylessly (FRED requires an absent
+    # fred_api_key on this plane); transform=yoy returns the annual inflation
+    # rate directly (2026-09-02 probe).
+    input_derivation: { kind: openbb_request_v1, pinned_provider: oecd }
     output_contracts: [normalized-capability-result/v1]
     idempotency: canonical_args
     result_ingest: openbb_series_v1

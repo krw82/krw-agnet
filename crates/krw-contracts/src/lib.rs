@@ -419,7 +419,7 @@ pub const OPENBB_PRICE_HISTORICAL_INPUT_V1_SCHEMA_SHA256: &str =
 pub const OPENBB_FRED_SERIES_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:9c8cdbecb9fed56b953478a0c7cfadf43309a670b7cb86af88efc93b5edf59b9";
 pub const OPENBB_CPI_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:9b3e680129dfe96ed2b1a6dcea972cce4f985400a1b3c8d4181748aa0e1628f4";
+    "sha256:1fd213ec4b88038bdf79cc84c660e30071c735a43c0a3882cfd798a00b67f499";
 pub const OPENBB_QUOTE_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:fc10820610a4e76b636d762a86651b0f8e9673883b91dd2fd72aad4de86eace3";
 pub const OPENBB_QUOTE_INPUT_V1_SCHEMA_SHA256: &str =
@@ -2411,7 +2411,12 @@ fn validate_openbb_cpi_input(value: &Value) -> Result<(), ContractValueError> {
         ],
         OPENBB_CPI_INPUT_V1,
     )?;
-    if request.get("provider").and_then(Value::as_str) != Some("fred") || !openbb_cpi_knobs(request)
+    // fred requires an absent fred_api_key on the local openbb plane; oecd
+    // serves the same harmonised CPI keylessly (2026-09-02).
+    if !matches!(
+        request.get("provider").and_then(Value::as_str),
+        Some("fred") | Some("oecd")
+    ) || !openbb_cpi_knobs(request)
     {
         return Err(ContractValueError::Shape(OPENBB_CPI_INPUT_V1));
     }

@@ -426,6 +426,9 @@ pub enum InputDerivation {
 pub enum OpenbbPinnedProvider {
     Fmp,
     Fred,
+    /// OECD harmonised CPI — serves keylessly where FRED requires an absent
+    /// `fred_api_key` on the openbb plane (2026-09-02).
+    Oecd,
 }
 
 impl OpenbbPinnedProvider {
@@ -433,6 +436,7 @@ impl OpenbbPinnedProvider {
         match self {
             Self::Fmp => "fmp",
             Self::Fred => "fred",
+            Self::Oecd => "oecd",
         }
     }
 }
@@ -3473,7 +3477,7 @@ fn validate_capability_input_abi(
                     "openbb-cpi-input/v1" => (
                         "openbb-cpi-input/v1",
                         "openbb-cpi-request/v1",
-                        OpenbbPinnedProvider::Fred,
+                        OpenbbPinnedProvider::Oecd,
                         false,
                     ),
                     "openbb-quote-input/v1" => (
@@ -5472,7 +5476,7 @@ mod tests {
             (
                 "openbb-cpi-input/v1",
                 "openbb-cpi-request/v1",
-                OpenbbPinnedProvider::Fred,
+                OpenbbPinnedProvider::Oecd,
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),
         );

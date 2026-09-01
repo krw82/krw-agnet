@@ -346,7 +346,7 @@ impl TrustedMacroContext {
     pub fn from_series_points(
         series: &[(String, Vec<(String, f64)>)],
     ) -> Result<Self, TrustedMarketSnapshotError> {
-        const MAX_MACRO_SERIES: usize = 3;
+        const MAX_MACRO_SERIES: usize = 4;
         const MAX_MACRO_POINTS: usize = 6;
         if series.is_empty() || series.len() > MAX_MACRO_SERIES {
             return Err(TrustedMarketSnapshotError::InvalidShape);
@@ -2260,14 +2260,15 @@ mod tests {
         assert_eq!(series["symbol"], "CPIAUCSL");
         assert_eq!(series["limit"], 260);
 
-        // CPI: kernel-owned defaults for every omitted knob.
+        // CPI: kernel-owned defaults for every omitted knob (pinned OECD —
+        // keyless on this plane, FRED requires an absent fred_api_key).
         let cpi = assemble_openbb_request(
             &serde_json::json!({}),
-            &OpenbbPinnedProvider::Fred,
+            &OpenbbPinnedProvider::Oecd,
             "openbb-cpi-input/v1",
         )
         .unwrap();
-        assert_eq!(cpi["provider"], "fred");
+        assert_eq!(cpi["provider"], "oecd");
         assert_eq!(cpi["country"], "united_states");
         assert_eq!(cpi["transform"], "yoy");
         assert_eq!(cpi["frequency"], "monthly");

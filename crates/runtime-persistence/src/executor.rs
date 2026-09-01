@@ -670,6 +670,40 @@ async fn preflight_macro_context(
         let kept = points.split_off(points.len().saturating_sub(2));
         series_points.push((series_id.to_owned(), kept));
     }
+    // Inflation leg: sealed OECD CPI (yoy) read — the annual inflation rate
+    // directly, keyless on this plane.
+    if let Some(invocation) = catalog
+        .openbb_cpi_preflight_invocation(&request.run_id)
+        .ok()
+        .flatten()
+    {
+        if let Ok(Ok(result)) =
+            timeout(MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT, capabilities.invoke(&invocation)).await
+        {
+            let points: Vec<(String, f64)> = result
+                .provider_content
+                .get("records")
+                .and_then(serde_json::Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            let date = row.get("date").and_then(serde_json::Value::as_str)?;
+                            let value = row.get("value").and_then(serde_json::Value::as_f64)?;
+                            Some((date.to_owned(), value))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut kept: Vec<(String, f64)> = points;
+            kept.sort_by(|a, b| a.0.cmp(&b.0));
+            if kept.len() > 2 {
+                kept = kept.split_off(kept.len() - 2);
+            }
+            if !kept.is_empty() {
+                series_points.push(("CPIYOY".to_owned(), kept));
+            }
+        }
+    }
     krw_agent_run_engine::TrustedMacroContext::from_series_points(&series_points).ok()
 }
 
@@ -1643,19 +1677,30 @@ mod tests {
         let release = catalog.release(&image_hash).expect("company release");
         let capability = QueuedMarketCapability {
             contents: Mutex::new(
-                [serde_json::json!({
-                    "format": "openbb-series-context/v1",
-                    "status": "available",
-                    "record_count": 6,
-                    "records": [
-                        {"date": "2026-08-27", "maturity": "month_3", "rate": 0.0390},
-                        {"date": "2026-08-27", "maturity": "year_2", "rate": 0.0433},
-                        {"date": "2026-08-27", "maturity": "year_10", "rate": 0.0441},
-                        {"date": "2026-08-28", "maturity": "month_3", "rate": 0.0384},
-                        {"date": "2026-08-28", "maturity": "year_2", "rate": 0.0434},
-                        {"date": "2026-08-28", "maturity": "year_10", "rate": 0.0443},
-                    ]
-                })]
+                [
+                    serde_json::json!({
+                        "format": "openbb-series-context/v1",
+                        "status": "available",
+                        "record_count": 6,
+                        "records": [
+                            {"date": "2026-08-27", "maturity": "month_3", "rate": 0.0390},
+                            {"date": "2026-08-27", "maturity": "year_2", "rate": 0.0433},
+                            {"date": "2026-08-27", "maturity": "year_10", "rate": 0.0441},
+                            {"date": "2026-08-28", "maturity": "month_3", "rate": 0.0384},
+                            {"date": "2026-08-28", "maturity": "year_2", "rate": 0.0434},
+                            {"date": "2026-08-28", "maturity": "year_10", "rate": 0.0443},
+                        ]
+                    }),
+                    serde_json::json!({
+                        "format": "openbb-series-context/v1",
+                        "status": "available",
+                        "record_count": 2,
+                        "records": [
+                            {"date": "2026-06-01", "value": 0.0344},
+                            {"date": "2026-07-01", "value": 0.0336},
+                        ]
+                    }),
+                ]
                 .into(),
             ),
             invocations: Mutex::new(Vec::new()),
@@ -1671,9 +1716,12 @@ mod tests {
         .expect("the yield curve folds into the macro context");
 
         let invocations = capability.invocations.lock().unwrap();
-        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations.len(), 2);
         assert_eq!(invocations[0].capability_id, "openbb.yield_curve");
         assert_eq!(invocations[0].arguments["provider"], "fmp");
+        assert_eq!(invocations[1].capability_id, "openbb.macro_cpi");
+        assert_eq!(invocations[1].arguments["provider"], "oecd");
+        assert_eq!(invocations[1].arguments["transform"], "yoy");
         drop(invocations);
         let _ = &macro_context;
     }

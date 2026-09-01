@@ -282,3 +282,22 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   공시 수치표를 한 답변에 결합 — 거시·미시·온톨로지 삼각조사 완성.
 - 워크스페이스 931/0. 잔여: CPI(물가) 다리는 FRED 키 필요(또는 pinned provider
   fred→oecd 변경 — 모델 경로 영향 검토 후 루프5+ 과제).
+
+## 17. 루프5 — 풀매트릭스 통계 확정 + CPI(oecd) 전환 (2026-09-02)
+
+- **GLM 풀매트릭스(수리 17종 탑재 빌드): 18/18 완료 · transport_failed 0 ·
+  폴백 0/18** — 폴백율 9.7%→**0% 수렴 통계 확정**. 어제 실패 케이스 전부 클린:
+  short_fix_dcf(provider_protocol_failure였음)가 4년 현금흐름 궤적 DCF 답변,
+  complex_klac(예산 폴백였음)가 세그먼트 실숫자 표 답변. compose thinking
+  비활성화의 품질 영향 관찰되지 않음(표·수치·정직 라벨 모두 유지).
+- **CPI fred→oecd 전환(5층)**: 계약 provider enum += oecd(JCS 단행 정규형 재작성
+  + sha 1fd213ec 재핀 — pretty-print가 NonCanonical으로 거부되는 것 실증) ·
+  OpenbbPinnedProvider::Oecd 배리언트 · 의미 검증기 fred|oecd · agent.yaml 핀+
+  content_hash · 어셈블리/이미지 검증기 2곳. 폴드에 CPI 시리즈(CPIYOY, oecd
+  transform=yoy = 연 인플레이션율 소수) 추가 — 매크로 프리페치가 이제
+  금리(UST 3종)+물가(CPI) 모두 반입.
+- 라이브(KO 물가 질문): CPIYOY+UST10Y가 프롬프트에 도달(에피소드 실증),
+  답변은 공시 기반 가격/믹스 인플레 분석으로 고품질 — MSFT 궤적은 금리를
+  직접 인용했으므로 인용 여부는 모델 프레젠테이션 분산, 데이터 다리는 상시 제공.
+- 워크스페이스 931/0. 루프6 후보: 폴백 0 달성 후 잔여 품질 축 = 심층 케이스
+  답변 길이/완결성 프로파일링, EN 이미지 동일 폴드 적용, 원본 반영 승인 건.
