@@ -172,7 +172,7 @@ where
                 bounded_child::validate_recovered_receipt(input.image, &identity, receipt)?;
                 bounded_child::ensure_can_continue(receipt, recovered_pending.is_some())?;
             }
-            state.reserve_provider_turn()?;
+            state.reserve_provider_turn(input.image)?;
             let turn_span = tracing::info_span!("turn", turn = state.usage.provider_turns);
             let prompt_t0 = Instant::now();
             let built = turn_span.in_scope(|| -> Result<_, EngineError> {

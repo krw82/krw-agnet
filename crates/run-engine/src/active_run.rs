@@ -1606,13 +1606,18 @@ impl ActiveRun {
         self.direct_answer_retry_requested = true;
     }
 
-    pub(crate) fn reserve_provider_turn(&mut self) -> Result<(), EngineError> {
+    pub(crate) fn reserve_provider_turn(
+        &mut self,
+        image: &AgentImageManifest,
+    ) -> Result<(), EngineError> {
         self.usage.provider_turns = self
             .usage
             .provider_turns
             .checked_add(1)
             .ok_or(EngineError::CounterOverflow("provider_turns"))?;
-        if self.direct_answer_retry_requested {
+        if self.direct_answer_retry_requested
+            || self.current_operation_emits_answer(image)?
+        {
             // The direct-answer retry holds an inviolable one-turn grant. A
             // research-heavy transcript can already sit past the cumulative
             // input cap (production GLM 2026-09-01 AMZN: 193k > 168k input

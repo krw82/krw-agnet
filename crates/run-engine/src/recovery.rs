@@ -363,7 +363,7 @@ where
                 "child episode lacks child receipt",
             ));
         }
-        state.reserve_provider_turn()?;
+        state.reserve_provider_turn(input.image)?;
         let messages = if child_policy.is_some() {
             Vec::new()
         } else {

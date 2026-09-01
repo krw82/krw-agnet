@@ -5250,6 +5250,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compose_turn_is_admitted_even_when_research_crossed_the_input_cap() {
+        // Production shape (GLM AMZN re-run, 2026-09-01): six research turns
+        // pushed cumulative input to 169,699 > the 168,000 cap — one 45k
+        // prompt jumped clean over the 80% soft-reserve window. The budget
+        // gate correctly routed the workflow to the composer, but the
+        // compose turn's own admission then failed the hard input check and
+        // the run degraded to the ledger fallback instead of delivering the
+        // answer its evidence had already earned. Answer-emitting turns hold
+        // the same inviolable one-turn grant as the direct-answer retry.
+        let mut fixture = fixture();
+        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.request.budget.max_input_tokens = 1_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let mut script = provider_script();
+        script.push_back(AssistantMessage {
+            content: Some(final_markdown()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        });
+        // Both research turns complete their capability reads; the second
+        // research turn's prompt receipt crosses the 1,000-token input cap
+        // after the evidence is already admitted. The budget gate routes the
+        // workflow to the composer and the compose turn must still be
+        // admitted.
+        // The transition turn (no capability dispatch of its own) carries the
+        // receipt that crosses the cap, so the crossing is recorded with both
+        // capability reads already admitted and the next admission is the
+        // composer itself.
+        let crossed = |completion: u32| TokenUsage {
+            prompt_tokens: 1_050,
+            completion_tokens: completion,
+            total_tokens: 1_050 + completion,
+            prompt_cache_hit_tokens: 5,
+            prompt_cache_miss_tokens: 5,
+        };
+        let usage = VecDeque::from([
+            scripted_token_usage(5),
+            scripted_token_usage(5),
+            crossed(5),
+            scripted_token_usage(4_000),
+            scripted_token_usage(1),
+        ]);
+        // The first research turn consumes the verified research state, so
+        // the crossed input cap meets substantive evidence and the workflow
+        // takes the image-declared output_budget_reserved edge to compose.
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert!(
+            outcome.answer_bundle.rendered_markdown.contains("## 결론"),
+            "the compose turn must be admitted past the crossed input cap"
+        );
+    }
+
+    #[tokio::test]
     async fn answer_compose_turn_runs_without_private_thinking() {
         // GLM's Anthropic endpoint ignores thinking.budget_tokens (probed
         // 2026-09-01: budget 1,024 still emitted 9,271 reasoning chars), so a
