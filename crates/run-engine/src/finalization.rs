@@ -1341,6 +1341,118 @@ pub(crate) fn error_is_output_budget_exhaustion(error: &EngineError) -> bool {
     )
 }
 
+/// Drop unknown keys from typed answer elements before the strict parse.
+/// Composers occasionally add one extra descriptive field to a claim or
+/// section (`interpretation`, `note`, …); the strict `deny_unknown_fields`
+/// parse would burn a repair turn on each such invention. Required fields
+/// still fail loudly — only additive keys are removed (2026-09-02 EN loop:
+/// two live failures, `answer_ir` wrapper then a claim `interpretation`).
+fn strip_unknown_typed_answer_fields(output: &mut Value) {
+    const CLAIM_KEYS: [&str; 14] = [
+        "claim_id", "kind", "strength", "text", "goal_ids", "evidence_ids",
+        "counter_evidence_ids", "calculation_ids", "subject", "predicate",
+        "value", "unit", "period", "comparison_basis",
+    ];
+    const SECTION_KEYS: [&str; 5] = [
+        "section_id", "heading", "intent", "claim_ids", "disclosed_uncertainty",
+    ];
+    // Option<String> fields: a wrongly-typed value (map, array) is dropped
+    // rather than failing the parse — the claim's required `text` carries the
+    // substance (2026-09-02 EN loop: third shape drift, a map in a string
+    // field).
+    const CLAIM_OPTIONAL_STRINGS: [&str; 6] = [
+        "subject", "predicate", "unit", "period", "comparison_basis", "strength_label",
+    ];
+    let Some(root) = output.as_object_mut() else { return };
+    for (field, allowed) in [("claims", &CLAIM_KEYS[..]), ("sections", &SECTION_KEYS[..])] {
+        let Some(rows) = root.get_mut(field).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        rows.retain(|row| {
+            let Some(object) = row.as_object() else { return true };
+            if field != "claims" {
+                return true;
+            }
+            // A claim without any prose field carries no substance: drop it
+            // rather than failing the whole answer (the alias pass below
+            // first rescues the common renames).
+            object.contains_key("text")
+                || object.contains_key("claim")
+                || object.contains_key("statement")
+                || object.contains_key("content")
+        });
+        for row in rows.iter_mut() {
+            let Some(object) = row.as_object_mut() else { continue };
+            if field == "claims" && !object.contains_key("text") {
+                for alias in ["claim", "statement", "content"] {
+                    if let Some(value) = object.remove(alias)
+                        && value.is_string()
+                    {
+                        object.insert("text".to_owned(), value);
+                        break;
+                    }
+                }
+            }
+            // The single most common id rename (`id` for `claim_id` /
+            // `section_id`) is aliased deterministically (2026-09-02 EN
+            // loop: fourth shape drift, a missing `claim_id`).
+            let id_field = if field == "claims" { "claim_id" } else { "section_id" };
+            if !object.contains_key(id_field)
+                && let Some(id) = object.remove("id")
+            {
+                object.insert(id_field.to_owned(), id);
+            }
+            object.retain(|key, _| allowed.contains(&key.as_str()));
+            // Non-substantive enum labels the sanitizer re-derives anyway:
+            // default them when the composer omits the key entirely (the
+            // provider cannot run constrained JSON-schema output, so shape
+            // drift on labels must not burn the answer budget).
+            if field == "claims" {
+                // Valid variants only: kind ∈ fact|number|interpretation|
+                // uncertainty, strength ∈ qualified|strong. An unknown or
+                // missing label falls back to the safe pair (the sanitizer
+                // re-derives grading from the ledger regardless).
+                let kind_ok = object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind,
+                            "fact" | "number" | "interpretation" | "uncertainty"
+                        )
+                    });
+                if !kind_ok {
+                    object.insert("kind".to_owned(), Value::String("fact".into()));
+                }
+                let strength_ok = object
+                    .get("strength")
+                    .and_then(Value::as_str)
+                    .is_some_and(|strength| matches!(strength, "qualified" | "strong"));
+                if !strength_ok {
+                    object.insert(
+                        "strength".to_owned(),
+                        Value::String("qualified".into()),
+                    );
+                }
+            }
+            for key in CLAIM_OPTIONAL_STRINGS {
+                if let Some(value) = object.get(key)
+                    && !value.is_string()
+                    && !value.is_null()
+                {
+                    object.remove(key);
+                }
+            }
+        }
+    }
+    if let Some(questions) = root
+        .get_mut("follow_up_questions")
+        .and_then(Value::as_array_mut)
+    {
+        questions.retain(Value::is_string);
+    }
+}
+
 fn validate_typed_output(
     input: &RunInput<'_>,
     state: &ActiveRun,
@@ -1354,7 +1466,21 @@ fn validate_typed_output(
     // answer-ir/v2 is structurally identical to v1 — only the typed caps
     // differ — so both share one typed parse/sanitize pipeline.
     let answer_ir = if contract.id == ANSWER_IR_V1 || contract.id == ANSWER_IR_V2 {
-        let mut answer_ir: AnswerIr = serde_json::from_value(output.clone())?;
+        // First live English run (2026-09-02): the composer prompt says
+        // "Produce AnswerIR v1", and GLM wrapped the object in a single
+        // `answer_ir` key. Unwrap exactly one such envelope before the typed
+        // parse — a bounded, deterministic tolerance for a one-key wrapper,
+        // never a deep or repeated unwrap.
+        let mut typed_output = match output.as_object() {
+            Some(object)
+                if object.len() == 1 && object.contains_key("answer_ir") =>
+            {
+                object["answer_ir"].clone()
+            }
+            _ => output.clone(),
+        };
+        strip_unknown_typed_answer_fields(&mut typed_output);
+        let mut answer_ir: AnswerIr = serde_json::from_value(typed_output)?;
         let policy = answer_policy(input.image);
         bind_kernel_goal_ids(&mut answer_ir, state);
         normalize_answer_calculation_lineage(&mut answer_ir, state);
@@ -2494,6 +2620,64 @@ pub(crate) fn run_outcome_after_commit(
         final_status,
         logical_action_keys: state.logical_action_keys.iter().cloned().collect(),
         evidence_count: state.ledger.len(),
+    }
+}
+
+#[cfg(test)]
+mod typed_answer_tolerance_tests {
+    use serde_json::json;
+
+    use super::strip_unknown_typed_answer_fields;
+
+    #[test]
+    fn unknown_claim_and_section_keys_are_stripped_but_required_kept() {
+        // 2026-09-02 EN live: composers added `interpretation` to claims and
+        // once wrapped the whole IR in `answer_ir`. Only additive keys are
+        // dropped; a missing required field still fails the strict parse.
+        let mut output = json!({
+            "schema_version": 1,
+            "locale": "en-US",
+            "sections": [{
+                "section_id": "s1", "heading": "Read", "intent": "open",
+                "claim_ids": ["c1"], "disclosed_uncertainty": null, "note": "x",
+            }],
+            "claims": [{
+                "claim_id": "c1", "kind": "statement", "strength": "medium",
+                "text": "Revenue grew.", "interpretation": "bullish",
+                "evidence_ids": ["e1"],
+            }],
+            "calculations": [],
+            "follow_up_questions": [],
+        });
+        let drift = json!({
+            "id": "c2", "claim": "Margins improved.", "evidence_ids": ["e2"],
+        });
+        output["claims"].as_array_mut().unwrap().push(json!({
+            "claim_id": "c3", "kind": "fact", "strength": "strong", "evidence_ids": [],
+        }));
+        output["claims"].as_array_mut().unwrap().push(drift);
+        output["claims"][0]["unit"] = json!({"label": "USD"});
+        strip_unknown_typed_answer_fields(&mut output);
+        let claims = output["claims"].as_array().unwrap();
+        assert_eq!(
+            claims[1]["claim_id"], "c2",
+            "an `id` key is aliased to claim_id"
+        );
+        assert_eq!(claims[1]["kind"], "fact", "missing labels default to a valid variant");
+        assert_eq!(claims[1]["strength"], "qualified", "missing labels default");
+        assert_eq!(claims[1]["text"], "Margins improved.", "a claim alias rescues prose");
+        assert!(
+            claims.iter().all(|claim| claim.get("text").is_some()),
+            "prose-less claims are dropped, not fatal"
+        );
+        assert!(output["claims"][0].get("interpretation").is_none());
+        assert!(
+            output["claims"][0].get("unit").is_none(),
+            "a wrongly-typed optional string is dropped, not fatal"
+        );
+        assert_eq!(output["claims"][0]["claim_id"], "c1");
+        assert!(output["sections"][0].get("note").is_none());
+        assert_eq!(output["sections"][0]["heading"], "Read");
     }
 }
 

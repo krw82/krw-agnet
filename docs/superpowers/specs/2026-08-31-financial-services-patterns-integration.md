@@ -335,3 +335,22 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   거부(`unknown field answer_ir`) — EN 이미지가 한 번도 라이브였던 적 없어
   처음 드러난 compose 형태 버그(루프8 과제).
 - 워크스페이스 **933/0** · host-ts 30/0.
+
+## 20. 루프8 — EN compose 형태 드리프트 사다리 수리 (2026-09-02)
+
+- 첫 EN 라이브(루프7)에서 `answer_ir` 래핑으로 시작해 **10차례 라이브 라운드**로
+  드리프트 5종을 연속 포획·수리(GLM은 json_schema 강출력 불가 — 원칙적 해법은
+  결정론적 정규화):
+  ① `answer_ir` 단일 래핑 → 1회 언랩 · ② 미지 키(`interpretation`) →
+  클레임/섹션 허용키 필터 · ③ 문자열 필드에 map → 잘못 타입 선택필드 드롭 ·
+  ④ `id`→`claim_id`/`section_id` 별칭 · ⑤ `kind`/`strength` 누락·무효값 →
+  유효 변형 기본값(fact/qualified) · ⑥ `text` 누락 → claim/statement/content
+  별칭 복구, 본문 없는 클레임 드롭(전체 실패 대신).
+- **EN 전용 예산 프로필**(company_research_en_glm): 영어 연구 reasoning이
+  턴당 18k-49k자로 한국어(12k-31k)의 2-3배 — 동일 204000 누적 한도 안에서
+  출력 비중 재조정(150K 입력/54K 출력). claim/executor fixture가 프로필 채택.
+- EN 컴포저 프롬프트 재작성: 최상위 키 명시 + 코드펜스 금지 + 관측(시세·금리)
+  인용 지침(KO 패리티).
+- 라이브 결과: 6-9차는 연구→컴포즈 도달(형태 수리마다 진행), 10차는 37초 만에
+  **입장 단계 의존성 탈출(간헐적, 재기동 직후 2회 상관)** — 루프9 1차 과제.
+- 워크스페이스 935/0.

@@ -2009,6 +2009,13 @@ mod tests {
         en_request.run_id = "run-release-en".into();
         en_request.run_kind = "company_research_en".into();
         en_request.locale = "en-US".into();
+        en_request.budget = budgets
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == "company_research_en_glm")
+            .expect("EN budget profile present")
+            .limits
+            .clone();
         (catalog, providers, ko_hash, en_hash, ko_request, en_request)
     }
 

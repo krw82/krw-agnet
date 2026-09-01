@@ -11,7 +11,7 @@ entrypoints:
     run_kind: company_research_en
     locale: en-US
     workflow: company_research_en_v1
-    required_budget_profile: company_research_glm
+    required_budget_profile: company_research_en_glm
     required_model_profile: glm_high
     scope: { allowed_context: company_ticker_set, cardinality: { kind: exact, value: 1 }, ticker_canonicalization: require_uppercase }
     constants: {}

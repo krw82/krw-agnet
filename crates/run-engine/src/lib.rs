@@ -6122,6 +6122,28 @@ mod tests {
     /// outage class it exists for. Every dispatch failure — both certainty
     /// lanes — must void the begun row, and the fallback must still commit.
     #[test]
+    fn single_answer_ir_envelope_is_unwrapped_before_the_typed_parse() {
+        // First live English compose (2026-09-02): GLM wrapped the IR in one
+        // `answer_ir` key after the composer prompt said "Produce AnswerIR
+        // v1". The typed parse accepts exactly one such envelope.
+        let base = serde_json::json!({
+            "schema_version": 1,
+            "locale": "en-US",
+            "sections": [],
+            "claims": [],
+            "calculations": [],
+            "follow_up_questions": [],
+        });
+        let wrapped = serde_json::json!({ "answer_ir": base });
+        let unwrapped: krw_agent_evidence::AnswerIr =
+            serde_json::from_value(wrapped["answer_ir"].clone()).unwrap();
+        assert_eq!(unwrapped.locale, "en-US");
+        // The tolerance itself lives in validate_typed_output; the parse
+        // target here pins the envelope shape the parser must accept.
+        assert!(wrapped.as_object().unwrap().len() == 1);
+    }
+
+    #[test]
     fn decision_retry_flag_runs_the_next_non_answer_turn_thinking_disabled() {
         // Production INTC (2026-09-02): an assess decision turn burned its
         // whole cap on private reasoning (finish=length, zero content); the

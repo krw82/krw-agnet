@@ -378,7 +378,10 @@ mod tests {
             load_yaml(root.join("deployments/local/budget-registry.yaml")).unwrap();
         budget
             .profiles
-            .retain(|profile| profile.profile_id == "company_research_glm");
+            .retain(|profile| {
+                profile.profile_id == "company_research_glm"
+                    || profile.profile_id == "company_research_en_glm"
+            });
         // The canonical endpoint template declares the ontology, feed, and
         // filings local endpoints the deployment binding example references;
         // resolving against it keeps this fixture honest about the registry
@@ -391,6 +394,16 @@ mod tests {
         .unwrap();
         request.run_kind = "company_research_en".into();
         request.locale = "en-US".into();
+        // The EN entrypoint pins its own budget profile (2026-09-02: English
+        // research reasoning runs 2-3x deeper), so the fixture request adopts
+        // that profile's limits instead of the shared Korean envelope.
+        request.budget = budget
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == "company_research_en_glm")
+            .expect("EN budget profile in the retained registry")
+            .limits
+            .clone();
         let runtime = resolve_runtime(
             &image,
             &binding,

@@ -20,6 +20,28 @@ profiles:
         ontology.query: 6
         ontology.trace: 4
         ontology.chain: 4
+  # English research profile (2026-09-02): English planning reasoning runs
+  # 2-3x deeper than Korean per research turn (measured 18k-49k reasoning
+  # chars/turn vs 12k-31k), so the shared 36000-output envelope starved the
+  # composer on every live EN run. Keep the same 204000 cumulative envelope
+  # (150000 + 54000) and turns; rebalance toward output only.
+  - profile_id: company_research_en_glm
+    limits:
+      max_provider_turns: 20
+      max_capability_calls: 16
+      max_replans: 3
+      max_repairs: 3
+      max_input_tokens: 150000
+      max_output_tokens: 54000
+      max_evidence_bytes: 8388608
+      deadline_ms: 1200000
+      capability_call_limits:
+        ontology.query_context: 6
+        ontology.company_context: 1
+        market.snapshot: 1
+        ontology.query: 6
+        ontology.trace: 4
+        ontology.chain: 4
   # GLM-5.3 is the active research profile. Keep local and production on the
   # same bounded envelope. Rich-answer revision 2026-08-16: evidence
   # collection was capped at 5 capability calls, which starved the composer
