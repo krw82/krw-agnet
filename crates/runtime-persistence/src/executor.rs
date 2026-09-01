@@ -831,11 +831,11 @@ fn execution_failure_from_dependency(
                 DeliveryCertainty::MayHaveDispatched => "may_have_dispatched",
             },
         });
-        if let Some(code) = retained_provider_dependency_code(origin, &failure.code) {
+        if let Some((key, code)) = retained_dependency_code(origin, &failure.code) {
             diagnostic
                 .as_object_mut()
                 .expect("dependency diagnostic is an object")
-                .insert("provider_code".into(), json!(code));
+                .insert(key.into(), json!(code));
         }
         RunExecutionFailure::failed("dependency_contract_failure").with_release(diagnostic)
     }
@@ -848,14 +848,26 @@ fn execution_failure_from_dependency(
 /// request, prompt, tool arguments, or account material. Other dependency
 /// origins remain hash-only because their codes may be authored by arbitrary
 /// adapters.
-fn retained_provider_dependency_code<'a>(origin: &str, code: &'a str) -> Option<&'a str> {
-    (origin == "provider").then_some(code).filter(|code| {
+fn retained_dependency_code<'a>(origin: &str, code: &'a str) -> Option<(&'static str, &'a str)> {
+    let bounded_snake_case = || {
         (1..=128).contains(&code.len())
-            && (code.starts_with("glm_") || code.starts_with("deepseek_"))
             && code
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    })
+    };
+    match origin {
+        // Provider failures enter through a closed vocabulary; retaining
+        // only those categories keeps live provider drift diagnosable.
+        "provider" if bounded_snake_case() && (code.starts_with("glm_") || code.starts_with("deepseek_")) => {
+            Some(("provider_code", code))
+        }
+        // The capability lane's codes are authored by this workspace's
+        // reject() sites (bounded snake_case); other dependency origins keep
+        // the hash-only treatment because their codes may come from
+        // arbitrary adapters.
+        "capability" if bounded_snake_case() => Some(("capability_code", code)),
+        _ => None,
+    }
 }
 
 /// Convert an engine failure to the bounded worker ABI while preserving only
@@ -1227,6 +1239,41 @@ mod tests {
     }
 
     #[test]
+    fn capability_dependency_failure_retains_the_bounded_capability_code() {
+        // The capability layer's reject() codes (ladder_exchange_invalid,
+        // filing_event_search_mapping, ...) are authored by this workspace,
+        // not arbitrary adapters. Production 2026-09-01: the anonymized
+        // dependency_code_hash made a NotDispatched ladder failure
+        // undiagnosable without re-running the live catalog. Retaining the
+        // bounded snake_case code keeps the terminal outcome diagnosable
+        // without retaining any payload content.
+        let dependency = krw_agent_execution_contracts::DependencyFailure::redacted(
+            "ladder_exchange_invalid",
+            "private exchange diagnostic detail",
+            false,
+            DeliveryCertainty::NotDispatched,
+        );
+
+        let failure = execution_failure_from_dependency("capability", &dependency);
+        assert_eq!(
+            failure.release["capability_code"],
+            json!("ladder_exchange_invalid")
+        );
+        let serialized = serde_json::to_string(&failure.release).unwrap();
+        assert!(!serialized.contains("private exchange diagnostic detail"));
+        // An arbitrary adapter-looking code from the capability lane is
+        // still reduced to the hash.
+        let noisy = krw_agent_execution_contracts::DependencyFailure::redacted(
+            "not our code: free text!",
+            "private",
+            false,
+            DeliveryCertainty::NotDispatched,
+        );
+        let failure = execution_failure_from_dependency("capability", &noisy);
+        assert!(failure.release.get("capability_code").is_none());
+    }
+
+    #[test]
     fn provider_dependency_failure_retains_the_active_glm_code() {
         let dependency = krw_agent_execution_contracts::DependencyFailure::redacted(
             "glm_http_400_invalid_param",
@@ -1246,8 +1293,8 @@ mod tests {
 
     #[test]
     fn provider_dependency_failure_rejects_unbounded_or_foreign_code() {
-        assert!(retained_provider_dependency_code("provider", "private-detail").is_none());
-        assert!(retained_provider_dependency_code("mcp", "deepseek_http_400").is_none());
+        assert!(retained_dependency_code("provider", "private-detail").is_none());
+        assert!(retained_dependency_code("mcp", "deepseek_http_400").is_none());
     }
 
     #[derive(Debug)]

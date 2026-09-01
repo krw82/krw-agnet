@@ -1805,6 +1805,45 @@ fn deduplicated(values: &[String]) -> Vec<&str> {
 
 const FRONT_EXCHANGE: &str = "krw-front/capability-exchange";
 
+/// Whether a filing-search result set binds to the requested listing.
+///
+/// The vendor catalog resolves the request through the requested company and
+/// can label the returned events with that company's canonical share-class
+/// listing (production 2026-09-01: a `GOOGL` request returned `GOOG`-tagged
+/// events of the same CIK, and the literal-echo rule rejected the whole
+/// exchange). Binding therefore holds when every row echoes the requested
+/// ticker, or when the entire result carries exactly one vendor ticker that
+/// differs from the request on exactly one CIK — one company, one relabel.
+/// Anything mixed (two tickers, two CIKs, a partial relabel) fails closed.
+pub fn filing_search_binds_requested_ticker(
+    requested_ticker: &str,
+    items: &[FilingMetadata],
+) -> bool {
+    if items.is_empty() || items.iter().all(|item| item.ticker == requested_ticker) {
+        return true;
+    }
+    let mut vendor_ticker: Option<&str> = None;
+    let mut vendor_cik: Option<&str> = None;
+    for item in items {
+        if item.ticker == requested_ticker {
+            // A partial relabel mixes two listing labels: not a single
+            // vendor-canonical projection.
+            return false;
+        }
+        match vendor_ticker {
+            None => vendor_ticker = Some(item.ticker.as_str()),
+            Some(seen) if seen == item.ticker => {}
+            Some(_) => return false,
+        }
+        match vendor_cik {
+            None => vendor_cik = Some(item.cik.as_str()),
+            Some(seen) if seen == item.cik => {}
+            Some(_) => return false,
+        }
+    }
+    vendor_ticker.is_some()
+}
+
 /// Validate input and output together, including request identity binding.
 ///
 /// Standalone JSON Schema cannot prove that a returned filing is the filing
@@ -1927,12 +1966,12 @@ pub fn validate_front_exchange(
             let output: Vec<FilingMetadata> = decode(output, KRW_FILING_SEARCH_RESULT_V1)?;
             let ticker = normalized_ticker(&input.ticker, 20).expect("validated input");
             output.len() <= usize::from(input.limit.unwrap_or(10))
+                && filing_search_binds_requested_ticker(&ticker, &output)
                 && output.iter().all(|metadata| {
-                    metadata.ticker == ticker
-                        && input
-                            .form_type
-                            .as_ref()
-                            .is_none_or(|form| metadata.form_type == *form)
+                    input
+                        .form_type
+                        .as_ref()
+                        .is_none_or(|form| metadata.form_type == *form)
                 })
         }
         (KRW_FILING_SECTIONS_INPUT_V1, KRW_FILING_SECTIONS_RESULT_V1) => {
@@ -2250,6 +2289,119 @@ mod tests {
                 "conformance vector failed for {contract_id}"
             );
         }
+    }
+
+    #[test]
+    fn filing_search_exchange_accepts_a_single_cik_share_class_alias() {
+        // Production shape (2026-09-01): a GOOGL request resolved through
+        // the company's CIK returned GOOG-tagged catalog events; the literal
+        // echo rule rejected the exchange and the run lost the whole filing
+        // ladder. One vendor ticker on one CIK across every row binds.
+        let metadata = fixture(KRW_FILING_METADATA_V1);
+        let input = serde_json::json!({"ticker": "GOOGL", "limit": 5});
+        // Relabel the listing ticker; when the CIK changes, rewrite the SEC
+        // URL prefixes with it so the row stays internally consistent (the
+        // semantic validator checks url ≡ cik + accession).
+        let relabeled = |ticker: &str, cik: Option<&str>| {
+            let mut row = metadata.clone();
+            static ROW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            let n = ROW.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            row["filing_event_id"] = Value::String(format!(
+                "00000000-0000-4000-8000-{n:012}"
+            ));
+            row["ticker"] = Value::String(ticker.into());
+            if let Some(cik) = cik {
+                let old_cik = row["cik"]
+                    .as_str()
+                    .expect("fixture cik")
+                    .trim_start_matches('0')
+                    .to_string();
+                let new_cik = cik.trim_start_matches('0').to_string();
+                row["cik"] = Value::String(cik.into());
+                for key in ["filing_detail_url", "primary_document_url"] {
+                    if let Some(url) = row[key].as_str() {
+                        row[key] = Value::String(
+                            url.replace(
+                                &format!("data/{old_cik}/"),
+                                &format!("data/{new_cik}/"),
+                            ),
+                        );
+                    }
+                }
+            }
+            row
+        };
+        let alias = Value::Array((0..3).map(|_| relabeled("GOOG", None)).collect());
+        validate_value(KRW_FILING_SEARCH_RESULT_V1, &alias).unwrap();
+        validate_front_exchange(
+            KRW_FILING_SEARCH_INPUT_V1,
+            &input,
+            KRW_FILING_SEARCH_RESULT_V1,
+            &alias,
+        )
+        .unwrap();
+
+        // Exact echo still binds.
+        let echo = Value::Array((0..2).map(|_| relabeled("GOOGL", None)).collect());
+        validate_front_exchange(
+            KRW_FILING_SEARCH_INPUT_V1,
+            &input,
+            KRW_FILING_SEARCH_RESULT_V1,
+            &echo,
+        )
+        .unwrap();
+
+        // Empty result is vacuously bound.
+        validate_front_exchange(
+            KRW_FILING_SEARCH_INPUT_V1,
+            &input,
+            KRW_FILING_SEARCH_RESULT_V1,
+            &Value::Array(Vec::new()),
+        )
+        .unwrap();
+
+        // Two CIKs under one vendor label is two companies: fail closed.
+        let two_companies = Value::Array(vec![
+            relabeled("GOOG", None),
+            relabeled("GOOG", Some("0000320193")),
+        ]);
+        assert!(
+            validate_front_exchange(
+                KRW_FILING_SEARCH_INPUT_V1,
+                &input,
+                KRW_FILING_SEARCH_RESULT_V1,
+                &two_companies,
+            )
+            .is_err()
+        );
+
+        // Two vendor labels mix listing identities: fail closed.
+        let two_labels =
+            Value::Array(vec![relabeled("GOOG", None), relabeled("GOOGL", None)]);
+        assert!(
+            validate_front_exchange(
+                KRW_FILING_SEARCH_INPUT_V1,
+                &input,
+                KRW_FILING_SEARCH_RESULT_V1,
+                &two_labels,
+            )
+            .is_err()
+        );
+
+        // A wholly different single-company label is accepted BY DESIGN: the
+        // binding authority for "which company" is the catalog's CIK
+        // resolution of the requested ticker (server-side), not a client-side
+        // relatedness table (none exists locally; maintaining one would be
+        // over-engineering). This check proves the set is one coherent
+        // company relabel, not zero companies or two.
+        let cross_listing = Value::Array((0..2).map(|_| relabeled("MSFT", None)).collect());
+        validate_front_exchange(
+            KRW_FILING_SEARCH_INPUT_V1,
+            &input,
+            KRW_FILING_SEARCH_RESULT_V1,
+            &cross_listing,
+        )
+        .unwrap();
     }
 
     #[test]

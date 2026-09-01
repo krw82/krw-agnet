@@ -4963,6 +4963,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ladder_filing_search_binds_a_share_class_relabel_to_the_requested_scope() {
+        use krw_agent_run_engine::{CanonicalContractGuard, ContractGuard};
+
+        // Production shape (2026-09-01): a GOOGL request resolved through the
+        // company CIK returned GOOG-tagged catalog events; the literal ticker
+        // echo rule rejected the exchange (ladder_exchange_invalid), the run
+        // lost the whole filing ladder, and a later brief for those events
+        // was never observed. One vendor label on one CIK must bind to the
+        // REQUESTED ticker.
+        let alias_row = |event_id: &str| {
+            serde_json::json!({
+                "filing_event_id": event_id,
+                "ticker": "GOOG",
+                "cik": "0001652044",
+                "accession_number": "0001652044-26-037714",
+                "form_type": "8-K",
+                "filing_date": "2026-08-31",
+                "report_date": "2026-08-28",
+                "accepted_at": "2026-08-31T21:58:21Z",
+                "sec_items": ["5.02"],
+                "event_tags": ["leadership_or_board_change"],
+                "filing_detail_url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426037714/index.htm",
+                "primary_document_url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426037714/goog-20260828.htm",
+                "enrichment_status": "ready",
+            })
+        };
+        let observed_event = "724f3b29-f493-41d5-8bba-27331f5d898c";
+        let alias_search = serde_json::json!([
+            alias_row(observed_event),
+            alias_row("824f3b29-f493-41d5-8bba-27331f5d898c"),
+        ]);
+        let googl_arguments = serde_json::json!({"ticker": "GOOGL", "limit": 10});
+
+        let (image, resolved) = fixture_image_and_runtime();
+        let catalog = Arc::new(
+            CapabilityCatalog::compile(&image, resolved).expect("ontology ladder catalog"),
+        );
+        let guard = CanonicalContractGuard::new(&image).expect("engine contract guard");
+        let capability = |id: &str| {
+            image
+                .body
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == id)
+                .unwrap_or_else(|| panic!("ladder capability {id}"))
+        };
+
+        // The brief retarget is computed up front so one run-scoped runtime
+        // serves both rungs: search observes the alias rows, the brief then
+        // consumes that authorization.
+        let mut brief = front_vector(KRW_FILING_BRIEF_RESULT_V1);
+        let brief_text = serde_json::to_string(&brief).expect("brief vector serializes");
+        let vector_event = brief["filing"]["filing_event_id"]
+            .as_str()
+            .expect("vector filing event id")
+            .to_string();
+        brief =
+            serde_json::from_str(&brief_text.replace(&vector_event, observed_event))
+                .expect("brief vector retargets the observed alias event");
+
+        let transport = FakeTransport::new([
+            envelope(&alias_search, false),
+            envelope(&brief, false),
+        ]);
+        let runtime = PooledMcpCapabilityRuntime::for_run(Arc::clone(&catalog), transport, scope())
+            .expect("run runtime");
+        let search_invocation = invocation(&catalog, "filing.search_events", googl_arguments);
+        let search_result = runtime
+            .invoke(&search_invocation)
+            .await
+            .expect("share-class relabel must pass the exchange");
+        assert_eq!(
+            search_result.answerability,
+            Some(Answerability::StrongAllowed)
+        );
+        assert_eq!(search_result.evidence.len(), 2);
+        assert!(
+            search_result.evidence.iter().all(|record| record
+                .entity
+                .as_deref()
+                == Some("GOOGL")),
+            "evidence is attributed to the requested listing scope"
+        );
+        guard
+            .validate_result(
+                capability("filing.search_events"),
+                &search_invocation.binding,
+                &search_result,
+            )
+            .expect("engine guard must accept the relabeled catalog set");
+        runtime
+            .restore_committed_result(&search_invocation, &search_result)
+            .await
+            .expect("commit relabeled search observations");
+
+        // A brief for the relabeled event is authorized and inherits the
+        // REQUESTED scope.
+        let brief_invocation = invocation(
+            &catalog,
+            "filing.event_brief",
+            serde_json::json!({"filing_event_id": observed_event}),
+        );
+        let brief_result = runtime
+            .invoke(&brief_invocation)
+            .await
+            .expect("brief for the relabeled event is observed and authorized");
+        assert_eq!(
+            brief_result
+                .evidence
+                .iter()
+                .next()
+                .map(|record| record.entity.as_deref().expect("brief entity")),
+            Some("GOOGL"),
+            "the brief inherits the requested listing scope, not the vendor label"
+        );
+    }
+
+    #[tokio::test]
     async fn web_news_builtin_invoke_returns_empty_items_when_env_is_unset() {
         // Environment-only configuration: an unset key or base is exactly a
         // `None` configuration, so pinning `None` reproduces the disabled

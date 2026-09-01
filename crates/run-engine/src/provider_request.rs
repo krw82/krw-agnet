@@ -657,6 +657,21 @@ pub(crate) fn provider_turn_policy(
         reasoning_effort = None;
     }
 
+    // Answer-emitting turns (final compose and section batches) articulate
+    // evidence the research turns already admitted, so private thinking
+    // there buys no research value — and on providers that ignore
+    // `thinking.budget_tokens` (z.ai GLM probed 2026-09-01: budget 1,024
+    // still emitted 9,271 reasoning chars) it can burn ~90% of the answer
+    // cap and truncate mid-answer (production AMZN ep07: 38,684 reasoning
+    // chars, 1,343 content chars, finish=length). The full-thinking policy
+    // stays with the research/assessment lanes; answer turns run
+    // thinking-disabled, the exact semantics the direct-answer retry
+    // already delivers complete answers with.
+    if answer_output {
+        thinking = ThinkingMode::Disabled;
+        reasoning_effort = None;
+    }
+
     // Once the workflow is already at its answer-producing state, a tiny
     // remaining tail is still more useful as a concise direct answer than as
     // a fatal provider-input error. This does not add a turn or alter the

@@ -366,7 +366,7 @@ pub(crate) fn model_event_ladder_hint(
         "kind": "event_premise_ladder_hint",
         "marked_goal_ids": marked,
         "ladder_capabilities_dispatched": false,
-        "note": "This run's committed plan marks an event-premise goal, and no filing-catalog or news-feed read has been dispatched. The filing event search is the direct evidence path for an event premise; ontology company facts cannot confirm the event.",
+        "note": "This run's committed plan marks an event-premise goal, and no filing-catalog or news-feed read has been dispatched. The filing event search is the direct evidence path for an event premise; ontology company facts cannot confirm the event. Submit exactly one ladder capability call per turn: the kernel rejects a decision batch that mixes or stacks these supplemental reads, costing a repair turn.",
     }))
 }
 

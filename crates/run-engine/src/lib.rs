@@ -5053,10 +5053,13 @@ mod tests {
         assert_eq!(requests[2].thinking.kind, ThinkingMode::Enabled);
         assert_eq!(requests[2].max_tokens, 16_384);
         assert_eq!(requests[3].model, GLM_MODEL_ID);
-        // The composer runs with thinking enabled (release A′): composition
-        // is compute — section structure, arithmetic narration, and
-        // counter-hedging in one pass — inside the unchanged 16,384 cap.
-        assert_eq!(requests[3].thinking.kind, ThinkingMode::Enabled);
+        // The composer runs thinking-disabled (release A″, 2026-09-01): the
+        // provider ignores thinking.budget_tokens, so a thinking-enabled
+        // compose burned ~90% of its cap on private reasoning and truncated
+        // mid-answer (AMZN ep07). The composer articulates admitted
+        // evidence; the thinking-off retry lane already delivers complete
+        // answers, and the research/assessment lanes keep full thinking.
+        assert_eq!(requests[3].thinking.kind, ThinkingMode::Disabled);
         assert_eq!(requests[3].max_tokens, 16_384);
         assert!(requests[3].tools.is_empty());
 
@@ -5159,6 +5162,142 @@ mod tests {
         // the declared retry reserve, not the starved cumulative leftover.
         assert_eq!(retry.thinking.kind, ThinkingMode::Disabled);
         assert_eq!(retry.max_tokens, 16_384);
+    }
+
+    #[tokio::test]
+    async fn truncated_compose_retry_survives_an_exhausted_input_budget() {
+        // Production shape (GLM AMZN run, 2026-09-01): the research and
+        // compose turns pushed cumulative input tokens past max_input_tokens
+        // (193k > 168k), the truncated compose requested the direct-answer
+        // retry, and `reserve_provider_turn`'s hard budget check then killed
+        // the retry turn before dispatch — the run degraded to the ledger
+        // fallback instead of delivering the answer it had earned. The retry
+        // grant must bound the overshoot of both token dimensions for its
+        // one turn; only the provider-turn ceiling still applies.
+        let mut fixture = fixture();
+        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.request.budget.max_input_tokens = 1_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let mut script = provider_script();
+        script.push_back(AssistantMessage {
+            content: Some(final_markdown()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        });
+        // Same completion shape as the reserve test, but the prompt receipts
+        // push cumulative input past the 1,000-token cap right before the
+        // retry turn dispatches.
+        let usage = VecDeque::from([
+            TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                prompt_cache_hit_tokens: 5,
+                prompt_cache_miss_tokens: 5,
+            },
+            TokenUsage {
+                prompt_tokens: 500,
+                completion_tokens: 16_384,
+                total_tokens: 16_884,
+                prompt_cache_hit_tokens: 5,
+                prompt_cache_miss_tokens: 5,
+            },
+            TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                prompt_cache_hit_tokens: 5,
+                prompt_cache_miss_tokens: 5,
+            },
+            TokenUsage {
+                prompt_tokens: 600,
+                completion_tokens: 16_384,
+                total_tokens: 16_984,
+                prompt_cache_hit_tokens: 5,
+                prompt_cache_miss_tokens: 5,
+            },
+            TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 1,
+                total_tokens: 11,
+                prompt_cache_hit_tokens: 5,
+                prompt_cache_miss_tokens: 5,
+            },
+        ]);
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+        );
+        rig.provider.truncate_first_content_turn();
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert!(
+            outcome.answer_bundle.rendered_markdown.contains("## 결론"),
+            "the retry must deliver the composed answer, not the ledger fallback"
+        );
+
+        let requests = rig.provider.requests.lock().unwrap();
+        let retry = requests
+            .last()
+            .expect("the retry turn is the last provider request");
+        assert_eq!(retry.thinking.kind, ThinkingMode::Disabled);
+        assert_eq!(retry.max_tokens, 16_384);
+    }
+
+    #[tokio::test]
+    async fn answer_compose_turn_runs_without_private_thinking() {
+        // GLM's Anthropic endpoint ignores thinking.budget_tokens (probed
+        // 2026-09-01: budget 1,024 still emitted 9,271 reasoning chars), so a
+        // thinking-enabled compose turn can burn ~90% of its cap on private
+        // reasoning and truncate mid-answer (AMZN ep07: 38,684 reasoning
+        // chars, 1,343 content chars, finish=length). Answer-emitting turns
+        // articulate already-admitted evidence; they run thinking-disabled,
+        // matching the retry lane semantics that already deliver complete
+        // answers.
+        let mut fixture = fixture();
+        fixture.request.budget.max_output_tokens = 36_000;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let mut script = provider_script();
+        script.push_back(AssistantMessage {
+            content: Some(final_markdown()),
+            reasoning_content: None,
+            reasoning_signature: None,
+            tool_calls: Vec::new(),
+        });
+        let usage = VecDeque::from([
+            scripted_token_usage(5),
+            scripted_token_usage(4_000),
+            scripted_token_usage(5),
+            scripted_token_usage(4_000),
+            scripted_token_usage(1),
+        ]);
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage,
+            VecDeque::from([fixture_company_context(), fixture_research_state()]),
+            true,
+            None,
+            false,
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap();
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+
+        let requests = rig.provider.requests.lock().unwrap();
+        let compose = requests
+            .iter()
+            .find(|request| request.max_tokens >= 4_000)
+            .expect("a full-cap compose request exists");
+        assert_eq!(
+            compose.thinking.kind,
+            ThinkingMode::Disabled,
+            "answer-emitting turns must not spend the answer budget on thinking"
+        );
     }
 
     #[tokio::test]

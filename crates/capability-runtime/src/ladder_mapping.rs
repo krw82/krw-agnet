@@ -195,8 +195,33 @@ pub(crate) fn map_ladder_evidence(
         LadderMapping::FilingEventSearch => {
             let ticker = required_ticker(arguments)?;
             // The physical result is a bare canonical array; the adapter's
-            // mapper consumes the items envelope.
-            let wrapped = json!({"items": payload});
+            // mapper consumes the items envelope. The exchange has already
+            // accepted this payload, so any row whose listing label differs
+            // from the request is the single-CIK share-class relabel —
+            // normalize it to the requested scope before mapping so the
+            // adapter's ticker filter and the evidence attribution both
+            // carry the run's scope, not the vendor's canonical label
+            // (production 2026-09-01: GOOGL request, GOOG-tagged rows).
+            let normalized_items = payload
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| {
+                            let mut normalized = row.clone();
+                            if normalized.get("ticker").and_then(Value::as_str) != Some(ticker)
+                                && normalized.get("ticker").is_some()
+                            {
+                                normalized
+                                    .as_object_mut()
+                                    .expect("ticker row is an object")
+                                    .insert("ticker".into(), json!(ticker));
+                            }
+                            normalized
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let wrapped = json!({"items": normalized_items});
             let records = map_filing_event_search(&wrapped, ticker, context)
                 .map_err(|error| reject("filing_event_search_mapping", format!("{error:?}")))?;
             let answerability = if records.is_empty() {

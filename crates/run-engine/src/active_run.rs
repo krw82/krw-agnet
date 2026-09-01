@@ -1612,6 +1612,27 @@ impl ActiveRun {
             .provider_turns
             .checked_add(1)
             .ok_or(EngineError::CounterOverflow("provider_turns"))?;
+        if self.direct_answer_retry_requested {
+            // The direct-answer retry holds an inviolable one-turn grant. A
+            // research-heavy transcript can already sit past the cumulative
+            // input cap (production GLM 2026-09-01 AMZN: 193k > 168k input
+            // killed the retry turn before dispatch and degraded a run that
+            // had earned its answer), and the output grant is floored in
+            // `provider_turn_policy`. Only the provider-turn ceiling still
+            // applies to this turn; the token overshoot is bounded by the
+            // single retry request.
+            if u64::from(self.usage.provider_turns) > u64::from(self.limits.max_provider_turns)
+            {
+                return Err(EngineError::Contract(
+                    krw_agent_protocol::ContractError::BudgetExceeded {
+                        resource: "provider_turns",
+                        used: u64::from(self.usage.provider_turns),
+                        limit: u64::from(self.limits.max_provider_turns),
+                    },
+                ));
+            }
+            return Ok(());
+        }
         self.check_budget()
     }
 

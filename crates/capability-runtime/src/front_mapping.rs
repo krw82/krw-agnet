@@ -350,6 +350,29 @@ impl FrontRunState {
                 "filing search result must be an array",
             )
         })?;
+        // Share-class relabel: the catalog can return the whole set under the
+        // company's canonical listing label (a GOOGL request resolved through
+        // the company CIK returned GOOG rows, 2026-09-01). When the payload
+        // carries exactly one vendor ticker on exactly one CIK — the same
+        // condition the contract exchange accepts — every row binds to the
+        // REQUESTED ticker, so a later brief inherits the run's scope.
+        let mut vendor_label: Option<&str> = None;
+        let mut vendor_cik: Option<&str> = None;
+        let mut single_vendor_label = true;
+        for row in rows {
+            let row_ticker = row.get("ticker").and_then(Value::as_str);
+            let row_cik = row.get("cik").and_then(Value::as_str);
+            match (vendor_label, row_ticker) {
+                (None, Some(seen)) if seen != requested_ticker => vendor_label = Some(seen),
+                (Some(seen), Some(current)) if seen == current => {}
+                _ => single_vendor_label = false,
+            }
+            match (vendor_cik, row_cik) {
+                (None, Some(seen)) => vendor_cik = Some(seen),
+                (Some(seen), Some(current)) if seen == current => {}
+                _ => single_vendor_label = false,
+            }
+        }
         for row in rows {
             let Some(object) = row.as_object() else {
                 return Err(reject(
@@ -359,7 +382,7 @@ impl FrontRunState {
             };
             let event_id = required_str(object, "filing_event_id")?;
             let ticker = required_str(object, "ticker")?;
-            if ticker != requested_ticker {
+            if ticker != requested_ticker && !single_vendor_label {
                 continue;
             }
             let key = ladder_id_key(event_id);
@@ -371,7 +394,7 @@ impl FrontRunState {
                     "run exceeded the fixed observed filing-event bound",
                 ));
             }
-            self.observed_filing_events.insert(key, ticker.to_owned());
+            self.observed_filing_events.insert(key, requested_ticker.to_owned());
         }
         Ok(())
     }

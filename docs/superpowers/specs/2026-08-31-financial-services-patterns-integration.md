@@ -180,3 +180,45 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   심도 튜닝(연구 턴 캡 등)은 별도 최적화 과제. filing MCP의 `ladder_exchange_invalid`
   근본 원인은 diagnostic이 해시 익명화라 capabilityd 디버그 로깅이 필요 — 폴백이 사용자를
   보호하므로 긴급 아님.
+
+## 12. 잔여 관찰이 결함이었던 사례 — 전수 조사 판정 (2026-09-01 심야2)
+
+§11의 두 "잔여 관찰"을 근본 원인까지 파헤쳤고, 둘 다 실제 결함(+추가 3건)이었다.
+
+### 증거 (전수)
+
+- 7일 고장 전수(공유 postgres agent_store): 204 final / 21 failed. 수리 빌드 이후 실패는
+  5건 — 3건 dependency_contract_failure(전부 d55d525 이전 빌드, 이미 수리), 1건
+  provider_protocol_failure(bccaf2a5, 이미 수리), 1건 answer_verification_failed(최종
+  어휘 빌드 이전, 매트릭스로 폐쇄).
+- 09-01 매트릭스 31 final 중 **3건(9.7%)이 예산소진 폴백**(AMZN·KLAC·INTC). 3건 모두
+  **입력 토큰 누적 174,580~193,381 > 상한 168,000**(성공 런은 154~160K). 같은 질문이
+  궤적에 따라 통과(6턴)/폴백(7~8턴)로 갈림.
+- 에피소드 복호화(AMZN a03ad083): ep07 첫 compose가 cap 16,384 전량을 소진하며
+  reasoning 38,684자 + 본문 1,343자에서 절단. 재시도 비트는 설정됐으나 8번째 턴은
+  디스패치되지 않음(provider_turns=7).
+- z.ai 직접 프로브 2회: `{"type":"disabled"}`는 확실히 존중(JSON 제약 하에서도).
+  `budget_tokens`는 **무시**(1,024 지정에 thinking 9,271자) — 와이어에서 유일한
+  thinking 제어 수단은 완전 비활성.
+
+### 결함 5종 + 수리
+
+1. **A — 재시도 턴이 입력 예산 하드 체크에 사냥당함**: `reserve_provider_turn` →
+   `check_budget` → `ensure_within`이 input_tokens>상한을 하드 에러로 돌린다. 출력
+   예약 우회(1bffbba)와 동일한 설계 결함이 입력 차원에 존재. 재시도는 배포되기 전에
+   사망 → 저품질 폴백. 수리: 재시도 대기 턴은 provider_turns 상한만 적용(입력/출력
+   초과분은 이 한 턴으로 유계).
+2. **B — 답변 턴이 thinking에 예산을 태움**: 첫 compose가 cap의 ~90%를 reasoning에
+   소모(z.ai는 budget_tokens 무시). 재시도 레인은 이미 thinking 비활성이고 정상
+   배달을 실증. 수리: 답변 방출 턴(compose/섹션 포함)은 thinking 비활성 — 검증된
+   재시도 의미론을 첫 시도로 확장.
+3. **C — ladder_exchange_invalid = 주식종류 티커 표기**: 카탈로그가 GOOGL 요청에
+   GOOG 태그 이벤트를 반환(라이브 재현; FOXA·BRK.B 등은 빈 결과라 무해). 계약이
+   문자열 동등을 요구해 교환 전체 거부 → 사다리 데이터 전량 상실. 수리: 결과 전체가
+   단일 CIK·단일 별칭 티커일 때(주식종류 재표기) 수용 + 관측 상태 바인딩 동일 규칙.
+4. **D — 진단 해시 블라인드**: capability 계열 실패의 reason_code가 임의 어댑터
+   가정으로 해시 익명화됨. 우리 reject() 코드는 이미 유계 snake_case — 보존한다.
+   경고 로그에 바운드된 메시지도 추가.
+5. **E — 사다리 배치 마찰**: 비연구 캐피빌리티(사다리 3종)는 배치 불가인데 모델이
+   3개를 묶어 제안 → `decision_batch_size_invalid`로 턴 낭비(GOOGL ep04에서 모델이
+   스스로 증언). 수리: 캐피빌리티 설명에 "턴당 1호출" 명시(커널 규칙은 불변).
