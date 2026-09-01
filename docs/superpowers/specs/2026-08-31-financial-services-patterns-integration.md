@@ -105,3 +105,40 @@ A(기계적, 리스크 최소) → B(게이트 개방, 매트릭스 필요) → 
 - news_company·transcript·unemployment·interest_rates·sp500_multiples 미큐레이션 (3단 뉴스 사다리 존재·자격증명 부재·FRED 중복).
 - LLM 산술 허용 금지(Task C가 대체), 위젯 SQL·브라우저 브리지 재구현 금지(워크스페이스 소관), 멀티 LLM 오케스트레이션 금지.
 - 기존 스킬/프롬프트 문서 수정 금지(사용자 지시) — 새 어휘는 커널 광고로만.
+
+## 9. 2026-09-01 근본원인 디버깅 — fix_dcf/mix 실패 해부 (커밋 1bffbba)
+
+### 방법
+실패 런(run_bccaf2a5, provider_protocol_failure)의 암호화된 provider 에피소드 7건을
+`crates/artifact-store/examples/dump_episode.rs`(신규 운영자 도구, 마스터키는 env만)로 복호화해
+턴 단위로 재구성. 조사 가설이었던 "compose 입력 오염"은 기각 — 오염 없음. 세 결함 발견:
+
+1. **compose 재시도 토큰 기아 (fix_dcf 치사원인)**: 연구 턴은 `remaining − reserve(16,384)`로
+   예약을 지키지만 검사는 턴 사이에만 실행. GLM compose 턴이 16,384를 전부 사고(thinking이
+   ~15.8k 소모, 본문 539자에서 절단), 재시도엔 693토큰만 남아 재절단 → provider_protocol_failure.
+   `compose_retry_reserve_tokens`(16,384)는 문서로만 존재하고 실제 지급 로직은 없었음.
+   → 수리: 재시도 턴은 선언된 재시도 예약을 불가침 지급(소프트 초과, 1회 한도; 재시도 레인은
+   thinking 비활성이라 토큰이 본문에 착지). remaining==0 조기 에러도 재시도 대기면 우회.
+2. **관측(Observation) 매핑 갱김 (모델 자율성 결함)**: ep05에서 모델이 openbb.balance_statement(FIX)를
+   자발 제안했으나 (a) 후보 매핑이 티커의 첫 후보만 보고 이미 해소된 조항에 묶여 목표 0개로
+   실종, (b) intent 영수증이 조항을 안 덮으면 매핑 없이 폐기 — 네트워크에 도달조차 못함.
+   compose가 "시세 데이터가 들어오지 않아" 헤징. → 수리: 티커의 후보 전체를 순회하며 frontier
+   목표가 남은 조항에 바인딩, intent 공간 폴백은 '미해소 계산 목표'로 한정(정성 전선은 여전히
+   unmapped — 파일링 읽기가 그 조항을 해소함). 동일 조항 경합 시 파일링 우선 원칙 유지(테스트).
+3. **폴백 미스라벨 (mix_cost_cash)**: 출력예산 36,000 전량 소진 → NoRemainingOutputBudget →
+   ledger 폴백이 "외부 연결(provider/MCP) 문제"로 진단 — 사실은 자체 예산 소진.
+   → 수리: 예산류 트리거는 `output_budget_exhausted` 사유코드와 "응답 예산 소진" 안내문으로
+   정직화. (동일 원인군: 재시도 예약 수리가 도달 자체를 예방.)
+
+### 검증
+- 워크스페이스 919+ 테스트 녹색(`--no-fail-fast`). 재시도 예약 테스트는 수리 전 빨강(판별력 확인).
+- 라이브 재검: 수리 엔진으로 스택 리로드(PID 37205) 후 short_fix_dcf + short_aapl_price_drop
+  GLM 재실행 — 결과는 본 절 이하에 기록.
+
+### Mimosa 전체 감사 (2026-09-01, scan-job-mtiea6c8)
+완주·봉인(seal sha256:388fb31d…, 307 패키지, finding 51). 전 수 미완(enobufs) 문제 해소.
+트리아지: sql-injection 37건은 정적 식별자 f-string(COUNT/PRAGMA 등 외부입력 불가)·
+hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2건은 의도된 로컬 운영
+러너(URL 검증 내장) · path-traversal 1건은 내부 신뢰 경로 — 전부 기존 코드 패턴이며
+금일 변경 파일(crates/run-engine·research-planner·artifact-store)에는 0건.
+"프로젝트 안전" 선언은 하지 않는다(정적 증거 경계, coverage=partial: 동적 파생 콜그래프 미완).
