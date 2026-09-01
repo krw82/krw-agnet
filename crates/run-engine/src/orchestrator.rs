@@ -143,6 +143,107 @@ where
                     .await?;
                 continue;
             }
+            // Kernel-owned supplemental batching drain: the model batched
+            // several independent supplemental reads into one committed
+            // episode; the statechart visits one capability per decision, so
+            // the kernel replays the queued remainder here — each through the
+            // same route/dispatch/ingest path a solo model decision takes,
+            // with zero extra provider turns (production 2026-09-01: rejected
+            // 3-call and 6-call batches burned a whole GOOGL run).
+            while let Some((queued_hash, call)) = state.take_pending_supplemental()? {
+                self.guard_control(&identity, deadline).await?;
+                if let Some(cached) = state.cached_action_result(&call) {
+                    state.complete_cached_capability(
+                        input.image,
+                        &call,
+                        &cached,
+                        queued_hash,
+                        self.config.max_compacted_context_bytes,
+                        true,
+                    )?;
+                    state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                    continue;
+                }
+                if state
+                    .preflight_capability_calls(input.image, std::slice::from_ref(&call))
+                    .is_err()
+                {
+                    // A queued call that no longer passes its pre-action
+                    // rules is dropped, not retried: the model sees the
+                    // outcome through the next observation either way.
+                    continue;
+                }
+                if state
+                    .route_to_capability(&call, queued_hash.clone())
+                    .is_err()
+                {
+                    // The workflow moved somewhere the remaining reads
+                    // cannot follow; stop draining.
+                    state.pending_supplemental_calls.clear();
+                    break;
+                }
+                state.reserve_capability_call(&call.capability.id, &call.action_key)?;
+                let action_context = ActionExecutionContext {
+                    identity: &identity,
+                    episode_hash: &queued_hash,
+                    image: input.image,
+                    state: &state,
+                    deadline,
+                    max_result_bytes: self.config.max_capability_result_bytes,
+                };
+                let cap_t0 = Instant::now();
+                let result = self.execute_action(&action_context, &call).await?;
+                state.record_capability_duration_ms(elapsed_millis(cap_t0));
+                let invocation = capability_invocation(&identity.run_id, &call);
+                self.capabilities
+                    .restore_committed_result(&invocation, &result)
+                    .await
+                    .map_err(|failure| EngineError::Dependency {
+                        component: "capability.restore_committed_result",
+                        failure,
+                    })?;
+                if state.commit_research_result(&call, &result).is_err() {
+                    continue;
+                }
+                let result_bytes = serde_jcs::to_vec(&result)?;
+                state.record_evidence_bytes(result_bytes.len())?;
+                state.ingest(&result)?;
+                state.ingest_scope_projection(&call, &result)?;
+                state.append_capability_tool_result(&call, &result)?;
+                if capability_result_completes_prerequisite(&result) {
+                    state
+                        .completed_capabilities
+                        .insert(call.capability.id.clone());
+                }
+                state.record_accepted_action(&call)?;
+                if capability_result_cacheable(
+                    call.capability
+                        .research_action
+                        .as_ref()
+                        .map(|policy| policy.kind),
+                    &result,
+                ) {
+                    state
+                        .action_cache
+                        .insert(call.action_key.clone(), result.clone());
+                }
+                state.complete_capability(
+                    input.image,
+                    &call,
+                    &result,
+                    accepted_action_receipt_hash(&call, &result)?,
+                )?;
+                if capability_result_completes_prerequisite(&result) {
+                    state.compact_settled_phase(
+                        queued_hash.clone(),
+                        self.config.max_compacted_context_bytes,
+                    )?;
+                }
+                state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                self.checkpoint_active_state(&identity, &state, deadline)
+                    .await?;
+            }
+
             let child_policy = bounded_child::current_policy(input.image, &state)?;
             if child_policy.is_none() {
                 // Do not carry image-owned child skill bodies into the parent

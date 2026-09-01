@@ -512,6 +512,96 @@ impl ProductionClaimedRunExecutor {
     }
 }
 
+/// Fold the last two daily closes of a sealed openbb price-history read
+/// into the closed market-snapshot shape. This is the deterministic market
+/// leg for stacks whose primary snapshot source is unconfigured (no FMP key,
+/// 2026-09-01): the model receives an honest close-to-close orientation
+/// instead of ending the market half of the answer at "unavailable".
+fn market_snapshot_from_openbb_closes(
+    ticker: &str,
+    provider_content: &serde_json::Value,
+) -> Option<krw_agent_run_engine::TrustedMarketSnapshot> {
+    // The pooled runtime serves the adapter-normalized projection: the raw
+    // upstream `results` become scrubbed `records` under the
+    // openbb-series-context/v1 envelope.
+    let rows = provider_content
+        .get("records")
+        .and_then(serde_json::Value::as_array)?;
+    // Rows arrive oldest-first from the price-history plane; the last two
+    // closes give the close-to-close orientation.
+    let mut last: Option<(f64, String)> = None;
+    let mut previous: Option<(f64, String)> = None;
+    for row in rows.iter().rev().take(2) {
+        let Some(close) = row
+            .get("close")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            continue;
+        };
+        let date = row
+            .get("date")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if last.is_none() {
+            last = Some((close, date));
+        } else if previous.is_none() {
+            previous = Some((close, date));
+        }
+    }
+    let (last_price, as_of) = last?;
+    let fetched_at = chrono_supply_default_timestamp();
+    let provider_content = serde_json::json!({
+        "format": "market-snapshot-context/v1",
+        "ticker": ticker,
+        "status": "available",
+        // The closed snapshot vocabulary pins `fmp`; the openbb price-history
+        // plane serves this read through its pinned fmp provider, so the
+        // label stays within the closed set and remains truthful.
+        "source": "fmp",
+        "source_usage": "research_only",
+        "fetched_at": fetched_at,
+        "as_of": as_of,
+        "currency": "USD",
+        "metrics": {
+            "last_price": last_price,
+            "previous_close": previous.map(|(close, _)| close),
+        },
+        "advisory_only": true,
+    });
+    krw_agent_run_engine::TrustedMarketSnapshot::from_provider_content(ticker, &provider_content)
+        .ok()
+}
+
+/// Bounded wall-clock timestamp for the folded snapshot receipt. The value
+/// only labels when the kernel folded the closes; the price dates carry the
+/// real as-of semantics.
+fn chrono_supply_default_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| {
+            let seconds = elapsed.as_secs();
+            let days = seconds / 86_400;
+            // Civil-from-days (Howard Hinnant's algorithm), bounded and
+            // dependency-free.
+            let z = days as i64 + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z.rem_euclid(146_097);
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let year = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let day = doy - (153 * mp + 2) / 5 + 1;
+            let month = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = if month <= 2 { year + 1 } else { year };
+            format!(
+                "{year:04}-{month:02}-{day:02}T00:00:00Z"
+            )
+        })
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
 /// Fetch a single current market snapshot before the provider sees the task.
 /// This is a sealed runtime seed, not a model-selected capability action: it
 /// receives only the authenticated singleton ticker, shares the normal MCP
@@ -547,7 +637,81 @@ async fn preflight_market_snapshot(
     .await
     .ok()?
     .ok()?;
-    TrustedMarketSnapshot::from_provider_content(ticker, &result.provider_content).ok()
+    if let Ok(snapshot) =
+        TrustedMarketSnapshot::from_provider_content(ticker, &result.provider_content)
+    {
+        if !snapshot.is_unavailable() {
+            return Some(snapshot);
+        }
+        // A well-formed `unavailable` payload is a successful primary lookup
+        // that still carries no data: continue to the openbb close-fold.
+    }
+    // The primary source is unconfigured or failed (production 2026-09-01:
+    // no FMP key on the sandbox stacks). Fall back to the sealed openbb
+    // price-history read and fold the last two closes into the same closed
+    // snapshot shape, so every company run still opens with an honest
+    // close-to-close market orientation.
+    let window = openbb_preflight_window();
+    let invocation = catalog
+        .openbb_price_history_preflight_invocation(
+            &request.run_id,
+            ticker,
+            &window.start,
+            &window.end,
+        )
+        .ok()??;
+    let result = match timeout(
+        MARKET_SNAPSHOT_PREFLIGHT_TIMEOUT,
+        capabilities.invoke(&invocation),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(failure)) => {
+            tracing::warn!(code = %failure.code, "market_preflight_openbb_fold_failed");
+            return None;
+        }
+        Err(_elapsed) => {
+            tracing::warn!("market_preflight_openbb_fold_timeout");
+            return None;
+        }
+    };
+    let folded = market_snapshot_from_openbb_closes(ticker, &result.provider_content);
+    if folded.is_none() {
+        tracing::warn!("market_preflight_openbb_fold_shape_mismatch");
+    }
+    folded
+}
+
+/// The sealed preflight window for the openbb fallback: the last 28 days,
+/// computed from the wall clock without a calendar dependency.
+fn openbb_preflight_window() -> OpenbbPreflightWindow {
+    let today = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() / 86_400)
+        .unwrap_or(0);
+    let iso = |days: u64| {
+        let z = days as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+        let year = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = if month <= 2 { year + 1 } else { year };
+        format!("{year:04}-{month:02}-{day:02}")
+    };
+    OpenbbPreflightWindow {
+        end: iso(today),
+        start: iso(today.saturating_sub(28)),
+    }
+}
+
+struct OpenbbPreflightWindow {
+    start: String,
+    end: String,
 }
 
 impl fmt::Debug for ProductionClaimedRunExecutor {
@@ -1297,6 +1461,41 @@ mod tests {
         assert!(retained_dependency_code("mcp", "deepseek_http_400").is_none());
     }
 
+    /// Serves one queued provider payload per invocation so a test can make
+    /// the primary snapshot source fail and then observe the openbb fold.
+    #[derive(Debug)]
+    struct QueuedMarketCapability {
+        contents: Mutex<std::collections::VecDeque<serde_json::Value>>,
+        invocations: Mutex<Vec<krw_agent_execution_contracts::CapabilityInvocation>>,
+    }
+
+    #[async_trait]
+    impl CapabilityRuntime for QueuedMarketCapability {
+        async fn invoke(
+            &self,
+            invocation: &krw_agent_execution_contracts::CapabilityInvocation,
+        ) -> Result<
+            krw_agent_execution_contracts::CapabilityResult,
+            krw_agent_execution_contracts::DependencyFailure,
+        > {
+            self.invocations.lock().unwrap().push(invocation.clone());
+            let provider_content = self
+                .contents
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(serde_json::json!({}));
+            Ok(krw_agent_execution_contracts::CapabilityResult {
+                provider_content,
+                evidence: Vec::new(),
+                answerability: None,
+                calculations: Vec::new(),
+                presentation: None,
+                truncation: None,
+            })
+        }
+    }
+
     #[derive(Debug)]
     struct FixtureMarketCapability {
         provider_content: serde_json::Value,
@@ -1325,6 +1524,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn market_preflight_folds_openbb_closes_when_the_primary_source_fails() {
+        // Production shape (2026-09-01): stacks without an FMP key got no
+        // market snapshot at all, and every answer opened its market leg
+        // with "시세 데이터가 확보되지 못했습니다". The sealed openbb fallback
+        // folds the last two closes into the same closed snapshot shape.
+        let (catalog, _providers, image_hash, _en_hash, request, _en_request) = fixture();
+        let release = catalog.release(&image_hash).expect("company release");
+        let capability = QueuedMarketCapability {
+            contents: Mutex::new(
+                [
+                    // The primary market.snapshot source is unconfigured and
+                    // answers with a WELL-FORMED unavailable payload — the
+                    // exact production shape that previously satisfied the
+                    // preflight while carrying no data.
+                    serde_json::json!({
+                        "format": "market-snapshot-context/v1",
+                        "ticker": "VG",
+                        "status": "unavailable",
+                        "source": "fmp",
+                        "source_usage": "research_only",
+                        "fetched_at": "2026-09-01T00:00:00Z",
+                        "as_of": null,
+                        "currency": null,
+                        "metrics": {},
+                        "advisory_only": true
+                    }),
+                    // The openbb price-history plane answers through the
+                    // adapter-normalized records envelope.
+                    serde_json::json!({
+                        "format": "openbb-series-context/v1",
+                        "status": "available",
+                        "record_count": 2,
+                        "records": [
+                            {"date": "2026-08-29", "close": 173.20},
+                            {"date": "2026-09-01", "close": 168.90},
+                        ]
+                    }),
+                ]
+                .into(),
+            ),
+            invocations: Mutex::new(Vec::new()),
+        };
+
+        let preflight = preflight_market_snapshot(
+            release.capability_catalog.as_ref(),
+            &capability,
+            &request,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .expect("openbb closes fold into a trusted snapshot");
+
+        let invocations = capability.invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 2, "primary then openbb fallback");
+        assert_eq!(invocations[1].capability_id, "openbb.price_history");
+        assert_eq!(
+            invocations[1].arguments["symbol"], "VG",
+            "the closed preflight pins the run ticker"
+        );
+        assert_eq!(
+            invocations[1].arguments["provider"], "fmp",
+            "the pinned provider rides the sealed invocation"
+        );
+        drop(invocations);
+    }
+
     async fn company_research_preflight_uses_one_closed_market_invocation() {
         let (catalog, _providers, image_hash, _en_hash, request, _en_request) = fixture();
         let release = catalog.release(&image_hash).expect("company release");
@@ -1396,10 +1661,24 @@ mod tests {
         )
         .await;
 
+        // Policy (2026-09-01 quality loop): a well-formed `unavailable`
+        // primary no longer ends the market leg at a confession. The kernel
+        // tries the sealed openbb close-fold; this fixture serves the same
+        // unavailable payload there too, so the fold finds no closes and the
+        // preflight honestly returns no snapshot (the prompt's
+        // market-context-note then steers retrieval) instead of retaining a
+        // data-free "unavailable" seed.
         assert!(
-            preflight.is_some(),
-            "an explicit safe unavailability signal reaches the provider context"
+            preflight.is_none(),
+            "a data-free unavailable payload must not be retained as the run's market seed"
         );
+        let invocations = capability.invocations.lock().unwrap();
+        assert_eq!(
+            invocations.len(),
+            2,
+            "primary unavailable triggers the openbb fold attempt"
+        );
+        assert_eq!(invocations[1].capability_id, "openbb.price_history");
     }
 
     #[derive(Debug)]

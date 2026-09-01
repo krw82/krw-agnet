@@ -224,6 +224,7 @@ pub(crate) fn model_visible_capability_result(
     result: &CapabilityResult,
     ladder_dispatched: bool,
     ontology_targeted_dispatched: bool,
+    market_observation_dispatched: bool,
 ) -> Value {
     let Some(receipt) = &call.research_intent_receipt else {
         return result.provider_content.clone();
@@ -255,6 +256,17 @@ pub(crate) fn model_visible_capability_result(
     // ResearchState can contain many thousands of tokens of observations;
     // this makes the server-reported *required* gaps visible at the decision
     // point without changing evidence or forcing a tool choice.
+    // An empty observation-store read must steer the analyst to the curated
+    // openbb data plane instead of ending the market leg of the answer at
+    // "no data" (production TSLA 2026-09-01: market.series returned no_data
+    // and the answer confessed missing numbers while openbb price history
+    // was alive and unused).
+    if let Some(hint) = model_observation_no_data_hint(&call.capability.id, &result.provider_content) {
+        visible
+            .as_object_mut()
+            .expect("JSON object literal")
+            .insert("kernel_observation_no_data_hint".into(), hint);
+    }
     if call.capability.id == "ontology.query_context" {
         if let Some(hint) = model_research_gap_hint(&result.provider_content) {
             visible
@@ -267,6 +279,12 @@ pub(crate) fn model_visible_capability_result(
                 .as_object_mut()
                 .expect("JSON object literal")
                 .insert("kernel_event_ladder_hint".into(), hint);
+        }
+        if let Some(hint) = model_market_context_hint(market_observation_dispatched) {
+            visible
+                .as_object_mut()
+                .expect("JSON object literal")
+                .insert("kernel_market_context_hint".into(), hint);
         }
         if let Some(hint) = model_cross_plane_hint(
             &call.capability.id,
@@ -344,6 +362,45 @@ pub(crate) fn model_cross_plane_hint(
 /// marks an event-premise goal and no event/news ladder rung has run. Context
 /// only — it does not force a tool choice, and it never carries question or
 /// retrieval text (the receipt privacy boundary holds).
+/// Kernel note for an empty observation-store read: the store registers
+/// per-ticker market series only around event anchors, so a `no_data`
+/// series read is the expected steady state, not a research dead end. The
+/// note steers the analyst to the curated openbb data plane so the market
+/// leg of the answer is retrieved instead of confessed.
+pub(crate) fn model_observation_no_data_hint(
+    capability_id: &str,
+    provider_content: &Value,
+) -> Option<Value> {
+    if !matches!(capability_id, "market.series" | "macro.series") {
+        return None;
+    }
+    if provider_content.get("status").and_then(Value::as_str) != Some("no_data") {
+        return None;
+    }
+    Some(serde_json::json!({
+        "schema_version": 1,
+        "kind": "observation_no_data_fallback",
+        "note": "The immutable observation store holds no points for this request (per-ticker market series are registered only around event anchors). Do not end the market leg of the answer at no-data: recent daily closes are retrievable from the curated openbb data plane via the `openbb.price_history` capability, and macro series via `openbb.macro_series`. Openbb observations remain timestamped advisory context, never filing evidence."
+    }))
+}
+
+/// Kernel note on the main research turn: no market-family observation has
+/// been dispatched yet. Rounds 1-4 of the 2026-09-01 quality loop showed the
+/// analyst skipping price retrieval entirely on price-shaped questions and
+/// ending the market leg of the answer at "data unavailable" while the
+/// openbb data plane was live. Deterministic state check: the note clears
+/// itself once any market/macro observation capability is dispatched.
+pub(crate) fn model_market_context_hint(market_observation_dispatched: bool) -> Option<Value> {
+    if market_observation_dispatched {
+        return None;
+    }
+    Some(serde_json::json!({
+        "schema_version": 1,
+        "kind": "market_context_unretrieved",
+        "note": "No market or macro observation has been dispatched in this run. If the user's question involves price moves, valuation, or macro backdrop, retrieve the recent daily close series via the `openbb.price_history` capability (timestamped advisory observation) and, for macro, `openbb.macro_series` — before composing. Do not end the market leg of the answer at an unavailability statement when these reads are dispatchable; state the observation dates you retrieved."
+    }))
+}
+
 pub(crate) fn model_event_ladder_hint(
     receipt: &ResearchIntentReceipt,
     ladder_dispatched: bool,

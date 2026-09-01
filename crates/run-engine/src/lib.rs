@@ -73,7 +73,8 @@ use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 use capability_dispatch::{
     TargetedQueryAttribution, assemble_company_context_request, assemble_openbb_request,
     canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
-    model_cross_plane_hint, model_event_ladder_hint, model_research_gap_hint,
+    model_cross_plane_hint, model_event_ladder_hint, model_market_context_hint,
+    model_observation_no_data_hint, model_research_gap_hint,
     normalize_physical_capability_arguments,
     normalize_provider_model_input, selected_targeted_response_detail,
 };
@@ -303,6 +304,7 @@ const TRUSTED_MARKET_SNAPSHOT_METRICS: [&str; 6] = [
 #[derive(Clone, PartialEq, Eq)]
 pub struct TrustedMarketSnapshot {
     canonical: String,
+    unavailable: bool,
 }
 
 impl fmt::Debug for TrustedMarketSnapshot {
@@ -393,11 +395,24 @@ impl TrustedMarketSnapshot {
         }
         let canonical = String::from_utf8(canonical)
             .map_err(|_| TrustedMarketSnapshotError::Canonicalization)?;
-        Ok(Self { canonical })
+        Ok(Self {
+            canonical,
+            unavailable: status == "unavailable",
+        })
     }
 
     fn canonical(&self) -> &str {
         &self.canonical
+    }
+
+    /// Whether the adapter explicitly reported that no safe current price or
+    /// valuation arrived. The market preflight uses this to decide whether
+    /// the sealed openbb close-fold fallback should run: a well-formed
+    /// `unavailable` payload is a successful primary lookup that still
+    /// carries no data (production 2026-09-01: the fold never ran because
+    /// the unavailable snapshot passed validation).
+    pub fn is_unavailable(&self) -> bool {
+        self.unavailable
     }
 }
 
@@ -2281,6 +2296,44 @@ mod tests {
                 vec!["goal-test".to_string()],
             )]),
         }
+    }
+
+    #[test]
+    fn market_context_hint_fires_until_a_market_observation_dispatches() {
+        let hint = model_market_context_hint(false).expect("hint before any market read");
+        assert_eq!(hint["kind"], "market_context_unretrieved");
+        assert!(hint["note"]
+            .as_str()
+            .expect("note text")
+            .contains("openbb.price_history"));
+        assert!(model_market_context_hint(true).is_none());
+    }
+
+    #[test]
+    fn observation_no_data_hint_points_at_the_openbb_fallback() {
+        let no_data = serde_json::json!({"status": "no_data", "points": []});
+        let hint = crate::capability_dispatch::model_observation_no_data_hint(
+            "market.series",
+            &no_data,
+        )
+        .expect("no_data store read must carry the fallback note");
+        assert_eq!(hint["kind"], "observation_no_data_fallback");
+        assert!(hint["note"]
+            .as_str()
+            .expect("note text")
+            .contains("openbb.price_history"));
+        // A store with points, or another capability, stays silent.
+        let available = serde_json::json!({"status": "available", "points": [{"date": "2026-08-30"}]});
+        assert!(crate::capability_dispatch::model_observation_no_data_hint(
+            "market.series",
+            &available
+        )
+        .is_none());
+        assert!(crate::capability_dispatch::model_observation_no_data_hint(
+            "ontology.query",
+            &no_data
+        )
+        .is_none());
     }
 
     #[test]
@@ -5940,6 +5993,107 @@ mod tests {
     /// outage class it exists for. Every dispatch failure — both certainty
     /// lanes — must void the begun row, and the fallback must still commit.
     #[tokio::test]
+    async fn supplemental_batch_dispatches_every_call_without_extra_turns() {
+        // Production shape (GOOGL 2026-09-01): the model batched the
+        // supplemental reads (filing events + openbb price history + news)
+        // and the one-capability-per-decision rule rejected the batch twice,
+        // burning the whole run. A homogeneous non-research batch now
+        // dispatches its first call through the model decision and the kernel
+        // drains the rest — one capability visit each, zero extra provider
+        // turns.
+        let mut fixture = fixture();
+        fixture.request.budget.max_capability_calls = 8;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let pinned_release = fixture.snapshot.capability_release_hashes["ontology.query_context"].clone();
+        fixture
+            .snapshot
+            .capability_release_hashes
+            .insert("filing.search_events".into(), pinned_release.clone());
+        fixture
+            .snapshot
+            .capability_release_hashes
+            .insert("news.feed_list".into(), pinned_release);
+        {
+            // The base fixture deployment binds only the two research
+            // capabilities; extend it with the two supplemental reads so the
+            // dynamic frontier can offer them at the assessment decision.
+            let mut binding = fixture.deployment.capabilities[0].clone();
+            binding.binding_key = "search_catalog_filings".into();
+            binding.mcp_tool_name = "search_catalog_filings".into();
+            fixture.deployment.capabilities.push(binding);
+            let mut binding = fixture.deployment.capabilities[0].clone();
+            binding.binding_key = "list_feed_items".into();
+            binding.mcp_tool_name = "list_feed_items".into();
+            fixture.deployment.capabilities.push(binding);
+        }
+        let script = VecDeque::from([
+            company_context_tool_call("company-context"),
+            query_context_tool_call("call-1", &fixture_research_state()["plan"]),
+            research_tool_call_batch(vec![
+                (
+                    "ladder-search",
+                    "filing.search_events",
+                    serde_json::json!({"ticker": "VG", "limit": 5}),
+                ),
+                (
+                    "feed-list",
+                    "news.feed_list",
+                    serde_json::json!({"tickers": ["VG"], "limit": 5}),
+                ),
+            ]),
+            workflow_transition_message("transition-assess", "evidence_sufficient"),
+            AssistantMessage {
+                content: Some(final_markdown()),
+                reasoning_content: None,
+                reasoning_signature: None,
+                tool_calls: Vec::new(),
+            },
+        ]);
+        let usage_script = (0..script.len()).map(|_| scripted_token_usage(5)).collect();
+        let lrcx_catalog = serde_json::json!([{
+            "filing_event_id": "01234567-89ab-4cde-8123-456789abcdef",
+            "ticker": "VG",
+            "cik": "0000103126",
+            "accession_number": "0000103126-26-012345",
+            "form_type": "8-K",
+            "filing_date": "2026-08-27",
+            "report_date": "2026-08-27",
+            "accepted_at": "2026-08-27T16:01:00Z",
+            "sec_items": ["5.02"],
+            "event_tags": ["leadership_or_board_change"],
+            "filing_detail_url": "https://www.sec.gov/Archives/edgar/data/103126/000010312626012345/index.htm",
+            "primary_document_url": "https://www.sec.gov/Archives/edgar/data/103126/000010312626012345/vg-20260827.htm",
+            "enrichment_status": "ready"
+        }]);
+        let feed_list = serde_json::json!({
+            "pagination": {"limit": 5, "next_cursor": null, "has_more": false},
+            "items": []
+        });
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage_script,
+            VecDeque::from([
+                fixture_company_context(),
+                fixture_research_state(),
+                lrcx_catalog,
+                feed_list,
+            ]),
+            true,
+            None,
+            false,
+        );
+        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
+            panic!("supplemental batch must drain, got {error:?}; log={:?}", *rig.log.lock().unwrap())
+        });
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        // company context + query context + BOTH supplemental reads: the
+        // batch's second call was dispatched by the kernel drain.
+        let calls = rig.capability.calls.load(std::sync::atomic::Ordering::SeqCst);
+        eprintln!("DEBUG2 calls={calls} log={:?}", *rig.log.lock().unwrap());
+        assert!(calls >= 4, "expected both batched reads to dispatch, got {calls}");
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+    }
+
     async fn not_dispatched_capability_failure_voids_the_begun_action_and_still_falls_back() {
         let fixture = fixture();
         // Two capability calls succeed (company context, query context);
@@ -9131,6 +9285,57 @@ mod tests {
             ),
             Err(TrustedMarketSnapshotError::InvalidShape)
         ));
+    }
+
+    #[tokio::test]
+    async fn unavailable_snapshot_and_missing_snapshot_steer_openbb_retrieval() {
+        // Answer-quality contract (2026-09-01): a missing or unavailable
+        // market snapshot must not end the market half of the answer at an
+        // unavailability statement. Production GOOGL said "시세 데이터가
+        // 확보되지 않아" while the openbb price-history plane was alive and
+        // unused. Both prompt lanes must point at the observation-plane
+        // retrieval path.
+        let fixture = fixture();
+
+        // (a) Explicit `unavailable` snapshot: the pointer appears.
+        let unavailable = TrustedMarketSnapshot::from_provider_content(
+            "GOOGL",
+            &serde_json::json!({
+                "format": "market-snapshot-context/v1",
+                "ticker": "GOOGL",
+                "status": "unavailable",
+                "source": "fmp",
+                "source_usage": "research_only",
+                "fetched_at": "2026-09-01T10:00:00Z",
+                "as_of": null,
+                "currency": null,
+                "metrics": {},
+                "advisory_only": true
+            }),
+        )
+        .expect("unavailable market seed");
+        let rig = engine(None, false);
+        let mut input = fixture.input();
+        input.market_snapshot_context = Some(&unavailable);
+        rig.engine.run(input).await.expect("research run succeeds");
+        let requests = rig.provider.requests.lock().unwrap();
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("retrieve the recent daily close series through the `openbb.price_history` capability")));
+
+        // (b) No snapshot at all on a company run: the note appears.
+        drop(requests);
+        let rig = engine(None, false);
+        let input = fixture.input();
+        assert_eq!(input.request.run_kind, "company_research");
+        rig.engine.run(input).await.expect("research run succeeds");
+        let requests = rig.provider.requests.lock().unwrap();
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("<market-context-note>")));
+        assert!(requests.iter().all(|request| request
+            .system
+            .contains("`openbb.price_history`")));
     }
 
     #[tokio::test]

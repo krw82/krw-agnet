@@ -63,6 +63,12 @@ pub(crate) struct ActiveRun {
     pub(crate) last_provider_episode_hash: Option<ContentHash>,
     pub(crate) state_trace: Vec<String>,
     pub(crate) direct_answer_retry_requested: bool,
+    /// Supplemental reads the model batched into one committed episode. The
+    /// statechart admits one non-research capability per decision, so the
+    /// kernel drains the remainder at the next model-decision state — one
+    /// capability visit each, zero extra provider turns. Transient by
+    /// design: a daemon restart loses the remainder and the model re-proposes.
+    pub(crate) pending_supplemental_calls: Vec<(ContentHash, PreparedCall)>,
     pub(crate) research_planner: ResearchPlanner,
     pub(crate) derived_ticker_scope: Option<DerivedTickerScope>,
     pub(crate) runtime_timings: Option<Arc<RuntimeStageTimings>>,
@@ -269,6 +275,7 @@ impl ActiveRun {
             last_provider_episode_hash: None,
             state_trace: vec![initial_state],
             direct_answer_retry_requested: false,
+            pending_supplemental_calls: Vec::new(),
             research_planner: ResearchPlanner::new(ScoringWeights::default())?,
             derived_ticker_scope: None,
             runtime_timings,
@@ -879,6 +886,34 @@ impl ActiveRun {
             Some(TerminalDisposition::Succeeded) => Err(EngineError::InvalidWorkflowControl),
             None => self.require_model_state(),
         }
+    }
+
+    /// Upper bound on kernel-drained supplemental reads per committed
+    /// episode. The statechart still enforces its own per-capability visit
+    /// and action limits on every drained call.
+    pub(crate) const MAX_SUPPLEMENTAL_BATCH: usize = 4;
+
+    /// Pop the next queued supplemental read, but only while the workflow is
+    /// parked at a model-decision state (each drained call routes through the
+    /// same single-capability transition the model would have taken). Calls
+    /// whose frontier expired are dropped; a route failure clears the queue —
+    /// the workflow has moved somewhere the remaining reads cannot follow.
+    pub(crate) fn take_pending_supplemental(
+        &mut self,
+    ) -> Result<Option<(ContentHash, PreparedCall)>, EngineError> {
+        if !matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision { .. }
+        ) {
+            return Ok(None);
+        }
+        while let Some((episode_hash, call)) = self.pending_supplemental_calls.pop() {
+            if !self.capability_has_remaining_visit(&call.capability.id)? {
+                continue;
+            }
+            return Ok(Some((episode_hash, call)));
+        }
+        Ok(None)
     }
 
     pub(crate) fn route_to_capability(
@@ -1770,13 +1805,27 @@ impl ActiveRun {
         }
 
         let Some(_) = first.capability.research_action.as_ref() else {
-            return if calls.len() == 1 {
-                Ok(ResearchDispatchDecision::Execute { selected_index: 0 })
-            } else {
-                Err(EngineError::WorkflowResolution {
-                    outcome: "non-research capability decision batch",
-                })
-            };
+            if calls.len() == 1 {
+                return Ok(ResearchDispatchDecision::Execute { selected_index: 0 });
+            }
+            // Kernel-owned supplemental batching (2026-09-01): models
+            // naturally batch independent supplemental reads (filing events,
+            // openbb price history, news) and punishing the batch costs a
+            // repair turn per attempt — production GOOGL burned its whole
+            // budget on rejected 3-call and 6-call batches. Accept a
+            // homogeneous non-research batch: the first call dispatches now,
+            // the kernel drains the rest one statechart visit at a time.
+            if calls.len() <= Self::MAX_SUPPLEMENTAL_BATCH
+                && calls.iter().all(|call| call.capability.research_action.is_none())
+                && let Some(episode_hash) = self.last_provider_episode_hash.clone()
+            {
+                self.pending_supplemental_calls
+                    .extend(calls[1..].iter().cloned().map(|call| (episode_hash.clone(), call)));
+                return Ok(ResearchDispatchDecision::Execute { selected_index: 0 });
+            }
+            return Err(EngineError::WorkflowResolution {
+                outcome: "non-research capability decision batch",
+            });
         };
         if calls
             .iter()
@@ -2514,12 +2563,37 @@ impl ActiveRun {
             .capability_calls
             .keys()
             .any(|capability_id| matches!(capability_id.as_str(), "ontology.query" | "ontology.trace"));
-        let content = model_visible_capability_result(
+        let market_observation_dispatched = self.capability_calls.keys().any(|capability_id| {
+            matches!(
+                capability_id.as_str(),
+                "market.snapshot"
+                    | "market.series"
+                    | "macro.series"
+                    | "openbb.price_history"
+                    | "openbb.quote"
+                    | "openbb.macro_series"
+            )
+        });
+        let mut content = model_visible_capability_result(
             call,
             result,
             ladder_dispatched,
             ontology_targeted_dispatched,
+            market_observation_dispatched,
         );
+        // The no-data fallback note must reach the model even when the
+        // observation call carries no research-intent receipt (the visible
+        // projection early-returns raw content without one), so the kernel
+        // attaches it to the transcript copy directly.
+        if let Some(hint) = crate::capability_dispatch::model_observation_no_data_hint(
+            &call.capability.id,
+            &result.provider_content,
+        )
+        {
+            if let Some(object) = content.as_object_mut() {
+                object.insert("kernel_observation_no_data_hint".into(), hint);
+            }
+        }
         self.append_tool_result(&call.tool_call_id, &content)
     }
 

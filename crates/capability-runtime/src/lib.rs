@@ -519,6 +519,67 @@ impl CapabilityCatalog {
         self.descriptors.len()
     }
 
+    /// Construct the sealed openbb price-history fallback for the market
+    /// preflight: used only when the primary snapshot source is unavailable
+    /// (no FMP key configured, 2026-09-01). The arguments are kernel-owned —
+    /// closed contract, pinned provider, bounded window — so this stays a
+    /// sealed runtime seed exactly like the primary snapshot invocation.
+    pub fn openbb_price_history_preflight_invocation(
+        &self,
+        run_id: &str,
+        ticker: &str,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Option<CapabilityInvocation>, CatalogError> {
+        let Some((capability_id, descriptor)) = self
+            .descriptors
+            .iter()
+            .find(|(capability_id, _)| capability_id.as_str() == "openbb.price_history")
+        else {
+            return Ok(None);
+        };
+        let arguments = serde_json::json!({
+            "provider": "fmp",
+            "symbol": ticker,
+            "start_date": start_date,
+            "end_date": end_date,
+        });
+        validate_value(
+            krw_agent_contracts::OPENBB_PRICE_HISTORICAL_INPUT_V1,
+            &arguments,
+        )
+        .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?;
+        let resolved = self
+            .runtime
+            .capabilities
+            .get(capability_id.as_str())
+            .ok_or_else(|| CatalogError::MissingResolvedBinding(capability_id.clone()))?;
+        let request_hash = ContentHash::sha256(
+            serde_jcs::to_vec(&arguments)
+                .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?,
+        );
+        let action_key = deterministic_action_key(
+            run_id,
+            &self.image_hash,
+            &descriptor.specification,
+            &descriptor.contracts,
+            &resolved.binding,
+            &arguments,
+        )
+        .map_err(|_| CatalogError::InvalidMarketSnapshotPreflight)?;
+        Ok(Some(CapabilityInvocation {
+            run_id: run_id.to_owned(),
+            action_key,
+            capability_id: capability_id.clone(),
+            request_hash,
+            input_schema_hash: descriptor.contracts.input.content_hash.clone(),
+            output_schema_hash: descriptor.contracts.output_contract_set_hash.clone(),
+            normalized_output_contract_hash: descriptor.normalized_output_contract_hash.clone(),
+            arguments,
+            binding: resolved.binding.clone(),
+        }))
+    }
+
     /// Construct the one sealed, best-effort market preflight invocation. This
     /// is intentionally discovered by its closed result mapping, rather than
     /// by a configurable capability name or arbitrary plugin instruction.
