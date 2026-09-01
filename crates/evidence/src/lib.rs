@@ -570,7 +570,7 @@ pub fn validate_answer(
     // the wrong script. Both are integrity failures — they disclose process
     // internals and break the locale contract — so they route to the
     // bounded compose repair instead of being silently downgraded.
-    const CONTROL_PAYLOAD_TOKENS: [&str; 14] = [
+    const CONTROL_PAYLOAD_TOKENS: [&str; 17] = [
         "\"stop_reason\"",
         "\"schema_version\": 1",
         "\"not_dispatched\"",
@@ -597,6 +597,13 @@ pub fn validate_answer(
         // of chasing individual keys.
         "krw_",
         "kernel",
+        // Assess-lane decision-batch envelope (2026-09-02 quality loop: a
+        // TSLA answer was the raw `{"action_type":"capability_alternatives",
+        // "alternatives":[]}` object). The JSON-pair and compound forms never
+        // appear in investor prose.
+        "\"action_type\"",
+        "capability_alternatives",
+        "\"alternatives\":",
     ];
     let answer_prose = answer
         .sections
@@ -1501,6 +1508,16 @@ mod tests {
         // matrix INTC shape: the entire answer was "커널이 거부했습니다").
         let narrated = answer_with(sectioned_claim("두 번째 시도도 커널이 거부했습니다."));
         let issues = validate_answer(&narrated, &ledger, &policy).unwrap_err();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "answer_control_payload_leak"));
+
+        // Assess-lane decision-batch envelope echoed as the entire answer
+        // (the 2026-09-02 TSLA shape).
+        let batch_leak = answer_with(sectioned_claim(
+            "{\"action_type\":\"capability_alternatives\",\"alternatives\":[]}",
+        ));
+        let issues = validate_answer(&batch_leak, &ledger, &policy).unwrap_err();
         assert!(issues
             .iter()
             .any(|issue| issue.code == "answer_control_payload_leak"));
