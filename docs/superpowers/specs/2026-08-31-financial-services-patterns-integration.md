@@ -452,3 +452,29 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
 - 워크스페이스 939/0(신규 2: 순수 튜플, object/content 형태).
 - 잔여(루프15): GOOGL류 의존성 탈출의 재현 포착(재시도 전파 후에도 폴백 커밋된
   경로 — 지연-재시도 소진과 폴백의 상호작용 계측 필요).
+
+## §27 루프15·16 판정서 (2026-09-02) — Http 재시도 + 계산 가드 + 내레이션 커밋 방어 + 워크스페이스 브리지
+
+- **루프15 완결(4d1a155)**: `classify_wire_failure`의 `WireError::Http(_)`를 전부
+  재시도 가능으로(전송 계열은 전부 네트워크 레벨; 에피소드 영수증이 재생 보장) +
+  계산 필드 방어(formula→expression 별칭, expression/output 기본값 — 직렬화 2건).
+  **재검 페어 클린**: ADBE KO final 1,557자(실시세 292.79→286.08달러 인용·정직
+  추론), GOOGL EN final 3,044자(순이익 281억 달러·각주 인용). 매트릭스 16/18
+  completed·폴백 0. 잔여 2 non-final은 RunScopeViolation(모델이 티커 참조 뺀
+  제안)·dependency_contract_failure — 별개 클래스.
+- **루프16(578629d) — 브리지 e2e가 잡은 신규 커밋 버그**: KO 컴포저가 최종 턴에
+  49자 진행 내레이션("이어서 … 확인합니다")을 반환 → `ModelOutputMode::Markdown`
+  경로는 품질 게이트가 없어 클레임 0인 채 final 커밋. 루프14 방어들은 전부
+  AnswerIR 분기 내부였다. 수리: `markdown_is_narration_shaped`(<400자 ∧ 구조
+  마커 부재)가 기존 1회 재시도 레인에 합류, 2회째는 `ComposerNarrationNotAnswer`
+  로 탈출 → 레저 폴백의 제3 사유(composer_narration, "작성 단계 문제" — provider
+  /예산 오진단 없음). 엔진 172/172.
+- **워크스페이스 브리지(66fd6e7)**: 사용자 4결정(맥+터널·전부 심층·위젯 실데이터
+  ·국문 고정) 반영 — `packages/workspace-bridge-ts`(런타임 의존 0, openbb-ai SSE
+  선 규격 미러) + `scripts/workspace-bridge.sh`(cloudflared quick tunnel·경로
+  비밀). **터널 경유 풀 e2e**: 함수호출 왕복 → MSFT 심층 런 → 1,200자 국문
+  보고서 스트리밍(실적 표·후속질문 3개 prompt_suggestions·위젯 citation).
+  워크스페이스 등록 URL은 스크립트 출력 참조(quick tunnel URL은 재시작마다 변경).
+- **다음 루프 후보**: 매트릭스 잔여 2 non-final 근본 원인(RunScopeViolation 티커
+  참조 누락 제안의 수리 피드백 강화), KO 컴포저가 내레이션을 뱉는 근원(중복
+  완료 인식 맥락 — 에피소드 reasoning에서 "duplicate_completed" 관찰).
