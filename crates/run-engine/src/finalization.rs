@@ -1348,6 +1348,34 @@ pub(crate) fn error_is_output_budget_exhaustion(error: &EngineError) -> bool {
 /// still fail loudly — only additive keys are removed (2026-09-02 EN loop:
 /// two live failures, `answer_ir` wrapper then a claim `interpretation`).
 fn strip_unknown_typed_answer_fields(output: &mut Value) {
+    // Capture section bodies BEFORE the closed-key filtering strips them:
+    // English composers put the whole answer prose in `body` (2026-09-02
+    // live dump) and the SECTION_KEYS retention below would otherwise
+    // discard the only substance the answer carries.
+    let captured_section_bodies: Vec<(String, String)> = output
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|sections| {
+            sections
+                .iter()
+                .filter_map(|section| {
+                    let body = section
+                        .get("body")
+                        .or_else(|| section.get("text"))
+                        .and_then(Value::as_str)?
+                        .trim()
+                        .to_owned();
+                    let id = section
+                        .get("section_id")
+                        .or_else(|| section.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("section")
+                        .to_owned();
+                    (!body.is_empty()).then_some((id, body))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     const CLAIM_KEYS: [&str; 14] = [
         "claim_id", "kind", "strength", "text", "goal_ids", "evidence_ids",
         "counter_evidence_ids", "calculation_ids", "subject", "predicate",
@@ -1695,6 +1723,49 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     object.remove(key);
                 }
             }
+        }
+    }
+
+    // English composers naturally write the answer as section `body` prose
+    // and emit no claims array at all (2026-09-02 live dump: rich bodies
+    // citing the rate fold, zero claims). Synthesize one claim per section
+    // body — bounded to the 2,000-byte claim-text limit at a sentence
+    // boundary — instead of discarding the answer.
+    let claims_absent = output
+        .get("claims")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty);
+    if claims_absent && !captured_section_bodies.is_empty() {
+        let synthesized: Vec<Value> = captured_section_bodies
+            .iter()
+            .enumerate()
+            .map(|(index, (section_id, body))| {
+                let mut text = body.clone();
+                if text.len() > 2_000 {
+                    let cut = text
+                        .char_indices()
+                        .take_while(|(offset, _)| *offset <= 1_950)
+                        .last()
+                        .map(|(offset, _)| offset)
+                        .unwrap_or(0);
+                    let head = &text[..cut];
+                    let boundary = head.rfind('.').map(|dot| dot + 1).unwrap_or(cut);
+                    text = text[..boundary].trim_end().to_owned();
+                }
+                serde_json::json!({
+                    "claim_id": format!("claim-{index}-{section_id}"),
+                    "kind": "fact",
+                    "strength": "qualified",
+                    "text": text,
+                    "evidence_ids": [],
+                    "goal_ids": [],
+                    "counter_evidence_ids": [],
+                    "calculation_ids": [],
+                })
+            })
+            .collect();
+        if let Some(object) = output.as_object_mut() {
+            object.insert("claims".to_owned(), Value::Array(synthesized));
         }
     }
 }
@@ -2896,6 +2967,32 @@ mod typed_answer_tolerance_tests {
     use serde_json::json;
 
     use super::strip_unknown_typed_answer_fields;
+
+    #[test]
+    fn section_bodies_synthesize_claims_when_the_composer_omits_them() {
+        // 2026-09-02 live dump: the English composer writes rich section
+        // `body` prose citing the rate fold and emits no claims array at
+        // all. The deterministic synthesis converts that natural shape into
+        // a valid AnswerIR instead of failing with no surviving claims.
+        let mut output = json!({
+            "schema_version": 1,
+            "locale": "en-US",
+            "sections": [
+                {"id": "conclusion", "heading": "Conclusion",
+                 "body": "Treasury curve 3.92%/4.39%/4.79% as of Sep 1."},
+                {"id": "fundamentals", "heading": "Fundamentals",
+                 "body": "Net sales rose 16% year over year."},
+            ],
+            "claims": [],
+            "calculations": [],
+            "follow_up_questions": ["What next?"]
+        });
+        strip_unknown_typed_answer_fields(&mut output);
+        let claims = output["claims"].as_array().unwrap();
+        assert_eq!(claims.len(), 2, "one claim per body section");
+        assert!(claims[0]["text"].as_str().unwrap().contains("3.92%"));
+        assert_eq!(claims[0]["kind"], "fact");
+    }
 
     #[test]
     fn unknown_claim_and_section_keys_are_stripped_but_required_kept() {
