@@ -842,11 +842,46 @@ fn markdown_contains_tool_reference(lower: &str, term: &str) -> bool {
     .any(|suffix| lower.contains(&format!("{term}{suffix}")))
 }
 
+/// Minimum substance for a Direct Markdown final. The composer contract
+/// mandates sections and citations, so a far shorter draft is process
+/// narration, not an answer (2026-09-02 live: a 49-char "이어서 … 확인합니다"
+/// was committed as the final answer with zero claims).
+pub(crate) const DIRECT_MARKDOWN_MIN_ANSWER_CHARS: usize = 400;
+
+/// True when a Direct Markdown draft is process narration rather than an
+/// answer: too short to carry the contracted report AND without a single
+/// structural marker (heading, list, table row, citation, bold, or numbered
+/// item). Short-but-structured drafts and full-length prose stay committable;
+/// the narration escape only fires on substance-free drafts.
+pub(crate) fn markdown_is_narration_shaped(content: &str) -> bool {
+    if content.chars().count() >= DIRECT_MARKDOWN_MIN_ANSWER_CHARS {
+        return false;
+    }
+    !content.lines().any(direct_markdown_line_is_structural)
+}
+
+fn direct_markdown_line_is_structural(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with('#')
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("|")
+        || trimmed.contains("[^")
+        || trimmed.contains("**")
+    {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    bytes[0].is_ascii_digit() && bytes.len() >= 2 && bytes[1] == b'.'
+}
+
 pub(crate) fn markdown_content_gate_feedback(
     content: &str,
     forbidden_terms: &[String],
-) -> Option<String> {
-    let lower = content.to_lowercase();
+) -> Option<String> {    let lower = content.to_lowercase();
     for term in forbidden_terms {
         let term_lower = term.trim().to_lowercase();
         if term_lower.is_empty() {
@@ -911,6 +946,18 @@ pub(crate) const LEDGER_FALLBACK_RETRIEVAL_EMPTY: &str = "retrieval_empty";
 /// failed: telling the user "provider/MCP 문제" for a budget exhaustion is a
 /// false diagnosis.
 pub(crate) const LEDGER_FALLBACK_OUTPUT_BUDGET_EXHAUSTED: &str = "output_budget_exhausted";
+/// The composer answered the final turn with process narration twice. Neither
+/// an external fault nor a budget exhaustion: the notice must say the writing
+/// stage failed to produce the report, not blame provider/MCP or tokens.
+pub(crate) const LEDGER_FALLBACK_COMPOSER_NARRATION: &str = "composer_narration";
+
+/// Why a run landed in the deterministic ledger fallback. Each cause gets an
+/// honest, distinct user-facing notice.
+pub(crate) enum LedgerFallbackCause {
+    DependencyOrRetrieval,
+    OutputBudgetExhausted,
+    ComposerNarration,
+}
 
 const LEDGER_FALLBACK_MAX_RECORDS: usize = 16;
 const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 8;
@@ -1045,33 +1092,50 @@ pub(crate) fn fallback_answer_from_ledger(
     calculations: &BTreeMap<String, Calculation>,
     intent: Option<&IntentPlanningProjection>,
     accepted_capability_results: usize,
-    output_budget_exhausted: bool,
+    cause: LedgerFallbackCause,
 ) -> LedgerFallbackAnswer {
-    let reason_code = if output_budget_exhausted {
-        LEDGER_FALLBACK_OUTPUT_BUDGET_EXHAUSTED
-    } else {
-        ledger_fallback_reason_code(ledger, accepted_capability_results)
+    let reason_code = match cause {
+        LedgerFallbackCause::OutputBudgetExhausted => LEDGER_FALLBACK_OUTPUT_BUDGET_EXHAUSTED,
+        LedgerFallbackCause::ComposerNarration => LEDGER_FALLBACK_COMPOSER_NARRATION,
+        LedgerFallbackCause::DependencyOrRetrieval => {
+            ledger_fallback_reason_code(ledger, accepted_capability_results)
+        }
     };
     let mut citations = FallbackCitations::new();
     let mut markdown = String::new();
 
     markdown.push_str("## 안내\n\n");
-    if output_budget_exhausted {
-        markdown.push_str(
-            "요청하신 연구가 응답 예산(출력 토큰) 소진으로 완료되지 못했습니다. \
+    match cause {
+        LedgerFallbackCause::OutputBudgetExhausted => {
+            markdown.push_str(
+                "요청하신 연구가 응답 예산(출력 토큰) 소진으로 완료되지 못했습니다. \
 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
-        );
-    } else {
-        markdown.push_str(
-            "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
+            );
+        }
+        LedgerFallbackCause::ComposerNarration => {
+            markdown.push_str(
+                "요청하신 연구의 작성 단계가 최종 보고서 대신 진행 상황 안내만 반환했습니다. \
 정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
-        );
+            );
+        }
+        LedgerFallbackCause::DependencyOrRetrieval => {
+            markdown.push_str(
+                "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
+정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+            );
+        }
     }
     markdown.push_str(&format!("- 사유 코드: {reason_code}\n"));
-    if output_budget_exhausted {
-        markdown.push_str("- 이는 시스템 응답 예산 문제이며 기업의 공시 범위와 무관합니다.\n");
-    } else {
-        markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
+    match cause {
+        LedgerFallbackCause::OutputBudgetExhausted => {
+            markdown.push_str("- 이는 시스템 응답 예산 문제이며 기업의 공시 범위와 무관합니다.\n");
+        }
+        LedgerFallbackCause::ComposerNarration => {
+            markdown.push_str("- 이는 시스템 작성 단계 문제이며 기업의 공시 범위와 무관합니다.\n");
+        }
+        LedgerFallbackCause::DependencyOrRetrieval => {
+            markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
+        }
     }
 
     markdown.push_str("\n## 질문 범위\n\n");
@@ -1320,6 +1384,8 @@ pub(crate) fn error_allows_ledger_fallback(error: &EngineError) -> bool {
     match error {
         EngineError::Dependency { component, .. } => *component != "persistence.commit_final",
         EngineError::DeadlineExceeded(_) => true,
+        // Narration escapes with admitted evidence still answer deterministically.
+        EngineError::ComposerNarrationNotAnswer => true,
         EngineError::NoRemainingOutputBudget
         | EngineError::FinalOutputReserveReached
         | EngineError::CapabilityBudgetExceeded { .. } => true,
@@ -2474,6 +2540,23 @@ where
                         return Ok(None);
                     }
                 }
+                // Narration guard, same one-bounded-retry lane: the composer
+                // occasionally answers the final turn with a short process
+                // note ("이어서 … 확인합니다") instead of the report. The first
+                // offense retries with explicit feedback; a second
+                // substance-free draft must never commit — it escapes to the
+                // deterministic ledger fallback instead.
+                if markdown_is_narration_shaped(content) {
+                    if !state.direct_answer_retry_requested() {
+                        state.request_direct_answer_retry();
+                        state.append_answer_content_gate_feedback(
+                            "the draft is process narration, not the final answer; write the complete final report now",
+                        );
+                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                        return Ok(None);
+                    }
+                    return Err(EngineError::ComposerNarrationNotAnswer);
+                }
                 // Direct Markdown has no typed AnswerIR to sanitize; the
                 // canonical contract is its own validation.
                 (
@@ -2917,6 +3000,13 @@ where
             state.derived_ticker_scope.as_ref(),
             &state.ledger,
         );
+        let cause = match &error {
+            EngineError::ComposerNarrationNotAnswer => LedgerFallbackCause::ComposerNarration,
+            error if error_is_output_budget_exhaustion(error) => {
+                LedgerFallbackCause::OutputBudgetExhausted
+            }
+            _ => LedgerFallbackCause::DependencyOrRetrieval,
+        };
         let fallback = fallback_answer_from_ledger(
             &input.request.question,
             &tickers,
@@ -2924,7 +3014,7 @@ where
             &state.calculations,
             state.research_planner.intent_projection(),
             state.accepted_actions.len(),
-            error_is_output_budget_exhaustion(&error),
+            cause,
         );
         tracing::warn!(
             code = fallback.reason_code,
@@ -3445,5 +3535,81 @@ mod markdown_gate_tests {
             &terms(),
         );
         assert!(passes.is_none());
+    }
+}
+
+#[cfg(test)]
+mod narration_gate_tests {
+    use super::{
+        fallback_answer_from_ledger, markdown_is_narration_shaped, EvidenceLedger,
+        LedgerFallbackCause,
+    };
+    use std::collections::BTreeMap;
+
+    /// The exact draft that committed as a live final answer (2026-09-02
+    /// workspace-bridge e2e: 49 chars, zero claims, run state final).
+    const LIVE_NARRATION: &str =
+        "검증 데이터 기준으로 수치를 확정한 뒤 정리하겠습니다. 이어서 순이익 계보를 확인합니다.";
+
+    #[test]
+    fn live_bridge_narration_is_detected() {
+        assert!(markdown_is_narration_shaped(LIVE_NARRATION));
+    }
+
+    #[test]
+    fn plan_style_progress_notes_are_detected() {
+        assert!(markdown_is_narration_shaped("이어서 순이익 계보를 확인합니다."));
+        assert!(markdown_is_narration_shaped("자료를 추가로 조회한 뒤 정리하겠습니다."));
+        assert!(markdown_is_narration_shaped("다음 단계: 매출 검증 후 작성."));
+    }
+
+    #[test]
+    fn structured_drafts_are_never_narration() {
+        // Short but structured: heading + list + citation.
+        assert!(!markdown_is_narration_shaped(
+            "## 결론\n\n- 매출 +12% [^1]\n\n[^1]: MSFT 10-K"
+        ));
+        // Table row and bold judgment openers both count as structure.
+        assert!(!markdown_is_narration_shaped(
+            "| 연도 | 매출 |\n| --- | --- |\n| FY2026 | 281억 달러 |"
+        ));
+        assert!(!markdown_is_narration_shaped(
+            "**판단: 상승 방향입니다.** 근거는 아래와 같습니다."
+        ));
+        // Numbered item.
+        assert!(!markdown_is_narration_shaped("1. 매출 성장\n2. 마진 안정"));
+    }
+
+    #[test]
+    fn full_length_prose_is_never_narration() {
+        let prose = format!("{}매출은 전년 대비 증가했습니다. ", "구간별로 보면 안정적입니다. ".repeat(60));
+        assert!(prose.chars().count() >= 400);
+        assert!(!markdown_is_narration_shaped(&prose));
+    }
+
+    #[test]
+    fn composer_narration_fallback_notice_is_honest() {
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let fallback = fallback_answer_from_ledger(
+            "질문?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            LedgerFallbackCause::ComposerNarration,
+        );
+        assert_eq!(fallback.reason_code, "composer_narration");
+        assert!(fallback.markdown.contains("작성 단계"));
+        assert!(fallback.markdown.contains("composer_narration"));
+        assert!(
+            !fallback.markdown.contains("외부 연결"),
+            "a narration escape must not be narrated as a provider/MCP fault"
+        );
+        assert!(
+            !fallback.markdown.contains("응답 예산"),
+            "a narration escape must not be narrated as a budget exhaustion"
+        );
     }
 }

@@ -81,7 +81,7 @@ use capability_dispatch::{
 #[cfg(test)]
 use finalization::{
     fallback_answer_from_ledger, run_outcome_after_commit, sanitize_answer,
-    validate_product_output_linkage,
+    validate_product_output_linkage, LedgerFallbackCause,
 };
 #[cfg(test)]
 use provider::{
@@ -1537,6 +1537,13 @@ pub enum EngineError {
     UncommittedCalculation(String),
     #[error("answer validation failed: {0:?}")]
     AnswerValidation(Vec<String>),
+    /// Direct-Markdown composer returned process narration instead of the
+    /// final report, twice (one bounded retry already spent). Committing the
+    /// narration would publish a non-answer; the deterministic ledger
+    /// fallback stands in instead (2026-09-02 live: a 49-char "이어서 …
+    /// 확인합니다" committed as the final with zero claims).
+    #[error("markdown composer returned narration instead of the final answer")]
+    ComposerNarrationNotAnswer,
     #[error("bounded rule validation failed: {0:?}")]
     RuleViolations(Vec<String>),
     #[error("{phase:?} rule validation failed: {violations:?}")]
@@ -6440,7 +6447,7 @@ mod tests {
             &no_calculations,
             None,
             0,
-            false,
+            LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(outage.reason_code, "dependency_unavailable");
         assert!(outage.markdown.contains("dependency_unavailable"));
@@ -6453,7 +6460,7 @@ mod tests {
             &no_calculations,
             None,
             3,
-            false,
+            LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(retrieval_ran_dry.reason_code, "retrieval_empty");
         assert!(retrieval_ran_dry.markdown.contains("retrieval_empty"));
@@ -6466,7 +6473,7 @@ mod tests {
             &no_calculations,
             None,
             0,
-            false,
+            LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(outage.markdown, again.markdown);
     }
@@ -6486,7 +6493,7 @@ mod tests {
             &no_calculations,
             None,
             0,
-            true,
+            LedgerFallbackCause::OutputBudgetExhausted,
         );
         assert_eq!(budget.reason_code, "output_budget_exhausted");
         assert!(budget.markdown.contains("output_budget_exhausted"));
@@ -6558,7 +6565,7 @@ mod tests {
             &calculations,
             None,
             2,
-            false,
+            LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(answer.reason_code, "dependency_unavailable");
         assert_eq!(
@@ -6581,7 +6588,7 @@ mod tests {
             &calculations,
             None,
             2,
-            false,
+            LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(answer.markdown, again.markdown);
         assert_eq!(answer.cited_evidence_ids, again.cited_evidence_ids);
