@@ -34,7 +34,12 @@ profiles:
       max_input_tokens: 150000
       max_output_tokens: 54000
       max_evidence_bytes: 8388608
-      deadline_ms: 1200000
+      # English reasoning turns run longer than Korean (measured 2026-09-02:
+      # a 20-minute deadline expired after only three turns, each carrying
+      # 18k-49k reasoning chars). Match the established 40-minute deep-run
+      # ceiling that the Korean deep profile already uses for the same
+      # high-reasoning envelope.
+      deadline_ms: 2400000
       capability_call_limits:
         ontology.query_context: 6
         ontology.company_context: 1

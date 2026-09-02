@@ -1197,7 +1197,17 @@ pub fn render_markdown(
         }
     }
     if !answer.follow_up_questions.is_empty() {
-        output.push_str("\n### 이어서 볼 질문\n\n");
+        // Locale-aware heading: the Korean contract kept a fixed Korean
+        // header; English answers render the English equivalent
+        // (2026-09-02: EN finals shipped with a Korean heading).
+        let follow_up_heading = if answer.locale == "en-US" {
+            "### Suggested Follow-up Questions"
+        } else {
+            "### 이어서 볼 질문"
+        };
+        output.push_str("\n");
+        output.push_str(follow_up_heading);
+        output.push_str("\n\n");
         for (index, question) in answer.follow_up_questions.iter().enumerate() {
             output.push_str(&(index + 1).to_string());
             output.push_str(". ");

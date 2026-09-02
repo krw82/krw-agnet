@@ -385,3 +385,21 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   2차는 deadline_exceeded(3턴만에 20분 소진 — 턴당 EN reasoning 4-5분 대기
   추정) = 루프11 과제(EN 데드라인 헤드룸 프로파일 조정).
 - 워크스페이스 936/0.
+
+## 23. 루프11 — EN 데드라인 헤드룸 + 폴드 EN 배선 + 빈-클레임 수비 (2026-09-02)
+
+- **deadline 1,200,000→2,400,000ms**(KO deep 프로필의 40분 선례와 동일 — 턴당
+  4-5분 EN reasoning × 연구 턴). 데드라인 소진 소멸.
+- **폴드 EN 배선(근명)**: 프리페치 두 게이트가 `run_kind ==
+  "company_research"`만 허용 — EN 진입점(company_research_en)은 폴드가 **전량
+  스킵**되고 있었음. 게이트 확장 후 **에피소드로 실증: EN 모델 reasoning에
+  "UST3M/2Y/10Y 3.92%/4.39%/4.79%, 2s10s +40bp" 반입**(루프11 3차).
+- 후속질문 헤더 로케일화(EN="Suggested Follow-up Questions"). EN 이미지의
+  claim_has_evidence 규칙을 KO 패리티로(관측 기반 오리엔테이션 클레임 거부
+  해소).
+- **빈-클레임 수비**: 정규화가 전 클레임을 드롭하면 468자 제목뿐인 답변이
+  커밋되던 것 — AnswerValidation 레인으로 라우팅해 bounded repair 후 정직한
+  `answer_no_surviving_claims` 코드로 종료(라이브 실증).
+- 라이브: 3차 = 폴드 반입+클린 final(468자 얇음 — 수비로 차단 대상),
+  5차 = 수비 작동 실증. 잔여 = EN 컴포저의 클레임 방출 형태 정렬(루프12 과제).
+- 워크스페이스 936/0.

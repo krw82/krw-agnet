@@ -1732,6 +1732,20 @@ fn validate_typed_output(
                 Value::String(input.request.locale.clone()),
             );
         }
+        // Normalization may drop every claim (prose-less rows); committing
+        // an empty shell as the final answer is worse than one bounded
+        // repair: surface it through the answer-validation lane so the
+        // composer retries (2026-09-02 EN live: a 468-char all-headings
+        // final).
+        let claims_empty = typed_output
+            .get("claims")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty);
+        if claims_empty {
+            return Err(EngineError::AnswerValidation(vec![
+                "answer_no_surviving_claims".to_owned(),
+            ]));
+        }
         let mut answer_ir: AnswerIr = serde_json::from_value(typed_output)?;
         let policy = answer_policy(input.image);
         bind_kernel_goal_ids(&mut answer_ir, state);
@@ -2292,7 +2306,8 @@ where
                     return Err(error);
                 }
 
-                let candidate = validate_typed_output(input, state, &validation_contract, &output);
+                let candidate =
+                    validate_typed_output(input, state, &validation_contract, &output);
                 if let Some(section_pin) = section_contract {
                     // E1 engine-owned section accumulation loop: retain the
                     // validated batch, walk `section_submitted`, and either

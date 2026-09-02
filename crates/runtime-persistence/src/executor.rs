@@ -608,7 +608,14 @@ async fn preflight_macro_context(
     request: &RunRequest,
     hard_deadline: Instant,
 ) -> Option<krw_agent_run_engine::TrustedMacroContext> {
-    if request.run_kind != "company_research" {
+    // The market and macro preflight folds serve both company-research
+    // entrypoints: the Korean image (company_research) and the English
+    // image (company_research_en — 2026-09-02: the fold silently skipped
+    // every English run).
+    if !matches!(
+        request.run_kind.as_str(),
+        "company_research" | "company_research_en"
+    ) {
         return None;
     }
     if hard_deadline.saturating_duration_since(Instant::now())
@@ -747,7 +754,14 @@ async fn preflight_market_snapshot(
     request: &RunRequest,
     hard_deadline: Instant,
 ) -> Option<TrustedMarketSnapshot> {
-    if request.run_kind != "company_research" {
+    // The market and macro preflight folds serve both company-research
+    // entrypoints: the Korean image (company_research) and the English
+    // image (company_research_en — 2026-09-02: the fold silently skipped
+    // every English run).
+    if !matches!(
+        request.run_kind.as_str(),
+        "company_research" | "company_research_en"
+    ) {
         return None;
     }
     let [ticker] = request.context.trusted_tickers() else {

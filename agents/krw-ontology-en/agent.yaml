@@ -313,5 +313,9 @@ validators:
     phase: answer
     fuel: 4096
     instructions:
-      - { op: claim_has_evidence, except_kinds: [uncertainty], code: claim_evidence_required }
+      # Claim-evidence discipline is enforced by the evidence sanitizer
+      # (binding + grading), matching the Korean image's contract — a hard
+      # per-claim rule here rejected observation-backed orientation claims
+      # that carry no filing evidence id (2026-09-02 EN live: x1 rule
+      # violation on an otherwise committed answer).
       - { op: no_internal_term, terms: [ResearchState, SearchPlan, query_context, MCP, object_id, tool_budget_exceeded, budget exceeded], code: internal_term_exposed }
