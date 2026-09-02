@@ -1362,6 +1362,8 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     let body = section
                         .get("body")
                         .or_else(|| section.get("text"))
+                        .or_else(|| section.get("content"))
+                        .or_else(|| section.get("blocks"))
                         .or_else(|| section.get("summary"))
                         .or_else(|| section.get("description"))
                         .and_then(Value::as_str)?
@@ -1430,6 +1432,14 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 || object.contains_key("claim")
                 || object.contains_key("statement")
                 || object.contains_key("content")
+                || object.contains_key("object")
+                // Structured tuple claims carry their substance as typed
+                // fields with evidence — the tuple-to-text pass renders them
+                // below (2026-09-02 EN: fifth shape, 14 such claims dropped
+                // by the prose gate before rendering).
+                || (object.contains_key("predicate")
+                    && (object.contains_key("value")
+                        || object.contains_key("evidence_ids")))
         });
         for (index, row) in rows.iter_mut().enumerate() {
             let Some(object) = row.as_object_mut() else { continue };
@@ -1536,7 +1546,7 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 }
             }
             if field == "claims" && !object.contains_key("text") {
-                for alias in ["claim", "statement", "content"] {
+                for alias in ["claim", "statement", "content", "object"] {
                     if let Some(value) = object.remove(alias)
                         && value.is_string()
                     {
@@ -1769,6 +1779,25 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
     {
         for (index, row) in rows.iter_mut().enumerate() {
             let Some(object) = row.as_object_mut() else { continue };
+            // Calculation ids drift like claim ids: alias then mint
+            // positionally (2026-09-02 EN: missing field calculation_id).
+            if !object
+                .get("calculation_id")
+                .is_some_and(Value::is_string)
+            {
+                if let Some(id) = object.remove("id").filter(Value::is_string) {
+                    object.insert("calculation_id".to_owned(), id);
+                }
+            }
+            if !object
+                .get("calculation_id")
+                .is_some_and(Value::is_string)
+            {
+                object.insert(
+                    "calculation_id".to_owned(),
+                    Value::String(format!("calc-{index}")),
+                );
+            }
             object.retain(|key, _| CALCULATION_KEYS.contains(&key.as_str()));
             let ids_ok = object
                 .get("input_evidence_ids")
@@ -3085,6 +3114,68 @@ mod typed_answer_tolerance_tests {
     use serde_json::json;
 
     use super::strip_unknown_typed_answer_fields;
+
+    #[test]
+    fn pure_tuple_claims_and_block_sections_survive_normalization() {
+        // Fifth live shape (2026-09-02 EN): sections carry `title`/`blocks`
+        // and claims are pure typed tuples (no prose alias at all). The
+        // prose gate must keep evidence-bound tuples for the tuple-to-text
+        // pass instead of dropping them.
+        let mut output = json!({
+            "schema_version": 1,
+            "locale": "en-US",
+            "sections": [
+                {"id": "s1", "title": "Cloud growth",
+                 "blocks": "Azure revenue grew 34% in FY2025."},
+            ],
+            "claims": [
+                {"claim_id": "c1", "subject": "MSFT",
+                 "predicate": "cloud_growth", "value": 34,
+                 "unit": "%", "period": "FY2025",
+                 "evidence_ids": ["ev:abc123"], "qualifier": "as reported"},
+            ],
+            "calculations": [],
+            "follow_up_questions": ["What drives Azure growth?"]
+        });
+        strip_unknown_typed_answer_fields(&mut output);
+        let claims = output["claims"].as_array().unwrap();
+        assert!(!claims.is_empty(), "pure tuple claims survive the prose gate");
+        assert!(claims[0]["text"].as_str().unwrap().contains("cloud_growth"));
+        assert_eq!(claims[0]["evidence_ids"][0], "ev:abc123");
+    }
+
+    #[test]
+    fn object_claims_and_content_sections_survive_normalization() {
+        // Fourth live shape (2026-09-02 EN MSFT): sections carry `content`
+        // and claims carry their prose in `object` with `id` identifiers.
+        // Both must survive: the claims keep their evidence binding via the
+        // object-alias text, and the sections keep their prose for the
+        // renderer.
+        let mut output = json!({
+            "schema_version": 1,
+            "locale": "en-US",
+            "sections": [
+                {"id": "s1", "heading": "Cloud growth",
+                 "content": "Azure revenue grew 34% in FY2025."},
+            ],
+            "claims": [
+                {"id": "c1", "subject": "MSFT", "predicate": "cloud_growth",
+                 "object": "Azure and other cloud services revenue grew 34%.",
+                 "unit": "%", "period": "FY2025", "qualified": "yes",
+                 "evidence_ids": ["ev:abc123"]},
+            ],
+            "calculations": [],
+            "follow_up_questions": ["What drives Azure growth?"]
+        });
+        strip_unknown_typed_answer_fields(&mut output);
+        let claims = output["claims"].as_array().unwrap();
+        assert!(!claims.is_empty(), "the object-prose claim survives");
+        assert!(claims[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("grew 34%"));
+        assert_eq!(claims[0]["evidence_ids"][0], "ev:abc123");
+    }
 
     #[test]
     fn section_bodies_synthesize_claims_when_the_composer_omits_them() {

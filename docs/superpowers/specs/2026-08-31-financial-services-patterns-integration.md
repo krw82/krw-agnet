@@ -437,3 +437,18 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   필요: claims_absent는 is_none_or(is_empty)라 도야 하는데, 이 궤적은 섹션
   body도 없는 변형 — 최종 형태 = **최상위 산문/요약 필드에서의 합성**.
 - 워크스페이스 937/0.
+
+## 26. 루프14 — EN 5번째 형태(순수 튜플+blocks) 수리 + LLY 재검 (2026-09-02)
+
+- **5번째 형태 규명(에피소드 실측)**: 섹션은 `title`/`blocks`, 클레임은 **텍스트
+  별칭 전혀 없는 순수 튜플**(claim_id+evidence_ids+subject/predicate/value) 14개 —
+  산문 게이트가 튜플 패스 이전에 전부 드롭. 수리: 게이트 보존 조건에
+  predicate+value/evidence_ids 조합 추가 · body 별칭에 blocks/content 추가 ·
+  클레임 텍스트 별칭에 object 추가 · 계산 id 별칭+발행(직렬화 방어).
+- **라이브 재검(3종)**: **LLY = 클린 final 2,080자 실제 한국어 컴포지(에지 수리
+  라이브 실증)** · **MSFT = 클린 final 2,364자**(튜플→텍스트 렌더링 경유, 인용
+  포함) · GOOGL = 폴백 final(클레임 형태 아닌 **cold-MCP 의존성 탈출** — 루프9
+  클래스의 간헐 잔여).
+- 워크스페이스 939/0(신규 2: 순수 튜플, object/content 형태).
+- 잔여(루프15): GOOGL류 의존성 탈출의 재현 포착(재시도 전파 후에도 폴백 커밋된
+  경로 — 지연-재시도 소진과 폴백의 상호작용 계측 필요).
