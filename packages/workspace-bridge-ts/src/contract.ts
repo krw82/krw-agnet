@@ -129,6 +129,33 @@ export interface WidgetCollection {
 export interface QueryRequest {
   readonly messages: readonly unknown[];
   readonly widgets: WidgetCollection | null;
+  readonly selectedSkills: readonly SelectedSkill[];
+}
+
+/** A skill the user pinned with the copilot's "/" picker (forced_slash). */
+export interface SelectedSkill {
+  readonly slug: string;
+  readonly description: string;
+  readonly contentMarkdown: string;
+  readonly source: string;
+}
+
+function readSelectedSkills(value: unknown): readonly SelectedSkill[] {
+  if (!Array.isArray(value)) return [];
+  const skills: SelectedSkill[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const object = item as Record<string, unknown>;
+    const content = object.contentMarkdown ?? object.content_markdown;
+    if (typeof object.slug !== "string" || typeof content !== "string") continue;
+    skills.push({
+      slug: object.slug,
+      description: typeof object.description === "string" ? object.description : "",
+      contentMarkdown: content,
+      source: typeof object.source === "string" ? object.source : "forced_slash",
+    });
+  }
+  return skills;
 }
 
 export function parseQueryRequest(value: unknown): QueryRequest {
@@ -147,7 +174,11 @@ export function parseQueryRequest(value: unknown): QueryRequest {
       secondary: readWidgetList((rawWidgets as { secondary?: unknown }).secondary),
     };
   }
-  return { messages, widgets };
+  return {
+    messages,
+    widgets,
+    selectedSkills: readSelectedSkills((value as { selected_skills?: unknown }).selected_skills),
+  };
 }
 
 function readWidgetList(value: unknown): readonly Widget[] {
@@ -400,9 +431,43 @@ function tryParseRows(content: string): readonly Record<string, unknown>[] | nul
   }
 }
 
-export function composeQuestion(question: string, digest: string | null): string {
-  if (digest === null) return question;
-  return `${question}\n\n${digest}`;
+export function composeQuestion(
+  question: string,
+  skillDirective: string | null,
+  digest: string | null,
+): string {
+  return [question, skillDirective, digest].filter((block) => block !== null).join("\n\n");
+}
+
+const MAX_SKILL_DIRECTIVE_CHARS = 4_000;
+
+/**
+ * The "/" picker sends the pinned skill's full markdown in
+ * `selected_skills`. Only the forced selection is honoured — a bare
+ * `skills_catalog` (model-selected handshakes) is deliberately ignored so
+ * the run always starts from an explicit user intent.
+ */
+export function buildSkillDirective(request: QueryRequest): string | null {
+  const skill = request.selectedSkills[0];
+  if (skill === undefined || skill.contentMarkdown.trim().length === 0) return null;
+  const header = `[사용자 지정 스킬 지시 — OpenBB Workspace /스킬] (${skill.slug}${
+    skill.description.length > 0 ? ` · ${skill.description}` : ""
+  })`;
+  let block = `${header}\n${skill.contentMarkdown.trim()}`;
+  if (block.length > MAX_SKILL_DIRECTIVE_CHARS) {
+    block = `${block.slice(0, MAX_SKILL_DIRECTIVE_CHARS)}\n…(스킬 지시 초과분 생략)`;
+  }
+  return block;
+}
+
+/**
+ * Gateway run request for the bridge. The guru lens is DISABLED on this
+ * agent by operator decision (2026-09-02): the gateway accepts an optional
+ * `advisor_lens`, and this builder must never send one — the "/" skill
+ * rides the question text instead.
+ */
+export function gatewayRunBody(ticker: string, question: string): Record<string, unknown> {
+  return { schema_version: 1, question, ticker };
 }
 
 const FOLLOW_UP_HEADERS = ["### 이어서 볼 질문", "### Suggested Follow-up Questions"];

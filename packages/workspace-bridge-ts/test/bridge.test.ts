@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildSkillDirective,
   buildWidgetDigest,
   chartArtifact,
   composeQuestion,
   encodeSse,
   extractQuestion,
+  gatewayRunBody,
   hasWidgetDataResult,
   messageChunk,
   parseFollowUps,
@@ -150,9 +152,65 @@ test("buildWidgetDigest reports widget fetch errors as absent data", () => {
 });
 
 test("composeQuestion appends the digest block", () => {
-  const composed = composeQuestion("질문", "블록");
+  const composed = composeQuestion("질문", null, "블록");
   assert.equal(composed, "질문\n\n블록");
-  assert.equal(composeQuestion("질문", null), "질문");
+  assert.equal(composeQuestion("질문", null, null), "질문");
+});
+
+test("forced slash selected_skills are parsed and turned into a directive", () => {
+  const request = parseQueryRequest({
+    messages: [{ role: "human", content: "AAPL 실적 분석해줘" }],
+    selected_skills: [
+      {
+        slug: "conservative-investor",
+        description: "보수적 투자자 관점",
+        contentMarkdown: "## 관점\n- 안전성 우선\n- 배당 중심으로 평가",
+        source: "forced_slash",
+      },
+    ],
+  });
+  const directive = buildSkillDirective(request);
+  assert.ok(directive !== null);
+  assert.ok(directive.includes("[사용자 지정 스킬 지시 — OpenBB Workspace /스킬]"));
+  assert.ok(directive.includes("conservative-investor"));
+  assert.ok(directive.includes("안전성 우선"));
+});
+
+test("skill directive accepts snake_case content and caps oversized skills", () => {
+  const long = "지시 항목입니다. ".repeat(600);
+  const request = parseQueryRequest({
+    messages: [{ role: "human", content: "q" }],
+    selected_skills: [
+      { slug: "s", description: "d", content_markdown: long, source: "forced_slash" },
+    ],
+  });
+  const directive = buildSkillDirective(request) ?? "";
+  assert.ok(directive.includes("지시 항목입니다"));
+  assert.ok(directive.length <= 4_200);
+  assert.ok(directive.includes("…(스킬 지시 초과분 생략)"));
+});
+
+test("skill-less requests and catalog-only requests yield no directive", () => {
+  assert.equal(buildSkillDirective(parseQueryRequest({ messages: [{ role: "human", content: "q" }] })), null);
+  const catalogOnly = parseQueryRequest({
+    messages: [{ role: "human", content: "q" }],
+    skills_catalog: [{ slug: "s", description: "d", updatedAt: "2026-09-02" }],
+  });
+  assert.equal(buildSkillDirective(catalogOnly), null);
+});
+
+test("composeQuestion orders question, skill directive, then widget digest", () => {
+  const composed = composeQuestion("본 질문", "[사용자 지정 스킬 지시 — X]\n지시", "[화면 위젯 관측 — Y]\n관측");
+  const questionAt = composed.indexOf("본 질문");
+  const skillAt = composed.indexOf("[사용자 지정 스킬 지시");
+  const digestAt = composed.indexOf("[화면 위젯 관측");
+  assert.ok(questionAt < skillAt && skillAt < digestAt);
+});
+
+test("gateway run body never carries the disabled guru lens", () => {
+  const body = gatewayRunBody("MSFT", "질문");
+  assert.deepEqual(Object.keys(body).sort(), ["question", "schema_version", "ticker"]);
+  assert.ok(!("advisor_lens" in body));
 });
 
 test("parseFollowUps reads the Korean numbered section and stops at the next header", () => {

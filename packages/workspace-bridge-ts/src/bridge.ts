@@ -12,10 +12,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 
 import {
+  buildSkillDirective,
   buildWidgetDigest,
   composeQuestion,
   encodeSse,
   extractQuestion,
+  gatewayRunBody,
   hasWidgetDataResult,
   messageChunk,
   parseFollowUps,
@@ -254,13 +256,16 @@ async function handleQuery(
   }
 
   const digest = buildWidgetDigest(parsed, dataSources);
-  const composedQuestion = composeQuestion(question, digest.block);
+  // "/"-pinned skill first frames the research, then the on-screen widget
+  // observation grounds it; the guru lens stays disabled (never sent).
+  const skillDirective = buildSkillDirective(parsed);
+  const composedQuestion = composeQuestion(question, skillDirective, digest.block);
 
   let run: GatewayRun;
   try {
     run = (await gatewayFetch(settings, "/runs", {
       method: "POST",
-      body: JSON.stringify({ schema_version: 1, question: composedQuestion, ticker: ticker.ticker }),
+      body: JSON.stringify(gatewayRunBody(ticker.ticker, composedQuestion)),
     })) as GatewayRun;
   } catch (error) {
     write(statusUpdate(`런 등록 실패: ${error instanceof Error ? error.message : "알 수 없음"}`, "ERROR"));

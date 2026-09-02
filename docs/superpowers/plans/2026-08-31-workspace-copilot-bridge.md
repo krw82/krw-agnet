@@ -94,6 +94,20 @@ OpenBB Workspace (호스팅)                 Mac (로컬)
 | 데이터를 당겨온 위젯 | `copilotCitationCollection` (type=widget) |
 | failed / retry_message | `copilotStatusUpdate` ERROR + `copilotMessageChunk` |
 
+## 스킬("/") 지원 — 2026-09-02 추가 (사용자 결정)
+
+- Workspace 코파일럿의 "/" 피커가 보내는 `selected_skills[0]`(forced_slash,
+  `contentMarkdown`)를 받아 **[사용자 지정 스킬 지시 — OpenBB Workspace /스킬]**
+  블록(4,000자 상한)으로 정규화하고, 질문 합성 순서를
+  **본 질문 → 스킬 지시 → 위젯 관측**으로 고정했다.
+- `skills_catalog`(모델 자동 선택 핸드셰이크, `get_skill_content`)는 의도적으로
+  무시 — 런은 항상 사용자의 명시적 의도에서 시작한다.
+- **구루 렌즈는 비활성화**(사용자 결정 2026-09-02): 게이트웨이는 선택적
+  `advisor_lens`를 받지만 브리지의 `gatewayRunBody`는 절대 발송하지 않으며
+  테스트로 못 박았다. 스킬 지시는 오직 질문 텍스트로만 전달된다.
+- 라이브 실증: dividend-conservative 스킬 페이로드 → 런 스냅샷
+  `immutable_snapshot.request.question`에 스킬 블록이 그대로 반영 확인.
+
 ## 테스트 계획
 
 1. 단위(node:test): SSE 직렬화 형태, 질문 추출, 위젯 티커 추출,
