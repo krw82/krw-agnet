@@ -370,3 +370,18 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   answer_language_mismatch(클레임 언어 휴리스틱) + invalid_section_id(정규화 후
   유니크 위반) + unrendered_claim×9(섹션-클레임 바인딩 누락) = 루프10 과제.
 - 폴백 warn에 trigger 상세 추가(진단 관측성). 워크스페이스 936/0.
+
+## 22. 루프10 — EN 검증 갭 3종+α 수리 (2026-09-02)
+
+- **클레임 언어 게이트 매개변수화**: ko-KR(한글 0=내부 아티팩트) 대칭으로
+  en-US(라틴 0=아티팩트, 한글/외래 우세=언어 오답) 허용 — 루프9의
+  answer_language_mismatch 해소.
+- **섹션-id 유니크 발행**: 정규화 시 인덱스 기반 발행 + BTreeSet 충돌 회피
+  (invalid_section_id 해소). **unrendered_claim 방지**: 미바인딩 클레임을
+  첫 섹션에 결정론적 부착(×9 해소).
+- **후속질문 정규화**(신규 드리프트, 라이브 포획): 번호 프리픽스 제거·개행
+  제거·'?' 종결 보장·빈 항목 드롭(invalid_follow_up_question×3 해소).
+- 라이브: 루프10 1차에서 3종 전부 소멸 확인(다음 드리프트=후속질문 → 수리).
+  2차는 deadline_exceeded(3턴만에 20분 소진 — 턴당 EN reasoning 4-5분 대기
+  추정) = 루프11 과제(EN 데드라인 헤드룸 프로파일 조정).
+- 워크스페이스 936/0.

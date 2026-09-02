@@ -629,14 +629,21 @@ pub fn validate_answer(
             detail: "kernel control payload echoed into the answer".to_string(),
         });
     }
-    // Script gate for the ko-KR contract: a real Korean answer always
-    // carries Hangul prose, so zero Hangul means the composer derailed into
-    // an internal artifact (for example a raw tool-proposal echo, which is
-    // all-Latin), and a non-Latin foreign script (Arabic, Cyrillic)
-    // outnumbering Hangul means it switched languages outright.
+    // Script gate, parametrized by the answer locale contract
+    // (2026-09-02: the hardcoded ko-KR gate failed every English answer).
+    // ko-KR: a real Korean answer always carries Hangul prose, so zero
+    // Hangul means the composer derailed into an internal artifact, and a
+    // non-Latin foreign script outnumbering Hangul means it switched
+    // languages outright. en-US: symmetric — zero Latin letters is an
+    // internal artifact, and Hangul or other scripts outnumbering Latin
+    // means the composer answered in the wrong language.
     let hangul = answer_prose
         .chars()
         .filter(|character| ('\u{AC00}'..='\u{D7A3}').contains(character))
+        .count();
+    let latin = answer_prose
+        .chars()
+        .filter(|character| character.is_ascii_alphabetic())
         .count();
     let foreign_script = answer_prose
         .chars()
@@ -645,12 +652,18 @@ pub fn validate_answer(
                 || ('\u{0400}'..='\u{04FF}').contains(character)
         })
         .count();
-    if hangul == 0 || (foreign_script > 0 && foreign_script > hangul) {
+    let language_mismatch = if policy.expected_locale == "en-US" {
+        latin == 0 || (foreign_script > 0 && foreign_script > latin) || (hangul > 0 && hangul > latin)
+    } else {
+        hangul == 0 || (foreign_script > 0 && foreign_script > hangul)
+    };
+    if language_mismatch {
         issues.push(ValidationIssue {
             code: "answer_language_mismatch",
             claim_id: None,
             detail: format!(
-                "ko-KR answer prose is dominated by a foreign script ({foreign_script} foreign vs {hangul} Hangul characters)"
+                "{} answer prose is dominated by a foreign script (hangul={hangul}, latin={latin}, foreign={foreign_script})",
+                policy.expected_locale
             ),
         });
     }

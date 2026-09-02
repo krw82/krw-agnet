@@ -1364,6 +1364,8 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         "subject", "predicate", "unit", "period", "comparison_basis", "strength_label",
     ];
     let Some(root) = output.as_object_mut() else { return };
+    let mut seen_section_ids: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     // Root scalars: composers occasionally echo the contract name into
     // `schema_version` ("answer_ir/v1") or omit `locale`; both normalize
     // deterministically (2026-09-02 EN loop, sixth drift).
@@ -1394,7 +1396,7 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 || object.contains_key("statement")
                 || object.contains_key("content")
         });
-        for row in rows.iter_mut() {
+        for (index, row) in rows.iter_mut().enumerate() {
             let Some(object) = row.as_object_mut() else { continue };
             // Sections require `intent`; composers rarely emit it. A
             // missing or wrongly-typed intent defaults to a bounded label
@@ -1439,38 +1441,40 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     );
                 }
                 // section_id must satisfy the bounded identifier rule
-                // (lowercase alphanumerics plus ._-:). Sanitize whatever the
-                // composer produced; mint when absent (2026-09-02 EN loop:
-                // invalid_section_id x3 on an otherwise valid IR).
-                let sanitized = object
+                // (lowercase alphanumerics plus ._-:) AND stay unique across
+                // sections. Sanitize whatever the composer produced; mint a
+                // positional id when absent or colliding (2026-09-02 EN
+                // loop: invalid_section_id x4 — duplicates after
+                // sanitization).
+                let mut sanitized = object
                     .get("section_id")
                     .and_then(Value::as_str)
                     .map(|id| {
-                        let cleaned: String = id
-                            .chars()
+                        id.chars()
                             .map(|c| {
                                 if c.is_ascii_lowercase()
                                     || c.is_ascii_digit()
                                     || matches!(c, '.' | '_' | ':' | '-')
                                 {
                                     c
-                                } else if c.is_ascii_uppercase()
-                                {
+                                } else if c.is_ascii_uppercase() {
                                     c.to_ascii_lowercase()
-                                } else
-                                {
+                                } else {
                                     '-'
                                 }
                             })
-                            .collect();
-                        cleaned
+                            .collect::<String>()
                     })
                     .filter(|id| !id.is_empty() && id.len() <= 128)
-                    .unwrap_or_else(|| format!("s{}", object.len()));
-                object.insert(
-                    "section_id".to_owned(),
-                    Value::String(sanitized),
-                );
+                    .unwrap_or_default();
+                if sanitized.is_empty() {
+                    sanitized = format!("section-{index}");
+                }
+                if !seen_section_ids.insert(sanitized.clone()) {
+                    sanitized = format!("section-{index}");
+                    seen_section_ids.insert(sanitized.clone());
+                }
+                object.insert("section_id".to_owned(), Value::String(sanitized));
                 // claim_ids must be an array of strings; a missing or
                 // wrongly-typed value defaults to empty (the section simply
                 // carries no claim bindings — 2026-09-02 EN loop, ninth
@@ -1590,6 +1594,73 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         .and_then(Value::as_array_mut)
     {
         questions.retain(Value::is_string);
+        // The public-text gate requires each question to end with '?' and
+        // carry no control characters or numbered prefixes; composers often
+        // emit "1. …" lists (2026-09-02 EN loop: x3). Normalize in place.
+        for question in questions.iter_mut() {
+            let Some(text) = question.as_str().map(str::to_owned) else {
+                continue;
+            };
+            let cleaned = text
+                .trim()
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .trim_start_matches(|c: char| c == '.' || c == ')' || c.is_whitespace())
+                .trim()
+                .replace(['\n', '\r'], " ");
+            let mut cleaned = cleaned;
+            if !cleaned.is_empty() && !cleaned.ends_with('?') {
+                cleaned.push('?');
+            }
+            if !cleaned.is_empty() && cleaned.len() <= 300 {
+                *question = Value::String(cleaned);
+            }
+        }
+        questions.retain(|question| {
+            question
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty() && text.len() <= 300)
+        });
+    }
+    // Every claim must be referenced by a section (unrendered_claim fails
+    // verification). When the composer omits section bindings, attach the
+    // orphaned claims to the first section — deterministic, and the renderer
+    // places them under that heading (2026-09-02 EN loop: x9).
+    let orphan_ids: Vec<String> = {
+        let sections = root
+            .get("sections")
+            .and_then(Value::as_array);
+        let claims = root
+            .get("claims")
+            .and_then(Value::as_array);
+        match (sections, claims) {
+            (Some(sections), Some(claims)) => {
+                let bound: std::collections::BTreeSet<String> = sections
+                    .iter()
+                    .filter_map(|section| section.get("claim_ids"))
+                    .filter_map(Value::as_array)
+                    .flat_map(|ids| ids.iter().filter_map(Value::as_str))
+                    .map(str::to_owned)
+                    .collect();
+                claims
+                    .iter()
+                    .filter_map(|claim| claim.get("claim_id"))
+                    .filter_map(Value::as_str)
+                    .filter(|id| !bound.contains(*id))
+                    .map(str::to_owned)
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    };
+    if !orphan_ids.is_empty()
+        && let Some(ids) = root
+            .get_mut("sections")
+            .and_then(Value::as_array_mut)
+            .and_then(|sections| sections.first_mut())
+            .and_then(|first| first.get_mut("claim_ids"))
+            .and_then(Value::as_array_mut)
+    {
+        ids.extend(orphan_ids.into_iter().map(Value::String));
     }
     // Calculations carry their own closed key set; strip additive keys and
     // coerce array-of-string fields (2026-09-02 EN loop, tenth drift: an
@@ -1602,7 +1673,7 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         .get_mut("calculations")
         .and_then(Value::as_array_mut)
     {
-        for row in rows.iter_mut() {
+        for (index, row) in rows.iter_mut().enumerate() {
             let Some(object) = row.as_object_mut() else { continue };
             object.retain(|key, _| CALCULATION_KEYS.contains(&key.as_str()));
             let ids_ok = object
@@ -2892,6 +2963,11 @@ mod typed_answer_tolerance_tests {
             output["sections"][0]["claim_ids"].is_array(),
             "missing section claim_ids default to an empty array"
         );
+        output["follow_up_questions"] = json!([
+            "1. What drives Services growth next quarter",
+            "How does the 2s10s slope affect valuation?",
+            ""
+        ]);
         output["calculations"].as_array_mut().unwrap().push(json!({
             "calculation_id": "calc-x", "expression": "a+b",
             "input_evidence_ids": "e1", "evidence_ids": ["e1"], "output": 3,
@@ -2899,6 +2975,14 @@ mod typed_answer_tolerance_tests {
         strip_unknown_typed_answer_fields(&mut output);
         let calcs = output["calculations"].as_array().unwrap();
         assert!(calcs[0].get("evidence_ids").is_none(), "calculation unknown keys strip");
+        let questions = output["follow_up_questions"].as_array().unwrap();
+        assert!(
+            questions.iter().all(|question| question
+                .as_str()
+                .is_some_and(|text| text.ends_with('?'))),
+            "numbered or unterminated follow-ups normalize and empty ones drop"
+        );
+        assert_eq!(questions.len(), 2);
         assert!(calcs[0]["input_evidence_ids"].is_array(), "calculation ids coerce to arrays");
         assert!(output["claims"][0].get("interpretation").is_none());
         assert!(
