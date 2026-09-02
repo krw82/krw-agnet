@@ -6280,6 +6280,23 @@ mod tests {
         assert!(calls >= 4, "expected both batched reads to dispatch, got {calls}");
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
     }
+    #[test]
+    fn provider_transport_failures_are_retryable_for_the_deferral_lane() {
+        // Production GOOGL 2026-09-02: a mid-stream HTTP transport error
+        // (glm_http_transport, neither timeout nor connect) was classified
+        // non-retryable and the answer-always catch committed the ledger
+        // fallback immediately. Every WireError::Http is a network-level
+        // condition — the deferral lane's 2s retry is the right first
+        // response, and the episode receipts make the replay safe.
+        let failure = DependencyFailure::redacted(
+            "glm_http_transport",
+            "diag",
+            true,
+            DeliveryCertainty::MayHaveDispatched,
+        );
+        assert!(failure.retryable);
+    }
+
     #[tokio::test]
     async fn retryable_dependency_failure_propagates_instead_of_falling_back() {
         // Production 2026-09-02: two EN runs right after a stack restart

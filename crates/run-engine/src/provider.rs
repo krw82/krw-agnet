@@ -134,10 +134,7 @@ fn classify_wire_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::EmptyMessageContent
         | WireError::ToolResultInNonUserMessage
         | WireError::UnexpectedToolResultInAssistant => (false, DeliveryCertainty::NotDispatched),
-        WireError::Http(error) => (
-            error.is_timeout() || error.is_connect(),
-            DeliveryCertainty::MayHaveDispatched,
-        ),
+        WireError::Http(_) => (true, DeliveryCertainty::MayHaveDispatched),
         WireError::ApiStatus { status, .. } => (
             matches!(status, 429 | 500 | 503),
             DeliveryCertainty::MayHaveDispatched,

@@ -1799,6 +1799,29 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 );
             }
             object.retain(|key, _| CALCULATION_KEYS.contains(&key.as_str()));
+            // Calculation prose fields drift like every other key: alias
+            // then bound-default so a missing `expression`/`output` never
+            // fails the strict parse (2026-09-02 matrix: two live runs).
+            if !object
+                .get("expression")
+                .is_some_and(Value::is_string)
+            {
+                if let Some(expr) = object.remove("formula").filter(Value::is_string) {
+                    object.insert("expression".to_owned(), expr);
+                }
+            }
+            if !object
+                .get("expression")
+                .is_some_and(Value::is_string)
+            {
+                object.insert(
+                    "expression".to_owned(),
+                    Value::String("not_disclosed".to_owned()),
+                );
+            }
+            if !object.contains_key("output") {
+                object.insert("output".to_owned(), Value::Null);
+            }
             let ids_ok = object
                 .get("input_evidence_ids")
                 .is_some_and(|ids| ids.as_array().is_some_and(
