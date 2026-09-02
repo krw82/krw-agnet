@@ -1207,6 +1207,12 @@ workflows:
       - { from: ingest_company_orientation, on: ingested, to: author_plan }
       - { from: ingest_company_orientation, on: output_budget_reserved, to: compose_ir }
       - { from: author_plan, on: plan_ready, to: validate_plan }
+      # Repair-budget exhaustion at the plan state keeps the answer-always
+      # contract: with admitted evidence available the run composes the
+      # bounded deterministic answer instead of failing provider-protocol
+      # (2026-09-02 matrix: LLY burned all 3 repairs at author_plan and
+      # failed with no unrecoverable edge declared).
+      - { from: author_plan, on: proposal_unrecoverable, to: compose_ir }
       - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_valid, to: query_context }

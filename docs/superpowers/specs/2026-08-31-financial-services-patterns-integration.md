@@ -418,3 +418,22 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
   2026-09-01")가 후속질문에, RSU 공정가격·10-Q 수치 15개가 본문에 반입.
   EN 삼각조사(공시+금리+간접 시세 신호) 라이브 완결.
 - 워크스페이스 937/0.
+
+## 25. 루프13 — KO+EN 통합 매트릭스 + EN 클레임 형태 3종 수렴 (2026-09-02)
+
+- **KO 풀매트릭스(수리 누적 빌드): 18케이스 17 final·폴백 0** — 유일 실패
+  (LLY)는 수리 예산 3/3을 author_plan에서 소진 후 `proposal_unrecoverable`
+  에지가 KO 이미지에 없어 하드 실패한 것 — **에지 추가로 수리**(answer-always
+  유지). 평균 길이 ~1,800자·정상 수준.
+- **EN 3종**: NVDA = **클린 final 2,501자**(파생 시가 데이터 포인트 ~$225.6
+  실증), MSFT/GOOGL = 클레임 형태 드리프트로 answer_verification 실패 —
+  **에피소드 덤프로 3번째 형태 규명: 증거 바인딩된 구조화 튜플 클레임(텍스트
+  없음) 10개**. 수리: 튜플→텍스트 렌더링(subject predicate value unit
+  period), 합성 클레임 인덱스 바인딩(키 매칭이 id 재발행 후 미스), 증거
+  별칭(sources/citations), body 별칭(summary/description), 시드 무조건
+  제거(없는 클레임 파싱 오염 수정, 937/0).
+- **잔여(루프14)**: MSFT류가 여전 `answer_no_surviving_claims`로 종료 —
+  합성이 claims 배열 **존재하지만 전멸** 시에도 도는지(빈 배열) 최종 확인
+  필요: claims_absent는 is_none_or(is_empty)라 도야 하는데, 이 궤적은 섹션
+  body도 없는 변형 — 최종 형태 = **최상위 산문/요약 필드에서의 합성**.
+- 워크스페이스 937/0.

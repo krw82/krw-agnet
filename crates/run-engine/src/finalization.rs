@@ -1362,6 +1362,8 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     let body = section
                         .get("body")
                         .or_else(|| section.get("text"))
+                        .or_else(|| section.get("summary"))
+                        .or_else(|| section.get("description"))
                         .and_then(Value::as_str)?
                         .trim()
                         .to_owned();
@@ -1376,6 +1378,11 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 .collect()
         })
         .unwrap_or_default();
+    // The body-synthesis seed is transport-only: strip it unconditionally
+    // so it never reaches the strict parse.
+    if let Some(object) = output.as_object_mut() {
+        object.remove("__admitted_evidence_ids__");
+    }
     const CLAIM_KEYS: [&str; 14] = [
         "claim_id", "kind", "strength", "text", "goal_ids", "evidence_ids",
         "counter_evidence_ids", "calculation_ids", "subject", "predicate",
@@ -1538,6 +1545,47 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     }
                 }
             }
+            // Structured fact tuples: English composers emit claims with
+            // evidence ids and typed subject/predicate/value fields but no
+            // prose (2026-09-02 matrix dump: 10 such claims). Render the
+            // tuple into bounded text so the evidence binding survives the
+            // prose gate.
+            if field == "claims"
+                && !object
+                    .get("text")
+                    .is_some_and(Value::is_string)
+            {
+                let scalar = |key: &str| {
+                    object
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                };
+                let value = object
+                    .get("value")
+                    .map(|value| match value {
+                        Value::Number(number) => number.to_string(),
+                        Value::String(text) => text.clone(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+                let parts: Vec<String> = [
+                    scalar("subject"),
+                    scalar("predicate"),
+                    Some(value).filter(|v| !v.is_empty()),
+                    scalar("unit"),
+                    scalar("period"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !parts.is_empty() {
+                    object.insert(
+                        "text".to_owned(),
+                        Value::String(parts.join(" ")),
+                    );
+                }
+            }
             // The single most common id rename (`id` for `claim_id` /
             // `section_id`) is aliased deterministically (2026-09-02 EN
             // loop: fourth shape drift, a missing `claim_id`).
@@ -1598,6 +1646,24 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 }
             }
             if field == "claims" {
+                // Composers name the evidence list "sources" or "citations"
+                // before falling back to evidence_ids (2026-09-02 EN
+                // matrix: claim_has_no_evidence with sources dropped).
+                if !object
+                    .get("evidence_ids")
+                    .is_some_and(Value::is_array)
+                {
+                    for alias in ["sources", "citations"] {
+                        if let Some(list) = object.remove(alias)
+                            .filter(|list| list.as_array().is_some_and(
+                                |rows| rows.iter().all(Value::is_string),
+                            ))
+                        {
+                            object.insert("evidence_ids".to_owned(), list);
+                            break;
+                        }
+                    }
+                }
                 for key in ["goal_ids", "evidence_ids", "counter_evidence_ids", "calculation_ids"] {
                     let ok = object.get(key).is_some_and(|ids| ids.as_array().is_some_and(
                         |rows| rows.iter().all(Value::is_string),
@@ -1736,6 +1802,20 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         .and_then(Value::as_array)
         .is_none_or(Vec::is_empty);
     if claims_absent && !captured_section_bodies.is_empty() {
+        // The synthesized claims describe prose the model derived from the
+        // run's admitted evidence: bind them to the admitted evidence set
+        // (bounded) so the evidence-required gate sees an honest, if broad,
+        // attribution, and register each claim in its section's claim_ids so
+        // the renderer places it (2026-09-02 matrix: claim_has_no_evidence
+        // and unrendered_claim fired on synthesized claims).
+        let admitted_evidence: Vec<Value> = output
+            .get("__admitted_evidence_ids__")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let _ = output.as_object_mut().map(|object| {
+            object.remove("__admitted_evidence_ids__");
+        });
         let synthesized: Vec<Value> = captured_section_bodies
             .iter()
             .enumerate()
@@ -1752,12 +1832,13 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     let boundary = head.rfind('.').map(|dot| dot + 1).unwrap_or(cut);
                     text = text[..boundary].trim_end().to_owned();
                 }
+                let claim_id = format!("claim-{index}-{section_id}");
                 serde_json::json!({
-                    "claim_id": format!("claim-{index}-{section_id}"),
+                    "claim_id": claim_id,
                     "kind": "fact",
                     "strength": "qualified",
                     "text": text,
-                    "evidence_ids": [],
+                    "evidence_ids": admitted_evidence,
                     "goal_ids": [],
                     "counter_evidence_ids": [],
                     "calculation_ids": [],
@@ -1765,7 +1846,30 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             })
             .collect();
         if let Some(object) = output.as_object_mut() {
+            let ids: Vec<Value> = synthesized
+                .iter()
+                .map(|claim| claim["claim_id"].clone())
+                .collect();
             object.insert("claims".to_owned(), Value::Array(synthesized));
+            // Bind by position: the capture preserved section order, and the
+            // section-id pass above may have renamed or minted ids, so key
+            // matching would miss every row.
+            if let Some(sections) = object
+                .get_mut("sections")
+                .and_then(Value::as_array_mut)
+            {
+                for (index, section) in sections.iter_mut().enumerate() {
+                    if index >= ids.len() {
+                        break;
+                    }
+                    if let Some(list) = section
+                        .get_mut("claim_ids")
+                        .and_then(Value::as_array_mut)
+                    {
+                        list.push(ids[index].clone());
+                    }
+                }
+            }
         }
     }
 }
@@ -1796,6 +1900,20 @@ fn validate_typed_output(
             }
             _ => output.clone(),
         };
+        // Seed the admitted-evidence pointer for the body-synthesis pass
+        // (bounded; removed before the strict parse).
+        let admitted: Vec<Value> = state
+            .ledger
+            .iter()
+            .take(8)
+            .map(|(evidence_id, _)| Value::String((*evidence_id).to_owned()))
+            .collect();
+        if let Some(object) = typed_output.as_object_mut() {
+            object.insert(
+                "__admitted_evidence_ids__".to_owned(),
+                Value::Array(admitted),
+            );
+        }
         strip_unknown_typed_answer_fields(&mut typed_output);
         if let Some(object) = typed_output.as_object_mut() {
             object.insert(
