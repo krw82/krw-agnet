@@ -1373,6 +1373,9 @@ pub(crate) fn validate_calculations(
 pub(crate) fn answer_policy(image: &AgentImageManifest) -> AnswerPolicy {
     AnswerPolicy {
         forbidden_terms: image.body.answer_policy.forbidden_user_terms.clone(),
+        // The locale contract comes from the image's declared answer locale
+        // (Korean images keep ko-KR; the English image declares en-US).
+        expected_locale: image.body.answer_policy.locale.clone(),
         require_direct_strong_claims: image
             .body
             .evidence_policy

@@ -6277,10 +6277,45 @@ mod tests {
         // company context + query context + BOTH supplemental reads: the
         // batch's second call was dispatched by the kernel drain.
         let calls = rig.capability.calls.load(std::sync::atomic::Ordering::SeqCst);
-        eprintln!("DEBUG2 calls={calls} log={:?}", *rig.log.lock().unwrap());
         assert!(calls >= 4, "expected both batched reads to dispatch, got {calls}");
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
     }
+    #[tokio::test]
+    async fn retryable_dependency_failure_propagates_instead_of_falling_back() {
+        // Production 2026-09-02: two EN runs right after a stack restart
+        // escaped to the deterministic ledger fallback 37 seconds in with
+        // zero provider episodes — a retryable cold-MCP dependency was
+        // swallowed by the answer-always catch. The engine must propagate
+        // retryable dependencies so the executor's deferral lane retries.
+        let fixture = fixture();
+        let script = VecDeque::from([company_context_tool_call("company-context")]);
+        let usage_script = VecDeque::from([scripted_token_usage(5)]);
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage_script,
+            VecDeque::from([fixture_company_context()]),
+            true,
+            None,
+            false,
+        );
+        rig.capability.fail_next_invoke(DependencyFailure::redacted(
+            "transient_mcp_unavailable",
+            "diag",
+            true,
+            DeliveryCertainty::MayHaveDispatched,
+        ));
+        let error = rig
+            .engine
+            .run(fixture.input())
+            .await
+            .expect_err("retryable dependency must propagate");
+        assert!(matches!(
+            &error,
+            EngineError::Dependency { failure, .. } if failure.retryable
+        ));
+    }
+
+
 
     async fn not_dispatched_capability_failure_voids_the_begun_action_and_still_falls_back() {
         let fixture = fixture();
@@ -6704,6 +6739,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: true,
             exact_follow_up_count: 1,
+            expected_locale: "ko-KR".to_owned(),
         };
 
         let claim = |claim_id: &str, kind: ClaimKind, strength: ClaimStrength| Claim {
@@ -6792,6 +6828,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: true,
             exact_follow_up_count: 1,
+            expected_locale: "ko-KR".to_owned(),
         };
         let valid_claim = |index: usize| Claim {
             claim_id: format!("c{index}"),
@@ -11554,6 +11591,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: false,
             exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
         }
     }
 

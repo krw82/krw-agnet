@@ -533,6 +533,10 @@ pub struct AnswerPolicy {
     pub require_unit_for_numbers: bool,
     pub require_counter_signal_for_interpretation: bool,
     pub exact_follow_up_count: usize,
+    /// The locale contract the answer must satisfy. Korean images keep the
+    /// historical ko-KR default; the English image declares en-US
+    /// (2026-09-02: the hardcoded check failed every English answer).
+    pub expected_locale: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,11 +562,14 @@ pub fn validate_answer(
             ),
         });
     }
-    if answer.locale != "ko-KR" {
+    if answer.locale != policy.expected_locale {
         issues.push(ValidationIssue {
             code: "answer_locale_mismatch",
             claim_id: None,
-            detail: format!("expected ko-KR, observed {}", answer.locale),
+            detail: format!(
+                "expected {}, observed {}",
+                policy.expected_locale, answer.locale
+            ),
         });
     }
     // Process-leak backstop (measured 2026-08-31): a forced compose after a
@@ -1436,6 +1443,7 @@ mod tests {
                 require_unit_for_numbers: true,
                 require_counter_signal_for_interpretation: true,
                 exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
             },
         )
         .unwrap_err();
@@ -1452,6 +1460,7 @@ mod tests {
             require_unit_for_numbers: false,
             require_counter_signal_for_interpretation: false,
             exact_follow_up_count: 0,
+            expected_locale: "ko-KR".to_owned(),
         };
         let sectioned_claim = |text: &str| Claim {
             claim_id: "c0".into(),
@@ -1606,6 +1615,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: true,
             exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
         }
     }
 
@@ -1687,6 +1697,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: true,
             exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
         };
         assert!(validate_answer(&answer, &ledger, &policy).is_ok());
         let rendered = render_markdown(&answer, &ledger).unwrap();
@@ -1728,6 +1739,7 @@ mod tests {
             require_unit_for_numbers: true,
             require_counter_signal_for_interpretation: true,
             exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
         };
         let issues = validate_answer(&answer, &ledger, &policy).unwrap_err();
         assert!(
@@ -1793,6 +1805,7 @@ mod tests {
                 require_unit_for_numbers: true,
                 require_counter_signal_for_interpretation: true,
                 exact_follow_up_count: 3,
+            expected_locale: "ko-KR".to_owned(),
             },
         )
         .unwrap_err();

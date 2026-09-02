@@ -354,3 +354,19 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
 - 라이브 결과: 6-9차는 연구→컴포즈 도달(형태 수리마다 진행), 10차는 37초 만에
   **입장 단계 의존성 탈출(간헐적, 재기동 직후 2회 상관)** — 루프9 1차 과제.
 - 워크스페이스 935/0.
+
+## 21. 루프9 — 재시도 전파 + 정규화 사다리 확장 + 로케일 매개변수화 (2026-09-02)
+
+- **재시도 의존성 전파(9-A)**: 오케스트레이터가 재시도 가능 의존성(콜드 MCP 풀)을
+  answer-always 폴백으로 삼키던 것을 Err로 전파해 실행자 2초 지연 재시도 경로
+  활성(TDD: `retryable_dependency_failure_propagates_instead_of_falling_back`).
+- **정규화 사다리 확장(드리프트 6~10)**: 루트 스칼라(schema_version 문자열
+  에코→1, locale→요청 바인딩) · 섹션 필드(intent/heading/claim_ids 기본값과
+  별칭) · id 발명(별칭 후 결정론적 발행) · 배열 필드 강제(문자열→빈 배열) ·
+  계산 정규화(미지 키 제거+ids 강제).
+- **로케일 매개변수화**: 검증기의 `locale != "ko-KR"` 하드코딩을 AnswerPolicy.
+  expected_locale로 — EN 이미지(en-US) 답변이 구조적으로 통과.
+- 라이브 9차: locale_mismatch 해소 — 잔여 EN 검증 갭 실측 =
+  answer_language_mismatch(클레임 언어 휴리스틱) + invalid_section_id(정규화 후
+  유니크 위반) + unrendered_claim×9(섹션-클레임 바인딩 누락) = 루프10 과제.
+- 폴백 warn에 trigger 상세 추가(진단 관측성). 워크스페이스 936/0.

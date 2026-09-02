@@ -1364,6 +1364,19 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         "subject", "predicate", "unit", "period", "comparison_basis", "strength_label",
     ];
     let Some(root) = output.as_object_mut() else { return };
+    // Root scalars: composers occasionally echo the contract name into
+    // `schema_version` ("answer_ir/v1") or omit `locale`; both normalize
+    // deterministically (2026-09-02 EN loop, sixth drift).
+    let version_ok = root
+        .get("schema_version")
+        .is_some_and(Value::is_u64);
+    if !version_ok {
+        root.insert("schema_version".to_owned(), Value::from(1_u64));
+    }
+    // Locale is run metadata, not model output: bind it to the request so a
+    // composer echoing the wrong example never trips the locale gate
+    // (2026-09-02 EN loop: answer_locale_mismatch on an otherwise valid IR).
+    let _ = root.remove("locale");
     for (field, allowed) in [("claims", &CLAIM_KEYS[..]), ("sections", &SECTION_KEYS[..])] {
         let Some(rows) = root.get_mut(field).and_then(Value::as_array_mut) else {
             continue;
@@ -1383,6 +1396,106 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         });
         for row in rows.iter_mut() {
             let Some(object) = row.as_object_mut() else { continue };
+            // Sections require `intent`; composers rarely emit it. A
+            // missing or wrongly-typed intent defaults to a bounded label
+            // (2026-09-02 EN loop, seventh drift). `heading` likewise.
+            if field == "sections" {
+                let heading_ok = object
+                    .get("heading")
+                    .is_some_and(Value::is_string);
+                if !heading_ok
+                    && let Some(heading) = object.remove("title")
+                        .or_else(|| object.remove("name"))
+                        .filter(Value::is_string)
+                {
+                    object.insert("heading".to_owned(), heading);
+                }
+                if !object
+                    .get("heading")
+                    .is_some_and(Value::is_string)
+                {
+                    object.insert(
+                        "heading".to_owned(),
+                        Value::String("Analysis".to_owned()),
+                    );
+                }
+                let intent_ok = object
+                    .get("intent")
+                    .is_some_and(Value::is_string);
+                if !intent_ok
+                    && let Some(intent) = object.remove("purpose")
+                        .or_else(|| object.remove("summary"))
+                        .filter(Value::is_string)
+                {
+                    object.insert("intent".to_owned(), intent);
+                }
+                if !object
+                    .get("intent")
+                    .is_some_and(Value::is_string)
+                {
+                    object.insert(
+                        "intent".to_owned(),
+                        Value::String("orientation".to_owned()),
+                    );
+                }
+                // section_id must satisfy the bounded identifier rule
+                // (lowercase alphanumerics plus ._-:). Sanitize whatever the
+                // composer produced; mint when absent (2026-09-02 EN loop:
+                // invalid_section_id x3 on an otherwise valid IR).
+                let sanitized = object
+                    .get("section_id")
+                    .and_then(Value::as_str)
+                    .map(|id| {
+                        let cleaned: String = id
+                            .chars()
+                            .map(|c| {
+                                if c.is_ascii_lowercase()
+                                    || c.is_ascii_digit()
+                                    || matches!(c, '.' | '_' | ':' | '-')
+                                {
+                                    c
+                                } else if c.is_ascii_uppercase()
+                                {
+                                    c.to_ascii_lowercase()
+                                } else
+                                {
+                                    '-'
+                                }
+                            })
+                            .collect();
+                        cleaned
+                    })
+                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                    .unwrap_or_else(|| format!("s{}", object.len()));
+                object.insert(
+                    "section_id".to_owned(),
+                    Value::String(sanitized),
+                );
+                // claim_ids must be an array of strings; a missing or
+                // wrongly-typed value defaults to empty (the section simply
+                // carries no claim bindings — 2026-09-02 EN loop, ninth
+                // drift).
+                let ids_ok = object
+                    .get("claim_ids")
+                    .is_some_and(|ids| ids.as_array().is_some_and(
+                        |rows| rows.iter().all(Value::is_string),
+                    ));
+                if !ids_ok
+                    && let Some(ids) = object.remove("claims")
+                        .filter(|ids| ids.as_array().is_some_and(
+                            |rows| rows.iter().all(Value::is_string),
+                        ))
+                {
+                    object.insert("claim_ids".to_owned(), ids);
+                } else if !object
+                    .get("claim_ids")
+                    .is_some_and(|ids| ids.as_array().is_some_and(
+                        |rows| rows.iter().all(Value::is_string),
+                    ))
+                {
+                    object.insert("claim_ids".to_owned(), Value::Array(Vec::new()));
+                }
+            }
             if field == "claims" && !object.contains_key("text") {
                 for alias in ["claim", "statement", "content"] {
                     if let Some(value) = object.remove(alias)
@@ -1397,10 +1510,27 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             // `section_id`) is aliased deterministically (2026-09-02 EN
             // loop: fourth shape drift, a missing `claim_id`).
             let id_field = if field == "claims" { "claim_id" } else { "section_id" };
-            if !object.contains_key(id_field)
-                && let Some(id) = object.remove("id")
+            if !object.contains_key(id_field) {
+                for alias in ["id", "claim", "cid", "claimId", "sectionId"] {
+                    if let Some(id) = object.remove(alias).filter(Value::is_string) {
+                        object.insert(id_field.to_owned(), id);
+                        break;
+                    }
+                }
+            }
+            // Still missing after aliases: mint a deterministic id from the
+            // row's position so a claim never dies on its identifier alone
+            // (2026-09-02 EN loop, eighth drift: `claimId` camelCase).
+            if !object
+                .get(id_field)
+                .is_some_and(Value::is_string)
             {
-                object.insert(id_field.to_owned(), id);
+                let minted = format!(
+                    "{}-{}",
+                    if field == "claims" { "claim" } else { "section" },
+                    object.len()
+                );
+                object.insert(id_field.to_owned(), Value::String(minted));
             }
             object.retain(|key, _| allowed.contains(&key.as_str()));
             // Non-substantive enum labels the sanitizer re-derives anyway:
@@ -1435,6 +1565,16 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     );
                 }
             }
+            if field == "claims" {
+                for key in ["goal_ids", "evidence_ids", "counter_evidence_ids", "calculation_ids"] {
+                    let ok = object.get(key).is_some_and(|ids| ids.as_array().is_some_and(
+                        |rows| rows.iter().all(Value::is_string),
+                    ));
+                    if !ok {
+                        object.insert(key.to_owned(), Value::Array(Vec::new()));
+                    }
+                }
+            }
             for key in CLAIM_OPTIONAL_STRINGS {
                 if let Some(value) = object.get(key)
                     && !value.is_string()
@@ -1450,6 +1590,41 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         .and_then(Value::as_array_mut)
     {
         questions.retain(Value::is_string);
+    }
+    // Calculations carry their own closed key set; strip additive keys and
+    // coerce array-of-string fields (2026-09-02 EN loop, tenth drift: an
+    // `evidence_ids` key appeared on a calculation).
+    const CALCULATION_KEYS: [&str; 11] = [
+        "calculation_id", "expression", "label", "input_evidence_ids",
+        "output", "unit", "rounding", "subject", "metric", "period", "currency",
+    ];
+    if let Some(rows) = root
+        .get_mut("calculations")
+        .and_then(Value::as_array_mut)
+    {
+        for row in rows.iter_mut() {
+            let Some(object) = row.as_object_mut() else { continue };
+            object.retain(|key, _| CALCULATION_KEYS.contains(&key.as_str()));
+            let ids_ok = object
+                .get("input_evidence_ids")
+                .is_some_and(|ids| ids.as_array().is_some_and(
+                    |values| values.iter().all(Value::is_string),
+                ));
+            if !ids_ok {
+                object.insert(
+                    "input_evidence_ids".to_owned(),
+                    Value::Array(Vec::new()),
+                );
+            }
+            for key in ["label", "unit", "rounding", "subject", "metric", "period", "currency"] {
+                if let Some(value) = object.get(key)
+                    && !value.is_string()
+                    && !value.is_null()
+                {
+                    object.remove(key);
+                }
+            }
+        }
     }
 }
 
@@ -1480,6 +1655,12 @@ fn validate_typed_output(
             _ => output.clone(),
         };
         strip_unknown_typed_answer_fields(&mut typed_output);
+        if let Some(object) = typed_output.as_object_mut() {
+            object.insert(
+                "locale".to_owned(),
+                Value::String(input.request.locale.clone()),
+            );
+        }
         let mut answer_ir: AnswerIr = serde_json::from_value(typed_output)?;
         let policy = answer_policy(input.image);
         bind_kernel_goal_ids(&mut answer_ir, state);
@@ -2420,6 +2601,7 @@ where
         );
         tracing::warn!(
             code = fallback.reason_code,
+            trigger = ?error,
             "terminal dependency/budget escape; committing deterministic ledger fallback final"
         );
         let output = Value::String(fallback.markdown.clone());
@@ -2653,23 +2835,71 @@ mod typed_answer_tolerance_tests {
             "id": "c2", "claim": "Margins improved.", "evidence_ids": ["e2"],
         });
         output["claims"].as_array_mut().unwrap().push(json!({
-            "claim_id": "c3", "kind": "fact", "strength": "strong", "evidence_ids": [],
+            "claimId": "c4", "claim": "Services margin expanded.",
+            "evidence_ids": ["e3"],
         }));
         output["claims"].as_array_mut().unwrap().push(drift);
+        output["schema_version"] = json!("answer_ir/v1");
         output["claims"][0]["unit"] = json!({"label": "USD"});
+        output["sections"][0].as_object_mut().unwrap().remove("claim_ids");
+        output["claims"][1]["evidence_ids"] = json!("e2");
+        output["schema_version"] = json!("ir");
         strip_unknown_typed_answer_fields(&mut output);
-        let claims = output["claims"].as_array().unwrap();
         assert_eq!(
-            claims[1]["claim_id"], "c2",
+            output["schema_version"], 1,
+            "a contract-name echo normalizes to version 1"
+        );
+        assert!(
+            output["sections"][0]["intent"].is_string(),
+            "missing intent defaults"
+        );
+        let claims = output["claims"].as_array().unwrap();
+        assert!(
+            claims.iter().any(|claim| claim["claim_id"] == "c2"),
             "an `id` key is aliased to claim_id"
         );
-        assert_eq!(claims[1]["kind"], "fact", "missing labels default to a valid variant");
-        assert_eq!(claims[1]["strength"], "qualified", "missing labels default");
-        assert_eq!(claims[1]["text"], "Margins improved.", "a claim alias rescues prose");
+        assert!(
+            claims.iter().all(|claim| claim["kind"] == "fact"),
+            "missing labels default to a valid variant"
+        );
+        assert!(
+            claims.iter().all(|claim| claim["strength"] == "qualified"),
+            "missing labels default"
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|claim| claim["text"] == "Margins improved."),
+            "a claim alias rescues prose"
+        );
         assert!(
             claims.iter().all(|claim| claim.get("text").is_some()),
             "prose-less claims are dropped, not fatal"
         );
+        assert!(
+            claims
+                .iter()
+                .all(|claim| claim.get("claim_id").map(serde_json::Value::is_string).unwrap_or(false)),
+            "camelCase ids alias or mint — never fatal"
+        );
+        assert!(
+            claims
+                .iter()
+                .all(|claim| claim["evidence_ids"].is_array()),
+            "wrongly-typed array fields normalize to arrays"
+        );
+        assert!(
+            output["sections"][0]["claim_ids"].is_array(),
+            "missing section claim_ids default to an empty array"
+        );
+        output["calculations"].as_array_mut().unwrap().push(json!({
+            "calculation_id": "calc-x", "expression": "a+b",
+            "input_evidence_ids": "e1", "evidence_ids": ["e1"], "output": 3,
+        }));
+        strip_unknown_typed_answer_fields(&mut output);
+        let calcs = output["calculations"].as_array().unwrap();
+        assert!(calcs[0].get("evidence_ids").is_none(), "calculation unknown keys strip");
+        assert!(calcs[0]["input_evidence_ids"].is_array(), "calculation ids coerce to arrays");
         assert!(output["claims"][0].get("interpretation").is_none());
         assert!(
             output["claims"][0].get("unit").is_none(),

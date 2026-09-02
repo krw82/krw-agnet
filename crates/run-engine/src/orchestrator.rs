@@ -101,6 +101,15 @@ where
             .await
         {
             Ok(outcome) => outcome,
+            // A RETRYABLE dependency (cold MCP pool right after a stack
+            // restart, production 2026-09-02: 2 of 10 EN runs escaped to the
+            // deterministic fallback 37s in with zero episodes) must not be
+            // swallowed by the answer-always catch: propagate it so the
+            // executor's deferral lane can re-lease and retry. Only
+            // non-retryable/capacity-class errors fall back immediately.
+            Err(error) if matches!(&error, EngineError::Dependency { failure, .. } if failure.retryable) => {
+                return Err(error)
+            }
             Err(error) if error_allows_ledger_fallback(&error) => {
                 self.commit_ledger_fallback(&input, &identity, &mut state, error, deadline)
                     .await?
