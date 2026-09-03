@@ -87,9 +87,14 @@ def publishable_widgets(
 
     _require(isinstance(artifact, dict), "artifact must be an object")
     views = artifact.get("views")
+    # The engine (crates/krw-presentation lib.rs) emits "artifact_format";
+    # "format" is accepted for backwards compatibility with older packs. No
+    # masking default: a missing or wrong format key is an honest rejection,
+    # never a silent pass.
+    format_key = artifact.get("artifact_format") or artifact.get("format")
     _require(
-        artifact.get("format", ARTIFACT_FORMAT) == ARTIFACT_FORMAT,
-        f"unsupported artifact format: {artifact.get('format')!r}",
+        format_key == ARTIFACT_FORMAT,
+        f"unsupported artifact format: {format_key!r}",
     )
     _require(isinstance(views, list) and bool(views), "artifact has no views")
     _require(bool(origin), "origin (run identity) is required")

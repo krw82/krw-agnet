@@ -14,8 +14,10 @@ from openbb_gateway.widget_publisher import (
 
 
 def artifact_fixture() -> dict:
+    # Key contract: the engine (crates/krw-presentation lib.rs) emits
+    # "artifact_format", NOT "format" — the fixture mirrors the producer.
     return {
-        "format": "krw-visualization",
+        "artifact_format": "krw-visualization",
         "schema_version": 4,
         "title": "Southern Copper — quarterly revenue",
         "views": [
@@ -108,7 +110,27 @@ class PublishableWidgetsTests(unittest.TestCase):
 
     def test_rejects_wrong_format_honestly(self) -> None:
         fixture = artifact_fixture()
-        fixture["format"] = "something-else"
+        fixture["artifact_format"] = "something-else"
+        with self.assertRaises(WidgetPublishError):
+            publishable_widgets(fixture, origin="run-abc")
+
+    def test_legacy_format_key_still_accepted(self) -> None:
+        """Backcompat: artifacts carrying the older "format" key (instead of
+        the engine-emitted "artifact_format") still publish."""
+
+        fixture = artifact_fixture()
+        fixture.pop("artifact_format")
+        fixture["format"] = "krw-visualization"
+        payloads = publishable_widgets(fixture, origin="run-abc")
+        self.assertEqual(len(payloads), 2)
+
+    def test_missing_format_key_is_rejected_not_masked(self) -> None:
+        """No format key at all must be an honest rejection — the old
+        ``.get(..., ARTIFACT_FORMAT)`` default silently passed keyless
+        artifacts, so the "honest rejection" never fired on them."""
+
+        fixture = artifact_fixture()
+        fixture.pop("artifact_format")
         with self.assertRaises(WidgetPublishError):
             publishable_widgets(fixture, origin="run-abc")
 
