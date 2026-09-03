@@ -1654,8 +1654,35 @@ fn map_goals(
                     true,
                     &mut benefits,
                 )
-            })?;
+            });
+        if goal_ids.is_none() {
+            // P7 (2026-09-03, live VIPS runs): a trusted ticker the ontology
+            // catalog does not cover has no filing-evidence lane at all —
+            // the strict mapping above only serves calculation goals, so a
+            // qualitative frontier (e.g. "list this issuer's recent
+            // filings") discarded the only remaining research surface as
+            // unmapped. When the server reports the ticker unavailable and
+            // the plan still expects it (an exact candidate exists), the
+            // observation plane is the only lane left: admit the read
+            // against every still-open goal. The advisory-only result, the
+            // one-visit state bound, and the ticker filter keep it bounded.
+            let ticker_unavailable = projection
+                .retrieval_status
+                .warnings
+                .iter()
+                .any(|warning| warning == "ticker_not_available")
+                && projection
+                    .exact_precise_query_candidates
+                    .iter()
+                    .any(|candidate| candidate.ticker == ticker);
+            if ticker_unavailable {
+                goal_ids =
+                    Some(frontier.iter().map(|goal_id| (*goal_id).to_owned()).collect());
+            }
+        }
+        let mut goal_ids = goal_ids?;
         goal_ids.sort();
+        goal_ids.dedup();
         return Some((goal_ids, benefits));
     } else {
         return None;
@@ -2546,6 +2573,51 @@ mod tests {
         );
         assert_eq!(
             planner.select(std::slice::from_ref(&observation)).unwrap(),
+            PlannerDecision::NoPositiveValue {
+                evaluated: 1,
+                reason: NoPositiveReason::ProposalUnmapped,
+            }
+        );
+    }
+
+    #[test]
+    fn observation_maps_for_a_qualitative_frontier_when_the_ticker_is_uncovered() {
+        // P7 live regression (VIPS filings runs): the ontology reports the
+        // trusted ticker unavailable, the plan still expects it (an exact
+        // candidate exists), and the frontier is qualitative-only — the
+        // strict calculation-goal fallback left the openbb.filings proposal
+        // unmapped twice. The observation lane is then the only research
+        // surface and must be admitted.
+        let mut state = observation_fixture();
+        state.warnings.push("ticker_not_available".into());
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&state, &[]).unwrap();
+        let filings = proposal(
+            "filings",
+            "openbb.filings",
+            serde_json::json!({"ticker": "VG"}),
+            100,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&filings)).unwrap(),
+            PlannerDecision::Execute { proposal_id, .. } if proposal_id == "filings"
+        ));
+    }
+
+    #[test]
+    fn uncovered_ticker_fallback_still_rejects_foreign_tickers() {
+        let mut state = observation_fixture();
+        state.warnings.push("ticker_not_available".into());
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&state, &[]).unwrap();
+        let foreign = proposal(
+            "filings",
+            "openbb.filings",
+            serde_json::json!({"ticker": "AAPL"}),
+            100,
+        );
+        assert_eq!(
+            planner.select(std::slice::from_ref(&foreign)).unwrap(),
             PlannerDecision::NoPositiveValue {
                 evaluated: 1,
                 reason: NoPositiveReason::ProposalUnmapped,
