@@ -130,10 +130,10 @@
 | P0 | ~~FMP 공식 MCP 등록 스파이크~~ → **2026-09-03 판정: 불가 폐기** (Bearer 401·`?apikey=`만 200 vs 엔진 쿼리 금지 `tool-mcp/src/lib.rs:626`; 상세 근거는 FMP 문서 §6). 스타터 게이트는 ODP 경유로 P1에 흡수 | — | 완료 |
 | P1 | 엔진 openbb 바인딩 병합(완료 확인) + FMP 필링 큐레이션 + 스타터 게이트 ODP 실측 | — | 0.5일 |
 | P2 | ~~`openbb-fmp-extra` 확장 프로바이더~~ → **2026-09-03 완료(f7aedb2, 자체 저장소 `~/krw-ontology-v2/openbb-fmp-extra`)**: 6명령(commodity list/quote/EOD·dcf·market_hours·mergers_latest), 단위 10/10, REST 마운트 6라우트 + `obb.fmpextra.*` 빌드 실증. 설계 변경 3건(모두 근본 원인): ① provider명 `fmpextra`(레지스트리가 진입점 이름으로 키 → fmp 재등록은 섀도잉) ② 자격증명 `fmpextra_api_key`(openbb-core가 provider명 접두 — 기존 fmp 키 값 재사용 안내) ③ 커모디티는 커스텀 라우트(표준 CommoditySpotPrices 모델에 symbol 차원 없음). 펀드/ETF 보유내역은 스타터 402 실측으로 의도적 제외. 라이브 데이터는 P6 마운트 시 측정 | A | 완료 |
-| P3 | DCF 위젯 이원화 마무리: krw-backend에 민감도 **히트맵**(Plotly)+metric 카드 | B | 0.5일 |
-| P4 | "/dcf" 코파일럿 스킬(브리지 스킬 경로 이미 지원) | — | 0.5일 |
-| P5 | 계약 정합 수리: krw-backend `source` 배열화(5위건), 브리지 `pickTicker` 이름 기반 매칭 보강, krw 위젯 `mcp_tool` 선언 | B | 0.5일 |
-| P6 | 배포: 확장을 ODP env 직접 설치 vs 별도 openbb-api 인스턴스 — 워크스페이스 등록 실측 후 확정 | — | 0.5일 |
+| P3 | ~~DCF 위젯 이원화 마무리: krw-backend에 민감도 히트맵(Plotly)+metric 카드~~ → **2026-09-03 완료(13a06fe)**: 히트맵+기저 요약 2위젯, 58/58 테스트, 라이브 실증(AAPL 기저 $100.84, MSFT 요약 실데이터). metric **타입**은 공식 소스 전무(페이로드 계약 미검증)로 보류 — 검증 가능한 계약(chart/table)만 선적 | B | 완료 |
+| P4 | ~~"/dcf" 코파일럿 스킬~~ → **2026-09-03 완료(bddfa55)**: `skills/dcf-valuation.md`(quant.dcf·민감도·위젯 숫자 정합 지시) + 합성 테스트(브리지 20/20). 워크스페이스 "/" 등록은 사용자 액션(스킬은 워크스페이스 소유 — 에이전트는 selected_skills 수신만 계약상 가능) | — | 완료 |
+| P5 | ~~계약 정합 수리~~ → **2026-09-03 완료(13a06fe·8f87e45)**: source 배열화 7위젯 → 공식 검증기 **7/7 통과**(기존 5위반 소멸) · pickTicker 이름 매칭(공식 페이로드 `{name:"ticker",type:"string"}` 대응, 19→20/20) · mcp_tool은 불선언 판정(워크스페이스 MCP 서버 이름 전제 + 우리 코파일럿은 자체 citation 경로 — README D11 기록) | B | 완료 |
+| P6 | ~~배포 경로 확정~~ → **2026-09-03 확정: 별도 인스턴스 채택**. 실측: 스파이크 venv+fmpextra에서 `openbb_platform_api` 부팅 → widgets.json 319개 중 **fmpextra 6위젯이 깔끔한 ID**(`fmpextra_dcf_fmpextra_obb` 등)로 자동 서빙(200). ODP env 직접 설치는 기각(앱 업데이트 시 env 소실 + 데스크톱 앱 내부 침입). 참고: pro-backend 생성기는 이 venv의 legacy util 라우트(no-ref)에서 깨져 /tmp 검증 사본에 no-ref 스킵 가드를 했고, 원시 `openbb_core` rest_api로 서빙하면 ID가 `fmp_extra_routers_…`로丑化되므로 **platform-api 경로가 정석**. 사용자 액션 2건: ① `~/.openbb_platform/user_settings.json`에 `fmpextra_api_key` 1행 추가(기존 fmp_api_key와 동일 값 — 값 복사는 사용자만) ② 워크스페이스 Add data에 `http://127.0.0.1:<port>/widgets.json` 등록 | — | 완료 |
 | P7 | 품질 루프: 커버 밖 티커 FMP 폴백 + "/dcf" + 위젯 렌더 실측 판정서 | — | 루프 1회 |
 
 리스크 롤업: AGPL 격리(독립 pip)·FMP 스타터 한도(큐레이션 상한+캐시)·
