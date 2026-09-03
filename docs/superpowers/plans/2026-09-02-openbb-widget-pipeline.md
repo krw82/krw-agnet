@@ -129,7 +129,7 @@
 |---|---|---|---|
 | P0 | ~~FMP 공식 MCP 등록 스파이크~~ → **2026-09-03 판정: 불가 폐기** (Bearer 401·`?apikey=`만 200 vs 엔진 쿼리 금지 `tool-mcp/src/lib.rs:626`; 상세 근거는 FMP 문서 §6). 스타터 게이트는 ODP 경유로 P1에 흡수 | — | 완료 |
 | P1 | 엔진 openbb 바인딩 병합(완료 확인) + FMP 필링 큐레이션 + 스타터 게이트 ODP 실측 | — | 0.5일 |
-| P2 | `openbb-fmp-extra` 확장 프로바이더: commodity(표준 fetcher)·DCF(신규 라우트, chart 파라미터 포함)·market_hours·M&A·펀드 | A | 1~2일 |
+| P2 | ~~`openbb-fmp-extra` 확장 프로바이더~~ → **2026-09-03 완료(f7aedb2, 자체 저장소 `~/krw-ontology-v2/openbb-fmp-extra`)**: 6명령(commodity list/quote/EOD·dcf·market_hours·mergers_latest), 단위 10/10, REST 마운트 6라우트 + `obb.fmpextra.*` 빌드 실증. 설계 변경 3건(모두 근본 원인): ① provider명 `fmpextra`(레지스트리가 진입점 이름으로 키 → fmp 재등록은 섀도잉) ② 자격증명 `fmpextra_api_key`(openbb-core가 provider명 접두 — 기존 fmp 키 값 재사용 안내) ③ 커모디티는 커스텀 라우트(표준 CommoditySpotPrices 모델에 symbol 차원 없음). 펀드/ETF 보유내역은 스타터 402 실측으로 의도적 제외. 라이브 데이터는 P6 마운트 시 측정 | A | 완료 |
 | P3 | DCF 위젯 이원화 마무리: krw-backend에 민감도 **히트맵**(Plotly)+metric 카드 | B | 0.5일 |
 | P4 | "/dcf" 코파일럿 스킬(브리지 스킬 경로 이미 지원) | — | 0.5일 |
 | P5 | 계약 정합 수리: krw-backend `source` 배열화(5위건), 브리지 `pickTicker` 이름 기반 매칭 보강, krw 위젯 `mcp_tool` 선언 | B | 0.5일 |
