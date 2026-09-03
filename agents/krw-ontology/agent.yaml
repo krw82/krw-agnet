@@ -201,6 +201,16 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-macro-calendar-input-v1
     content_hash: sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5
     semantic_authority: krw-agent-capability-runtime
+  # Round-3 (2026-09-03): ticker-scoped FMP SEC-filings list — the filing
+  # record for issuers outside the ontology catalog.
+  - id: openbb-filings-request/v1
+    schema_ref: canonical:krw-agent/openbb-filings-request-v1
+    content_hash: sha256:e678f0b234195aa701118362a4afab536a4dd7a95256b1c5a491307fe4d555c8
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-filings-input/v1
+    schema_ref: canonical:krw-agent/openbb-filings-input-v1
+    content_hash: sha256:080415cbbbac36d41eaa0b9614a2cc9b0ae0fd005f1520bea490cb529f478011
+    semantic_authority: krw-agent-capability-runtime
   # Deterministic local quant computation (financial-services P2/P4: the
   # tools compute, the model interprets).
   - id: quant-dcf-request/v1
@@ -889,6 +899,38 @@ capabilities:
     scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # ── openbb curation round 3: FMP filings (2026-09-03) ──
+  - id: openbb.filings
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_filings }
+    permission: read
+    # Ticker-scoped SEC-filing list (filing_date, report_type, links) from the
+    # FMP provider — the filing record for issuers outside the ontology
+    # catalog, where the ontology filing ladder has nothing to serve. Records
+    # are an advisory observation; strong claims still need primary text.
+    input_contract: openbb-filings-input/v1
+    model_input_contract: openbb-filings-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 30000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1500
+        expected_tool_cost_micros: 400
+        expected_result_bytes: 8192
+      conflict_domain: openbb.equity_fundamental_filings
+    scope_binding:
+      kind: trusted_ticker_set
+      ticker_references:
+        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
+      require_any_of: [ticker]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   # Deterministic DCF computation builtin: the model supplies labeled inputs
   # it already collected; the engine owns every arithmetic step (present
   # values, terminal value, equity bridge, base-centered 5x5 sensitivity)
@@ -1143,8 +1185,9 @@ workflows:
       # able to accept every already-advertised evidence-producing read:
       # query_context x2, targeted query x2, trace, chain, market x1, each
       # of the five event/news ladder reads x1, the two observation series
-      # lookups x1, and the three curated openbb lookups x1.
-      - { id: ingest_evidence, kind: ingest, max_visits: 28 }
+      # lookups x1, the three curated openbb lookups x1, and the round-3
+      # openbb filings lookup x1.
+      - { id: ingest_evidence, kind: ingest, max_visits: 29 }
       - { id: assess_obligations, kind: assess, role_id: analyst, max_visits: 3 }
       - { id: market_snapshot, kind: capability, capability_id: market.snapshot, max_visits: 1 }
       # Observation-plane series lookups (advisory market/macro backdrop).
@@ -1172,6 +1215,9 @@ workflows:
       - { id: openbb_earnings_calendar_lookup, kind: capability, capability_id: openbb.earnings_calendar, max_visits: 1 }
       - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
       - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
+      # Round-3: FMP filings list for the trusted ticker (the filing record
+      # when the issuer sits outside the ontology catalog).
+      - { id: openbb_filings_lookup, kind: capability, capability_id: openbb.filings, max_visits: 1 }
       # Deterministic valuation computation (advisory artifact, no ledger
       # entries): the analyst supplies labeled inputs, the engine computes.
       - { id: quant_dcf_lookup, kind: capability, capability_id: quant.dcf, max_visits: 1 }
@@ -1239,6 +1285,7 @@ workflows:
       - { from: assess_obligations, on: openbb_earnings_calendar_has_value, to: openbb_earnings_calendar_lookup }
       - { from: assess_obligations, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
       - { from: assess_obligations, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
+      - { from: assess_obligations, on: openbb_filings_has_value, to: openbb_filings_lookup }
       - { from: assess_obligations, on: quant_dcf_has_value, to: quant_dcf_lookup }
       - { from: assess_obligations, on: precise_query_has_value, to: targeted_query }
       - { from: assess_obligations, on: selected_trace_has_value, to: trace_selected }
@@ -1274,6 +1321,7 @@ workflows:
       - { from: openbb_earnings_calendar_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_filings_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: quant_dcf_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_search, on: evidence_observed, to: ingest_evidence }
       - { from: event_filing_brief, on: evidence_observed, to: ingest_evidence }
@@ -1618,6 +1666,7 @@ validators:
       - { op: max_calls, capability_id: openbb.earnings_calendar, max: 2, code: openbb_earnings_calendar_limit }
       - { op: max_calls, capability_id: openbb.yield_curve, max: 2, code: openbb_yield_curve_limit }
       - { op: max_calls, capability_id: openbb.macro_calendar, max: 2, code: openbb_macro_calendar_limit }
+      - { op: max_calls, capability_id: openbb.filings, max: 2, code: openbb_filings_limit }
       - { op: max_calls, capability_id: quant.dcf, max: 2, code: quant_dcf_limit }
       - { op: max_calls, capability_id: ontology.query, max: 2, code: targeted_query_limit }
       - { op: max_calls, capability_id: ontology.trace, max: 1, code: trace_limit }
@@ -1648,6 +1697,7 @@ validators:
       - { op: state_precedes, before: query_context, after: openbb_earnings_calendar_lookup, code: context_before_openbb_earnings_calendar }
       - { op: state_precedes, before: query_context, after: openbb_yield_curve_lookup, code: context_before_openbb_yield_curve }
       - { op: state_precedes, before: query_context, after: openbb_macro_calendar_lookup, code: context_before_openbb_macro_calendar }
+      - { op: state_precedes, before: query_context, after: openbb_filings_lookup, code: context_before_openbb_filings }
       - { op: state_precedes, before: query_context, after: quant_dcf_lookup, code: context_before_quant_dcf }
       - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
       - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }

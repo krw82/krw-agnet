@@ -398,3 +398,14 @@ capabilities:
     data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
     max_connections: 2
     request_timeout_ms: 15000
+  - binding_key: openbb_equity_fundamental_filings
+    mcp_tool_name: equity_fundamental_filings
+    endpoint_ref: krw-openbb-local
+    credential_ref: KRW_OPENBB_MCP_TOKEN
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:REPLACE_WITH_OPENBB_TOOL_SCHEMA_SHA256
+    server_build: REPLACE_WITH_OPENBB_BUILD_ID
+    data_release_hash: sha256:REPLACE_WITH_OPENBB_RELEASE_SHA256
+    max_connections: 2
+    request_timeout_ms: 15000

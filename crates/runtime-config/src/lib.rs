@@ -1740,7 +1740,7 @@ mod tests {
     /// names, no bearer on the local no-credential profile) and proves the
     /// fail-closed path when the endpoint registry omits the openbb entry.
     #[test]
-    fn openbb_endpoint_resolves_the_thirteen_curated_tools_for_preflight() {
+    fn openbb_endpoint_resolves_the_fourteen_curated_tools_for_preflight() {
         let (image, binding, registry, budget, endpoints, _request, secrets) = fixture();
         let runtime = resolve_runtime(
             &image,
@@ -1811,6 +1811,11 @@ mod tests {
                 "openbb_economy_calendar",
                 "economy_calendar",
             ),
+            (
+                "openbb.filings",
+                "openbb_equity_fundamental_filings",
+                "equity_fundamental_filings",
+            ),
         ];
         for (capability_id, binding_key, tool_name) in expected {
             let resolved = runtime
@@ -1878,8 +1883,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            25,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, and the curated openbb endpoint thirteen more physical bindings"
+            26,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, and the curated openbb endpoint fourteen more physical bindings"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1911,7 +1916,7 @@ mod tests {
         .expect("local skill.load must not depend on a physical MCP deployment binding");
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
-        assert_eq!(runtime.physical_binding_count(), 25);
+        assert_eq!(runtime.physical_binding_count(), 26);
     }
 
     /// The observation series bindings are held to the same fail-closed

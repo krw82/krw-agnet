@@ -530,7 +530,8 @@ pub enum CapabilityResultIngest {
     MacroSeriesV1,
     /// Bounded advisory record-set read from the curated external openbb-mcp
     /// endpoint: a time series, a structured snapshot (quote, metrics,
-    /// statements, consensus), a peer set, or a bounded event calendar. Like
+    /// statements, consensus), a peer set, a bounded event calendar, or a
+    /// ticker-scoped SEC-filing list. Like
     /// the store-backed observation series it is advisory research context:
     /// the retained records are unverified, never filing evidence, and never
     /// support a strong claim. The raw envelope is projected by the generic
@@ -602,7 +603,7 @@ impl CapabilityResultIngest {
                 "Retrieve a bounded recent macro indicator series (inflation, rates, labor, growth) only when the macro backdrop materially improves the question. It is timestamped advisory research data, never filing evidence or recommendation support."
             }
             Self::OpenbbSeriesV1 => {
-                "Retrieve one bounded openbb observation read (historical price, quote, fundamentals, statements, consensus, peers, earnings calendar, macro series, yield curve, or macro calendar) for the already in-scope ticker or a named macro series only when the live observation materially improves the question. The records are timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
+                "Retrieve one bounded openbb observation read (historical price, quote, fundamentals, statements, consensus, peers, earnings calendar, macro series, yield curve, macro calendar, or the ticker's recent SEC-filing list) for the already in-scope ticker or a named macro series only when the live observation materially improves the question. The records are timestamped advisory research data: never filing evidence, never support for a target price or recommendation."
             }
             Self::TargetedEvidenceV1 => {
                 "Retrieve one precise fact only for an unresolved research clause. Use the pinned input schema and do not broaden the authenticated scope."
@@ -3459,7 +3460,7 @@ fn validate_capability_input_abi(
             // physical contract pins exactly one transport provider so a
             // swapped vendor cannot ride an existing capability. Round 2
             // (financial-services patterns, 2026-08-31) grows the set from
-            // three tools to thirteen with the same closed-pair rule.
+            // three tools to fourteen with the same closed-pair rule.
             let (input_contract, model_contract, expected_provider, ticker_scoped) =
                 match capability.input_contract.as_str() {
                     "openbb-price-historical-input/v1" => (
@@ -3539,6 +3540,13 @@ fn validate_capability_input_abi(
                         "openbb-macro-calendar-request/v1",
                         OpenbbPinnedProvider::Fmp,
                         false,
+                    ),
+                    // Round-3: ticker-scoped FMP filings list.
+                    "openbb-filings-input/v1" => (
+                        "openbb-filings-input/v1",
+                        "openbb-filings-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
                     ),
                     _ => (
                         capability.input_contract.as_str(),
@@ -5546,6 +5554,17 @@ mod tests {
                 ),
             );
         }
+        // Round-3: the ticker-scoped FMP filings list (out-of-ontology
+        // issuers keep a researchable filing record through the openbb plane).
+        expected.insert(
+            "openbb.filings",
+            (
+                "openbb-filings-input/v1",
+                "openbb-filings-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
         for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
             let capability = image
                 .body

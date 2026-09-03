@@ -311,11 +311,11 @@ pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
 ];
 
 /// Observation-plane read capabilities: the store-backed series lookups and
-/// the curated openbb data plane (rounds 1-2). Their results are advisory
+/// the curated openbb data plane (rounds 1-3). Their results are advisory
 /// observations — the cross-plane note reminds the analyst that anything
 /// observation-derived which the answer relies on still needs an ontology
 /// (filing) confirmation read.
-pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 15] = [
+pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 16] = [
     "market.series",
     "macro.series",
     "openbb.price_history",
@@ -331,6 +331,7 @@ pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 15] = [
     "openbb.earnings_calendar",
     "openbb.yield_curve",
     "openbb.macro_calendar",
+    "openbb.filings",
 ];
 
 /// Kernel-owned cross-plane note, mirroring `model_event_ladder_hint`: the
@@ -1093,6 +1094,30 @@ pub(crate) fn assemble_openbb_request(
             physical.insert("start_date".into(), Value::String(start_date));
             physical.insert("end_date".into(), Value::String(end_date));
             physical.insert("importance".into(), Value::String(importance.to_owned()));
+        }
+        // Round-3 filings: ticker-scoped SEC-filing list. The kernel pins the
+        // record limit (the physical tool's own default is 1000, far past the
+        // adapter's advisory record bound) and passes an optional date window
+        // through. Form filtering is not a physical parameter — records carry
+        // `report_type` so the analyst reads the form mix directly.
+        "openbb-filings-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            let limit = request
+                .get("limit")
+                .and_then(Value::as_u64)
+                .filter(|limit| (1..=40).contains(limit))
+                .unwrap_or(20);
+            physical.insert("limit".into(), Value::from(limit));
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
         }
         _ => return Err(invalid()),
     }

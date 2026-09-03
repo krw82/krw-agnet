@@ -1011,7 +1011,7 @@ mod tests {
                 .map(|schema| schema.capability_id.as_str())
                 .collect::<BTreeSet<_>>(),
             // The filing-event/news fallback ladder, the observation series
-            // (store-backed and openbb, rounds 1-2), and the deterministic
+            // (store-backed and openbb, rounds 1-3), and the deterministic
             // quant builtin are all reachable from the analyst assessment,
             // so they are advertised alongside the core ontology surface.
             BTreeSet::from([
@@ -1040,6 +1040,7 @@ mod tests {
                 "openbb.earnings_calendar",
                 "openbb.yield_curve",
                 "openbb.macro_calendar",
+                "openbb.filings",
                 "quant.dcf",
                 "skill.load",
             ])

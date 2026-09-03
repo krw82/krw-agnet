@@ -2357,6 +2357,44 @@ mod tests {
             .is_err()
         );
 
+        // Round-3 filings: kernel-pinned record limit (the physical tool's
+        // own default is 1000), optional date window passthrough, and a
+        // ticker that is always injected so the read stays scoped.
+        let filings = assemble_openbb_request(
+            &serde_json::json!({"ticker": "VIPS"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-filings-input/v1",
+        )
+        .unwrap();
+        assert_eq!(filings["provider"], "fmp");
+        assert_eq!(filings["symbol"], "VIPS");
+        assert_eq!(filings["limit"], 20);
+        assert!(filings.get("start_date").is_none());
+        let filings_window = assemble_openbb_request(
+            &serde_json::json!({
+                "ticker": "AAPL",
+                "limit": 40,
+                "start_date": "2026-08-01",
+                "end_date": "2026-09-01"
+            }),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-filings-input/v1",
+        )
+        .unwrap();
+        assert_eq!(filings_window["limit"], 40);
+        assert_eq!(filings_window["start_date"], "2026-08-01");
+        assert_eq!(filings_window["end_date"], "2026-09-01");
+        // The model contract is the first gate for the limit range; the
+        // lowerer still falls back to the kernel default rather than
+        // trusting an out-of-range value that reached it directly.
+        let filings_out_of_range = assemble_openbb_request(
+            &serde_json::json!({"ticker": "AAPL", "limit": 41}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-filings-input/v1",
+        )
+        .unwrap();
+        assert_eq!(filings_out_of_range["limit"], 20);
+
         // A shape the model contract already rejects cannot be lowered.
         assert!(
             assemble_openbb_request(

@@ -186,6 +186,14 @@ const OPENBB_MACRO_CALENDAR_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-macro-calendar-input-v1.json"
 ));
+const OPENBB_FILINGS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-filings-request-v1.json"
+));
+const OPENBB_FILINGS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-filings-input-v1.json"
+));
 const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
@@ -341,6 +349,15 @@ pub const OPENBB_YIELD_CURVE_INPUT_V1: &str = "openbb-yield-curve-input/v1";
 pub const OPENBB_MACRO_CALENDAR_REQUEST_V1: &str = "openbb-macro-calendar-request/v1";
 /// Physical MCP input for the curated openbb `economy_calendar` tool.
 pub const OPENBB_MACRO_CALENDAR_INPUT_V1: &str = "openbb-macro-calendar-input/v1";
+/// Model-authored request for a bounded openbb SEC-filings list. Round-3
+/// curation: the FMP-backed filing read that keeps out-of-ontology tickers
+/// researchable (the ontology filing ladder only serves covered issuers).
+/// Records carry `report_type`; the physical tool does not filter by form,
+/// so the window and limit keep the advisory record list bounded.
+pub const OPENBB_FILINGS_REQUEST_V1: &str = "openbb-filings-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_filings`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_FILINGS_INPUT_V1: &str = "openbb-filings-input/v1";
 /// Model-authored request for the deterministic local DCF builtin. The
 /// model supplies labeled inputs it already collected; the builtin owns
 /// every arithmetic step and fails closed on `terminal_growth >= wacc`.
@@ -460,6 +477,10 @@ pub const OPENBB_MACRO_CALENDAR_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:1c2dd39b615ad08691ff1227660d926ea7dd91fc253cdcaf0ec15dd65a91c7f7";
 pub const OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:ee4b18769314e8549493d14516d2948979724f2fa112a3643f216751e5978bb5";
+pub const OPENBB_FILINGS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:e678f0b234195aa701118362a4afab536a4dd7a95256b1c5a491307fe4d555c8";
+pub const OPENBB_FILINGS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:080415cbbbac36d41eaa0b9614a2cc9b0ae0fd005f1520bea490cb529f478011";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -675,6 +696,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_MACRO_CALENDAR_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_MACRO_CALENDAR_INPUT_BYTES,
         }),
+        OPENBB_FILINGS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_FILINGS_REQUEST_V1,
+            schema_sha256: OPENBB_FILINGS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_FILINGS_REQUEST_BYTES,
+        }),
+        OPENBB_FILINGS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_FILINGS_INPUT_V1,
+            schema_sha256: OPENBB_FILINGS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_FILINGS_INPUT_BYTES,
+        }),
         QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
             id: QUANT_DCF_REQUEST_V1,
             schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
@@ -799,6 +830,9 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(OPENBB_YIELD_CURVE_INPUT_V1).expect("static contract"),
         contract(OPENBB_MACRO_CALENDAR_REQUEST_V1).expect("static contract"),
         contract(OPENBB_MACRO_CALENDAR_INPUT_V1).expect("static contract"),
+        // Round-3 filings (out-of-ontology FMP filing read).
+        contract(OPENBB_FILINGS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_FILINGS_INPUT_V1).expect("static contract"),
         // Deterministic local quant computation (financial-services P2/P4).
         contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
         contract(QUANT_DCF_RESULT_V1).expect("static contract"),
@@ -915,6 +949,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_YIELD_CURVE_INPUT_V1 => validate_openbb_yield_curve_input(value),
         OPENBB_MACRO_CALENDAR_REQUEST_V1 => validate_openbb_macro_calendar_request(value),
         OPENBB_MACRO_CALENDAR_INPUT_V1 => validate_openbb_macro_calendar_input(value),
+        OPENBB_FILINGS_REQUEST_V1 => validate_openbb_filings_request(value),
+        OPENBB_FILINGS_INPUT_V1 => validate_openbb_filings_input(value),
         QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
         QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
@@ -2700,6 +2736,61 @@ fn validate_openbb_macro_calendar_input(value: &Value) -> Result<(), ContractVal
     Ok(())
 }
 
+/// Round-3 filings model request: trusted ticker plus an optional date window
+/// and an optional 1..=40 record limit. The physical tool does not filter by
+/// form server-side, so the projected list keeps `report_type` and the window
+/// and limit carry the bounding duty.
+fn openbb_filings_fields(request: &serde_json::Map<String, Value>) -> bool {
+    request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        && request
+            .get("limit")
+            .is_none_or(|limit| {
+                limit.as_u64().is_some_and(|limit| (1..=40).contains(&limit))
+            })
+        && optional_openbb_date(request.get("start_date"))
+        && optional_openbb_date(request.get("end_date"))
+}
+
+fn validate_openbb_filings_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_FILINGS_REQUEST_V1)?;
+    exact_keys(
+        request,
+        &["ticker", "limit", "start_date", "end_date"],
+        OPENBB_FILINGS_REQUEST_V1,
+    )?;
+    if !openbb_filings_fields(request) {
+        return Err(ContractValueError::Shape(OPENBB_FILINGS_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_filings_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_FILINGS_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "limit", "start_date", "end_date"],
+        OPENBB_FILINGS_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=40).contains(&limit))
+        || !optional_openbb_date(request.get("start_date"))
+        || !optional_openbb_date(request.get("end_date"))
+    {
+        return Err(ContractValueError::Shape(OPENBB_FILINGS_INPUT_V1));
+    }
+    Ok(())
+}
+
 /// Deterministic local DCF request: shape and range bounds only. The
 /// semantic invariant (`terminal_growth < wacc`) is enforced by the builtin
 /// itself so the rejection carries the quant-specific error code.
@@ -3182,8 +3273,9 @@ mod tests {
     fn complete_registry_includes_hash_bound_kernel_contracts() {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
         // Round-1 registry (71 descriptors including front/guru/product) +
-        // 20 openbb round-2 contracts + the 2 quant DCF contracts.
-        assert_eq!(descriptors().len(), 93);
+        // 20 openbb round-2 contracts + the 2 quant DCF contracts + the 2
+        // openbb round-3 filings contracts.
+        assert_eq!(descriptors().len(), 95);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
