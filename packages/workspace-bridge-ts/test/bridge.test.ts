@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readFileSync } from "node:fs";
+
 import {
   buildSkillDirective,
   buildWidgetDigest,
@@ -195,6 +197,32 @@ test("forced slash selected_skills are parsed and turned into a directive", () =
   assert.ok(directive.includes("[사용자 지정 스킬 지시 — OpenBB Workspace /스킬]"));
   assert.ok(directive.includes("conservative-investor"));
   assert.ok(directive.includes("안전성 우선"));
+});
+
+test("the shipped dcf-valuation skill flows through the directive path intact", () => {
+  // /dcf (P4): the workspace owns slash skills, the bridge owns the shipped
+  // content. This pins that the artifact composes cleanly end to end.
+  const skillMarkdown = readFileSync(
+    new URL("../skills/dcf-valuation.md", import.meta.url),
+    "utf8",
+  );
+  assert.ok(skillMarkdown.includes("quant.dcf"));
+  assert.ok(skillMarkdown.includes("민감도"));
+  const request = parseQueryRequest({
+    messages: [{ role: "human", content: "AAPL 적정가 분석해줘" }],
+    selected_skills: [
+      {
+        slug: "dcf",
+        description: "DCF 밸류에이션 렌즈",
+        contentMarkdown: skillMarkdown,
+        source: "forced_slash",
+      },
+    ],
+  });
+  const directive = buildSkillDirective(request);
+  assert.ok(directive !== null);
+  assert.ok(directive.includes("(dcf · DCF 밸류에이션 렌즈)"));
+  assert.ok(directive.includes("quant.dcf"));
 });
 
 test("skill directive accepts snake_case content and caps oversized skills", () => {
