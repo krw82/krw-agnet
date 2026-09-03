@@ -2,7 +2,7 @@
 # Concurrent 50-question test: enqueue all at once, then poll.
 set -uo pipefail
 
-krw_root="~/krw-agnet"
+krw_root="${HOME}/krw-agnet"
 gateway="http://127.0.0.1:4318"
 questions_file="$krw_root/.local/test-questions-50.json"
 

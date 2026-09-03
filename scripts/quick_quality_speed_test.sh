@@ -3,7 +3,7 @@
 # Sends N questions, measures E2E latency, runs the scoped grader.
 set -euo pipefail
 
-krw_root="~/krw-agnet"
+krw_root="${HOME}/krw-agnet"
 gateway="http://127.0.0.1:4318"
 gt_file="$krw_root/evals/numeric-accuracy/ground_truth.json"
 

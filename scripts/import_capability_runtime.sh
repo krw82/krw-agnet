@@ -39,7 +39,7 @@ case "$MODE" in
     ;;
 esac
 
-readonly SOURCE_REPOSITORY="${1:-~/krw-ontology-v2/krw-ontology}"
+readonly SOURCE_REPOSITORY="${1:-${HOME}/krw-ontology-v2/krw-ontology}"
 readonly SOURCE_COMMIT="0cdc12200f6478bf71e373c6ab820137d1dff676"
 readonly SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly TARGET_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../services/krw-ontology-runtime" && pwd)"

@@ -2,7 +2,7 @@
   "format_version": 2,
   "generated_at": "2026-08-30T20:51:03Z",
   "source": {
-    "repository": "~/krw-ontology-v2/krw-ontology",
+    "repository": "../krw-ontology",
     "commit": "0cdc12200f6478bf71e373c6ab820137d1dff676",
     "import_mode": "git_object_only",
     "working_tree_is_never_an_input": true

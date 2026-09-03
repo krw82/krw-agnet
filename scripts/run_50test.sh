@@ -2,7 +2,7 @@
 # Run 50-question quality + speed test against local gateway.
 set -uo pipefail
 
-krw_root="~/krw-agnet"
+krw_root="${HOME}/krw-agnet"
 gateway="http://127.0.0.1:4318"
 questions_file="$krw_root/.local/test-questions-50.json"
 gt_file="$krw_root/evals/numeric-accuracy/ground_truth.json"
