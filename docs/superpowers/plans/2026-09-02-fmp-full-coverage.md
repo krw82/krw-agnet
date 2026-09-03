@@ -88,12 +88,24 @@ FMP가 **자체 MCP 서버**를 운영: `https://financialmodelingprep.com/mcp?a
 - **롱테일**: TipRanks·Bulk·Fundraisers·세부 변형은 옵션 A 경로 유지, 위젯
   수요 발생 시 승격.
 
-## §3 스타터 플랜 게이트 (실측 필요)
+## §3 스타터 플랜 게이트 (2026-09-03 ODP 경유 실측 확정)
 
-- 실측된 스타터 동작: 펀더멘털(income·metrics·니치티커)·필링검색·시세.
-- 미실측(상위 플랜 가능성): TipRanks, Bulk, 일부 상세 변형, 1분봉 실시간.
-- 검증법: 각 엔드포인트 첫 호출 시 402/403 관찰 — 옵션 A 등록 직후 큐레이션
-  스파이크에서 자동 기록. (플랜 매트릭스 비공개 부분 존재.)
+측정법: ODP(127.0.0.1:6900)의 openbb 라우트 × `provider=fmp` — ODP 자체
+자격증명(스타터) 사용, 키 미추출. 402 게이트는 ODP가 502로 래핑해
+`Restricted Endpoint` 원문이 보인다.
+
+| 분류 | 라우트 | 상태 |
+|---|---|---|
+| 엔진 큐레이션 13종(라운드1~3) | price/historical·quote, fundamental/metrics·income·balance·cash·filings, estimates/consensus, compare/peers, calendar/earnings, government/yield_curve, economy/calendar | **전부 200** |
+| 니치 티커(VIPS·GRAB) | filings·quote·income | **200** — 커버 밖 티커 폴백 경로 실측 가능 |
+| 비큐레이션(개방) | discovery/filings(8-K 전 시장), ownership/insider_trading, etf/sectors, etf/countries, economy/risk_premium, fundamental/employee_count | **200** — 단 discovery/filings는 `limit` 파라미터를 FMP가 무시(요청 1에 1000 레코드 반화) → 큐레이션 시 프로젝션 상한이 실질 방어선 |
+| **스타터 402 게이트(실측 1건)** | **etf/holdings** | **502 wrapping 402 "Restricted Endpoint"** — 펀드/ETF 보유내역 계열은 스타터 불가 |
+| 미측정(라우트 부재 — P2가 생성) | commodity, DCF, mutual funds, M&A, market hours | openbb에 라우트 자체가 없어 ODP 경유 측정 불가. P2 확장 프로바이더 마운트 직후 동일 스파이크로 측정한다. |
+
+P2 설계 반영: 펀드/보유내역 계열은 스타터 402 위험이 실측됐으므로
+우선순위 후순위로(사용자 요구의 핵심은 커모디티·DCF·M&A·시장시간).
+크로스 체크: equity/search는 provider=fmp 미지원(422 — cboe 등 전용) —
+§1의 "Search 대체 충분" 판정과 부합.
 
 ## §4 실행 계획 (승인 대기)
 
