@@ -127,8 +127,8 @@
 
 | 단계 | 내용 | 경로 | 공수 |
 |---|---|---|---|
-| P0 | FMP 공식 MCP 등록 스파이크 + 스타터 게이트 실측표 | C | 0.5일 |
-| P1 | 엔진 openbb 바인딩 병합 + FMP 필링·펀더멘털 큐레이션 | — | 0.5일 |
+| P0 | ~~FMP 공식 MCP 등록 스파이크~~ → **2026-09-03 판정: 불가 폐기** (Bearer 401·`?apikey=`만 200 vs 엔진 쿼리 금지 `tool-mcp/src/lib.rs:626`; 상세 근거는 FMP 문서 §6). 스타터 게이트는 ODP 경유로 P1에 흡수 | — | 완료 |
+| P1 | 엔진 openbb 바인딩 병합(완료 확인) + FMP 필링 큐레이션 + 스타터 게이트 ODP 실측 | — | 0.5일 |
 | P2 | `openbb-fmp-extra` 확장 프로바이더: commodity(표준 fetcher)·DCF(신규 라우트, chart 파라미터 포함)·market_hours·M&A·펀드 | A | 1~2일 |
 | P3 | DCF 위젯 이원화 마무리: krw-backend에 민감도 **히트맵**(Plotly)+metric 카드 | B | 0.5일 |
 | P4 | "/dcf" 코파일럿 스킬(브리지 스킬 경로 이미 지원) | — | 0.5일 |

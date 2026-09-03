@@ -114,3 +114,32 @@ FMP가 **자체 MCP 서버**를 운영: `https://financialmodelingprep.com/mcp?a
 1. 옵션 C(혼합) 확정 여부 — 본 문서의 권고.
 2. P0의 FMP 공식 MCP 등록 승인(원격 MCP + 키 env).
 3. P2 확장 프로바이더 명명/위치(샌드박스 `~/krw-ontology-v2/openbb-fmp-extra` 권장).
+
+## §6 P0 스파이크 판정 (2026-09-03 실측) — 옵션 A 폐기, 단일 경로(옵션 B)로 확정
+
+사용자 승인("전부다 엄격히 진행")으로 스파이크를 돌린 결과, FMP 공식
+MCP 직접 등록은 **엔진 보안 계약과 양립 불가**로 판정났다:
+
+| 시험 | 실측 |
+|---|---|
+| `POST /mcp` initialize, 인증 없음 | HTTP 401 `Unauthorized: Authentication required` |
+| `Authorization: Bearer <sentinel>` | HTTP 401 거부 — 헤더 인증 미지원 |
+| `POST /mcp?apikey=<sentinel>` (URL 쿼리) | HTTP 200, `serverInfo: FMP MCP Server 1.0.0` |
+| 엔진 tool-mcp 엔드포인트 검증 | URL 쿼리 문자열 자체를 금지 (`tool-mcp/src/lib.rs:626` — 키가 URL에 남는 구조 원천 차단) |
+
+키를 URL 쿼리로만 받는 원격 서버와, 쿼리 없는 HTTPS 엔드포인트만 받는
+엔진 클라이언트를 잇는 방법은 키 삽입 프록시를 짜는 것뿐인데 이는
+과설계이므로 폐기한다. 결론:
+
+- **옵션 A(공식 MCP 병렬 등록) 제거** — 옵션 C의 혼합도 자동 소멸.
+- **단일 경로 = 옵션 B(확장 프로바이더)**: 없는 FMP 영역은
+  `openbb-fmp-extra`로 openbb에 마운트 → 위젯·MCP 도구 자동 생성 →
+  엔진은 기존 `krw-openbb-local` 바인딩으로 호출 (사용자 2026-09-03
+  확인: "없는 부분을 위젯, 관련된 openbb mcp를 만들고 그걸 리서치엔진이
+  호출하게끔").
+- 스타터 게이트 실측은 직접 REST가 아니라 **ODP 경유**(openbb 라우트 ×
+  provider=fmp, ODP 자체 자격증명 사용 — 키 미추출 원칙 유지)로 P1에서
+  수행한다.
+- FMP_API_KEY env 계약(`.env.example`·`with_local_env.sh`)은 값이
+  어느 `.env.local`에도 없음을 확인 — 확장 프로바이더(P2)의 크리덴셜
+  주입은 openbb 표준 인증 경로(ODP 자격증명)를 그대로 쓴다.
