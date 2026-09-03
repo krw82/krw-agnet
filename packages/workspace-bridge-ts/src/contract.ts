@@ -269,7 +269,10 @@ export function pickTicker(request: QueryRequest, question: string): TickerChoic
   for (const group of groups) {
     for (const widget of group) {
       for (const param of widget.params) {
-        if (param.type !== "ticker") continue;
+        // Official payloads carry ticker params both as type "ticker" and as
+        // a plain string param literally named "ticker" (verified against
+        // agents-for-openbb test_payloads) — match either shape.
+        if (param.type !== "ticker" && param.name.trim().toLowerCase() !== "ticker") continue;
         const value = paramValue(param);
         if (typeof value !== "string") continue;
         const first = value.split(",")[0]?.trim().toUpperCase() ?? "";

@@ -97,6 +97,27 @@ test("pickTicker prefers widget ticker params and falls back to the question", (
   assert.equal(pickTicker(hopeless, "시장 전망은?"), null);
 });
 
+test("pickTicker also matches the official string-param-named-ticker shape", () => {
+  // agents-for-openbb test_payloads carry {name: "ticker", type: "string"}.
+  const request = parseQueryRequest({
+    messages: [{ role: "human", content: "실적 분석해줘" }],
+    widgets: {
+      primary: [
+        {
+          uuid: "w-string-ticker",
+          origin: "https://pro.openbb.co",
+          widget_id: "company_profile",
+          name: "Company Profile",
+          params: [{ name: "ticker", type: "string", current_value: "aapl" }],
+        },
+      ],
+      secondary: [],
+      extra: [],
+    },
+  });
+  assert.deepEqual(pickTicker(request, "실적 분석해줘"), { ticker: "AAPL", source: "Company Profile" });
+});
+
 test("primaryWidgetDataSources uses current values and skips tab params", () => {
   const sources = primaryWidgetDataSources(parseQueryRequest(queryRequest()));
   assert.equal(sources.length, 1);
