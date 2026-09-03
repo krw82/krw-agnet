@@ -478,3 +478,78 @@ hardcoded-credential 5건은 env 패스스루/키 '경로' 문자열 · ssrf 2�
 - **다음 루프 후보**: 매트릭스 잔여 2 non-final 근본 원인(RunScopeViolation 티커
   참조 누락 제안의 수리 피드백 강화), KO 컴포저가 내레이션을 뱉는 근원(중복
   완료 인식 맥락 — 에피소드 reasoning에서 "duplicate_completed" 관찰).
+
+## §28 P7 품질 루프 판정서 — FMP 전체 커버리지 실행(옵션 B 단일 경로) + 위젯 파이프라인 P0~P7 (2026-09-03)
+
+/goal: 위젯 파이프라인 계획(31beb83) + FMP 커버리지 계획(107c771)의 P0~P7을
+superpowers 프로세스(executing-plans)로 전부 엄격 실행. 과설계 금지, 근본 수리.
+
+### 실행 요약 (P0~P7)
+
+| 단계 | 결과 | 증거 |
+|---|---|---|
+| P0 FMP 공식 MCP | **불가 판정 폐기**(dcf8572) — Bearer 401·`?apikey=`만 200 vs 엔진 쿼리 금지(tool-mcp lib.rs:626) → 단일 경로(옵션 B) 확정 | 실측 3종 |
+| P1 filings 큐레이션 | **완료**(6eb6fbf): `openbb.filings`(equity_fundamental_filings, fmp 고정, limit 1..=40 기본 20, 날짜창) — 라운드2 교리 그대로, 레지스트리 93→95, 물리 바인딩 25→26, 워크스페이스 945/0. 스타터 게이트표(6b2065f): 큐레이션 13종 전부 200(니치 VIPS·GRAB 포함), **etf/holdings만 402**(ODP 502 래핑) | 단위+통합+계약 |
+| P2 openbb-fmp-extra | **완료**(f7aedb2, 자체 저장소): 6명령(커모디티 list/quote/EOD·dcf·market_hours·mergers_latest). 설계 변경 3건(전부 근본): provider명 fmpextra(진입점 이름=레지스트리 키→fmp 재등록은 섀도잉) · 자격증명 fmpextra_api_key(플랫폼이 provider명 접두) · 커모디티는 커스텀 라우트(표준 모델에 symbol 차원 없음). 단위 10/10, REST 6라우트, `obb.fmpextra.*` 빌드 실증 | f7aedb2 |
+| P3 DCF 위젯 | **완료**(13a06fe): krw-backend 히트맵(Plotly 5×5 WACC×성장)+기저 요약(구성·경고·주식수 유도 출처 표기). 58/58, 라이브 실증(AAPL 기저 $100.84, MSFT 실데이터 구성). **metric 타입은 보류** — 공식 소스 전무(페이로드 계약 미검증), 검증된 chart/table만 선적 | e2e curl |
+| P4 /dcf 스킬 | **완료**(bddfa55): `skills/dcf-valuation.md`(quant.dcf 산술 위임·민감도·위젯 숫자 정합 지시) + 합성 테스트(브리지 20/20). 워크스페이스 "/" 등록은 사용자 액션(계약상 에이전트는 selected_skills 수신만) | 테스트 |
+| P5 계약 정합 | **완료**: source 배열화 → 공식 validate_widgets.py **7/7 통과**(기존 5위반 소멸) · pickTicker `{name:"ticker",type:"string"}` 공식 변형 대응(20/20) · mcp_tool 불선언 판정(워크스페이스 MCP 서버 이름 전제 + 자체 citation 경로 — krw-backend README D11) | 검증기+테스트 |
+| P6 배포 경로 | **별도 인스턴스 채택 확정**: `openbb_platform_api` 부팅 → widgets.json 319개 중 fmpextra 6위젯이 깔끔한 ID(`fmpextra_dcf_fmpextra_obb`)로 서빙. ODP env 직접 설치 기각(업데이트 소실+침입). 원시 rest_api 서빙은 ID丑化되므로 platform-api가 정석. 사용자 액션 2건 문서화(fmpextra_api_key 1행·widgets.json 등록) | 실측 |
+| P7 품질 루프 | **아래 판정** — 루프가 엔진 결함 3건을 발견·근본 수리(이것이 루프의 목적) | 8라이브 런 |
+
+### P7 라이브 루프 상세 (VIPS 5런 + DCF 스킬 3런, 전부 에피소드 덤프로 규명)
+
+**발견·수리한 결함 3 + 운영 1**:
+
+1. **D1 커버 밖 티커 0턴 사망**(run_c5f25eef): company_context가
+   `KeyError: ticker shard not found`로 capability 핸들러 crash — 커버 밖
+   티커는 런 자체가 시작 불가. 수리: `_not_covered_payload`(정직 봉투,
+   `ticker_not_covered` 코드, missing-shard와 구분)를 company_context·
+   topic_map에 가드(6316979). 합성 릴리스 단위 4종.
+2. **D2 quant.dcf 결과 계약 전수 탈락**(run_10687ad3): 모델이 실제 입력을
+   모아(에피소드 ep05 검증: 10-Q 기반 TTM OCF, FCF 3개년, 순현금, 주식수)
+   정확히 제안했으나 빌트인 출력이 항상 exact_keys 4키 허용목록에서 탈락 —
+   **quant.dcf는 프로덕션에서 단 한 번도 반환된 적 없던 것**. 수리: 허용
+   키를 발신자 폐쇄집합(15키)으로(6316979) + 실패 라이브 입력 회귀 테스트.
+3. **D3 openbb 모델 제안 영구 불가**(run_e1f11bad): 스코프 검증이 조립
+   **후** 물리 인자(`/symbol`)로 돌지만 바인딩 포인터는 `/ticker` —
+   라운드1~3 티커 스코프 openbb 10도구의 모델 제안이 전부
+   `capability_scope_not_authorized`로 사망(봉인 프리플라이트만 살아남았음).
+   수리: 10도구 바인딩을 `/symbol`(조립형)으로 — 폐쇄집합 어셈블리가
+   ticker→symbol 1:1 유도라 치환 방어 동등(24fce49). 조립→검증 종단 회귀.
+4. **D4 커버 밖 관측 매핑 부재**(run_2d2a8208): 스코프 수리 후에도
+   `proposal_unmapped` — 관측 매핑의 인텐트 폴백은 계산 목표만 인정하고
+   정성 전선은 의도적으로 미매핑(커버 티커에선 옳은 설계)이나, 커버 밖
+   티커는 관측 평면이 **유일한** 조사 면. 수리: `ticker_not_available`
+   경고+후보 존재 시 개방 프론티어 전체에 매입(티커 필터·1회 상태·advisory
+   결과로 한정, 외국 티커 거부 테스트). 워크스페이스 949/0.
+5. (운영) 스택 TLS 인증서 30일 만료로 재기동 루프 — 스크립트 소유의 만료
+   정책이라 임시 재생성으로 복구, 원칙적 수리(만료 연장/자동 갱신)는
+   스택 스크립트 소유 과제로 기록.
+
+**VIPS 판정: 조건부 통과(게이트 수리 완료, 심도 클래스 잔여)** —
+런1 0턴 사망 → 런2 정직 컴포지션("커버 밖" 명시+실시세·금리 폴드, 968자) →
+런3/4 게이트 노출 → 런5 `output_budget_exhausted` 정직 폴백(§11·§17에 이미
+문서화된 GLM thinking 심도 클래스 — 이 스레드 결함 아님). 전 8런 환각 0·
+날조 0·정직 라벨 100%. FMP 폴백 완주는 예산 심도 튜닝(별도 최적화 과제,
+§17 잔여와 동일 클래스)이 남은 유일한 관문.
+
+**DCF 스킬 판정: 통과(교리) / 부분통과(quant 라이브 발동)** — 스킬 지시가
+그대로 반영된 고품질 국문 답변(재무 기초 표·민감도 방향·한계 고지), **손계산
+전면 거부**("제 손계산·추정 수치가 아닙니다" — 스킬 산술 금지 교리 라이브
+준수). quant.dcf 라이브 발동은 미완: 모델이 capex·주식수를 근거에서 확보
+하지 못해 정직하게 계산을 거부(이 역시 교리 준수). 다음 루프 레버: 어세스
+힌트에 openbb.cash_statement/metrics(capex·shares 보유)를 DCF 입력 경로로
+명시.
+
+### 최종 게이트
+
+워크스페이스 **949 passed / 0 failed**(945 + D2/D4 회귀 4) · 브리지 20/20 ·
+krw-backend 58/58(신규 8) · openbb-fmp-extra 10/10 · 런타임(python) 101(+4).
+커밋 체인: dcf8572 → 6eb6fbf → 6b2065f → (f7aedb2·13a06fe 자체 저장소) →
+8f87e45 → bddfa55 → 2da5dc6 → 6316979 → 24fce49 → (D4 매핑 커밋).
+
+**다음 루프 후보**: ① GLM 심도-예산 튜닝(VIPS 완주의 마지막 관문, §17
+잔여와 동일) ② 어세스 DCF 입력 힌트(quant.dcf 라이브 발동) ③ fmpextra
+인스턴스 상시화+워크스페이스 등록(사용자 액션 2건) 후 커모디티/차트 위젯
+렌더 실측 ④ EN 이미지 라운드2~3 패리티(현재 KO만).
