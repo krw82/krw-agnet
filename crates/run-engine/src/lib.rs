@@ -11038,6 +11038,48 @@ mod tests {
     }
 
     #[test]
+    fn openbb_filings_scope_admits_the_requested_uncovered_ticker() {
+        // P7 live repro (run_e1f11bad, 2026-09-03): the model proposed
+        // openbb.filings alone with {"ticker": "VIPS", "limit": 40} against a
+        // CompanyTickerSet{["VIPS"]} context and the dispatch was rejected
+        // twice with capability_scope_not_authorized. Root cause: scope
+        // validation runs on the ASSEMBLED physical arguments, and the
+        // OpenbbRequestV1 derivation renames ticker -> symbol — a /ticker
+        // pointer could never match. The openbb ticker capabilities now bind
+        // /symbol (the assembled shape, derived 1:1 from the model's ticker
+        // by the closed-set assembly); this pins the live input end to end
+        // plus the substitution rejection.
+        let image = loaded_agent("krw-ontology");
+        let entrypoint = image.body.entrypoints.get("company_research").unwrap();
+        let filings = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "openbb.filings")
+            .unwrap();
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["VIPS".into()],
+        };
+        let proposed = serde_json::json!({"ticker": "VIPS", "limit": 40});
+        let physical = capability_dispatch::assemble_openbb_request(
+            &proposed,
+            &krw_agent_image::OpenbbPinnedProvider::Fmp,
+            "openbb-filings-input/v1",
+        )
+        .unwrap();
+        validate_capability_run_scope(entrypoint, &context, None, filings, &physical)
+            .unwrap_or_else(|error| {
+                panic!("openbb.filings scope rejected the assembled live input: {error}")
+            });
+        let mut foreign = physical.clone();
+        foreign["symbol"] = serde_json::json!("MSFT");
+        assert!(matches!(
+            validate_capability_run_scope(entrypoint, &context, None, filings, &foreign),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+    }
+
+    #[test]
     fn observed_result_ids_binding_admits_scoped_runs_and_rejects_scopeless_contexts() {
         let image = loaded_agent("krw-ontology");
         let entrypoint = image.body.entrypoints.get("company_research").unwrap();

@@ -602,8 +602,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.macro_series
@@ -669,8 +669,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.metrics
@@ -697,8 +697,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.income_statement
@@ -725,8 +725,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.balance_statement
@@ -753,8 +753,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.cash_statement
@@ -781,8 +781,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.consensus
@@ -809,8 +809,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.peers
@@ -837,8 +837,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   - id: openbb.earnings_calendar
@@ -866,8 +866,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   # ── openbb curation round 2: macro plane ──
@@ -927,8 +927,8 @@ capabilities:
     scope_binding:
       kind: trusted_ticker_set
       ticker_references:
-        - { id: ticker, pointer_pattern: /ticker, value_kind: string }
-      require_any_of: [ticker]
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
   # Deterministic DCF computation builtin: the model supplies labeled inputs
