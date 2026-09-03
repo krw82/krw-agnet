@@ -134,7 +134,7 @@
 | P4 | ~~"/dcf" 코파일럿 스킬~~ → **2026-09-03 완료(bddfa55)**: `skills/dcf-valuation.md`(quant.dcf·민감도·위젯 숫자 정합 지시) + 합성 테스트(브리지 20/20). 워크스페이스 "/" 등록은 사용자 액션(스킬은 워크스페이스 소유 — 에이전트는 selected_skills 수신만 계약상 가능) | — | 완료 |
 | P5 | ~~계약 정합 수리~~ → **2026-09-03 완료(13a06fe·8f87e45)**: source 배열화 7위젯 → 공식 검증기 **7/7 통과**(기존 5위반 소멸) · pickTicker 이름 매칭(공식 페이로드 `{name:"ticker",type:"string"}` 대응, 19→20/20) · mcp_tool은 불선언 판정(워크스페이스 MCP 서버 이름 전제 + 우리 코파일럿은 자체 citation 경로 — README D11 기록) | B | 완료 |
 | P6 | ~~배포 경로 확정~~ → **2026-09-03 확정: 별도 인스턴스 채택**. 실측: 스파이크 venv+fmpextra에서 `openbb_platform_api` 부팅 → widgets.json 319개 중 **fmpextra 6위젯이 깔끔한 ID**(`fmpextra_dcf_fmpextra_obb` 등)로 자동 서빙(200). ODP env 직접 설치는 기각(앱 업데이트 시 env 소실 + 데스크톱 앱 내부 침입). 참고: pro-backend 생성기는 이 venv의 legacy util 라우트(no-ref)에서 깨져 /tmp 검증 사본에 no-ref 스킵 가드를 했고, 원시 `openbb_core` rest_api로 서빙하면 ID가 `fmp_extra_routers_…`로丑化되므로 **platform-api 경로가 정석**. 사용자 액션 2건: ① `~/.openbb_platform/user_settings.json`에 `fmpextra_api_key` 1행 추가(기존 fmp_api_key와 동일 값 — 값 복사는 사용자만) ② 워크스페이스 Add data에 `http://127.0.0.1:<port>/widgets.json` 등록 | — | 완료 |
-| P7 | 품질 루프: 커버 밖 티커 FMP 폴백 + "/dcf" + 위젯 렌더 실측 판정서 | — | 루프 1회 |
+| P7 | ~~품질 루프 판정서~~ → **2026-09-03 완결(스펙 §28, 815a7a4)**: 라이브 8런(에피소드 덤프 규명)이 엔진 결함 3건을 발견·근본 수리(커버 밖 티커 0턴 crash·quant.dcf 결과 계약 전수 탈락·openbb 모델 제안 영구 불가[스코프 포인터]·커버 밖 관측 매핑) — 워크스페이스 949/0. VIPS=조건부 통과(게이트 전부 수리, 잔여=GLM 심도 예산 클래스), /dcf=교리 통과(손계산 거부 라이브), 위젯 렌더=데이터 엔드포인트·위젯 카탈로그 실측(워크스페이스 렌더는 사용자 등록 후) | — | 완료 |
 
 리스크 롤업: AGPL 격리(독립 pip)·FMP 스타터 한도(큐레이션 상한+캐시)·
 ODP env 소실(P6 별도 인스턴스로 회피 가능)·openbb-core <2.0 핀.
