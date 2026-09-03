@@ -30,7 +30,7 @@
 - Consumes: 기존 `SeriesFetchRequest`, `urlencode` 파라미터 빌드
 - Produces: 빈티지 모드 URL에 `realtime_start=1776-07-04` 항상 포함 (비빈티지 모드는 변경 없음)
 
-- [ ] **Step 1: 실패 테스트로 교체** — 기존 테스트의 단언 3줄(`assert "realtime_start" not in url` 등)을 다음으로 교체:
+- [x] **Step 1: 실패 테스트로 교체** — 기존 테스트의 단언 3줄(`assert "realtime_start" not in url` 등)을 다음으로 교체:
 
 ```python
     # All-vintages view REQUIRES an explicit early realtime_start: FRED
@@ -57,8 +57,8 @@ def test_fred_latest_mode_sends_no_realtime_bounds():
     assert "realtime_end" not in url
 ```
 
-- [ ] **Step 2: 실패 확인** — `uv run pytest tests/unit/observation/test_providers.py -k "realtime" -v` → FAIL
-- [ ] **Step 3: 구현** — fred.py `params` 빌드 블록의 빈티지 주석 블록(88-93)을 교체:
+- [x] **Step 2: 실패 확인** — `uv run pytest tests/unit/observation/test_providers.py -k "realtime" -v` → FAIL
+- [x] **Step 3: 구현** — fred.py `params` 빌드 블록의 빈티지 주석 블록(88-93)을 교체:
 
 ```python
         if self._include_vintages:
@@ -73,8 +73,8 @@ def test_fred_latest_mode_sends_no_realtime_bounds():
 ```
 
 모듈 docstring 3-5행("no real-time or ``vintage_dates`` bounds are sent")을 "an explicit early ``realtime_start`` bound selects the ALFRED all-vintages view"로 수정. `params_hash`가 키를 포함하므로 프로바이던스 해시는 자동 갱신된다.
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + `uv run pytest tests/unit/observation -q` 녹색
-- [ ] **Step 5: 커밋** — `fix(observation): send early realtime_start so vintage mode actually collects revisions`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + `uv run pytest tests/unit/observation -q` 녹색
+- [x] **Step 5: 커밋** — `fix(observation): send early realtime_start so vintage mode actually collects revisions`
 
 ### Task 2: openbb-fmp-extra — URL 인코딩 + API 키 비노출 (openbb-fmp-extra)
 
@@ -88,7 +88,7 @@ def test_fred_latest_mode_sends_no_realtime_bounds():
 - Consumes: `amake_request` (openbb-core), 기존 fetcher들의 `build_url(endpoint, api_key, **params)` 호출 시그니처 — 불변
 - Produces: 동일 시그니처. `get_data_many`는 전송 실패 시 **URL/키를 포함하지 않는** `OpenBBError`를 raise
 
-- [ ] **Step 1: 실패 테스트** — `tests/test_fmpextra.py`에 추가:
+- [x] **Step 1: 실패 테스트** — `tests/test_fmpextra.py`에 추가:
 
 ```python
 import pytest
@@ -128,8 +128,8 @@ async def test_get_data_many_never_leaks_url_or_apikey_on_transport_error(monkey
 
 (실행 시 `OpenBBError` 실제 임포트 경로와 `amake_request` 지연 import 패치 지점을 확인해 맞춘다 — helpers.py:13이 함수 내 import이므로 소스 모듈 패치가 유효하다.)
 
-- [ ] **Step 2: 실패 확인** — `python -m pytest tests/test_fmpextra.py -k "build_url or leaks" -v` → FAIL
-- [ ] **Step 3: 구현** — helpers.py 전체 교체:
+- [x] **Step 2: 실패 확인** — `python -m pytest tests/test_fmpextra.py -k "build_url or leaks" -v` → FAIL
+- [x] **Step 3: 구현** — helpers.py 전체 교체:
 
 ```python
 """FMP extra helpers: request + response handling for the stable API."""
@@ -180,8 +180,8 @@ def build_url(endpoint: str, api_key: str | None, **params: Any) -> str:
 ```
 
 (`OpenBBError`의 임포트 경로가 `openbb_core.app.errors`가 아니면 실행 시 실제 경로로 잡는다.)
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 전체 녹색
-- [ ] **Step 5: 커밋** — `fix(helpers): percent-encode query params and redact transport errors (API key never leaks)`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 전체 녹색
+- [x] **Step 5: 커밋** — `fix(helpers): percent-encode query params and redact transport errors (API key never leaks)`
 
 ### Task 3: krw-backend — DCF 그리드 검증이 잘못된 코너/하한 검사 (krw-backend)
 
@@ -194,7 +194,7 @@ def build_url(endpoint: str, api_key: str | None, **params: Any) -> str:
 **Interfaces:**
 - Produces: `validate_grid_bounds(wacc_percent, growth_percent)` — 시그니처 불변, `growth_percent ∈ [-2.0, 1.5)`가 더 이상 DcfMathError 아님
 
-- [ ] **Step 1: 실패 테스트** — `tests/test_dcf_endpoints.py`에 추가 (임포트는 기존 파일의 관례 따름):
+- [x] **Step 1: 실패 테스트** — `tests/test_dcf_endpoints.py`에 추가 (임포트는 기존 파일의 관례 따름):
 
 ```python
 def test_validate_grid_bounds_accepts_documented_growth_range():
@@ -215,8 +215,8 @@ def test_validate_grid_bounds_rejects_dangerous_corner():
         validate_grid_bounds(1.0, 1.0)  # corners: growth 1.5 vs wacc 0.0
 ```
 
-- [ ] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_dcf_endpoints.py -k grid_bounds -v` → 1번째 FAIL
-- [ ] **Step 3: 구현** — `validate_grid_bounds` 코너 검사 줄(dcf.py:116)을 교체:
+- [x] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_dcf_endpoints.py -k grid_bounds -v` → 1번째 FAIL
+- [x] **Step 3: 구현** — `validate_grid_bounds` 코너 검사 줄(dcf.py:116)을 교체:
 
 ```python
     if not 0.5 <= wacc_percent <= 30.0:
@@ -231,8 +231,8 @@ def test_validate_grid_bounds_rejects_dangerous_corner():
 ```
 
 (범위 검사를 코너 검사보다 먼저 두어 오류 메시지 순서를 예측 가능하게 한다.)
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + `KRW_BACKEND_API_KEYS=test python -m pytest tests -q` 녹색
-- [ ] **Step 5: 커밋** — `fix(dcf): validate the actual max-growth vs min-wacc grid corner; stop rejecting growth < 1.5`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + `KRW_BACKEND_API_KEYS=test python -m pytest tests -q` 녹색
+- [x] **Step 5: 커밋** — `fix(dcf): validate the actual max-growth vs min-wacc grid corner; stop rejecting growth < 1.5`
 
 ### Task 4: krw-backend — openbb 평면 실패를 502로 매핑 (krw-backend)
 
@@ -245,7 +245,7 @@ def test_validate_grid_bounds_rejects_dangerous_corner():
 **Interfaces:**
 - Produces: `fetch_dcf_inputs`는 전송/디코딩 실패 시 `DcfInputError` raise — 미처리 예외 경로 소멸
 
-- [ ] **Step 1: 실패 테스트**:
+- [x] **Step 1: 실패 테스트**:
 
 ```python
 import httpx
@@ -276,8 +276,8 @@ async def test_fetch_dcf_inputs_wraps_non_json_body_as_input_error():
         await fetch_dcf_inputs("AAPL", 5, client=httpx.AsyncClient(transport=_inputs_page(handler)))
 ```
 
-- [ ] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_dcf_endpoints.py -k inputs_wraps -v` → FAIL (ConnectError/ValueError가 그대로 새어나감)
-- [ ] **Step 3: 구현** — gather 블록과 파싱 블록을 하나의 try로 묶는다. dcf.py:66-110을 다음 구조로 (본체 로직은 불변):
+- [x] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_dcf_endpoints.py -k inputs_wraps -v` → FAIL (ConnectError/ValueError가 그대로 새어나감)
+- [x] **Step 3: 구현** — gather 블록과 파싱 블록을 하나의 try로 묶는다. dcf.py:66-110을 다음 구조로 (본체 로직은 불변):
 
 ```python
     try:
@@ -310,8 +310,8 @@ async def test_fetch_dcf_inputs_wraps_non_json_body_as_input_error():
 ```
 
 기존 `own_client` finally 구조는 유지하고, 파싱 본문(fcfs 루프 ~ return DcfInputs)은 기존 코드를 그대로 안쪽에 둔다.
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + 기존 DCF 엔드포인트 테스트 전부 녹색
-- [ ] **Step 5: 커밋** — `fix(dcf): map openbb transport/decode failures to DcfInputError (502, never a raw 500)`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + 기존 DCF 엔드포인트 테스트 전부 녹색
+- [x] **Step 5: 커밋** — `fix(dcf): map openbb transport/decode failures to DcfInputError (502, never a raw 500)`
 
 ### Task 5: krw-backend — 비ASCII 키 500 + /docs 무인증 노출 (krw-backend)
 
@@ -324,7 +324,7 @@ async def test_fetch_dcf_inputs_wraps_non_json_body_as_input_error():
 **Interfaces:**
 - Produces: 비ASCII `X-API-Key` → 403(500 아님). `/docs`, `/redoc`, `/openapi.json` → 404.
 
-- [ ] **Step 1: 실패 테스트** — test_auth.py에 추가:
+- [x] **Step 1: 실패 테스트** — test_auth.py에 추가:
 
 ```python
 def test_non_ascii_api_key_is_rejected_not_500(client):
@@ -352,10 +352,10 @@ AUTHED_PATHS = [
 ]
 ```
 
-- [ ] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_auth.py -v` → 신규 2케이스 FAIL
-- [ ] **Step 3: 구현** — auth.py:37을 `hmac.compare_digest(key.encode("utf-8"), x_api_key.encode("utf-8"))`로. app.py create_app에 `docs_url=None, redoc_url=None, openapi_url=None` 추가.
-- [ ] **Step 4: 통과 확인** — 전체 `python -m pytest tests -q` 녹색
-- [ ] **Step 5: 커밋** — `fix(auth,app): bytes compare for non-ASCII keys (403 not 500); disable unauthenticated /docs surface`
+- [x] **Step 2: 실패 확인** — `KRW_BACKEND_API_KEYS=test python -m pytest tests/test_auth.py -v` → 신규 2케이스 FAIL
+- [x] **Step 3: 구현** — auth.py:37을 `hmac.compare_digest(key.encode("utf-8"), x_api_key.encode("utf-8"))`로. app.py create_app에 `docs_url=None, redoc_url=None, openapi_url=None` 추가.
+- [x] **Step 4: 통과 확인** — 전체 `python -m pytest tests -q` 녹색
+- [x] **Step 5: 커밋** — `fix(auth,app): bytes compare for non-ASCII keys (403 not 500); disable unauthenticated /docs surface`
 
 ### Task 6: krw-agent-service — SSE 스트림 절대 완결 (krw-agent-service)
 
@@ -368,7 +368,7 @@ AUTHED_PATHS = [
 **Interfaces:**
 - Produces: `GatewayRunner.run`은 모든 예외를 `EngineUnavailable`로 수렴(문자열은 클래스명만). `answer_flow`는 어떤 runner 예외에도 스트림 완결.
 
-- [ ] **Step 1: 실패 테스트** — test_gateway_runner.py에 추가:
+- [x] **Step 1: 실패 테스트** — test_gateway_runner.py에 추가:
 
 ```python
 @pytest.mark.asyncio
@@ -401,8 +401,8 @@ async def test_stream_completes_when_runner_raises_unexpected_exception():
     assert any(e.get("type") == "copilotMessageChunk" for e in events)
 ```
 
-- [ ] **Step 2: 실패 확인** — `python -m pytest tests -k "invalid_gateway or non_string or completes_when_runner" -v` → FAIL
-- [ ] **Step 3: 구현** — ① runners.py 예외 체인 끝에(320-327) 다음을 추가 (순서 중요 — EngineUnavailable 재발산이 먼저):
+- [x] **Step 2: 실패 확인** — `python -m pytest tests -k "invalid_gateway or non_string or completes_when_runner" -v` → FAIL
+- [x] **Step 3: 구현** — ① runners.py 예외 체인 끝에(320-327) 다음을 추가 (순서 중요 — EngineUnavailable 재발산이 먼저):
 
 ```python
         except httpx.TimeoutException as exc:
@@ -448,8 +448,8 @@ async def test_stream_completes_when_runner_raises_unexpected_exception():
 ```
 
 ④ runners.py GatewayRunner docstring(184-187)의 보장 문구를 "모든 예외(전송·URL·디코딩·응답 타입)가 EngineUnavailable로 수렴"으로 갱신.
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 녹색
-- [ ] **Step 5: 커밋** — `fix(runners,flow): converge every failure on EngineUnavailable — the SSE stream always completes`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 녹색
+- [x] **Step 5: 커밋** — `fix(runners,flow): converge every failure on EngineUnavailable — the SSE stream always completes`
 
 ### Task 7: krw-agent-service — 스크럽 NFKC/구분자 강화 + 티커 오탐 (krw-agent-service)
 
@@ -462,7 +462,7 @@ async def test_stream_completes_when_runner_raises_unexpected_exception():
 **Interfaces:**
 - Produces: `scrub_vendors`/`contains_vendor_token` 시그니처 불변, NFKC + 구분자 우회 패턴 추가. `extract_ticker` — 2~5글자만 후보.
 
-- [ ] **Step 1: 실패 테스트** — test_guardrails.py에 추가:
+- [x] **Step 1: 실패 테스트** — test_guardrails.py에 추가:
 
 ```python
 def test_scrub_covers_fullwidth_homoglyphs():
@@ -489,8 +489,8 @@ def test_extract_ticker_still_finds_real_tickers():
     assert extract_ticker("AAPL 실적은?") == "AAPL"
 ```
 
-- [ ] **Step 2: 실패 확인** — `python -m pytest tests -k "fullwidth or separator_obfuscation or ignores_common" -v` → FAIL
-- [ ] **Step 3: 구현** — ① guardrails.py: 토큰을 NFKC 정규화한 입력에서 매칭하고, 글자 사이 최대 1개의 구분자(`.`/`_`/`-`/공백)를 허용하는 패턴 추가:
+- [x] **Step 2: 실패 확인** — `python -m pytest tests -k "fullwidth or separator_obfuscation or ignores_common" -v` → FAIL
+- [x] **Step 3: 구현** — ① guardrails.py: 토큰을 NFKC 정규화한 입력에서 매칭하고, 글자 사이 최대 1개의 구분자(`.`/`_`/`-`/공백)를 허용하는 패턴 추가:
 
 ```python
 import unicodedata
@@ -527,8 +527,8 @@ def scrub_vendors(text: str | None) -> str:
 ```
 
 docstring의 "can never leak"를 "known ASCII spellings plus fullwidth-NFKC and single-separator obfuscations are rewritten; this is not a general adversarial-paraphrase filter"로 정직하게 교체. `contains_vendor_token`도 `_normalize` 적용. ② runners.py:48 `_TICKER_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,5}(?![A-Za-z0-9])")`로 변경하고 차단 목록에 `"AM", "BY", "DO", "GO", "IF", "IN", "IS", "IT"(있음), "MY", "NO", "OF", "ON", "OR", "PM", "US", "VS", "NY", "LA"` 추가. docstring에 "단일 문자 티커(F, A 등)는 거부로 위임" 명시.
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 녹색
-- [ ] **Step 5: 커밋** — `fix(guardrails,runners): NFKC + separator-obfuscation scrub; ticker heuristic stops matching 1-letter/acronym words`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + `python -m pytest tests -q` 녹색
+- [x] **Step 5: 커밋** — `fix(guardrails,runners): NFKC + separator-obfuscation scrub; ticker heuristic stops matching 1-letter/acronym words`
 
 ### Task 8: krw-agnet — 위젯 퍼블리셔 format 키 드리프트 (krw-agnet)
 
@@ -541,7 +541,7 @@ docstring의 "can never leak"를 "known ASCII spellings plus fullwidth-NFKC and 
 **Interfaces:**
 - Produces: `publishable_widgets`는 `artifact_format`(주) 또는 `format`(호환) 키를 검사; 둘 다 없거나 값이 틀리면 `WidgetPublishError`.
 
-- [ ] **Step 1: 실패 테스트** — test_widget_publisher.py에 추가:
+- [x] **Step 1: 실패 테스트** — test_widget_publisher.py에 추가:
 
 ```python
 def test_engine_emitted_artifact_format_key_is_accepted():
@@ -561,8 +561,8 @@ def test_missing_format_key_is_rejected_not_masked():
 ```
 
 (unittest.TestCase 스타일이면 `with self.assertRaises`, 함수 스타일이면 pytest.raises — 기존 파일 관례 따름.) 기존 fixture의 `"format": "krw-visualization"`를 `"artifact_format": "krw-visualization"`으로 교체(과거 `format` 키 호환은 별도 케이스로 유지).
-- [ ] **Step 2: 실패 확인** — `cd services/openbb-gateway && python -m pytest tests/test_widget_publisher.py -v` → 신규 2케이스 FAIL
-- [ ] **Step 3: 구현** — widget_publisher.py:91-93을 교체:
+- [x] **Step 2: 실패 확인** — `cd services/openbb-gateway && python -m pytest tests/test_widget_publisher.py -v` → 신규 2케이스 FAIL
+- [x] **Step 3: 구현** — widget_publisher.py:91-93을 교체:
 
 ```python
     # The engine (krw-presentation lib.rs) emits "artifact_format"; "format"
@@ -575,8 +575,8 @@ def test_missing_format_key_is_rejected_not_masked():
     )
 ```
 
-- [ ] **Step 4: 통과 확인** — Step 2 재실행 PASS + 서비스 테스트 전체 녹색
-- [ ] **Step 5: 커밋** — `fix(widget-publisher): validate the artifact_format key the engine actually emits`
+- [x] **Step 4: 통과 확인** — Step 2 재실행 PASS + 서비스 테스트 전체 녹색
+- [x] **Step 5: 커밋** — `fix(widget-publisher): validate the artifact_format key the engine actually emits`
 
 ### Task 9: 오픈소스 민감정보 스캔 + 정리 (전체 저장소)
 
@@ -590,15 +590,15 @@ def test_missing_format_key_is_rejected_not_masked():
 - Consumes: `git ls-files`, 패턴 스캔
 - Produces: 스캔 보고서 + 수정 커밋들
 
-- [ ] **Step 1: 스캔** — 저장소별 `git ls-files` 대상으로 다음을 검출:
+- [x] **Step 1: 스캔** — 저장소별 `git ls-files` 대상으로 다음을 검출:
   1. 시크릿 패턴: `apikey=`, `api_key`에 리터럴 값, `Bearer `, `token:`/`TOKEN=`, `sk-`, FRED/FMP/Polygon/Supabase 키 형태(32자+ 고엔트로피), `.env` 파일 추적 여부
   2. 개인 식별: `username`, `/Users/`, 이메일 주소 패턴
   3. 로컬 산출물 추적 여부: `krw-agnet/.local/`(에이전트 게이트웨이 로그·어댑터), `*.sqlite`, `releases/`, 터널 로그
   4. URL·호스트: 내부 호스트명·포트가 문서에 하드코딩된 곳(정보성 — 치환 여부 판단)
-- [ ] **Step 2: 분류** — 각 히트를 [치환 필요 / .gitignore+rm --cached / 문서 메모만 / 무해]로 분류. 치환 필요 항목은 값을 환경변수 참조나 플레이스홀더로 교체.
-- [ ] **Step 3: 수정 + 커밋** — 저장소별로 `chore: scrub local artifacts / secrets for open-source readiness` 커밋. `.gitignore`에 `.local/`, `*.sqlite`, `.env*` 등 추가.
-- [ ] **Step 4: 보고서** — `OSS_READINESS.md`에: 발견·조치 목록, git 히스토리에 시크릿이 존재하는 경우 `git filter-repo` 후 폐기-재작성 권고(공개 직전 1회), 라이선스·README 공개 전 체크리스트(벤더 상표/이름 — 스크럽 교리와 연계), AGPL(openbb-krw의 openbb-core 의존) 고지 필수 여부 확인.
-- [ ] **Step 5: 커밋** — 보고서는 샌드박스 루트(비 git)에 두고 각 저장소 커밋만 수행.
+- [x] **Step 2: 분류** — 각 히트를 [치환 필요 / .gitignore+rm --cached / 문서 메모만 / 무해]로 분류. 치환 필요 항목은 값을 환경변수 참조나 플레이스홀더로 교체.
+- [x] **Step 3: 수정 + 커밋** — 저장소별로 `chore: scrub local artifacts / secrets for open-source readiness` 커밋. `.gitignore`에 `.local/`, `*.sqlite`, `.env*` 등 추가.
+- [x] **Step 4: 보고서** — `OSS_READINESS.md`에: 발견·조치 목록, git 히스토리에 시크릿이 존재하는 경우 `git filter-repo` 후 폐기-재작성 권고(공개 직전 1회), 라이선스·README 공개 전 체크리스트(벤더 상표/이름 — 스크럽 교리와 연계), AGPL(openbb-krw의 openbb-core 의존) 고지 필수 여부 확인.
+- [x] **Step 5: 커밋** — 보고서는 샌드박스 루트(비 git)에 두고 각 저장소 커밋만 수행.
 
 ---
 
