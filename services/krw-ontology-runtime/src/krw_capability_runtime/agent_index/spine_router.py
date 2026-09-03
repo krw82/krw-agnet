@@ -417,6 +417,11 @@ class OntologySpineRouter:
         normalized = str(ticker or "").upper()
         if normalized in self._missing_shard_paths:
             return self._missing_shard_payload(ticker, operation="company_context")
+        if normalized not in self._shard_paths:
+            # A run for a ticker the catalog never declared must die at turn
+            # zero — the honest payload keeps the run alive so the observation
+            # plane (e.g. the FMP filings fallback) can still serve it.
+            return self._not_covered_payload(ticker, operation="company_context")
         payload = self._store_for_ticker(ticker).company_context(ticker=ticker, **kwargs)
         payload = self._project_shard_payload(payload, ticker=normalized)
         payload.setdefault("routing", self._route_payload("company_shard", [normalized]))
@@ -461,6 +466,11 @@ class OntologySpineRouter:
         normalized = str(ticker or "").upper()
         if normalized in self._missing_shard_paths:
             payload = self._missing_shard_payload(ticker, operation="topic_map")
+            payload.setdefault("ticker", normalized)
+            payload.setdefault("topics", [])
+            return payload
+        if normalized not in self._shard_paths:
+            payload = self._not_covered_payload(ticker, operation="topic_map")
             payload.setdefault("ticker", normalized)
             payload.setdefault("topics", [])
             return payload
@@ -2789,6 +2799,34 @@ class OntologySpineRouter:
             "ticker": normalized,
             "missing_parts": ["ticker_shard_missing"],
             "missing_shards": self._missing_shards_for_tickers([normalized]),
+            "fallback_used": False,
+            "routing": self._route_payload("company_shard_missing", [normalized]),
+        }
+
+    def _not_covered_payload(self, ticker: str | None, *, operation: str) -> dict[str, Any]:
+        """Honest payload for a ticker the catalog never declared.
+
+        Distinct from a missing shard (declared but absent — an integrity
+        problem): not-covered is a data state. Same envelope shape as
+        [`_missing_shard_payload`] so downstream consumers treat it as a
+        result, never as a transport failure that kills the run.
+        """
+
+        normalized = str(ticker or "").upper()
+        return {
+            "error": {
+                "code": "ticker_not_covered",
+                "message": (
+                    "Ticker is outside the ontology catalog; no company shard "
+                    f"exists: {normalized}"
+                ),
+                "details": {
+                    "ticker": normalized,
+                    "operation": operation,
+                },
+            },
+            "ticker": normalized,
+            "missing_parts": ["ticker_not_covered"],
             "fallback_used": False,
             "routing": self._route_payload("company_shard_missing", [normalized]),
         }

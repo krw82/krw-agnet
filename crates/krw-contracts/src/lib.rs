@@ -2869,9 +2869,33 @@ fn validate_quant_dcf_request(value: &Value) -> Result<(), ContractValueError> {
 /// produced by the deterministic builtin, not by the model).
 fn validate_quant_dcf_result(value: &Value) -> Result<(), ContractValueError> {
     let result = object(value, QUANT_DCF_RESULT_V1)?;
+    // The closed key set is exactly what the quant.dcf builtin emits
+    // (crates/capability-runtime/src/quant_dcf.rs). P7 live finding
+    // (2026-09-03): the list previously carried only the four schema-required
+    // keys, so every real builtin output — which always also carries the
+    // audit fields (present values, bridge, warnings, usage) — failed
+    // exact_keys and the capability plane rejected the result with
+    // `quant_result_contract_invalid`. The schema anticipated the fields;
+    // this list must mirror the emitter.
     exact_keys(
         result,
-        &["format", "ticker", "equity_value_per_share", "sensitivity"],
+        &[
+            "format",
+            "ticker",
+            "method",
+            "mid_year",
+            "inputs",
+            "present_values",
+            "pv_of_projection",
+            "terminal_value_pv",
+            "terminal_share_of_enterprise_value",
+            "enterprise_value",
+            "equity_value",
+            "equity_value_per_share",
+            "warnings",
+            "sensitivity",
+            "usage",
+        ],
         QUANT_DCF_RESULT_V1,
     )?;
     if result.get("format").and_then(Value::as_str) != Some("quant-dcf-result/v1")

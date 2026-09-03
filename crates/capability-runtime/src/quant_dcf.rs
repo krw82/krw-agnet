@@ -393,4 +393,28 @@ mod tests {
                 .unwrap()
                 .contains("terminal_share")));
     }
+
+    #[test]
+    fn builtin_output_passes_the_quant_result_contract_end_to_end() {
+        // P7 live regression (2026-09-03): the capability plane rejected a
+        // real dispatch with `quant_result_contract_invalid` because the
+        // semantic validator's allowed-key list omitted the builtin's audit
+        // fields. This pins the full pipeline — the exact episode inputs of
+        // the failed live run — against the pinned contract.
+        use krw_agent_contracts::{validate_value, QUANT_DCF_RESULT_V1};
+
+        let live_args = json!({
+            "fcfs": [99531000000.0, 108807000000.0, 98545000000.0],
+            "method": "perpetuity",
+            "mid_year": false,
+            "net_debt": -22144000000.0,
+            "shares": 14800000000.0,
+            "terminal_growth": 0.025,
+            "ticker": "AAPL",
+            "wacc": 0.095
+        });
+        let result = run_quant_dcf(&live_args).unwrap();
+        validate_value(QUANT_DCF_RESULT_V1, &result)
+            .expect("the builtin's own output must satisfy the pinned contract");
+    }
 }
