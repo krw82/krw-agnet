@@ -2472,12 +2472,13 @@ mod tests {
             descriptor.schema_version,
             PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION
         );
-        // Eight checked-in images currently publish 20 public entrypoints:
-        // one router, five Guru lenses, five core ontology workflows, one
-        // English company workflow, five feed workflows (including the wide
-        // news discovery variant), and one each for source filing, notebook,
-        // and answer composition.
-        assert_eq!(descriptor.entries.len(), 20);
+        // Eight checked-in images currently publish 21 public entrypoints:
+        // one router, five Guru lenses, six core ontology workflows (the five
+        // company/universe lanes plus the ticker-less open_research free
+        // door), one English company workflow, five feed workflows (including
+        // the wide news discovery variant), and one each for source filing,
+        // notebook, and answer composition.
+        assert_eq!(descriptor.entries.len(), 21);
         assert!(descriptor.entries.windows(2).all(|pair| {
             (pair[0].run_kind.as_str(), pair[0].locale.as_str())
                 < (pair[1].run_kind.as_str(), pair[1].locale.as_str())

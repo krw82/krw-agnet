@@ -129,6 +129,29 @@ profiles:
         ontology.query_context_universe: 4
         ontology.query_universe: 5
         ontology.trace_universe: 3
+  - profile_id: open_research
+    limits:
+      # The free door spans the wide discovery loop plus the market-plane
+      # observation frontier, so it carries more turns/calls than wide.
+      max_provider_turns: 24
+      max_capability_calls: 24
+      max_replans: 1
+      max_repairs: 1
+      max_input_tokens: 120000
+      # Must exceed the compose retry reserve threshold (34816): see
+      # earnings_deep_dive above.
+      max_output_tokens: 36864
+      max_evidence_bytes: 8388608
+      deadline_ms: 1500000
+      capability_call_limits:
+        ontology.query_context_universe: 4
+        ontology.query_universe: 4
+        ontology.trace_universe: 2
+        openbb.quote: 3
+        openbb.metrics: 3
+        openbb.income_statement: 3
+        openbb.filings: 3
+        news.web_search: 2
   - profile_id: display_plan_minimal
     limits:
       max_provider_turns: 4

@@ -29,7 +29,10 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_STATES: usize = 128;
 const MAX_TRANSITIONS: usize = 512;
 const MAX_CAPABILITIES: usize = 64;
-const MAX_PROMPT_SEGMENTS: usize = 64;
+// Sanity bound, not a doctrine number: the krw-ontology image sat at exactly
+// 64 before open_research added its two segments, so the ceiling moves with
+// the curation rather than forcing segment reuse across regimes.
+const MAX_PROMPT_SEGMENTS: usize = 80;
 const MAX_SPEC_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROMPT_BLOB_BYTES: usize = 256 * 1024;
@@ -5191,7 +5194,7 @@ mod tests {
                 .values_mut()
                 .find(|entrypoint| entrypoint.run_kind == "idea_generation")
                 .unwrap();
-            entrypoint.run_kind = "open_research".into();
+            entrypoint.run_kind = "test_open_research".into();
             entrypoint.scope.allowed_context = RunContextKind::QuestionOnly;
             entrypoint.scope.cardinality = cardinality;
             entrypoint.scope.ticker_canonicalization =
@@ -5205,7 +5208,7 @@ mod tests {
         let entrypoint = uppercase
             .entrypoints
             .values_mut()
-            .find(|entrypoint| entrypoint.run_kind == "open_research")
+            .find(|entrypoint| entrypoint.run_kind == "test_open_research")
             .unwrap();
         entrypoint.scope.ticker_canonicalization = TickerCanonicalizationPolicy::RequireUppercase;
         assert!(validate_spec(&uppercase).is_err());

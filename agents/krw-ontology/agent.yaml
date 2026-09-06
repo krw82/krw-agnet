@@ -50,6 +50,17 @@ entrypoints:
     required_model_profile: glm_high
     scope: { allowed_context: covered_universe, cardinality: { kind: max, value: 12 }, ticker_canonicalization: not_applicable }
     constants: {}
+  # The free door (open-research vision 2026-09-06): ticker-less questions
+  # and uncovered tickers enter here. The question text is the only trusted
+  # input; covered-universe discovery stays bounded by the cardinality.
+  open_research:
+    run_kind: open_research
+    locale: ko-KR
+    workflow: open_research_v1
+    required_budget_profile: open_research
+    required_model_profile: glm_high
+    scope: { allowed_context: question_only, cardinality: { kind: max, value: 12 }, ticker_canonicalization: not_applicable }
+    constants: {}
 
 contracts:
   - id: search-plan/v2
@@ -352,6 +363,22 @@ roles:
     prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, evidence_analyst, wide_research_analysis]
     deterministic: false
     execution: { reasoning: standard, max_output_tokens: 8192 }
+  - id: open_planner
+    # Shares the wide discovery planner contract: a covered-universe search
+    # plan authored from the question, with zero trusted tickers.
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, research_planner_skill, research_scope]
+    deterministic: false
+    execution: { reasoning: direct, max_output_tokens: 8192 }
+  - id: open_analyst
+    # Free-door analyst: universe discovery ladder + market-plane observation
+    # reads, with the open-research evidence-grade contract.
+    prompt_segments: [security_boundary, kernel_runtime, ontology_catalog, wide_skill_catalog, evidence_analyst, open_research_analysis]
+    deterministic: false
+    execution: { reasoning: standard, max_output_tokens: 16384 }
+  - id: open_composer
+    prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, open_research_output_contract]
+    deterministic: false
+    execution: { reasoning: standard, max_output_tokens: 16384 }
   - id: earnings_composer
     prompt_segments: [security_boundary, kernel_runtime, research_synthesis, plain_korean_investor_language, final_markdown_contract, specialized_answer, earnings_output_contract]
     deterministic: false
@@ -392,6 +419,8 @@ prompt_segments:
   - { id: idea_screen, path: prompts/idea-screen.md, stable_prefix: false, private: true }
   - { id: wide_research_analysis, path: prompts/wide-research-analysis.md, stable_prefix: false, private: true }
   - { id: wide_research_output_contract, path: references/wide-research-output-contract.md, stable_prefix: false, private: true }
+  - { id: open_research_analysis, path: prompts/open-research-analysis.md, stable_prefix: false, private: true }
+  - { id: open_research_output_contract, path: references/open-research-output-contract.md, stable_prefix: false, private: true }
   - { id: specialized_answer, path: prompts/specialized-answer.md, stable_prefix: false, private: true }
   - { id: thesis_change_policy, path: references/thesis-change-policy.md, stable_prefix: false, private: true, loadable: true }
   - { id: earnings_quality_policy, path: references/earnings-quality-policy.md, stable_prefix: false, private: true, loadable: true }
@@ -1542,6 +1571,113 @@ workflows:
       - { from: assess_wide_impacts, on: output_budget_reserved, to: compose_ir }
       - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
       - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: compose_ir, on: draft_ready, to: verify_ir }
+      - { from: verify_ir, on: repair_required, to: repair_ir }
+      - { from: verify_ir, on: verified, to: render_ko }
+      - { from: repair_ir, on: draft_ready, to: verify_ir }
+      - { from: render_ko, on: rendered, to: commit }
+      - { from: commit, on: committed, to: succeeded }
+
+  - id: open_research_v1
+    initial: accepted
+    states:
+      - { id: accepted, kind: start, max_visits: 1 }
+      # Assess first: the engine requires the state right after
+      # initialization to be a ModelDecision (idea_generation_v1 precedent),
+      # and this screen carries the vague-question clarify path.
+      - { id: classify_screen, kind: assess, role_id: open_analyst, max_visits: 1 }
+      - { id: compose_clarification, kind: compose, role_id: open_composer, max_visits: 1 }
+      - { id: author_plan, kind: plan, role_id: open_planner, max_visits: 2 }
+      - { id: validate_plan, kind: validate, max_visits: 2 }
+      - { id: repair_plan, kind: plan, role_id: open_planner, max_visits: 1 }
+      - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
+      # Must cover every advertised evidence read: discovery x2, targeted
+      # x3, trace x2, market/macro series x2, the thirteen openbb lookups,
+      # and the web-news lookup, with company-lane headroom.
+      - { id: ingest_evidence, kind: ingest, max_visits: 29 }
+      - { id: assess_frontier, kind: assess, role_id: open_analyst, max_visits: 8 }
+      - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
+      - { id: trace_selected, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
+      - { id: market_series_lookup, kind: capability, capability_id: market.series, max_visits: 1 }
+      - { id: macro_series_lookup, kind: capability, capability_id: macro.series, max_visits: 1 }
+      - { id: openbb_price_lookup, kind: capability, capability_id: openbb.price_history, max_visits: 1 }
+      - { id: openbb_quote_lookup, kind: capability, capability_id: openbb.quote, max_visits: 1 }
+      - { id: openbb_metrics_lookup, kind: capability, capability_id: openbb.metrics, max_visits: 1 }
+      - { id: openbb_income_lookup, kind: capability, capability_id: openbb.income_statement, max_visits: 1 }
+      - { id: openbb_balance_lookup, kind: capability, capability_id: openbb.balance_statement, max_visits: 1 }
+      - { id: openbb_cash_lookup, kind: capability, capability_id: openbb.cash_statement, max_visits: 1 }
+      - { id: openbb_consensus_lookup, kind: capability, capability_id: openbb.consensus, max_visits: 1 }
+      - { id: openbb_peers_lookup, kind: capability, capability_id: openbb.peers, max_visits: 1 }
+      - { id: openbb_earnings_calendar_lookup, kind: capability, capability_id: openbb.earnings_calendar, max_visits: 1 }
+      - { id: openbb_filings_lookup, kind: capability, capability_id: openbb.filings, max_visits: 1 }
+      - { id: openbb_macro_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
+      - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
+      - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
+      - { id: news_web_search, kind: capability, capability_id: news.web_search, max_visits: 1 }
+      - { id: compose_ir, kind: compose, role_id: open_composer, max_visits: 2 }
+      - { id: verify_ir, kind: verify, max_visits: 2 }
+      - { id: repair_ir, kind: compose, role_id: open_composer, max_visits: 1 }
+      - { id: render_ko, kind: render, max_visits: 1 }
+      - { id: commit, kind: commit, max_visits: 1 }
+      - { id: succeeded, kind: terminal, terminal: succeeded, max_visits: 1 }
+    transitions:
+      - { from: accepted, on: begin, to: classify_screen }
+      - { from: classify_screen, on: clarification_required, to: compose_clarification }
+      - { from: classify_screen, on: screen_ready, to: author_plan }
+      - { from: classify_screen, on: output_budget_reserved, to: compose_ir }
+      - { from: compose_clarification, on: draft_ready, to: verify_ir }
+      - { from: author_plan, on: plan_ready, to: validate_plan }
+      - { from: author_plan, on: proposal_unrecoverable, to: compose_ir }
+      - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_invalid, to: repair_plan }
+      - { from: validate_plan, on: plan_valid, to: discover_context }
+      - { from: repair_plan, on: plan_ready, to: validate_plan }
+      - { from: discover_context, on: correction_required, to: repair_plan }
+      - { from: discover_context, on: correction_unresolved, to: assess_frontier }
+      - { from: discover_context, on: evidence_observed, to: ingest_evidence }
+      - { from: ingest_evidence, on: ingested, to: assess_frontier }
+      - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
+      - { from: assess_frontier, on: market_series_has_value, to: market_series_lookup }
+      - { from: assess_frontier, on: macro_series_has_value, to: macro_series_lookup }
+      - { from: assess_frontier, on: openbb_price_has_value, to: openbb_price_lookup }
+      - { from: assess_frontier, on: openbb_quote_has_value, to: openbb_quote_lookup }
+      - { from: assess_frontier, on: openbb_metrics_has_value, to: openbb_metrics_lookup }
+      - { from: assess_frontier, on: openbb_income_has_value, to: openbb_income_lookup }
+      - { from: assess_frontier, on: openbb_balance_has_value, to: openbb_balance_lookup }
+      - { from: assess_frontier, on: openbb_cash_has_value, to: openbb_cash_lookup }
+      - { from: assess_frontier, on: openbb_consensus_has_value, to: openbb_consensus_lookup }
+      - { from: assess_frontier, on: openbb_peers_has_value, to: openbb_peers_lookup }
+      - { from: assess_frontier, on: openbb_earnings_calendar_has_value, to: openbb_earnings_calendar_lookup }
+      - { from: assess_frontier, on: openbb_filings_has_value, to: openbb_filings_lookup }
+      - { from: assess_frontier, on: openbb_cpi_has_value, to: openbb_macro_cpi_lookup }
+      - { from: assess_frontier, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
+      - { from: assess_frontier, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
+      - { from: assess_frontier, on: news_web_has_value, to: news_web_search }
+      - { from: assess_frontier, on: precise_query_has_value, to: targeted_query }
+      - { from: assess_frontier, on: selected_trace_has_value, to: trace_selected }
+      - { from: assess_frontier, on: append_context_plan, to: discover_context }
+      - { from: assess_frontier, on: proposal_rejected, to: assess_frontier }
+      - { from: assess_frontier, on: evidence_sufficient, to: compose_ir }
+      - { from: assess_frontier, on: no_positive_value_action, to: compose_ir }
+      - { from: assess_frontier, on: output_budget_reserved, to: compose_ir }
+      - { from: targeted_query, on: evidence_observed, to: ingest_evidence }
+      - { from: trace_selected, on: evidence_observed, to: ingest_evidence }
+      - { from: market_series_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: macro_series_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_price_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_quote_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_metrics_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_income_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_balance_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_cash_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_consensus_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_peers_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_earnings_calendar_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_filings_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_macro_cpi_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: news_web_search, on: evidence_observed, to: ingest_evidence }
       - { from: compose_ir, on: draft_ready, to: verify_ir }
       - { from: verify_ir, on: repair_required, to: repair_ir }
       - { from: verify_ir, on: verified, to: render_ko }

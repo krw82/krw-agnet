@@ -8722,6 +8722,7 @@ mod tests {
                 "krw-ontology/company_research_v2/assess_obligations".into(),
                 "krw-ontology/earnings_deep_dive_v1/reconcile_periods_and_commentary".into(),
                 "krw-ontology/idea_generation_v1/assess_candidates".into(),
+                "krw-ontology/open_research_v1/assess_frontier".into(),
                 "krw-ontology/scenario_sensitivity_v1/assess_transmission_path".into(),
                 "krw-ontology/wide_research_v1/assess_wide_impacts".into(),
             ]),
@@ -8735,6 +8736,7 @@ mod tests {
                 "krw-guru-advisor/guru_company_advisor_v1/assess_company_gaps".into(),
                 "krw-ontology-en/company_research_en_v1/assess_obligations".into(),
                 "krw-ontology/idea_generation_v1/assess_candidates".into(),
+                "krw-ontology/open_research_v1/assess_frontier".into(),
                 "krw-ontology/scenario_sensitivity_v1/assess_transmission_path".into(),
                 "krw-ontology/wide_research_v1/assess_wide_impacts".into(),
             ]),
@@ -11562,6 +11564,42 @@ mod tests {
         let pinned = kernel_workflow_facts(&image, &request, "evidence_sufficient").unwrap();
         assert_eq!(pinned["author_key"], "ackman");
         assert_eq!(pinned["event"], "evidence_sufficient");
+    }
+
+    #[test]
+    fn open_research_admits_question_only_requests_against_the_real_image() {
+        let mut fixture = fixture();
+        fixture.request.run_kind = "open_research".into();
+        fixture.request.context = RunContextV1::QuestionOnly {};
+        fixture.request.question = "반도체 병목 관련된 회사 있나?".into();
+        validate_input(&fixture.input(), &EngineConfig::default()).unwrap_or_else(|error| {
+            panic!("the free door must admit a ticker-less question: {error}")
+        });
+
+        // Every capability state in the free door must reference a declared
+        // capability, and the advertised evidence reads must fit the ingest
+        // bound (same audit discipline the company lane carries).
+        let image = loaded_agent("krw-ontology");
+        let workflow = image
+            .body
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "open_research_v1")
+            .expect("open_research_v1 workflow");
+        let declared: BTreeSet<&str> = image
+            .body
+            .capabilities
+            .iter()
+            .map(|capability| capability.id.as_str())
+            .collect();
+        for state in &workflow.states {
+            if let Some(capability_id) = state.capability_id.as_deref() {
+                assert!(
+                    declared.contains(capability_id),
+                    "open_research_v1 references undeclared capability {capability_id}"
+                );
+            }
+        }
     }
 
     #[test]
