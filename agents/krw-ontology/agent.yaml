@@ -531,7 +531,7 @@ capabilities:
     idempotency: canonical_args
     result_ingest: market_snapshot_v1
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
       require_any_of: [ticker]
@@ -552,7 +552,7 @@ capabilities:
     idempotency: canonical_args
     result_ingest: market_series_v1
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
       require_any_of: [ticker]
@@ -600,7 +600,7 @@ capabilities:
         expected_result_bytes: 12288
       conflict_domain: openbb.equity_price_historical
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -667,7 +667,7 @@ capabilities:
         expected_result_bytes: 2048
       conflict_domain: openbb.equity_price_quote
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -695,7 +695,7 @@ capabilities:
         expected_result_bytes: 8192
       conflict_domain: openbb.equity_fundamental_metrics
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -723,7 +723,7 @@ capabilities:
         expected_result_bytes: 16384
       conflict_domain: openbb.equity_fundamental_income
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -751,7 +751,7 @@ capabilities:
         expected_result_bytes: 16384
       conflict_domain: openbb.equity_fundamental_balance
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -779,7 +779,7 @@ capabilities:
         expected_result_bytes: 16384
       conflict_domain: openbb.equity_fundamental_cash
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -807,7 +807,7 @@ capabilities:
         expected_result_bytes: 2048
       conflict_domain: openbb.equity_estimates_consensus
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -835,7 +835,7 @@ capabilities:
         expected_result_bytes: 6144
       conflict_domain: openbb.equity_compare_peers
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -864,7 +864,7 @@ capabilities:
         expected_result_bytes: 4096
       conflict_domain: openbb.equity_calendar_earnings
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -925,7 +925,7 @@ capabilities:
         expected_result_bytes: 8192
       conflict_domain: openbb.equity_fundamental_filings
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: symbol, pointer_pattern: /symbol, value_kind: string }
       require_any_of: [symbol]
@@ -1112,7 +1112,7 @@ capabilities:
     idempotency: canonical_args
     result_ingest: feed_issue_list_v1
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: tickers, pointer_pattern: /tickers, value_kind: string_array }
       require_any_of: [tickers]
@@ -1147,7 +1147,7 @@ capabilities:
     idempotency: canonical_args
     result_ingest: web_news_v1
     scope_binding:
-      kind: trusted_ticker_set
+      kind: market_plane
       ticker_references:
         - { id: ticker, pointer_pattern: /ticker, value_kind: string }
       require_any_of: [ticker]

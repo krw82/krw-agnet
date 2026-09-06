@@ -5708,8 +5708,9 @@ mod tests {
                 }
             }
         }
-        // The price lookup and the round-2 company plane are ticker-scoped;
-        // the macro lookups (round 1 and round 2) are unscoped.
+        // The price lookup and the round-2 company plane are ticker-scoped
+        // market-plane reads (membership-checked in company runs, form-only
+        // in question-only runs); the macro lookups are unscoped.
         let scoped = image
             .body
             .capabilities
@@ -5718,7 +5719,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             &scoped.scope_binding,
-            CapabilityScopeBinding::TrustedTickerSet { .. }
+            CapabilityScopeBinding::MarketPlane { .. }
         ));
         for capability_id in [
             "openbb.quote",
@@ -5738,7 +5739,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{capability_id} ticker scope"));
             assert!(matches!(
                 &capability.scope_binding,
-                CapabilityScopeBinding::TrustedTickerSet { .. }
+                CapabilityScopeBinding::MarketPlane { .. }
             ));
         }
         for capability_id in [
