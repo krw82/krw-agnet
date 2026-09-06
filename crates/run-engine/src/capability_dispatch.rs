@@ -1425,6 +1425,18 @@ pub(crate) fn is_append_context_plan_capacity_rejection(error: &EngineError) -> 
     )
 }
 
+/// A capability prerequisite is satisfied when the run already completed it,
+/// or when the active workflow program has no state for it at all — an
+/// unreachable prerequisite is a property of the regime (e.g. question-only
+/// runs have no company-context state), not an ordering violation.
+pub(crate) fn prerequisite_satisfied(
+    required: &str,
+    completed: &BTreeSet<String>,
+    program_state_capabilities: &BTreeSet<&str>,
+) -> bool {
+    completed.contains(required) || !program_state_capabilities.contains(required)
+}
+
 pub(crate) fn prepare_calls(
     episode: &ProviderEpisodeV1,
     input: &RunInput<'_>,
@@ -1440,6 +1452,29 @@ pub(crate) fn prepare_calls(
         .iter()
         .map(|schema| schema.capability_id.as_str())
         .collect::<BTreeSet<_>>();
+    // Prerequisites order capabilities WITHIN one workflow program. When the
+    // active program structurally never declares the prerequisite as a state
+    // (for example ontology.query_context inside a question-only workflow),
+    // the ordering constraint is vacuous and must not deadlock the regime.
+    let program_state_capabilities: BTreeSet<&str> =
+        crate::selected_entrypoint(input.image, input.request)
+            .ok()
+            .and_then(|entrypoint| {
+                input
+                    .image
+                    .body
+                    .workflows
+                    .iter()
+                    .find(|workflow| workflow.id == entrypoint.workflow)
+                    .map(|workflow| {
+                        workflow
+                            .states
+                            .iter()
+                            .filter_map(|state| state.capability_id.as_deref())
+                            .collect::<BTreeSet<_>>()
+                    })
+            })
+            .unwrap_or_default();
     let calls = &episode.assistant.tool_calls;
     if calls.len() > max_calls {
         return Err(EngineError::TooManyToolCalls {
@@ -1478,7 +1513,7 @@ pub(crate) fn prepare_calls(
         if !capability
             .prerequisites
             .iter()
-            .all(|required| state.completed_capabilities.contains(required))
+            .all(|required| prerequisite_satisfied(required, &state.completed_capabilities, &program_state_capabilities))
         {
             return Err(EngineError::CapabilityPrerequisiteMissing(
                 capability.id.clone(),

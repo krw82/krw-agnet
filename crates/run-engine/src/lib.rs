@@ -11003,6 +11003,44 @@ mod tests {
     }
 
     #[test]
+    fn prerequisites_apply_only_within_the_reachable_workflow_program() {
+        let image = loaded_agent("krw-ontology");
+        let state_capabilities = |workflow_id: &str| -> BTreeSet<&str> {
+            image
+                .body
+                .workflows
+                .iter()
+                .find(|workflow| workflow.id == workflow_id)
+                .unwrap()
+                .states
+                .iter()
+                .filter_map(|state| state.capability_id.as_deref())
+                .collect()
+        };
+        // The wide program never declares ontology.query_context as a state,
+        // so its ordering prerequisite cannot apply there — the regime that
+        // open_research relies on for market-plane reads.
+        let wide_states = state_capabilities("wide_research_v1");
+        assert!(capability_dispatch::prerequisite_satisfied(
+            "ontology.query_context",
+            &BTreeSet::new(),
+            &wide_states
+        ));
+        // The company program does declare it, so it must complete first.
+        let company_states = state_capabilities("company_research_v2");
+        assert!(!capability_dispatch::prerequisite_satisfied(
+            "ontology.query_context",
+            &BTreeSet::new(),
+            &company_states
+        ));
+        assert!(capability_dispatch::prerequisite_satisfied(
+            "ontology.query_context",
+            &BTreeSet::from(["ontology.query_context".to_string()]),
+            &company_states
+        ));
+    }
+
+    #[test]
     fn declarative_ticker_scope_binding_rejects_substitution_and_extra_clause_tickers() {
         let fixture = fixture();
         let entrypoint = fixture
