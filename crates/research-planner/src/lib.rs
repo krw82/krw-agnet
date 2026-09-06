@@ -453,44 +453,53 @@ impl ResearchPlanner {
             let observed = observed_goals
                 .get(&goal.goal_id)
                 .ok_or(ResearchPlannerError::IntentReceipt)?;
-            let new_evidence = observed
-                .evidence_ids
-                .iter()
-                .filter(|id| !goal.evidence_ids.contains(id))
-                .cloned()
-                .collect::<Vec<_>>();
-            let new_calculations = observed
-                .calculation_ids
-                .iter()
-                .filter(|id| !goal.calculation_ids.contains(id))
-                .cloned()
-                .collect::<Vec<_>>();
-            if observed.coverage_ppm < goal.coverage_ppm
-                || (goal.status == GoalStatus::Satisfied
-                    && observed.status != GoalStatus::Satisfied)
-                || goal.status == GoalStatus::Blocked
-            {
-                return Err(ResearchPlannerError::IntentGoalProgressDrift);
-            }
-            if observed.status == GoalStatus::Unresolved {
-                if goal.status != GoalStatus::Unresolved {
-                    return Err(ResearchPlannerError::IntentGoalProgressDrift);
-                }
-                // A goal that is still unresolved but already has new evidence is
-                // in progress, not drifting. With multiple clauses a single
-                // capability call may cover some goals and leave others
-                // unresolved; the agent must be allowed to make further calls to
-                // resolve them. Previously, any new evidence on an unresolved
-                // goal was treated as drift and aborted the whole run.
+            // The progress ledger is monotonic by contract (plans are
+            // append-only and ingest merges progress), but the fresh
+            // observation is the engine's own re-score of retained clauses
+            // under the latest retrieval lens: a follow-up query with a
+            // narrower scope can re-report an earlier clause lower even
+            // though its evidence is still in the ledger. An observation
+            // may therefore only UPGRADE a committed goal — the committed
+            // high-water mark stands, exactly like the cross-clause merge
+            // above. A terminal abort here burned healthy multi-intent
+            // runs (live 2026-09-07: the second SO query_context died with
+            // IntentGoalProgressDrift).
+            let mut merged = observed.clone();
+            merged.merge(&SemanticGoalObservation {
+                status: goal.status,
+                coverage_ppm: goal.coverage_ppm,
+                evidence_ids: goal.evidence_ids.clone(),
+                calculation_ids: goal.calculation_ids.clone(),
+            });
+            if merged.status == GoalStatus::Unresolved {
+                // A goal that is still unresolved but already has evidence
+                // is in progress, not drifting. With multiple clauses a
+                // single capability call may cover some goals and leave
+                // others unresolved; the agent must be allowed to make
+                // further calls to resolve them. Previously, any new
+                // evidence on an unresolved goal was treated as drift and
+                // aborted the whole run.
                 continue;
             }
-            if observed.evidence_ids.is_empty()
-                || (goal.calculation_required && observed.calculation_ids.is_empty())
+            if merged.evidence_ids.is_empty()
+                || (goal.calculation_required && merged.calculation_ids.is_empty())
             {
                 return Err(ResearchPlannerError::IntentCoverageProvenanceMissing);
             }
-            if goal.status == observed.status
-                && goal.coverage_ppm == observed.coverage_ppm
+            let new_evidence = merged
+                .evidence_ids
+                .iter()
+                .filter(|id| !goal.evidence_ids.contains(*id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let new_calculations = merged
+                .calculation_ids
+                .iter()
+                .filter(|id| !goal.calculation_ids.contains(*id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if goal.status == merged.status
+                && goal.coverage_ppm == merged.coverage_ppm
                 && new_evidence.is_empty()
                 && new_calculations.is_empty()
             {
@@ -499,8 +508,8 @@ impl ResearchPlanner {
             progress.push(GoalProgressUpdate {
                 goal_id: goal.goal_id.clone(),
                 expected_status: goal.status,
-                status: observed.status,
-                coverage_ppm: observed.coverage_ppm,
+                status: merged.status,
+                coverage_ppm: merged.coverage_ppm,
                 evidence_ids: new_evidence,
                 calculation_ids: new_calculations,
             });
@@ -3391,6 +3400,32 @@ mod tests {
                 evaluated: 1,
             } if proposal_id == "required-gap-query" && score > 0
         ));
+    }
+
+    #[test]
+    fn rederived_lower_clause_coverage_keeps_committed_progress() {
+        let receipt = fixture_intent_receipt();
+        let mut planner = ResearchPlanner::default();
+        planner
+            .record_initial_context(ContentHash::sha256("fixture-context"))
+            .unwrap();
+        let mut state = fixture_for_proposal();
+        planner
+            .ingest_research_state_for_intent(&state, &receipt, &[])
+            .unwrap();
+
+        // A follow-up retrieval under a narrower lens can re-report a
+        // retained clause lower even though its evidence is still in the
+        // ledger — the ingest contract merges progress monotonically and
+        // the plan is append-only. The committed goal keeps its high-water
+        // progress instead of terminating the run (live 2026-09-07: the
+        // second SO query_context died with IntentGoalProgressDrift).
+        state.clause_coverage[0].status = "missing".into();
+        state.clause_coverage[0].covered_tickers.clear();
+        state.clause_coverage[0].missing_tickers.push("VG".into());
+        planner
+            .ingest_research_state_for_intent(&state, &receipt, &[])
+            .unwrap();
     }
 
     #[test]
