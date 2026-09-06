@@ -11217,6 +11217,61 @@ mod tests {
     }
 
     #[test]
+    fn unscoped_observation_reads_authorize_in_every_research_context() {
+        // Live repro (2026-09-04, run_e17363630b + run_880549c1): a
+        // macro-framed free-door question attempted the mandated macro
+        // series reads and every dispatch returned
+        // capability_scope_not_authorized, because the scope match had no
+        // arm for Unscoped bindings — the catch-all rejected reads that
+        // name no company at all, so macro questions could never observe
+        // their indicators.
+        let image = loaded_agent("krw-ontology");
+        let mut entrypoint = image.body.entrypoints.get("idea_generation").unwrap().clone();
+        entrypoint.scope.allowed_context = krw_agent_protocol::RunContextKind::QuestionOnly;
+        entrypoint.scope.cardinality = krw_agent_image::ScopeCardinality::Max { value: 12 };
+        let macro_series = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "macro.series")
+            .unwrap();
+        assert!(matches!(
+            macro_series.scope_binding,
+            krw_agent_image::CapabilityScopeBinding::Unscoped
+        ));
+        let read = serde_json::json!({"metric": "cpi_yoy", "limit": 24});
+
+        validate_capability_run_scope(
+            &entrypoint,
+            &RunContextV1::QuestionOnly {},
+            None,
+            macro_series,
+            &read,
+        )
+        .unwrap();
+        validate_capability_run_scope(
+            &entrypoint,
+            &RunContextV1::CoveredUniverse {
+                universe: krw_agent_protocol::CoveredUniverseMarker::Covered,
+            },
+            None,
+            macro_series,
+            &read,
+        )
+        .unwrap();
+        validate_capability_run_scope(
+            &entrypoint,
+            &RunContextV1::CompanyTickerSet {
+                tickers: vec!["SO".into()],
+            },
+            None,
+            macro_series,
+            &read,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn market_plane_binding_keeps_membership_in_ticker_scoped_runs() {
         let image = loaded_agent("krw-ontology");
         let entrypoint = image.body.entrypoints.get("company_research").unwrap();

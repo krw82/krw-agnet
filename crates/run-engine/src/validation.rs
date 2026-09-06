@@ -477,6 +477,21 @@ pub(crate) fn validate_capability_run_scope(
             },
             RunContextV1::QuestionOnly {},
         ) => validate_market_plane_binding(ticker_references, require_any_of, arguments),
+        // Unscoped observation reads (macro indicator series, FRED/openbb
+        // macro calendars, yield curves) name no company at all: there is no
+        // ticker scope to bind or violate, and the input contract's
+        // kernel-owned allowlists keep each read bounded. Free-door live
+        // testing (2026-09-04, run_e17363630b / run_880549c1) hit exactly
+        // this arm's absence — every macro observation came back as
+        // capability_scope_not_authorized, so a macro-framed question could
+        // never observe its indicators and had to answer from filings alone.
+        (
+            CapabilityScopeBinding::Unscoped,
+            RunContextV1::QuestionOnly {}
+            | RunContextV1::CoveredUniverse { .. }
+            | RunContextV1::CompanyTickerSet { .. }
+            | RunContextV1::ResearchNotebook { .. },
+        ) => Ok(()),
         (
             CapabilityScopeBinding::SelectedFeedItems {
                 issue_ids_pointer,
