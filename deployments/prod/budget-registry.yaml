@@ -17,7 +17,7 @@ profiles:
       max_capability_calls: 32
       max_replans: 5
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 148000
       max_output_tokens: 56000
       max_evidence_bytes: 33554432
       deadline_ms: 3600000
@@ -39,7 +39,7 @@ profiles:
       max_capability_calls: 32
       max_replans: 5
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 150000
       max_output_tokens: 54000
       max_evidence_bytes: 33554432
       # English reasoning turns run longer than Korean (measured 2026-09-02:
@@ -85,7 +85,7 @@ profiles:
       max_capability_calls: 24
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       # Two GLM Guru turns seal the lens/brief before the ordinary filing
       # researcher continues in the parent workflow. Keep a separate tail for
       # evidence review and the final Korean answer. Must exceed the compose
@@ -109,7 +109,7 @@ profiles:
       max_capability_calls: 24
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 159000
       # 45056 keeps the compose-reserve threshold (34816) covered with real
       # cumulative headroom for one extra repair turn.
       max_output_tokens: 45056
@@ -126,7 +126,7 @@ profiles:
       max_capability_calls: 20
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       # Must exceed the compose retry reserve threshold (34816).
       max_output_tokens: 36864
       max_evidence_bytes: 33554432
@@ -141,7 +141,7 @@ profiles:
       max_capability_calls: 24
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       # Must exceed the compose retry reserve threshold (34816).
       max_output_tokens: 36864
       max_evidence_bytes: 33554432
@@ -164,9 +164,11 @@ profiles:
       max_capability_calls: 60
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 190000
-      # Must exceed the compose retry reserve threshold (34816).
-      max_output_tokens: 65536
+      # Input+output must fit the GLM-5.3 204800 context; 167000+36864 keeps
+      # the proven ~204000 cumulative envelope while still raising input from
+      # the old 120000.
+      max_input_tokens: 167000
+      max_output_tokens: 36864
       max_evidence_bytes: 33554432
       deadline_ms: 7200000
       capability_call_limits:
@@ -208,7 +210,7 @@ profiles:
       max_capability_calls: 16
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       # The news analyst now runs at the 16384-token ceiling; the tail must
       # hold two analyst turns plus the compose tail.
       max_output_tokens: 36864
@@ -228,7 +230,7 @@ profiles:
       max_capability_calls: 16
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       max_output_tokens: 36864
       max_evidence_bytes: 33554432
       deadline_ms: 1800000
@@ -244,7 +246,7 @@ profiles:
       max_capability_calls: 16
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 167000
       max_output_tokens: 36864
       max_evidence_bytes: 33554432
       deadline_ms: 1800000
@@ -261,7 +263,7 @@ profiles:
       max_capability_calls: 22
       max_replans: 3
       max_repairs: 10
-      max_input_tokens: 168000
+      max_input_tokens: 144000
       # The parent envelope covers the ordinary filing researcher (GLM
       # thinking + the capability decision share one 16384-token output
       # ceiling), the evidence review, and the final composition: mirror
