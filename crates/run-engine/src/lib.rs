@@ -2309,7 +2309,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(income_explicit["limit"], 4);
-        assert_eq!(income_explicit["period"], "quarterly");
+        // The wire vocabulary lowers quarterly -> quarter (upstream statement
+        // endpoints reject the 'quarterly' literal with a 422).
+        assert_eq!(income_explicit["period"], "quarter");
 
         // Round-2 earnings calendar: the symbol is always injected so the
         // read stays ticker-scoped even though the tool allows an unscoped

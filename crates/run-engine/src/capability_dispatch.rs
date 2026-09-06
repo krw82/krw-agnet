@@ -1060,6 +1060,13 @@ pub(crate) fn assemble_openbb_request(
                 .get("period")
                 .and_then(Value::as_str)
                 .filter(|period| matches!(*period, "annual" | "quarterly"))
+                // The model-facing vocabulary stays annual/quarterly, but the
+                // upstream statement endpoints accept {q1..q4, fy, ttm,
+                // annual, quarter} — 'quarterly' is a literal 422 there
+                // (live run_e341b613: income_statement for the free-door
+                // subject died as a non-retryable mcp_text_json dependency
+                // on exactly this literal). Lower it on the wire.
+                .map(|period| if period == "quarterly" { "quarter" } else { "annual" })
                 .unwrap_or("annual");
             physical.insert("period".into(), Value::String(period.to_owned()));
         }
