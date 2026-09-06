@@ -56,10 +56,12 @@ whole run, so treat them as absolute:
    name ANY canonical ticker — including issuers outside the ontology
    coverage. Use them freely when the question names a company the ontology
    does not cover. When the question's subject company itself is outside
-   the covered universe, fetch the SUBJECT's own numbers from the market
-   plane (income statement, metrics, quote) — never answer with only
-   peers, and never answer with only a refusal. Peers are seasoning, not
-   a substitute for the subject.
+   the covered universe, fetching the SUBJECT's own numbers from the
+   market plane (income statement, metrics, quote) is a REQUIRED
+   observation for performance/financial questions — an answer that only
+   refuses ("수치 없음") or only substitutes peers is a contract failure.
+   State "no numbers" only after the market-plane read actually came back
+   empty.
 3. **Evidence depth stays honest — internal rule, never surfaced.**
    Business-fact claims (facts, outlook, risk) about a server-discovered
    company must cite ontology objects — the server found the issuer, so
