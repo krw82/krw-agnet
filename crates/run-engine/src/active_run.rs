@@ -1920,6 +1920,26 @@ impl ActiveRun {
                     // the door is closed. Company runs keep the strict
                     // candidate mapping (their trusted scope always has
                     // candidates).
+                    //
+                    // Observation-batch drain (live 2026-09-07, PLTR
+                    // run_0b02e610): the doctrine admits a ≤4 homogeneous
+                    // observation batch, but executing only the leader
+                    // starved answers down to a single read (quote-only)
+                    // and burned repair turns on re-emitted batches. Drain
+                    // the remaining calls through the same kernel-owned
+                    // queue the supplemental lane uses; every drained call
+                    // still routes through its own statechart transition
+                    // (visit, action-limit, scope, and contract checks).
+                    if calls.len() <= Self::MAX_SUPPLEMENTAL_BATCH
+                        && let Some(episode_hash) = self.last_provider_episode_hash.clone()
+                    {
+                        self.pending_supplemental_calls.extend(
+                            calls[1..]
+                                .iter()
+                                .cloned()
+                                .map(|call| (episode_hash.clone(), call)),
+                        );
+                    }
                     Ok(ResearchDispatchDecision::Execute { selected_index: 0 })
                 } else if self.has_replan_budget() {
                     self.reserve_replan()?;
