@@ -1693,7 +1693,7 @@ fn trusted_scope_values(
         RunContextV1::CompanyTickerSet { tickers } => {
             Ok((tickers.clone(), Value::Null, requested_limit_tickers))
         }
-        RunContextV1::CoveredUniverse { .. } => {
+        RunContextV1::CoveredUniverse { .. } | RunContextV1::QuestionOnly {} => {
             let cap = u64::from(scope.max_discovery_tickers);
             if cap == 0 {
                 return Err(InitialPlanError::UnsupportedScope);
@@ -2578,6 +2578,48 @@ mod tests {
         assert_eq!(plan["tickers"], json!([]));
         assert_eq!(plan["universe"], "covered");
         assert_eq!(plan["limit_tickers"], 7);
+    }
+
+    #[test]
+    fn question_only_compiles_a_covered_discovery_plan_and_supports_macro_only() {
+        let question = "인플레이션 오르면 어떤 섹터가 유리할까?";
+        let proposal = proposal();
+        let context = RunContextV1::QuestionOnly {};
+        let plan = compile_research_proposal(
+            &proposal,
+            InitialPlanScope {
+                question,
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 12,
+                prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
+            },
+        )
+        .unwrap()
+        .search_plan;
+        // The free door starts with zero trusted tickers: the plan itself is
+        // the covered-universe discovery request, so macro-only questions
+        // (zero discovered companies) remain plannable.
+        assert_eq!(plan["tickers"], json!([]));
+        assert_eq!(plan["universe"], "covered");
+        assert_eq!(plan["limit_tickers"], 12);
+
+        // A no-discovery question_only entrypoint (cardinality exact 0)
+        // cannot compile a discovery plan — same as covered_universe.
+        let error = compile_research_proposal(
+            &proposal,
+            InitialPlanScope {
+                question,
+                context: &context,
+                derived_tickers: None,
+                max_discovery_tickers: 0,
+                prior_plan: None,
+                requester: ResearchPlanRequester::CompanyQueryContext,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, InitialPlanError::UnsupportedScope));
     }
 
     #[test]
