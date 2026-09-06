@@ -1486,7 +1486,7 @@ workflows:
       - { id: author_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 2 }
       - { id: validate_discovery_plan, kind: validate, max_visits: 2 }
       - { id: repair_discovery_plan, kind: plan, role_id: idea_planner, max_visits: 1 }
-      - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
       - { id: ingest_candidates, kind: ingest, max_visits: 7 }
       - { id: assess_candidates, kind: assess, role_id: idea_analyst, max_visits: 6 }
       - { id: candidate_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
@@ -1507,16 +1507,16 @@ workflows:
       - { from: author_discovery_plan, on: plan_ready, to: validate_discovery_plan }
       - { from: author_discovery_plan, on: proposal_contract_invalid, to: repair_discovery_plan }
       - { from: validate_discovery_plan, on: plan_invalid, to: repair_discovery_plan }
-      - { from: validate_discovery_plan, on: plan_valid, to: discover_context }
+      - { from: validate_discovery_plan, on: plan_valid, to: query_context }
       - { from: repair_discovery_plan, on: plan_ready, to: validate_discovery_plan }
-      - { from: discover_context, on: correction_required, to: repair_discovery_plan }
-      - { from: discover_context, on: correction_unresolved, to: assess_candidates }
-      - { from: discover_context, on: evidence_observed, to: ingest_candidates }
+      - { from: query_context, on: correction_required, to: repair_discovery_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_candidates }
+      - { from: query_context, on: evidence_observed, to: ingest_candidates }
       - { from: ingest_candidates, on: ingested, to: assess_candidates }
       - { from: ingest_candidates, on: output_budget_reserved, to: compose_ir }
       - { from: assess_candidates, on: precise_query_has_value, to: candidate_query }
       - { from: assess_candidates, on: selected_trace_has_value, to: candidate_trace }
-      - { from: assess_candidates, on: append_context_plan, to: discover_context }
+      - { from: assess_candidates, on: append_context_plan, to: query_context }
       - { from: assess_candidates, on: proposal_rejected, to: assess_candidates }
       - { from: assess_candidates, on: candidates_classifiable, to: classify_priority }
       - { from: assess_candidates, on: no_positive_value_action, to: classify_priority }
@@ -1539,7 +1539,7 @@ workflows:
       - { id: author_wide_plan, kind: plan, role_id: wide_planner, max_visits: 2 }
       - { id: validate_wide_plan, kind: validate, max_visits: 2 }
       - { id: repair_wide_plan, kind: plan, role_id: wide_planner, max_visits: 1 }
-      - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
+      - { id: query_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
       - { id: ingest_evidence, kind: ingest, max_visits: 7 }
       - { id: assess_wide_impacts, kind: assess, role_id: wide_analyst, max_visits: 6 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
@@ -1555,16 +1555,16 @@ workflows:
       - { from: author_wide_plan, on: plan_ready, to: validate_wide_plan }
       - { from: author_wide_plan, on: proposal_contract_invalid, to: repair_wide_plan }
       - { from: validate_wide_plan, on: plan_invalid, to: repair_wide_plan }
-      - { from: validate_wide_plan, on: plan_valid, to: discover_context }
+      - { from: validate_wide_plan, on: plan_valid, to: query_context }
       - { from: repair_wide_plan, on: plan_ready, to: validate_wide_plan }
-      - { from: discover_context, on: correction_required, to: repair_wide_plan }
-      - { from: discover_context, on: correction_unresolved, to: assess_wide_impacts }
-      - { from: discover_context, on: evidence_observed, to: ingest_evidence }
+      - { from: query_context, on: correction_required, to: repair_wide_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_wide_impacts }
+      - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: assess_wide_impacts }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: assess_wide_impacts, on: precise_query_has_value, to: targeted_query }
       - { from: assess_wide_impacts, on: selected_trace_has_value, to: trace_selected }
-      - { from: assess_wide_impacts, on: append_context_plan, to: discover_context }
+      - { from: assess_wide_impacts, on: append_context_plan, to: query_context }
       - { from: assess_wide_impacts, on: proposal_rejected, to: assess_wide_impacts }
       - { from: assess_wide_impacts, on: evidence_sufficient, to: compose_ir }
       - { from: assess_wide_impacts, on: no_positive_value_action, to: compose_ir }
@@ -1590,7 +1590,12 @@ workflows:
       - { id: author_plan, kind: plan, role_id: open_planner, max_visits: 2 }
       - { id: validate_plan, kind: validate, max_visits: 2 }
       - { id: repair_plan, kind: plan, role_id: open_planner, max_visits: 1 }
-      - { id: discover_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
+      # State id matches the company door's discovery state on purpose: the
+      # action_limits `context_before_*` state_precedes validators key on
+      # `query_context`, and the universe doors' observation lookups were
+      # dead under the company rule (live 2026-09-04: context_before_macro_
+      # series fired because no query_context state existed in this workflow).
+      - { id: query_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
       # Must cover every advertised evidence read: discovery x2, targeted
       # x3, trace x2, market/macro series x2, the thirteen openbb lookups,
       # and the web-news lookup, with company-lane headroom.
@@ -1630,11 +1635,11 @@ workflows:
       - { from: author_plan, on: proposal_unrecoverable, to: compose_ir }
       - { from: author_plan, on: proposal_contract_invalid, to: repair_plan }
       - { from: validate_plan, on: plan_invalid, to: repair_plan }
-      - { from: validate_plan, on: plan_valid, to: discover_context }
+      - { from: validate_plan, on: plan_valid, to: query_context }
       - { from: repair_plan, on: plan_ready, to: validate_plan }
-      - { from: discover_context, on: correction_required, to: repair_plan }
-      - { from: discover_context, on: correction_unresolved, to: assess_frontier }
-      - { from: discover_context, on: evidence_observed, to: ingest_evidence }
+      - { from: query_context, on: correction_required, to: repair_plan }
+      - { from: query_context, on: correction_unresolved, to: assess_frontier }
+      - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: assess_frontier }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
       - { from: assess_frontier, on: market_series_has_value, to: market_series_lookup }
@@ -1841,8 +1846,8 @@ validators:
       - { op: state_precedes, before: query_context, after: openbb_macro_calendar_lookup, code: context_before_openbb_macro_calendar }
       - { op: state_precedes, before: query_context, after: openbb_filings_lookup, code: context_before_openbb_filings }
       - { op: state_precedes, before: query_context, after: quant_dcf_lookup, code: context_before_quant_dcf }
-      - { op: state_precedes, before: discover_context, after: candidate_query, code: discovery_before_candidate_query }
-      - { op: state_precedes, before: discover_context, after: candidate_trace, code: discovery_before_candidate_trace }
+      - { op: state_precedes, before: query_context, after: candidate_query, code: discovery_before_candidate_query }
+      - { op: state_precedes, before: query_context, after: candidate_trace, code: discovery_before_candidate_trace }
       - { op: state_precedes, before: event_filing_search, after: event_filing_brief, code: search_before_brief }
       - { op: state_precedes, before: news_feed_lookup, after: news_feed_context, code: list_before_context }
       - { op: state_precedes, before: news_feed_lookup, after: news_web_search, code: ladder_before_web_news }
