@@ -1680,6 +1680,19 @@ fn map_goals(
                     Some(frontier.iter().map(|goal_id| (*goal_id).to_owned()).collect());
             }
         }
+        if goal_ids.is_none() && projection.exact_precise_query_candidates.is_empty() {
+            // Free-door universe plans (question_only runs) carry no
+            // ticker-scoped precise candidates and never raise
+            // ticker_not_available for an issuer the question itself names,
+            // so the P7 lane above cannot fire — and without this fallback
+            // the model's only market-plane read for the subject company is
+            // discarded as unmapped (live 2026-09-04, run_745d938b: every
+            // openbb PLTR read came back proposal_unmapped and the answer
+            // had to refuse all figures). The MarketPlane scope binding
+            // still admits only canonical tickers, and the one-visit state
+            // bounds plus the action_limits caps keep the reads few.
+            goal_ids = Some(frontier.iter().map(|goal_id| (*goal_id).to_owned()).collect());
+        }
         let mut goal_ids = goal_ids?;
         goal_ids.sort();
         goal_ids.dedup();
@@ -2623,6 +2636,38 @@ mod tests {
                 reason: NoPositiveReason::ProposalUnmapped,
             }
         );
+    }
+
+    #[test]
+    fn universe_plan_admits_the_subject_ticker_observation_lane() {
+        // Free-door (question_only) live regression (2026-09-04,
+        // run_745d938b): a universe discovery plan has no ticker-scoped
+        // precise candidates and never raises ticker_not_available for the
+        // issuer the question itself names, so every openbb read for the
+        // subject came back proposal_unmapped and the answer had to refuse
+        // all figures. With the precise-candidate lane empty, the
+        // observation plane is the only lane left: admit it. Company runs
+        // always carry exact candidates, and the dispatch-level MarketPlane
+        // binding still polices ticker canonicality and membership.
+        let state = observation_fixture();
+        let mut planner = ResearchPlanner::default();
+        planner.ingest_research_state(&state, &[]).unwrap();
+        planner
+            .projection
+            .as_mut()
+            .expect("projection ingested")
+            .exact_precise_query_candidates
+            .clear();
+        let income = proposal(
+            "income",
+            "openbb.income_statement",
+            serde_json::json!({"ticker": "PLTR"}),
+            100,
+        );
+        assert!(matches!(
+            planner.select(std::slice::from_ref(&income)).unwrap(),
+            PlannerDecision::Execute { proposal_id, .. } if proposal_id == "income"
+        ));
     }
 
     #[test]
