@@ -687,6 +687,18 @@ pub enum CapabilityScopeBinding {
         #[serde(default)]
         reject_non_null_pointers: Vec<String>,
     },
+    /// Market/news-plane observation read (openbb.*, market.series, news.*).
+    /// In ticker-scoped runs it behaves exactly like `TrustedTickerSet`
+    /// (membership in the immutable run scope). In a `question_only` run the
+    /// ticker argument is checked for canonical form only: market/news
+    /// evidence covers the whole market — uncovered issuers included — and
+    /// is graded market/news evidence, never filing-grade ontology evidence
+    /// (open-research vision §6).
+    MarketPlane {
+        ticker_references: Vec<TickerReferenceSpec>,
+        #[serde(default)]
+        require_any_of: Vec<String>,
+    },
     /// A closed covered-universe execution. Explicit tickers must be absent;
     /// optional literals and a bounded discovery limit are declared here
     /// rather than inferred from a capability ID.
@@ -3574,6 +3586,7 @@ fn validate_capability_input_abi(
                     matches!(
                         &capability.scope_binding,
                         CapabilityScopeBinding::TrustedTickerSet { .. }
+                            | CapabilityScopeBinding::MarketPlane { .. }
                     )
                 } else {
                     matches!(&capability.scope_binding, CapabilityScopeBinding::Unscoped)
@@ -3851,6 +3864,19 @@ fn validate_capability_scope_binding(capability: &CapabilitySpec) -> Result<(), 
                 && reject_non_null_pointers
                     .iter()
                     .all(|pointer| valid_json_pointer(pointer))
+        }
+        CapabilityScopeBinding::MarketPlane {
+            ticker_references,
+            require_any_of,
+        } => {
+            valid_ticker_reference_specs(ticker_references)
+                && !require_any_of.is_empty()
+                && unique_strings(require_any_of)
+                && require_any_of.iter().all(|required| {
+                    ticker_references
+                        .iter()
+                        .any(|reference| reference.id == *required)
+                })
         }
         CapabilityScopeBinding::CoveredUniverse {
             ticker_references,
@@ -5098,6 +5124,44 @@ mod tests {
             } => ticker_references[1].pointer_pattern = "/clauses/*not-a-wildcard/tickers".into(),
             _ => panic!("company query_context must declare a ticker scope binding"),
         }
+        assert!(matches!(
+            validate_spec(&spec),
+            Err(ImageError::InvalidSpec(message))
+                if message.contains("declarative scope binding")
+        ));
+    }
+
+    #[test]
+    fn market_plane_binding_validates_for_ticker_scoped_openbb_reads() {
+        let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        let capability = spec
+            .capabilities
+            .iter_mut()
+            .find(|capability| capability.id == "openbb.quote")
+            .unwrap();
+        capability.scope_binding = CapabilityScopeBinding::MarketPlane {
+            ticker_references: vec![TickerReferenceSpec {
+                id: "symbol".into(),
+                pointer_pattern: "/symbol".into(),
+                value_kind: TickerReferenceValueKind::String,
+            }],
+            require_any_of: vec!["symbol".into()],
+        };
+        assert!(validate_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn market_plane_binding_requires_declared_ticker_references() {
+        let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+        let capability = spec
+            .capabilities
+            .iter_mut()
+            .find(|capability| capability.id == "openbb.quote")
+            .unwrap();
+        capability.scope_binding = CapabilityScopeBinding::MarketPlane {
+            ticker_references: Vec::new(),
+            require_any_of: Vec::new(),
+        };
         assert!(matches!(
             validate_spec(&spec),
             Err(ImageError::InvalidSpec(message))
