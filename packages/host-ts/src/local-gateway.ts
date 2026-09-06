@@ -19,8 +19,9 @@ import {
   HostAgentClient,
   HostPostgresTransport,
   loadPinnedReleaseArtifact,
-  parseGatewayCompanyResearchRequest,
+  parseGatewayRunRequest,
   prepareGatewayCompanyResearch,
+  prepareGatewayOpenResearch,
   projectOperatorProtocolFailureClass,
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
@@ -338,13 +339,25 @@ async function createRun(
       session_id: resolvedSessionId,
       run_id: runId,
     };
-    const prepared = await prepareGatewayCompanyResearch({
-      artifact,
-      ownership,
-      mutation_id: generatedId("mut"),
-      request: parseGatewayCompanyResearchRequest(body),
-      materializers: noCommittedAnswerMaterializer,
-    });
+    const parsedRequest = parseGatewayRunRequest(body);
+    let prepared;
+    if (parsedRequest.door === "company") {
+      prepared = await prepareGatewayCompanyResearch({
+        artifact,
+        ownership,
+        mutation_id: generatedId("mut"),
+        request: parsedRequest.request,
+        materializers: noCommittedAnswerMaterializer,
+      });
+    } else {
+      prepared = await prepareGatewayOpenResearch({
+        artifact,
+        ownership,
+        mutation_id: generatedId("mut"),
+        request: parsedRequest.request,
+        materializers: noCommittedAnswerMaterializer,
+      });
+    }
     await client.query({
       name: "krw_gateway_create_run_v1",
       text: "INSERT INTO krw_gateway_local.runs(run_id, session_id, tenant_id, principal_id) VALUES ($1, $2, $3, $4)",

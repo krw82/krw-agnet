@@ -38,6 +38,40 @@ export interface GatewayCompanyResearchRequestV1 extends JsonObject {
 }
 
 /**
+ * Browser/CLI body for the ticker-less open-research route (the free door).
+ * The question text is the only input: no ticker, no advisor lens — an
+ * advisor lens without a company is a category error and must fail closed.
+ */
+export interface GatewayOpenResearchRequestV1 extends JsonObject {
+  readonly schema_version: typeof GATEWAY_SCHEMA_VERSION;
+  readonly question: string;
+}
+
+/**
+ * The single POST /runs body, discriminated by door: `ticker` key presence
+ * selects the company door, its absence the open-research free door. The
+ * explicit tag keeps narrowing reliable even though both bodies extend the
+ * index-signature `JsonObject`.
+ */
+export type GatewayRunRequestV1 =
+  | { readonly door: "company"; readonly request: GatewayCompanyResearchRequestV1 }
+  | { readonly door: "open_research"; readonly request: GatewayOpenResearchRequestV1 };
+
+/** Parse the discriminated public body (ticker key presence = company door). */
+export function parseGatewayRunRequest(value: unknown): GatewayRunRequestV1 {
+  if (!isPlainObject(value)) throw new ContractViolation("gateway_request_object");
+  return Object.hasOwn(value, "ticker")
+    ? {
+        door: "company" as const,
+        request: parseGatewayCompanyResearchRequest(value),
+      }
+    : {
+        door: "open_research" as const,
+        request: parseGatewayOpenResearchRequest(value),
+      };
+}
+
+/**
  * Server-only input. `ownership` and `mutation_id` must come from
  * authentication/conversation storage and a server ID generator, never from
  * `GatewayCompanyResearchRequestV1`.
@@ -78,6 +112,70 @@ export async function prepareGatewayCompanyResearch(
     intent,
     materializers: input.materializers,
   });
+}
+
+/**
+ * Server-only input for the free door. Same ownership rules as the company
+ * preparation; the run kind is always `open_research`.
+ */
+export interface PrepareGatewayOpenResearchInput
+  extends Omit<PrepareEnqueueRunInput, "intent"> {
+  readonly mutation_id: string;
+  readonly request: GatewayOpenResearchRequestV1;
+}
+
+/**
+ * Convert a ticker-less question into the open-research enqueue intent.
+ * Locale routing degrades gracefully: Latin-script questions only reach an
+ * English entrypoint when the pinned release actually publishes one — until
+ * `open_research_en` ships, they stay on the Korean image (the same
+ * degradation the company route applies to old pins).
+ */
+export async function prepareGatewayOpenResearch(
+  input: PrepareGatewayOpenResearchInput,
+): Promise<PreparedEnqueueRunV1> {
+  const request = parseGatewayOpenResearchRequest(input.request);
+  const intent: EnqueueRunIntentV1 = {
+    mutation_id: input.mutation_id,
+    run_kind: "open_research",
+    locale: openResearchLocaleForQuestion(
+      request.question,
+      input.artifact.descriptor,
+    ),
+    question: request.question,
+    context: { kind: "question_only" },
+  };
+  return prepareEnqueueRun({
+    artifact: input.artifact,
+    ownership: input.ownership,
+    intent,
+    materializers: input.materializers,
+  });
+}
+
+/** Deterministic locale routing for the free door (see note above). */
+export function openResearchLocaleForQuestion(
+  question: string,
+  descriptor: unknown,
+): "ko-KR" | "en-US" {
+  if (/\p{Script=Hangul}/u.test(question)) return "ko-KR";
+  if (/[A-Za-z]/.test(question) && releaseHasOpenResearchEntrypoint(descriptor, "en-US")) {
+    return "en-US";
+  }
+  return "ko-KR";
+}
+
+function releaseHasOpenResearchEntrypoint(
+  descriptor: unknown,
+  locale: string,
+): boolean {
+  if (!isPlainObject(descriptor) || !Array.isArray(descriptor.entries)) return false;
+  return descriptor.entries.some(
+    (entry) =>
+      isPlainObject(entry) &&
+      entry.run_kind === "open_research" &&
+      entry.locale === locale,
+  );
 }
 
 /**
@@ -152,6 +250,32 @@ export function parseGatewayCompanyResearchRequest(
     question: value.question,
     ticker: value.ticker,
     ...(advisorLens === undefined ? {} : { advisor_lens: advisorLens }),
+  };
+  return Object.freeze(parsed);
+}
+
+/** Parse the ticker-less open-research body. No future fields by accident. */
+export function parseGatewayOpenResearchRequest(
+  value: unknown,
+): GatewayOpenResearchRequestV1 {
+  if (!isPlainObject(value)) throw new ContractViolation("gateway_request_object");
+  allowedKeys(value, ["schema_version", "question"], ["schema_version", "question"]);
+  if (value.schema_version !== GATEWAY_SCHEMA_VERSION) {
+    throw new ContractViolation("gateway_request_schema_version");
+  }
+  if (
+    typeof value.question !== "string" ||
+    value.question.length === 0 ||
+    value.question.includes("\0") ||
+    Buffer.byteLength(value.question, "utf8") > MAX_QUESTION_BYTES
+  ) {
+    throw new ContractViolation("gateway_request_question");
+  }
+  const context = { kind: "question_only" as const };
+  validateRunContext(context);
+  const parsed: GatewayOpenResearchRequestV1 = {
+    schema_version: GATEWAY_SCHEMA_VERSION,
+    question: value.question,
   };
   return Object.freeze(parsed);
 }

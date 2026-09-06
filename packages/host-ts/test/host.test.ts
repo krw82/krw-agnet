@@ -14,8 +14,12 @@ import {
   prepareCancelRun,
   prepareEnqueueRun,
   parseGatewayCompanyResearchRequest,
+  parseGatewayOpenResearchRequest,
+  parseGatewayRunRequest,
   prepareGatewayCompanyResearch,
+  prepareGatewayOpenResearch,
   gatewayLocaleForQuestion,
+  openResearchLocaleForQuestion,
   projectOperatorProtocolFailureClass,
   projectPublicRunUsage,
   retryMessageForTerminalFailure,
@@ -468,6 +472,118 @@ test("Gateway company-research request cannot inject a route, ownership, or memo
   assert.equal(immutable.request.session_memory, null);
   assert.equal(Object.hasOwn(immutable.request, "requested_model"), true);
     assert.equal(immutable.request.requested_model, "glm-5.3-flash");
+});
+
+function openResearchDescriptor(): PublicReleaseDescriptor {
+  const base = descriptor();
+  return {
+    ...base,
+    entries: [
+      ...base.entries,
+      {
+        run_kind: "open_research",
+        locale: "ko-KR",
+        agent_image_hash: hash("b"),
+        model_profile: "glm_high",
+        scope: {
+          context_kind: "question_only",
+          cardinality: "max",
+          value: 12,
+        },
+        execution: {
+          ...base.entries[0]!.execution,
+          agent_image_hash: hash("b"),
+        },
+      },
+    ],
+  };
+}
+
+test("Gateway open-research request parses ticker-less bodies and rejects lens injection", async () => {
+  const open = parseGatewayRunRequest({
+    schema_version: 1,
+    question: "반도체 병목 관련된 회사 있나?",
+  });
+  assert.equal(open.door, "open_research");
+  assert.deepEqual(open.request, {
+    schema_version: 1,
+    question: "반도체 병목 관련된 회사 있나?",
+  });
+  // The company door still parses when a ticker key is present.
+  const company = parseGatewayRunRequest({
+    schema_version: 1,
+    question: "PLTR earnings?",
+    ticker: "PLTR",
+  });
+  assert.equal(company.door, "company");
+  assert.equal(company.request.ticker, "PLTR");
+  // An advisor lens without a company is a category error: fail closed.
+  assert.throws(
+    () =>
+      parseGatewayRunRequest({
+        schema_version: 1,
+        question: "PLTR earnings?",
+        advisor_lens: "buffett",
+      }),
+    /gateway_request_unknown_or_missing_field/,
+  );
+
+  const releaseDescriptor = openResearchDescriptor();
+  const prepared = await prepareGatewayOpenResearch({
+    artifact: {
+      descriptor: releaseDescriptor,
+      artifact_hash: canonicalHash(releaseDescriptor),
+      release_set_hash: releaseDescriptor.release_set_hash,
+      file_identity: {
+        device: 1n,
+        inode: 1n,
+        size_bytes: Buffer.byteLength(canonicalJson(releaseDescriptor), "utf8"),
+      },
+    },
+    ownership: {
+      schema_version: 1,
+      tenant_id: "tenant-01",
+      principal_id: "principal-01",
+      session_id: "session-01",
+      run_id: "run-open-01",
+    },
+    mutation_id: "enqueue-run-open-01",
+    request: parseGatewayOpenResearchRequest({
+      schema_version: 1,
+      question: "반도체 병목 관련된 회사 있나?",
+    }),
+    materializers: neverMaterializers(),
+  });
+  const immutable = prepared.agent_request.immutable_snapshot;
+  assert.equal(immutable.request.run_kind, "open_research");
+  assert.equal(immutable.request.locale, "ko-KR");
+  assert.deepEqual(immutable.request.context, { kind: "question_only" });
+});
+
+test("open-research locale degrades to ko-KR until an English entrypoint ships", () => {
+  const withEnglish = openResearchDescriptor();
+  assert.equal(
+    openResearchLocaleForQuestion("PLTR earnings?", withEnglish),
+    "ko-KR",
+  );
+  assert.equal(
+    openResearchLocaleForQuestion("반도체 병목?", withEnglish),
+    "ko-KR",
+  );
+  const englishPinned = {
+    ...withEnglish,
+    entries: [
+      ...withEnglish.entries,
+      {
+        ...withEnglish.entries[1]!,
+        locale: "en-US",
+      },
+    ],
+  };
+  assert.equal(
+    openResearchLocaleForQuestion("PLTR earnings?", englishPinned),
+    "en-US",
+  );
 });
 
 test("mutation envelope is deterministic and reserves ABI fields", () => {
