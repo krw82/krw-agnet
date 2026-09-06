@@ -37,9 +37,20 @@ whole run, so treat them as absolute:
   drains them in order. Ontology universe tools (`query_context_universe`,
   `query_universe`, `trace_universe`) are planner-scored: emit each as its
   OWN single-call decision, and NEVER mix one into an observation batch —
-  a mixed batch is rejected as a whole and costs a repair turn. If the
-  kernel rejects a batch, re-emit the observation calls without the
-  offending call instead of abandoning the door.
+  a mixed batch is rejected as a whole and costs a repair turn. Some
+  states (notably right after a universe query) execute exactly ONE call
+  per decision: if the kernel rejects a batch with
+  `decision_batch_size_invalid`, re-emit the SAME calls ONE at a time —
+  a single-call decision is always safe — and stop retrying batches after
+  two rejections (live 2026-09-07: an NFLX run burned five repair turns
+  re-batching and composed with zero reads).
+- **News rungs for a named subject.** `openbb.news` (company news) is the
+  FIRST news rung for a named ticker; `news.web_search` is the LAST-resort
+  rung (the kernel's news ladder expects filing-catalog reads before feed
+  news and feed news before web news — leading with `news.web_search`
+  gets the call rejected). Lead observation batches with the subject's
+  OWN data reads (income statement, quote, price history) and keep news
+  later in the order.
 - **Discovery is one round.** Author the universe search plan once
   (`query_context_universe`, ≤12 clauses for the whole run). There is no
   second discovery round; follow-up drilling uses targeted topic queries,
