@@ -424,12 +424,41 @@ pub(crate) fn validate_capability_run_scope(
             )
         }
         (
+            CapabilityScopeBinding::MarketPlane {
+                ticker_references,
+                require_any_of,
+            },
+            RunContextV1::CompanyTickerSet { .. } | RunContextV1::ResearchNotebook { .. },
+        ) => validate_trusted_ticker_binding(
+            ticker_references,
+            require_any_of,
+            &[],
+            arguments,
+            context.trusted_tickers(),
+        ),
+        (
+            CapabilityScopeBinding::MarketPlane {
+                ticker_references,
+                require_any_of,
+            },
+            RunContextV1::SelectedFeedItems { .. },
+        ) => {
+            let scope = derived_ticker_scope.ok_or(EngineError::DerivedFeedScopeUnavailable)?;
+            validate_trusted_ticker_binding(
+                ticker_references,
+                require_any_of,
+                &[],
+                arguments,
+                &scope.tickers,
+            )
+        }
+        (
             CapabilityScopeBinding::CoveredUniverse {
                 ticker_references,
                 required_string_values,
                 bounded_integer_pointer,
             },
-            RunContextV1::CoveredUniverse { .. },
+            RunContextV1::CoveredUniverse { .. } | RunContextV1::QuestionOnly {},
         ) => validate_covered_universe_binding(
             entrypoint,
             ticker_references,
@@ -437,6 +466,17 @@ pub(crate) fn validate_capability_run_scope(
             bounded_integer_pointer.as_deref(),
             arguments,
         ),
+        // Free-door market-plane rule (open-research vision §6): market/news
+        // observation tools may name any canonical ticker — uncovered issuers
+        // included — because their evidence grade is market/news, never
+        // filing-grade. Filing-grade ontology reads stay universe-bound above.
+        (
+            CapabilityScopeBinding::MarketPlane {
+                ticker_references,
+                require_any_of,
+            },
+            RunContextV1::QuestionOnly {},
+        ) => validate_market_plane_binding(ticker_references, require_any_of, arguments),
         (
             CapabilityScopeBinding::SelectedFeedItems {
                 issue_ids_pointer,
@@ -469,9 +509,7 @@ pub(crate) fn validate_capability_run_scope(
         ) => Ok(()),
         (
             _,
-            RunContextV1::QuestionOnly {}
-            | RunContextV1::RoutingRequest { .. }
-            | RunContextV1::ExistingAnswer { .. },
+            RunContextV1::RoutingRequest { .. } | RunContextV1::ExistingAnswer { .. },
         ) => Err(EngineError::RunScopeViolation(
             "no-scope context cannot authorize capability dispatch",
         )),
@@ -497,7 +535,7 @@ fn validate_trusted_ticker_binding(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let observed = validate_ticker_reference_values(arguments, ticker_references, &trusted)?;
+    let observed = validate_ticker_reference_values(arguments, ticker_references, Some(&trusted))?;
     if !require_any_of
         .iter()
         .any(|reference_id| observed.get(reference_id).copied().unwrap_or_default() > 0)
@@ -527,7 +565,7 @@ fn validate_covered_universe_binding(
     arguments: &Value,
 ) -> Result<(), EngineError> {
     let empty = BTreeSet::new();
-    validate_ticker_reference_values(arguments, ticker_references, &empty)?;
+    validate_ticker_reference_values(arguments, ticker_references, Some(&empty))?;
     for requirement in required_string_values {
         if arguments
             .pointer(&requirement.pointer)
@@ -589,7 +627,7 @@ fn validate_selected_feed_binding(
     }
     if forbid_ticker_references {
         let empty = BTreeSet::new();
-        validate_ticker_reference_values(arguments, ticker_references, &empty)?;
+        validate_ticker_reference_values(arguments, ticker_references, Some(&empty))?;
     }
     Ok(())
 }
@@ -618,7 +656,7 @@ const MAX_SCOPE_POINTER_MATCHES: usize = 4_096;
 fn validate_ticker_reference_values(
     arguments: &Value,
     references: &[TickerReferenceSpec],
-    trusted: &BTreeSet<&str>,
+    trusted: Option<&BTreeSet<&str>>,
 ) -> Result<BTreeMap<String, usize>, EngineError> {
     let mut observed = BTreeMap::new();
     for reference in references {
@@ -664,10 +702,40 @@ fn validate_ticker_reference_values(
     Ok(observed)
 }
 
-fn validate_scope_ticker(ticker: &str, trusted: &BTreeSet<&str>) -> Result<(), EngineError> {
-    if !is_canonical_ticker(ticker) || !trusted.contains(ticker) {
+fn validate_scope_ticker(
+    ticker: &str,
+    trusted: Option<&BTreeSet<&str>>,
+) -> Result<(), EngineError> {
+    if !is_canonical_ticker(ticker) {
         return Err(EngineError::RunScopeViolation(
             "capability ticker is outside the immutable run scope",
+        ));
+    }
+    if let Some(trusted) = trusted {
+        if !trusted.contains(ticker) {
+            return Err(EngineError::RunScopeViolation(
+                "capability ticker is outside the immutable run scope",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Free-door market-plane validation: canonical form, duplicate-freedom and
+/// the declared `require_any_of` only. Membership is deliberately not
+/// enforced — see the matrix arm above.
+fn validate_market_plane_binding(
+    ticker_references: &[TickerReferenceSpec],
+    require_any_of: &[String],
+    arguments: &Value,
+) -> Result<(), EngineError> {
+    let observed = validate_ticker_reference_values(arguments, ticker_references, None)?;
+    if !require_any_of
+        .iter()
+        .any(|reference_id| observed.get(reference_id).copied().unwrap_or_default() > 0)
+    {
+        return Err(EngineError::RunScopeViolation(
+            "market-plane capability omitted its required ticker argument",
         ));
     }
     Ok(())

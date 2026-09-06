@@ -11080,6 +11080,118 @@ mod tests {
     }
 
     #[test]
+    fn question_only_context_authorizes_universe_and_market_plane_capabilities() {
+        let image = loaded_agent("krw-ontology");
+        let mut entrypoint = image.body.entrypoints.get("idea_generation").unwrap().clone();
+        entrypoint.scope.allowed_context = krw_agent_protocol::RunContextKind::QuestionOnly;
+        entrypoint.scope.cardinality = krw_agent_image::ScopeCardinality::Max { value: 12 };
+        let context = RunContextV1::QuestionOnly {};
+
+        // Universe-bound discovery: bounded marker + limit, explicit tickers
+        // stay forbidden (same regime as covered_universe runs).
+        let universe = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "ontology.query_context_universe")
+            .unwrap();
+        let plan = serde_json::json!({
+            "question": "반도체 병목 관련 회사?",
+            "tickers": [],
+            "universe": "covered",
+            "limit_tickers": 5,
+            "clauses": []
+        });
+        validate_capability_run_scope(&entrypoint, &context, None, universe, &plan).unwrap();
+        let mut over_limit = plan.clone();
+        over_limit["limit_tickers"] = serde_json::json!(20);
+        assert!(matches!(
+            validate_capability_run_scope(&entrypoint, &context, None, universe, &over_limit),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+        let mut with_ticker = plan;
+        with_ticker["tickers"] = serde_json::json!(["AVGO"]);
+        assert!(matches!(
+            validate_capability_run_scope(&entrypoint, &context, None, universe, &with_ticker),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+
+        // Market-plane observation: a canonical non-member ticker (uncovered
+        // issuer) is admitted; only the form is enforced (vision §6).
+        let mut quote = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "openbb.quote")
+            .unwrap()
+            .clone();
+        quote.scope_binding = krw_agent_image::CapabilityScopeBinding::MarketPlane {
+            ticker_references: vec![krw_agent_image::TickerReferenceSpec {
+                id: "symbol".into(),
+                pointer_pattern: "/symbol".into(),
+                value_kind: krw_agent_image::TickerReferenceValueKind::String,
+            }],
+            require_any_of: vec!["symbol".into()],
+        };
+        let physical = serde_json::json!({"symbol": "PLTR"});
+        validate_capability_run_scope(&entrypoint, &context, None, &quote, &physical).unwrap();
+        let mut non_canonical = physical.clone();
+        non_canonical["symbol"] = serde_json::json!("pltr");
+        assert!(matches!(
+            validate_capability_run_scope(&entrypoint, &context, None, &quote, &non_canonical),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+        let mut missing = physical;
+        missing["symbol"] = serde_json::Value::Null;
+        assert!(matches!(
+            validate_capability_run_scope(&entrypoint, &context, None, &quote, &missing),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+    }
+
+    #[test]
+    fn market_plane_binding_keeps_membership_in_ticker_scoped_runs() {
+        let image = loaded_agent("krw-ontology");
+        let entrypoint = image.body.entrypoints.get("company_research").unwrap();
+        let mut quote = image
+            .body
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "openbb.quote")
+            .unwrap()
+            .clone();
+        quote.scope_binding = krw_agent_image::CapabilityScopeBinding::MarketPlane {
+            ticker_references: vec![krw_agent_image::TickerReferenceSpec {
+                id: "symbol".into(),
+                pointer_pattern: "/symbol".into(),
+                value_kind: krw_agent_image::TickerReferenceValueKind::String,
+            }],
+            require_any_of: vec!["symbol".into()],
+        };
+        let context = RunContextV1::CompanyTickerSet {
+            tickers: vec!["VIPS".into()],
+        };
+        validate_capability_run_scope(
+            entrypoint,
+            &context,
+            None,
+            &quote,
+            &serde_json::json!({"symbol": "VIPS"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_capability_run_scope(
+                entrypoint,
+                &context,
+                None,
+                &quote,
+                &serde_json::json!({"symbol": "PLTR"}),
+            ),
+            Err(EngineError::RunScopeViolation(_))
+        ));
+    }
+
+    #[test]
     fn observed_result_ids_binding_admits_scoped_runs_and_rejects_scopeless_contexts() {
         let image = loaded_agent("krw-ontology");
         let entrypoint = image.body.entrypoints.get("company_research").unwrap();
