@@ -1655,7 +1655,13 @@ workflows:
       - { from: assess_frontier, on: news_web_has_value, to: news_web_search }
       - { from: assess_frontier, on: precise_query_has_value, to: targeted_query }
       - { from: assess_frontier, on: selected_trace_has_value, to: trace_selected }
-      - { from: assess_frontier, on: append_context_plan, to: discover_context }
+      # 2026-09-04 postmortem: the free door deliberately offers no
+      # append_context_plan edge out of the frontier. A second discovery
+      # proposal charges the root SearchPlan's lifetime clause cap and the
+      # live Q2 run died on exactly that boundary; follow-up drilling rides
+      # targeted topic queries (no plan budget), the market plane, macro
+      # series, and news instead.
+      - { from: assess_frontier, on: proposal_unrecoverable, to: compose_ir }
       - { from: assess_frontier, on: proposal_rejected, to: assess_frontier }
       - { from: assess_frontier, on: evidence_sufficient, to: compose_ir }
       - { from: assess_frontier, on: no_positive_value_action, to: compose_ir }

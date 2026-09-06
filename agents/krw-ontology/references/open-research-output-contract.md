@@ -9,9 +9,11 @@ Write the answer in plain Korean investor language under the same final
 markdown contract as company research, with these free-door additions:
 
 1. **Evidence-grade labels.** Mark each load-bearing claim's grade: 필링급
-   (ontology filing citation), 관측급 (observation series), or 시장·뉴스급
-   (market/news data). A claim built only on 시장·뉴스급 evidence must read as
-   a data observation, not as a business fact.
+   (ontology filing citation — the server resolved the issuer, so the
+   citation is vouched), 관측급 (observation series), or 시장·뉴스급
+   (market/news data for a company the model itself picked). A claim built
+   only on 시장·뉴스급 evidence must read as a data observation, not as a
+   business fact.
 2. **Coverage honesty.** If the question's company is outside the filing
    ontology, say so explicitly (예: "온톨로지 커버리지 밖 — 시장 데이터 기준").
    When listing discovered companies, note the covered-universe basis and that

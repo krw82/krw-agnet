@@ -134,8 +134,11 @@ for forbidden_identity in \
 done
 
 guru_budget="$(sed -n '/profile_id: guru_company_advisor/,/profile_id: notebook_transform/p' "$repo_root/deployments/local/budget-registry.yaml")"
+# 2026-09-04 owner directive raised the shared turn/call envelopes across
+# research profiles (guru max_capability_calls 11 -> 22, repairs -> 10); the
+# per-capability bounds below are unchanged.
 for budget_marker in \
-  'max_capability_calls: 11' \
+  'max_capability_calls: 22' \
   'guru.query_context: 1' \
   'guru.company_brief: 2' \
   'ontology.query_context: 2' \

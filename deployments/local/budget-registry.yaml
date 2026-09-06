@@ -5,14 +5,14 @@ profiles:
   # keep latency practical (~90s average). Output tokens are bounded per role.
   - profile_id: company_research_full
     limits:
-      max_provider_turns: 32
-      max_capability_calls: 16
-      max_replans: 3
-      max_repairs: 3
+      max_provider_turns: 64
+      max_capability_calls: 32
+      max_replans: 5
+      max_repairs: 10
       max_input_tokens: 168000
       max_output_tokens: 56000
-      max_evidence_bytes: 8388608
-      deadline_ms: 300000
+      max_evidence_bytes: 33554432
+      deadline_ms: 3600000
       capability_call_limits:
         ontology.query_context: 6
         ontology.company_context: 1
@@ -27,19 +27,19 @@ profiles:
   # (150000 + 54000) and turns; rebalance toward output only.
   - profile_id: company_research_en_glm
     limits:
-      max_provider_turns: 20
-      max_capability_calls: 16
-      max_replans: 3
-      max_repairs: 3
-      max_input_tokens: 150000
+      max_provider_turns: 40
+      max_capability_calls: 32
+      max_replans: 5
+      max_repairs: 10
+      max_input_tokens: 168000
       max_output_tokens: 54000
-      max_evidence_bytes: 8388608
+      max_evidence_bytes: 33554432
       # English reasoning turns run longer than Korean (measured 2026-09-02:
       # a 20-minute deadline expired after only three turns, each carrying
       # 18k-49k reasoning chars). Match the established 40-minute deep-run
       # ceiling that the Korean deep profile already uses for the same
       # high-reasoning envelope.
-      deadline_ms: 2400000
+      deadline_ms: 4800000
       capability_call_limits:
         ontology.query_context: 6
         ontology.company_context: 1
@@ -56,10 +56,10 @@ profiles:
   # each, so the wall-clock deadline stays twenty minutes.
   - profile_id: company_research_glm
     limits:
-      max_provider_turns: 20
-      max_capability_calls: 16
-      max_replans: 3
-      max_repairs: 3
+      max_provider_turns: 40
+      max_capability_calls: 32
+      max_replans: 5
+      max_repairs: 10
       # This is a cumulative run budget, not a single provider request. A
       # detailed multi-objective company question can legitimately reuse its
       # grounded context across several turns before composition. At 80% the
@@ -72,13 +72,13 @@ profiles:
       # 168000 + 36000 = 204000.
       max_input_tokens: 168000
       max_output_tokens: 36000
-      max_evidence_bytes: 8388608
+      max_evidence_bytes: 33554432
       # Wall-clock ceiling for the 20-turn envelope: GLM high-reasoning turns
       # run 96-144s each, so a full-depth run needs ~32-48 minutes. The old
       # 20-minute deadline starved exactly those deep runs (2026-08-16 A/B:
       # five of eight fell to the ledger fallback at the clock while three
       # shallower runs composed real answers in 11-14 minutes).
-      deadline_ms: 2400000
+      deadline_ms: 4800000
       capability_call_limits:
         ontology.query_context: 4
         ontology.company_context: 2
@@ -88,19 +88,19 @@ profiles:
         ontology.chain: 2
   - profile_id: earnings_deep_dive
     limits:
-      max_provider_turns: 16
-      max_capability_calls: 12
-      max_replans: 1
-      max_repairs: 1
-      max_input_tokens: 120000
+      max_provider_turns: 32
+      max_capability_calls: 24
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       # Two GLM Guru turns seal the lens/brief before the ordinary filing
       # researcher continues in the parent workflow. Keep a separate tail for
       # evidence review and the final Korean answer. Must exceed the compose
       # retry reserve threshold (2 x 16384 + 2048 = 34816) or the run is
       # rejected at start.
       max_output_tokens: 36864
-      max_evidence_bytes: 8388608
-      deadline_ms: 1200000
+      max_evidence_bytes: 33554432
+      deadline_ms: 2400000
       capability_call_limits:
         ontology.query_context: 4
         ontology.query: 4
@@ -112,19 +112,19 @@ profiles:
       # optional trace/chain work, scenario construction, and final writing.
       # Ten turns can exhaust before the composer receives a turn; keep room
       # for the full declared path plus one bounded repair.
-      max_provider_turns: 20
-      max_capability_calls: 12
-      max_replans: 1
-      # Two repair chances: the plan lane shares this counter with the
+      max_provider_turns: 40
+      max_capability_calls: 24
+      max_replans: 3
+      # Ten repair chances: the plan lane shares this counter with the
       # compose lane, and production showed a single proposal rejection
       # killing the run with the compose lane never reached.
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_repairs: 10
+      max_input_tokens: 168000
       # 45056 keeps the compose-reserve threshold (34816) covered with real
       # cumulative headroom for one extra repair turn.
       max_output_tokens: 45056
-      max_evidence_bytes: 8388608
-      deadline_ms: 1200000
+      max_evidence_bytes: 33554432
+      deadline_ms: 2400000
       capability_call_limits:
         ontology.query_context: 4
         ontology.query: 4
@@ -132,56 +132,62 @@ profiles:
         ontology.chain: 2
   - profile_id: idea_generation
     limits:
-      max_provider_turns: 16
-      max_capability_calls: 10
-      max_replans: 1
-      max_repairs: 1
-      max_input_tokens: 120000
+      max_provider_turns: 32
+      max_capability_calls: 20
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       # Must exceed the compose retry reserve threshold (34816).
       max_output_tokens: 36864
-      max_evidence_bytes: 8388608
-      deadline_ms: 900000
+      max_evidence_bytes: 33554432
+      deadline_ms: 1800000
       capability_call_limits:
-        ontology.query_context_universe: 4
-        ontology.query_universe: 4
-        ontology.trace_universe: 2
+        ontology.query_context_universe: 10
+        ontology.query_universe: 20
+        ontology.trace_universe: 10
   - profile_id: wide_research
     limits:
-      max_provider_turns: 20
-      max_capability_calls: 12
-      max_replans: 1
-      max_repairs: 1
-      max_input_tokens: 120000
+      max_provider_turns: 40
+      max_capability_calls: 24
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       # Must exceed the compose retry reserve threshold (34816).
       max_output_tokens: 36864
-      max_evidence_bytes: 8388608
-      deadline_ms: 1200000
+      max_evidence_bytes: 33554432
+      deadline_ms: 2400000
       capability_call_limits:
-        ontology.query_context_universe: 4
-        ontology.query_universe: 5
-        ontology.trace_universe: 3
+        ontology.query_context_universe: 10
+        ontology.query_universe: 20
+        ontology.trace_universe: 10
   - profile_id: open_research
     limits:
       # The free door spans the wide discovery loop plus the market-plane
       # observation frontier, so it carries more turns/calls than wide.
-      max_provider_turns: 24
-      max_capability_calls: 24
-      max_replans: 1
-      max_repairs: 1
-      max_input_tokens: 120000
+      # 2026-09-04 owner directive: raise the envelope dramatically — the
+      # bounded repair budget (1) was the proximate cause of terminal run
+      # deaths in live testing (a single mid-run correction exhausted it and
+      # the next model-owned violation had no escape), and wall-clock is not
+      # a constraint for this lane. Ten repairs, 60 turns/calls, a 2-hour
+      # deadline, and headroom under the GLM-5.3 204800-token context.
+      max_provider_turns: 60
+      max_capability_calls: 60
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 190000
       # Must exceed the compose retry reserve threshold (34816).
-      max_output_tokens: 36864
-      max_evidence_bytes: 8388608
-      deadline_ms: 1500000
+      max_output_tokens: 65536
+      max_evidence_bytes: 33554432
+      deadline_ms: 7200000
       capability_call_limits:
-        ontology.query_context_universe: 4
-        ontology.query_universe: 4
-        ontology.trace_universe: 2
-        openbb.quote: 3
-        openbb.metrics: 3
-        openbb.income_statement: 3
-        openbb.filings: 3
-        news.web_search: 2
+        ontology.query_context_universe: 10
+        ontology.query_universe: 20
+        ontology.trace_universe: 10
+        openbb.quote: 10
+        openbb.metrics: 10
+        openbb.income_statement: 10
+        openbb.filings: 10
+        news.web_search: 10
   - profile_id: display_plan_minimal
     limits:
       max_provider_turns: 4
@@ -208,18 +214,18 @@ profiles:
         feed.get_items: 2
   - profile_id: news_research
     limits:
-      max_provider_turns: 18
-      max_capability_calls: 8
-      max_replans: 1
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_provider_turns: 36
+      max_capability_calls: 16
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       # The news analyst now runs at the 16384-token ceiling; the tail must
       # hold two analyst turns plus the compose tail.
       max_output_tokens: 36864
-      max_evidence_bytes: 8388608
+      max_evidence_bytes: 33554432
       # A passing news run needs ~4 minutes; the old 120000ms wall killed
       # every run at exactly 2.0min (production 2026-08-19).
-      deadline_ms: 900000
+      deadline_ms: 1800000
       capability_call_limits:
         feed.get_items: 2
         feed.get_context: 2
@@ -228,14 +234,14 @@ profiles:
         ontology.trace: 1
   - profile_id: market_move_research
     limits:
-      max_provider_turns: 18
-      max_capability_calls: 8
-      max_replans: 1
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_provider_turns: 36
+      max_capability_calls: 16
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       max_output_tokens: 36864
-      max_evidence_bytes: 8388608
-      deadline_ms: 900000
+      max_evidence_bytes: 33554432
+      deadline_ms: 1800000
       capability_call_limits:
         feed.get_items: 2
         feed.get_context: 2
@@ -244,11 +250,11 @@ profiles:
         ontology.trace: 1
   - profile_id: news_filing_correlation
     limits:
-      max_provider_turns: 18
-      max_capability_calls: 8
-      max_replans: 1
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_provider_turns: 36
+      max_capability_calls: 16
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       max_output_tokens: 36864
       max_evidence_bytes: 8388608
       deadline_ms: 900000
@@ -261,11 +267,11 @@ profiles:
         ontology.trace: 1
   - profile_id: guru_company_advisor
     limits:
-      max_provider_turns: 20
-      max_capability_calls: 11
-      max_replans: 1
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_provider_turns: 40
+      max_capability_calls: 22
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       # The parent envelope covers the ordinary filing researcher (GLM
       # thinking + the capability decision share one 16384-token output
       # ceiling), the evidence review, and the final composition: mirror
@@ -312,14 +318,14 @@ profiles:
       capability_call_limits: {}
   - profile_id: source_filing_followup
     limits:
-      max_provider_turns: 20
-      max_capability_calls: 10
-      max_replans: 1
-      max_repairs: 2
-      max_input_tokens: 120000
+      max_provider_turns: 40
+      max_capability_calls: 20
+      max_replans: 3
+      max_repairs: 10
+      max_input_tokens: 168000
       max_output_tokens: 14000
-      max_evidence_bytes: 8388608
-      deadline_ms: 120000
+      max_evidence_bytes: 33554432
+      deadline_ms: 1200000
       capability_call_limits:
         filing.get: 2
         filing.get_brief: 2

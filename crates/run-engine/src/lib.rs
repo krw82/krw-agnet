@@ -8677,13 +8677,40 @@ mod tests {
                             target.kind
                         );
                     }
+                    // The context-replan edge is the planner-lane contract:
+                    // the frontier can always ask for one more discovery
+                    // round. The free door (question-only) deliberately does
+                    // NOT offer a second discovery round — the root
+                    // SearchPlan's lifetime clause cap made replan a
+                    // terminal trap in live testing (2026-09-04 postmortem) —
+                    // so those assess states instead must carry the
+                    // kernel-owned proposal_unrecoverable escape into an
+                    // answer-producing compose state.
+                    let has_context_replan = outgoing.iter().any(|transition| {
+                        transition.event == "append_context_plan"
+                            && target_mapping(transition.to)
+                                == Some(ImageResearchActionKind::Context)
+                    });
+                    let unrecoverable_escape = outgoing
+                        .iter()
+                        .find(|transition| transition.event == "proposal_unrecoverable");
+                    if let Some(escape) = unrecoverable_escape {
+                        let target = workflow
+                            .states
+                            .iter()
+                            .find(|state| state.numeric_id == escape.to)
+                            .unwrap();
+                        assert!(
+                            matches!(target.kind, StateKind::Compose),
+                            "proposal_unrecoverable escape {} -> {} targets {:?}; the bounded-answer path must land in a compose state",
+                            audit_id,
+                            target.stable_id,
+                            target.kind
+                        );
+                    }
                     assert!(
-                        outgoing.iter().any(|transition| {
-                            transition.event == "append_context_plan"
-                                && target_mapping(transition.to)
-                                    == Some(ImageResearchActionKind::Context)
-                        }),
-                        "planner assess state {audit_id} lacks its context-replan edge"
+                        has_context_replan || unrecoverable_escape.is_some(),
+                        "planner assess state {audit_id} lacks its context-replan edge or a proposal_unrecoverable escape"
                     );
                     assert!(audited.insert(audit_id));
                 }
@@ -11564,6 +11591,29 @@ mod tests {
         let pinned = kernel_workflow_facts(&image, &request, "evidence_sufficient").unwrap();
         assert_eq!(pinned["author_key"], "ackman");
         assert_eq!(pinned["event"], "evidence_sufficient");
+    }
+
+    #[test]
+    fn append_context_plan_capacity_stop_accepts_the_universe_discovery_tool() {
+        use crate::active_run::is_append_context_plan_provider_tool;
+
+        let company = provider_tool_name("ontology.query_context");
+        let universe = provider_tool_name("ontology.query_context_universe");
+        assert!(is_append_context_plan_provider_tool(&company));
+        // 2026-09-04 live postmortem: the free door's discovery tool was
+        // missing from the hardcoded name check, so its append rejections
+        // bypassed the bounded-answer stop path and terminated question-only
+        // runs instead of composing with the admitted evidence.
+        assert!(is_append_context_plan_provider_tool(&universe));
+        // Near misses stay rejected: targeted queries and traces are not
+        // context-plan appends and must not ride the capacity stop edge.
+        assert!(!is_append_context_plan_provider_tool(&provider_tool_name(
+            "ontology.query_universe"
+        )));
+        assert!(!is_append_context_plan_provider_tool(&provider_tool_name(
+            "ontology.trace_universe"
+        )));
+        assert_ne!(company, universe);
     }
 
     #[test]

@@ -1257,7 +1257,7 @@ impl ActiveRun {
         self.finalize_for_output_reserve(image, &provider_episode_hash)
     }
 
-    /// A second `query_context` proposal can be semantically valid yet have no
+    /// A second context-plan proposal can be semantically valid yet have no
     /// room in the immutable root `SearchPlan`.  This is a kernel-known
     /// physical capacity boundary, not a question-specific model mistake.
     /// When the workflow explicitly offers a stop edge to an answer-producing
@@ -1272,7 +1272,7 @@ impl ActiveRun {
         let [call] = episode.assistant.tool_calls.as_slice() else {
             return Ok(false);
         };
-        if call.function.name.as_str() != provider_tool_name("ontology.query_context") {
+        if !is_append_context_plan_provider_tool(call.function.name.as_str()) {
             return Ok(false);
         }
         if !matches!(
@@ -3032,4 +3032,20 @@ impl ActiveRun {
     pub(crate) fn checkpoint_bytes(&self) -> Result<Vec<u8>, EngineError> {
         Ok(serde_jcs::to_vec(&self.checkpoint_value()?)?)
     }
+}
+
+/// The context-plan capabilities whose append proposals are bounded by the
+/// root SearchPlan clause cap. Both discovery lanes stop the same way: the
+/// company lane's `ontology.query_context` and the free door's
+/// `ontology.query_context_universe`. The universe variant was originally
+/// missing from the hardcoded check (2026-09-04 live postmortem: question-only
+/// runs died terminally on append rejections instead of taking the
+/// bounded-answer stop edge), so the accepted set is explicit and tested.
+pub(crate) fn is_append_context_plan_provider_tool(function_name: &str) -> bool {
+    [
+        provider_tool_name("ontology.query_context"),
+        provider_tool_name("ontology.query_context_universe"),
+    ]
+    .iter()
+    .any(|accepted| accepted.as_str() == function_name)
 }
