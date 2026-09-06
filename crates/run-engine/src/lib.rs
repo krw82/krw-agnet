@@ -6170,9 +6170,13 @@ mod tests {
         assert!(markdown.contains("416.2"));
         assert!(markdown.contains("services\\_revenue"));
         assert!(markdown.contains("FY2025"));
-        // The limitation notice names the dependency reason and explicitly
-        // does not present the outage as company non-disclosure.
-        assert!(markdown.contains("dependency_unavailable"));
+        // The limitation notice explains the dependency limit in natural
+        // prose (surface doctrine: no reason codes in the answer), keeps
+        // attribution on the retrieval environment — not the company — and
+        // the machine-readable reason rides the bundle fields.
+        assert!(markdown.contains("자료 연결이 기한 안에 회복되지"));
+        assert!(!markdown.contains("dependency_unavailable"));
+        assert!(!markdown.contains("사유 코드"));
         assert!(!markdown.contains("미공시"));
         assert!(!markdown.contains("공시하지 않"));
         // No internal identifiers, paths, or URLs leak into public Markdown.
@@ -6498,7 +6502,8 @@ mod tests {
         assert_eq!(outcome.evidence_count, 0);
         assert!(outcome.answer_bundle.evidence_ids.is_empty());
         let markdown = &outcome.answer_bundle.rendered_markdown;
-        assert!(markdown.contains("dependency_unavailable"));
+        assert!(markdown.contains("자료 연결이 기한 안에 회복되지"));
+        assert!(!markdown.contains("dependency_unavailable"));
         assert!(!markdown.contains("retrieval_empty"));
         assert!(!markdown.contains("services_growth_driver"));
         assert!(!markdown.contains("미공시"));
@@ -6525,7 +6530,8 @@ mod tests {
             LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(outage.reason_code, "dependency_unavailable");
-        assert!(outage.markdown.contains("dependency_unavailable"));
+        assert!(outage.markdown.contains("자료 연결이 기한 안에 회복되지"));
+        assert!(!outage.markdown.contains("dependency_unavailable"));
         assert!(!outage.markdown.contains("retrieval_empty"));
 
         let retrieval_ran_dry = fallback_answer_from_ledger(
@@ -6538,7 +6544,12 @@ mod tests {
             LedgerFallbackCause::DependencyOrRetrieval,
         );
         assert_eq!(retrieval_ran_dry.reason_code, "retrieval_empty");
-        assert!(retrieval_ran_dry.markdown.contains("retrieval_empty"));
+        assert!(
+            retrieval_ran_dry
+                .markdown
+                .contains("자료 연결이 기한 안에 회복되지")
+        );
+        assert!(!retrieval_ran_dry.markdown.contains("retrieval_empty"));
 
         // Deterministic bytes for identical inputs.
         let again = fallback_answer_from_ledger(
@@ -6571,8 +6582,8 @@ mod tests {
             LedgerFallbackCause::OutputBudgetExhausted,
         );
         assert_eq!(budget.reason_code, "output_budget_exhausted");
-        assert!(budget.markdown.contains("output_budget_exhausted"));
-        assert!(budget.markdown.contains("응답 예산"));
+        assert!(!budget.markdown.contains("output_budget_exhausted"));
+        assert!(budget.markdown.contains("응답 분량 한도"));
         assert!(
             !budget.markdown.contains("외부 연결"),
             "a budget exhaustion must not be narrated as a provider/MCP fault"
@@ -6653,7 +6664,8 @@ mod tests {
         assert!(answer.markdown.contains("416.2"));
         assert!(answer.markdown.contains("services\\_revenue"));
         assert!(answer.markdown.contains("FY2025"));
-        assert!(answer.markdown.contains("dependency_unavailable"));
+        assert!(answer.markdown.contains("자료 연결이 기한 안에 회복되지"));
+        assert!(!answer.markdown.contains("dependency_unavailable"));
         assert!(!answer.markdown.contains("미공시"));
         // Deterministic: same ledger, same bytes.
         let again = fallback_answer_from_ledger(

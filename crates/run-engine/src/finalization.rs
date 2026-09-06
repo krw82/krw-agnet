@@ -1105,50 +1105,48 @@ pub(crate) fn fallback_answer_from_ledger(
     let mut citations = FallbackCitations::new();
     let mut markdown = String::new();
 
-    markdown.push_str("## 안내\n\n");
+    // The degraded lane is deterministic by design (the composer lane is
+    // exactly what failed), but its output still meets the surface doctrine:
+    // natural Korean prose, no reason codes, no query telemetry blocks. The
+    // machine-readable reason stays on `LedgerFallbackAnswer.reason_code`.
+    markdown.push_str("**지금은 전체 분석을 완성하지 못했습니다.** ");
     match cause {
         LedgerFallbackCause::OutputBudgetExhausted => {
             markdown.push_str(
-                "요청하신 연구가 응답 예산(출력 토큰) 소진으로 완료되지 못했습니다. \
-이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+                "이번에는 응답 분량 한도에 걸려, 이미 확인된 자료만으로 읽은 부분을 남깁니다.\n\n",
             );
         }
         LedgerFallbackCause::ComposerNarration => {
             markdown.push_str(
-                "요청하신 연구의 작성 단계가 최종 보고서 대신 진행 상황 안내만 반환했습니다. \
-정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+                "보고서 작성 단계가 끝까지 완료되지 못해, 이미 확인된 자료만으로 읽은 부분을 남깁니다.\n\n",
             );
         }
         LedgerFallbackCause::DependencyOrRetrieval => {
             markdown.push_str(
-                "요청하신 연구가 기한 내 완료되지 못했습니다. 외부 연결(provider/MCP) 문제가 복구 기한 안에 해결되지 않아, \
-정상 답변 대신 이미 검증된 자료만으로 제한적 요약을 남깁니다.\n\n",
+                "자료 연결이 기한 안에 회복되지 않아, 이미 확인된 자료만으로 읽은 부분을 남깁니다. \
+이번 조회 환경의 한계이지 회사 자료 자체의 문제는 아닙니다.\n\n",
             );
         }
     }
-    markdown.push_str(&format!("- 사유 코드: {reason_code}\n"));
-    match cause {
-        LedgerFallbackCause::OutputBudgetExhausted => {
-            markdown.push_str("- 이는 시스템 응답 예산 문제이며 기업의 공시 범위와 무관합니다.\n");
+    let scope_subject = if tickers.is_empty() {
+        fallback_public_inline(question)
+    } else {
+        let tickers_inline = tickers
+            .iter()
+            .map(|ticker| fallback_public_inline(ticker))
+            .filter(|ticker| !ticker.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if tickers_inline.is_empty() {
+            fallback_public_inline(question)
+        } else {
+            format!("{tickers_inline} 에 대한 «{question}» 질문")
         }
-        LedgerFallbackCause::ComposerNarration => {
-            markdown.push_str("- 이는 시스템 작성 단계 문제이며 기업의 공시 범위와 무관합니다.\n");
-        }
-        LedgerFallbackCause::DependencyOrRetrieval => {
-            markdown.push_str("- 이는 시스템 의존성 문제이며 기업의 공시 범위와 무관합니다.\n");
-        }
-    }
-
-    markdown.push_str("\n## 질문 범위\n\n");
-    markdown.push_str(&format!("- 질문: {}\n", fallback_public_inline(question)));
-    let tickers_inline = tickers
-        .iter()
-        .map(|ticker| fallback_public_inline(ticker))
-        .filter(|ticker| !ticker.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !tickers_inline.is_empty() {
-        markdown.push_str(&format!("- 대상 종목: {tickers_inline}\n"));
+    };
+    if !scope_subject.is_empty() {
+        markdown.push_str(&format!(
+            "— {scope_subject} 에 대해 지금까지 확인된 부분입니다.\n\n"
+        ));
     }
 
     let direct_records = ledger
@@ -1181,7 +1179,7 @@ pub(crate) fn fallback_answer_from_ledger(
         }
     }
     if !direct_lines.is_empty() {
-        markdown.push_str("\n## 확보된 핵심 사실 (직접 근거)\n\n");
+        markdown.push_str("\n## 확인된 사실 (직접 근거)\n\n");
         for line in direct_lines {
             markdown.push_str(&line);
             markdown.push('\n');
@@ -1196,13 +1194,13 @@ pub(crate) fn fallback_answer_from_ledger(
             .take(LEDGER_FALLBACK_MAX_FACTS_PER_RECORD)
         {
             if let Some(mut line) = fallback_fact_line(record, fact, &mut citations) {
-                line.push_str(" · 간접 근거이므로 참고 수준으로만 반영");
+                line.push_str(" · 간접 자료라 참고 수준으로만 반영");
                 related_lines.push(line);
             }
         }
     }
     if !related_lines.is_empty() {
-        markdown.push_str("\n## 제한적 시사점 (간접 근거)\n\n");
+        markdown.push_str("\n## 참고로 읽은 흐름 (간접 근거)\n\n");
         for line in related_lines {
             markdown.push_str(&line);
             markdown.push('\n');
@@ -1264,7 +1262,7 @@ pub(crate) fn fallback_answer_from_ledger(
         calculation_lines.push(line);
     }
     if !calculation_lines.is_empty() {
-        markdown.push_str("\n## 계산 지표 (검증된 계산)\n\n");
+        markdown.push_str("\n## 계산해 본 지표\n\n");
         for line in calculation_lines {
             markdown.push_str(&line);
             markdown.push('\n');
@@ -1281,23 +1279,23 @@ pub(crate) fn fallback_answer_from_ledger(
             .filter(|goal_id| !goal_id.is_empty())
             .collect::<Vec<_>>();
         if !uncovered.is_empty() {
-            markdown.push_str("\n## 다루지 못한 목표\n\n");
+            markdown.push_str("\n## 이번에 확인하지 못한 부분\n\n");
             for goal_id in uncovered {
                 markdown.push_str(&format!(
-                    "- 목표 {goal_id} 는 이번 실행에서 충족되지 못했습니다.\n"
+                    "- {goal_id} 은(는) 이번 실행에서 끝까지 확인하지 못했습니다.\n"
                 ));
             }
         }
     }
 
-    markdown.push_str("\n## 제약 및 조회 상태\n\n");
+    markdown.push_str("\n### 읽을 때의 주의\n\n");
     markdown.push_str(&format!(
-        "- 이번 실행에서 확보한 근거: {}건, 완료된 외부 조회: {}건\n",
+        "- 이번에 확인한 근거 {}건, 완료한 조회 {}건 기준의 부분 자료입니다.\n",
         ledger.len(),
         accepted_capability_results
     ));
     markdown.push_str(
-        "- 연구가 완료되지 않았으므로 위 내용은 부분 자료이며, 완전한 답변이 아닙니다.\n",
+        "- 위 내용은 완결된 분석이 아니므로, 자료 연결이 안정된 뒤 다시 전체 분석을 받아보시는 것이 좋습니다.\n",
     );
 
     let periods = ledger
@@ -3623,7 +3621,7 @@ mod narration_gate_tests {
         );
         assert_eq!(fallback.reason_code, "composer_narration");
         assert!(fallback.markdown.contains("작성 단계"));
-        assert!(fallback.markdown.contains("composer_narration"));
+        assert!(!fallback.markdown.contains("composer_narration"));
         assert!(
             !fallback.markdown.contains("외부 연결"),
             "a narration escape must not be narrated as a provider/MCP fault"
