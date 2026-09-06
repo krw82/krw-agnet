@@ -444,19 +444,19 @@ pub const OPENBB_QUOTE_INPUT_V1_SCHEMA_SHA256: &str =
 pub const OPENBB_METRICS_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:ef640c9f81c5ba44d5df70043138b3aa32e299e578c368a94367a9df2307fce9";
 pub const OPENBB_METRICS_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:d2b15418f877e07d349af189050255c4b3c881c4ee84af17d07428f2b8c7489e";
+    "sha256:e67ee6954ae97ac9b4a72bc17c40173c3d48fa88c4be84fa67f433dfd0a5be39";
 pub const OPENBB_INCOME_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:645782f7cc8e1c76f48427ab18ae4588d4f91265fcf88d7d46eef82f01a6923b";
 pub const OPENBB_INCOME_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:2328d489e814fe1826d7a1b6067ef8408d2faf72e6eaf45d22ecf70ff274cac9";
+    "sha256:e19e8f53063925e833ee143d5801eb4f8d2a9953a8aafa4716e73ef26753c047";
 pub const OPENBB_BALANCE_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c68b3edfdfdeb5e8c2ad9fc83d792963732c38b05277ce20985fa421ae51f562";
 pub const OPENBB_BALANCE_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:40d57579162715a2444f2b44e60911531e93e68a3b40adfe4d01c541a3a291a6";
+    "sha256:686dcc3dd757892c10e7e91ed1dc3c84a0d9ec8e57f07270e3c33accc8d82d83";
 pub const OPENBB_CASH_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:d0130ca76f7beb49779d7a8271fb69f03195230201c062aeeb24d55ab8813ac3";
 pub const OPENBB_CASH_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:64c6a021d38ee7eefa479b89c7a104f077444f25d74a2403b9d16770f0478431";
+    "sha256:cce1ee438f24c31a9e0bcafd9a6239d1234e6aa43c7870e2683dae7d3977c29b";
 pub const OPENBB_CONSENSUS_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:744d59d4a2815fd2371e814a90e97723867bd0edf178872548e9fa6dca88dba2";
 pub const OPENBB_CONSENSUS_INPUT_V1_SCHEMA_SHA256: &str =
@@ -2528,6 +2528,9 @@ fn openbb_statement_request(value: &Value, contract: &'static str) -> Result<(),
 
 /// Shared physical input for the four statement-shaped tools: the limit is
 /// always present (the kernel pins the default when the model omits it).
+/// The wire period vocabulary is annual/quarter — the upstream statement
+/// endpoints answer the 'quarterly' literal with a 422 — while the MODEL
+/// request keeps annual/quarterly and the kernel lowers it during assembly.
 fn openbb_statement_input(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
     let request = object(value, contract)?;
     exact_keys(request, &["provider", "symbol", "limit", "period"], contract)?;
@@ -2539,7 +2542,7 @@ fn openbb_statement_input(value: &Value, contract: &'static str) -> Result<(), C
         || !integer_range(request.get("limit"), 1, 4)
         || !request
             .get("period")
-            .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarterly")))
+            .is_none_or(|value| matches!(value.as_str(), Some("annual" | "quarter")))
     {
         return Err(ContractValueError::Shape(contract));
     }

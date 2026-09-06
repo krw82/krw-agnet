@@ -146,7 +146,7 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-metrics-input/v1
     schema_ref: canonical:krw-agent/openbb-metrics-input-v1
-    content_hash: sha256:d2b15418f877e07d349af189050255c4b3c881c4ee84af17d07428f2b8c7489e
+    content_hash: sha256:e67ee6954ae97ac9b4a72bc17c40173c3d48fa88c4be84fa67f433dfd0a5be39
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-income-request/v1
     schema_ref: canonical:krw-agent/openbb-income-request-v1
@@ -154,7 +154,7 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-income-input/v1
     schema_ref: canonical:krw-agent/openbb-income-input-v1
-    content_hash: sha256:2328d489e814fe1826d7a1b6067ef8408d2faf72e6eaf45d22ecf70ff274cac9
+    content_hash: sha256:e19e8f53063925e833ee143d5801eb4f8d2a9953a8aafa4716e73ef26753c047
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-balance-request/v1
     schema_ref: canonical:krw-agent/openbb-balance-request-v1
@@ -162,7 +162,7 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-balance-input/v1
     schema_ref: canonical:krw-agent/openbb-balance-input-v1
-    content_hash: sha256:40d57579162715a2444f2b44e60911531e93e68a3b40adfe4d01c541a3a291a6
+    content_hash: sha256:686dcc3dd757892c10e7e91ed1dc3c84a0d9ec8e57f07270e3c33accc8d82d83
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-cash-request/v1
     schema_ref: canonical:krw-agent/openbb-cash-request-v1
@@ -170,7 +170,7 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-cash-input/v1
     schema_ref: canonical:krw-agent/openbb-cash-input-v1
-    content_hash: sha256:64c6a021d38ee7eefa479b89c7a104f077444f25d74a2403b9d16770f0478431
+    content_hash: sha256:cce1ee438f24c31a9e0bcafd9a6239d1234e6aa43c7870e2683dae7d3977c29b
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-consensus-request/v1
     schema_ref: canonical:krw-agent/openbb-consensus-request-v1
