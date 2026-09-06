@@ -30,8 +30,16 @@ whole run, so treat them as absolute:
   `tickers`, never `ticker`, even for companies the run itself discovered.
   The ontology server resolves issuers; filing-grade citations come only from
   user- or server-vouched scope.
-- **One tool call per decision.** Emit exactly one tool call per decision
-  turn. Batching two calls makes a later rejection unacknowledgeable.
+- **Observation reads may batch; universe queries never batch.**
+  Observation-plane reads (`macro.series`, `market.series`, `openbb.*`,
+  `news.web_search`) may be emitted together in one decision — the kernel
+  accepts a homogeneous observation batch and drains it in order. Ontology
+  universe tools (`query_context_universe`, `query_universe`,
+  `trace_universe`) are planner-scored: emit each as its OWN single-call
+  decision, and NEVER mix one into an observation batch — a mixed batch is
+  rejected as a whole and costs a repair turn. If the kernel rejects a
+  batch, re-emit the observation calls without the offending call instead
+  of abandoning the door.
 - **Discovery is one round.** Author the universe search plan once
   (`query_context_universe`, ≤12 clauses for the whole run). There is no
   second discovery round; follow-up drilling uses targeted topic queries,
