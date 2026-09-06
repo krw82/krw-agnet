@@ -2069,6 +2069,11 @@ fn exact_shape_keys(
 
 fn validate_targeted_query(value: &Value) -> Result<(), ContractValueError> {
     let query = object(value, ONTOLOGY_TARGETED_QUERY_V1)?;
+    // `response_format` is transport vocabulary, never model surface (the
+    // live 2026-09-07 release forbids the field outright and a model that
+    // authors it kills the run server-side); the canonical exported schema
+    // keeps the wider physical shape while the runtime validator keeps the
+    // authoring surface narrower, exactly like the company-context contract.
     exact_keys(
         query,
         &[
@@ -2086,7 +2091,6 @@ fn validate_targeted_query(value: &Value) -> Result<(), ContractValueError> {
             "period",
             "periods",
             "response_detail",
-            "response_format",
             "ticker",
             "tickers",
             "topic",
@@ -2129,9 +2133,6 @@ fn validate_targeted_query(value: &Value) -> Result<(), ContractValueError> {
         || query
             .get("include_rejected")
             .is_some_and(|value| !value.is_boolean())
-        || query
-            .get("response_format")
-            .is_some_and(|value| value.as_str() != Some("json"))
         || query.get("response_detail").is_some_and(|value| {
             !matches!(
                 value.as_str(),
@@ -3005,16 +3006,11 @@ fn validate_quant_dcf_result(value: &Value) -> Result<(), ContractValueError> {
 
 fn validate_trace_input(value: &Value) -> Result<(), ContractValueError> {
     let trace = object(value, ONTOLOGY_TRACE_INPUT_V1)?;
-    exact_keys(
-        trace,
-        &["object_id", "response_format", "ticker"],
-        ONTOLOGY_TRACE_INPUT_V1,
-    )?;
-    if !bounded_string(trace.get("object_id"), 1, 256)
-        || !optional_string(trace.get("ticker"), 32)
-        || trace
-            .get("response_format")
-            .is_some_and(|value| value.as_str() != Some("json"))
+    // Same doctrine as the targeted query: `response_format` is transport
+    // vocabulary the live release rejects (extra_forbidden), so the model
+    // authoring surface stays {object_id, ticker}.
+    exact_keys(trace, &["object_id", "ticker"], ONTOLOGY_TRACE_INPUT_V1)?;
+    if !bounded_string(trace.get("object_id"), 1, 256) || !optional_string(trace.get("ticker"), 32)
     {
         return Err(ContractValueError::Shape(ONTOLOGY_TRACE_INPUT_V1));
     }
@@ -3799,6 +3795,15 @@ mod tests {
             )
             .is_err()
         );
+        // `response_format` is transport vocabulary: even the JSON literal
+        // must not be authorable (live 2026-09-07 release: extra_forbidden).
+        assert!(
+            validate_value(
+                ONTOLOGY_TARGETED_QUERY_V1,
+                &serde_json::json!({"topic": "cash generation", "response_format": "json"})
+            )
+            .is_err()
+        );
         assert!(
             validate_value(
                 ONTOLOGY_TRACE_INPUT_V1,
@@ -3808,9 +3813,16 @@ mod tests {
         );
         validate_value(
             ONTOLOGY_TRACE_INPUT_V1,
-            &serde_json::json!({"object_id": "obj-1", "response_format": "json"}),
+            &serde_json::json!({"object_id": "obj-1"}),
         )
         .unwrap();
+        assert!(
+            validate_value(
+                ONTOLOGY_TRACE_INPUT_V1,
+                &serde_json::json!({"object_id": "obj-1", "response_format": "json"}),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -107,7 +107,8 @@ where
             // swallowed by the answer-always catch: propagate it so the
             // executor's deferral lane can re-lease and retry. Only
             // non-retryable/capacity-class errors fall back immediately.
-            Err(error) if matches!(&error, EngineError::Dependency { failure, .. } if failure.retryable) => {
+            Err(error) if matches!(&error, EngineError::Dependency { failure, .. } if failure.retryable) =>
+            {
                 return Err(error);
             }
             Err(error) if error_allows_ledger_fallback(&error) => {
