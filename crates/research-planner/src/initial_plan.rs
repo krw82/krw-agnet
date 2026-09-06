@@ -1807,23 +1807,27 @@ mod tests {
             .map(|goal| goal.goal_id.as_str())
             .collect();
         assert_eq!(marked.len(), 1);
-        assert!(compiled
-            .receipt
-            .clause_goal_ids
-            .values()
-            .flatten()
-            .any(|goal_id| marked.contains(&goal_id.as_str())));
+        assert!(
+            compiled
+                .receipt
+                .clause_goal_ids
+                .values()
+                .flatten()
+                .any(|goal_id| marked.contains(&goal_id.as_str()))
+        );
     }
 
     #[test]
     fn unmarked_proposal_leaves_event_premise_false() {
         let question = "How durable is AAPL services growth?";
         let compiled = compile_research_proposal(&proposal(), company_scope(question)).unwrap();
-        assert!(compiled
-            .receipt
-            .intent_graph
-            .goals()
-            .all(|goal| !goal.event_premise));
+        assert!(
+            compiled
+                .receipt
+                .intent_graph
+                .goals()
+                .all(|goal| !goal.event_premise)
+        );
     }
 
     #[test]
@@ -1840,10 +1844,12 @@ mod tests {
         }
         let recovered: ResearchIntentReceipt = serde_json::from_value(value).unwrap();
         recovered.validate_recovered().unwrap();
-        assert!(recovered
-            .intent_graph
-            .goals()
-            .all(|goal| !goal.event_premise));
+        assert!(
+            recovered
+                .intent_graph
+                .goals()
+                .all(|goal| !goal.event_premise)
+        );
     }
 
     #[test]

@@ -1685,8 +1685,12 @@ fn map_goals(
                     .iter()
                     .any(|candidate| candidate.ticker == ticker);
             if ticker_unavailable {
-                goal_ids =
-                    Some(frontier.iter().map(|goal_id| (*goal_id).to_owned()).collect());
+                goal_ids = Some(
+                    frontier
+                        .iter()
+                        .map(|goal_id| (*goal_id).to_owned())
+                        .collect(),
+                );
             }
         }
         if goal_ids.is_none() && projection.exact_precise_query_candidates.is_empty() {
@@ -1700,7 +1704,12 @@ fn map_goals(
             // had to refuse all figures). The MarketPlane scope binding
             // still admits only canonical tickers, and the one-visit state
             // bounds plus the action_limits caps keep the reads few.
-            goal_ids = Some(frontier.iter().map(|goal_id| (*goal_id).to_owned()).collect());
+            goal_ids = Some(
+                frontier
+                    .iter()
+                    .map(|goal_id| (*goal_id).to_owned())
+                    .collect(),
+            );
         }
         let mut goal_ids = goal_ids?;
         goal_ids.sort();
@@ -2150,8 +2159,8 @@ mod tests {
     use krw_agent_planning::{ActionConcurrency, ActionEffect, AuthIsolation};
     use krw_agent_protocol::RunContextV1;
     use krw_ontology_adapter::{
-        CalculationCoverage, ClauseCoverage, MissingPart, RecommendedAction,
-        SupplementalReadKind, parse_research_state,
+        CalculationCoverage, ClauseCoverage, MissingPart, RecommendedAction, SupplementalReadKind,
+        parse_research_state,
     };
 
     use super::*;
@@ -2750,9 +2759,7 @@ mod tests {
         let mut second_clause = state.plan["clauses"][0].clone();
         second_clause["clause_id"] = Value::String("clause-open-calc".into());
         second_clause["retrieval_query"] = Value::String("total debt".into());
-        state
-            .plan
-            ["clauses"]
+        state.plan["clauses"]
             .as_array_mut()
             .expect("clauses array")
             .push(second_clause);
