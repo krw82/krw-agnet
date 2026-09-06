@@ -681,7 +681,11 @@ where
                     .await?;
                 continue;
             }
-            let decision = match state.decide_research_dispatch(&prepared) {
+            let question_only = matches!(
+                input.request.context,
+                krw_agent_protocol::RunContextV1::QuestionOnly {}
+            );
+            let decision = match state.decide_research_dispatch(&prepared, question_only) {
                 Ok(decision) => decision,
                 Err(error) => {
                     let Some(directive) = model_recovery_directive(&error) else {

@@ -1795,6 +1795,7 @@ impl ActiveRun {
     pub(crate) fn decide_research_dispatch(
         &mut self,
         calls: &[PreparedCall],
+        question_only: bool,
     ) -> Result<ResearchDispatchDecision, EngineError> {
         let first = calls
             .first()
@@ -1906,6 +1907,19 @@ impl ActiveRun {
                             ResearchStopReason::ReplanBudgetExhausted,
                         ))
                     }
+                } else if question_only && reason == NoPositiveReason::ProposalUnmapped {
+                    // Free-door market-plane override (live 2026-09-04,
+                    // run_3d4bb3ff): a question_only universe plan maps
+                    // proposals through discovery clauses, so a
+                    // market-plane read for the issuer the question itself
+                    // names — or any canonical ticker the doctrine admits —
+                    // can be unmapped even though the scope validator
+                    // already blessed the ticker. Execute the batch leader
+                    // instead of burning a replan and teaching the model
+                    // the door is closed. Company runs keep the strict
+                    // candidate mapping (their trusted scope always has
+                    // candidates).
+                    Ok(ResearchDispatchDecision::Execute { selected_index: 0 })
                 } else if self.has_replan_budget() {
                     self.reserve_replan()?;
                     Ok(ResearchDispatchDecision::ProposalRejected(reason))

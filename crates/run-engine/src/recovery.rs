@@ -625,7 +625,11 @@ where
                 outcome: "exactly one bounded child recovered capability action",
             });
         }
-        let selected_index = match state.decide_research_dispatch(&prepared)? {
+        let question_only = matches!(
+            input.request.context,
+            krw_agent_protocol::RunContextV1::QuestionOnly {}
+        );
+        let selected_index = match state.decide_research_dispatch(&prepared, question_only)? {
             ResearchDispatchDecision::Execute { selected_index } => selected_index,
             ResearchDispatchDecision::NoPositiveValue(reason) => {
                 if actions
