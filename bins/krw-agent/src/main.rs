@@ -101,8 +101,9 @@ enum Command {
         #[arg(long)]
         question: String,
         /// One exact company ticker for the company-research entrypoint.
+        /// Omit for the ticker-less open-research free door.
         #[arg(long)]
-        ticker: String,
+        ticker: Option<String>,
         /// Continue this durable session. Omit for a server-created new session.
         #[arg(long)]
         session_id: Option<String>,
@@ -556,7 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             run_through_gateway(
                 &question,
-                &ticker,
+                ticker.as_deref(),
                 session_id.as_deref(),
                 &gateway_url,
                 &token_env,
@@ -573,7 +574,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[allow(clippy::too_many_arguments)]
 async fn run_through_gateway(
     question: &str,
-    ticker: &str,
+    ticker: Option<&str>,
     session_id: Option<&str>,
     gateway_url: &str,
     token_env: &str,
@@ -597,9 +598,15 @@ async fn run_through_gateway(
         )
     })?);
     let client = AgentGatewayClient::new(gateway_url, token.to_string())?;
-    let submitted = client
-        .submit_company_research(question, ticker, session_id)
-        .await?;
+    // No ticker on the CLI = the ticker-less free door (open research).
+    let submitted = match ticker {
+        Some(ticker) => {
+            client
+                .submit_company_research(question, ticker, session_id)
+                .await
+        }
+        None => client.submit_open_research(question, session_id).await,
+    }?;
     if !wait {
         if json {
             let output = serde_json::json!({

@@ -192,6 +192,35 @@ impl AgentGatewayClient {
         parse_submit_response(response, session_id).await
     }
 
+    pub(crate) async fn submit_open_research(
+        &self,
+        question: &str,
+        session_id: Option<&str>,
+    ) -> Result<SubmittedRun, GatewayClientError> {
+        validate_question(question)?;
+        if let Some(value) = session_id
+            && !is_gateway_id(value)
+        {
+            return Err(GatewayClientError::InvalidSessionId);
+        }
+        let suffix = match session_id {
+            Some(value) => format!("sessions/{value}/runs"),
+            None => "runs".into(),
+        };
+        let response = self
+            .client
+            .post(self.endpoint(&suffix))
+            .bearer_auth(self.token.as_str())
+            .json(&OpenResearchRequest {
+                schema_version: SCHEMA_VERSION,
+                question,
+            })
+            .send()
+            .await
+            .map_err(map_request_error)?;
+        parse_submit_response(response, session_id).await
+    }
+
     pub(crate) async fn read_run(&self, run_id: &str) -> Result<RunStatus, GatewayClientError> {
         if !is_gateway_id(run_id) {
             return Err(GatewayClientError::InvalidRunId);
@@ -265,6 +294,15 @@ struct CompanyResearchRequest<'a> {
     schema_version: u16,
     question: &'a str,
     ticker: &'a str,
+}
+
+/// The ticker-less free door: the gateway discriminates on the `ticker` key's
+/// absence, so the body must not carry the field at all.
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct OpenResearchRequest<'a> {
+    schema_version: u16,
+    question: &'a str,
 }
 
 #[derive(Deserialize)]
