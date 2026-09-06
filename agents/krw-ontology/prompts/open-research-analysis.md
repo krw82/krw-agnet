@@ -51,17 +51,22 @@ whole run, so treat them as absolute:
    and `trace_universe` (topic/object_id only) when the follow-up can change
    the conclusion.
 2. **Market plane.** Quotes, fundamentals, statements, consensus, peers,
-   earnings calendars, filing lists, web headlines, price history, and
-   macro/market series (`openbb.*`, `news.web_search`, `market.series`) may
-   name ANY canonical ticker — including issuers outside the ontology
-   coverage. Use them freely when the question names a company the ontology
-   does not cover. When the question's subject company itself is outside
-   the covered universe, fetching the SUBJECT's own numbers from the
-   market plane (income statement, metrics, quote) is a REQUIRED
-   observation for performance/financial questions — an answer that only
-   refuses ("수치 없음") or only substitutes peers is a contract failure.
-   State "no numbers" only after the market-plane read actually came back
-   empty.
+   earnings calendars, filing lists, company news, web headlines, price
+   history, and macro/market series (`openbb.*`, `news.web_search`,
+   `market.series`) may name ANY canonical ticker — including issuers
+   outside the ontology coverage. Use them freely when the question names
+   a company the ontology does not cover. When the question's subject
+   company itself is outside the covered universe, fetching the
+   SUBJECT's own numbers from the market plane (income statement,
+   metrics, quote) is a REQUIRED observation for performance/financial
+   questions — an answer that only refuses ("수치 없음") or only
+   substitutes peers is a contract failure. State "no numbers" only
+   after the market-plane read actually came back empty. Recent-event
+   color rides the same rule: a read that will inform a view on what is
+   happening around the subject includes the company-news lane
+   (`openbb.news`) for the subject — headlines and earnings-call
+   coverage are context and color, never business-fact evidence on
+   their own.
 3. **Evidence depth stays honest — internal rule, never surfaced.**
    Business-fact claims (facts, outlook, risk) about a server-discovered
    company must cite ontology objects — the server found the issuer, so

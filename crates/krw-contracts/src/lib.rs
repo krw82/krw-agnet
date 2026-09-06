@@ -194,6 +194,14 @@ const OPENBB_FILINGS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-filings-input-v1.json"
 ));
+const OPENBB_NEWS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-news-request-v1.json"
+));
+const OPENBB_NEWS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-news-input-v1.json"
+));
 const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
@@ -358,6 +366,13 @@ pub const OPENBB_FILINGS_REQUEST_V1: &str = "openbb-filings-request/v1";
 /// Physical MCP input for the curated openbb `equity_fundamental_filings`
 /// tool with the kernel-injected fmp provider and a pinned limit.
 pub const OPENBB_FILINGS_INPUT_V1: &str = "openbb-filings-input/v1";
+/// Model-authored request for a bounded openbb company-news read. Round-4
+/// curation: the fmp news lane that keeps any canonical ticker (covered or
+/// not) supplied with recent headlines and earnings-call coverage color.
+pub const OPENBB_NEWS_REQUEST_V1: &str = "openbb-news-request/v1";
+/// Physical MCP input for the curated openbb `news_company` tool with the
+/// kernel-injected fmp provider and a pinned article limit.
+pub const OPENBB_NEWS_INPUT_V1: &str = "openbb-news-input/v1";
 /// Model-authored request for the deterministic local DCF builtin. The
 /// model supplies labeled inputs it already collected; the builtin owns
 /// every arithmetic step and fails closed on `terminal_growth >= wacc`.
@@ -481,6 +496,10 @@ pub const OPENBB_FILINGS_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:e678f0b234195aa701118362a4afab536a4dd7a95256b1c5a491307fe4d555c8";
 pub const OPENBB_FILINGS_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:080415cbbbac36d41eaa0b9614a2cc9b0ae0fd005f1520bea490cb529f478011";
+pub const OPENBB_NEWS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:ce26132394b35b355216fa38d8489079099c0964dfed01ff1cb762a28c2b6fb3";
+pub const OPENBB_NEWS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:07d729bbf5ec2eb88f8c0d29c70c6dd738e1582e675975f0c706efdf84e7f3c8";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -706,6 +725,16 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_FILINGS_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_FILINGS_INPUT_BYTES,
         }),
+        OPENBB_NEWS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_NEWS_REQUEST_V1,
+            schema_sha256: OPENBB_NEWS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_NEWS_REQUEST_BYTES,
+        }),
+        OPENBB_NEWS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_NEWS_INPUT_V1,
+            schema_sha256: OPENBB_NEWS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_NEWS_INPUT_BYTES,
+        }),
         QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
             id: QUANT_DCF_REQUEST_V1,
             schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
@@ -833,6 +862,9 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         // Round-3 filings (out-of-ontology FMP filing read).
         contract(OPENBB_FILINGS_REQUEST_V1).expect("static contract"),
         contract(OPENBB_FILINGS_INPUT_V1).expect("static contract"),
+        // Round-4 company news (FMP news color for any canonical ticker).
+        contract(OPENBB_NEWS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_NEWS_INPUT_V1).expect("static contract"),
         // Deterministic local quant computation (financial-services P2/P4).
         contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
         contract(QUANT_DCF_RESULT_V1).expect("static contract"),
@@ -941,9 +973,7 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_CONSENSUS_INPUT_V1 => validate_openbb_consensus_input(value),
         OPENBB_PEER_REQUEST_V1 => validate_openbb_peer_request(value),
         OPENBB_PEER_INPUT_V1 => validate_openbb_peer_input(value),
-        OPENBB_EARNINGS_CALENDAR_REQUEST_V1 => {
-            validate_openbb_earnings_calendar_request(value)
-        }
+        OPENBB_EARNINGS_CALENDAR_REQUEST_V1 => validate_openbb_earnings_calendar_request(value),
         OPENBB_EARNINGS_CALENDAR_INPUT_V1 => validate_openbb_earnings_calendar_input(value),
         OPENBB_YIELD_CURVE_REQUEST_V1 => validate_openbb_yield_curve_request(value),
         OPENBB_YIELD_CURVE_INPUT_V1 => validate_openbb_yield_curve_input(value),
@@ -951,6 +981,8 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_MACRO_CALENDAR_INPUT_V1 => validate_openbb_macro_calendar_input(value),
         OPENBB_FILINGS_REQUEST_V1 => validate_openbb_filings_request(value),
         OPENBB_FILINGS_INPUT_V1 => validate_openbb_filings_input(value),
+        OPENBB_NEWS_REQUEST_V1 => validate_openbb_news_request(value),
+        OPENBB_NEWS_INPUT_V1 => validate_openbb_news_input(value),
         QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
         QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
@@ -2485,7 +2517,10 @@ fn openbb_ticker_only_request(
 
 /// Shared physical shape for the ticker-only tools: kernel-injected fmp
 /// provider plus the symbol.
-fn openbb_ticker_only_input(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
+fn openbb_ticker_only_input(
+    value: &Value,
+    contract: &'static str,
+) -> Result<(), ContractValueError> {
     let request = object(value, contract)?;
     exact_keys(request, &["provider", "symbol"], contract)?;
     if request.get("provider").and_then(Value::as_str) != Some("fmp")
@@ -2512,7 +2547,10 @@ fn openbb_statement_knobs(request: &serde_json::Map<String, Value>) -> bool {
 }
 
 /// Shared model request for the four statement-shaped lookups.
-fn openbb_statement_request(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
+fn openbb_statement_request(
+    value: &Value,
+    contract: &'static str,
+) -> Result<(), ContractValueError> {
     let request = object(value, contract)?;
     exact_keys(request, &["ticker", "limit", "period"], contract)?;
     if !request
@@ -2533,7 +2571,11 @@ fn openbb_statement_request(value: &Value, contract: &'static str) -> Result<(),
 /// request keeps annual/quarterly and the kernel lowers it during assembly.
 fn openbb_statement_input(value: &Value, contract: &'static str) -> Result<(), ContractValueError> {
     let request = object(value, contract)?;
-    exact_keys(request, &["provider", "symbol", "limit", "period"], contract)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "limit", "period"],
+        contract,
+    )?;
     if request.get("provider").and_then(Value::as_str) != Some("fmp")
         || !request
             .get("symbol")
@@ -2588,7 +2630,9 @@ fn openbb_macro_calendar_fields(request: &serde_json::Map<String, Value>) -> boo
     );
     match (openbb_date_ordinal(start), openbb_date_ordinal(end)) {
         (Some(start_day), Some(end_day)) => {
-            importance_ok && end_day >= start_day && end_day - start_day <= OPENBB_MACRO_CALENDAR_MAX_WINDOW_DAYS
+            importance_ok
+                && end_day >= start_day
+                && end_day - start_day <= OPENBB_MACRO_CALENDAR_MAX_WINDOW_DAYS
         }
         _ => false,
     }
@@ -2748,11 +2792,11 @@ fn openbb_filings_fields(request: &serde_json::Map<String, Value>) -> bool {
         .get("ticker")
         .and_then(Value::as_str)
         .is_some_and(canonical_market_ticker)
-        && request
-            .get("limit")
-            .is_none_or(|limit| {
-                limit.as_u64().is_some_and(|limit| (1..=40).contains(&limit))
-            })
+        && request.get("limit").is_none_or(|limit| {
+            limit
+                .as_u64()
+                .is_some_and(|limit| (1..=40).contains(&limit))
+        })
         && optional_openbb_date(request.get("start_date"))
         && optional_openbb_date(request.get("end_date"))
 }
@@ -2794,6 +2838,53 @@ fn validate_openbb_filings_input(value: &Value) -> Result<(), ContractValueError
     Ok(())
 }
 
+/// Round-4 news model request: trusted ticker plus an optional 1..=10
+/// article limit. The physical tool owns the recency window (its default
+/// reads the trailing two weeks), so the model surface stays a ticker and
+/// a bound.
+fn openbb_news_fields(request: &serde_json::Map<String, Value>) -> bool {
+    request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+        && request.get("limit").is_none_or(|limit| {
+            limit
+                .as_u64()
+                .is_some_and(|limit| (1..=10).contains(&limit))
+        })
+}
+
+fn validate_openbb_news_request(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_NEWS_REQUEST_V1)?;
+    exact_keys(request, &["ticker", "limit"], OPENBB_NEWS_REQUEST_V1)?;
+    if !openbb_news_fields(request) {
+        return Err(ContractValueError::Shape(OPENBB_NEWS_REQUEST_V1));
+    }
+    Ok(())
+}
+
+fn validate_openbb_news_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_NEWS_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "limit"],
+        OPENBB_NEWS_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=10).contains(&limit))
+    {
+        return Err(ContractValueError::Shape(OPENBB_NEWS_INPUT_V1));
+    }
+    Ok(())
+}
+
 /// Deterministic local DCF request: shape and range bounds only. The
 /// semantic invariant (`terminal_growth < wacc`) is enforced by the builtin
 /// itself so the rejection carries the quant-specific error code.
@@ -2818,12 +2909,15 @@ fn validate_quant_dcf_request(value: &Value) -> Result<(), ContractValueError> {
         .get("ticker")
         .and_then(Value::as_str)
         .is_some_and(canonical_market_ticker);
-    let fcfs_ok = request.get("fcfs").and_then(Value::as_array).is_some_and(|values| {
-        (1..=10).contains(&values.len())
-            && values
-                .iter()
-                .all(|value| value.as_f64().is_some_and(f64::is_finite))
-    });
+    let fcfs_ok = request
+        .get("fcfs")
+        .and_then(Value::as_array)
+        .is_some_and(|values| {
+            (1..=10).contains(&values.len())
+                && values
+                    .iter()
+                    .all(|value| value.as_f64().is_some_and(f64::is_finite))
+        });
     let wacc_ok = request
         .get("wacc")
         .and_then(Value::as_f64)
@@ -2834,13 +2928,11 @@ fn validate_quant_dcf_request(value: &Value) -> Result<(), ContractValueError> {
         .is_some_and(|growth| growth.is_finite() && (0.0..=0.08).contains(&growth));
     let method = request.get("method").and_then(Value::as_str);
     let method_ok = matches!(method, Some("perpetuity") | Some("exit_multiple"));
-    let multiple_ok = request
-        .get("exit_multiple")
-        .is_none_or(|value| {
-            value
-                .as_f64()
-                .is_some_and(|multiple| multiple.is_finite() && (0.5..=100.0).contains(&multiple))
-        });
+    let multiple_ok = request.get("exit_multiple").is_none_or(|value| {
+        value
+            .as_f64()
+            .is_some_and(|multiple| multiple.is_finite() && (0.5..=100.0).contains(&multiple))
+    });
     let net_debt_ok = request
         .get("net_debt")
         .and_then(Value::as_f64)
@@ -2902,7 +2994,9 @@ fn validate_quant_dcf_result(value: &Value) -> Result<(), ContractValueError> {
         QUANT_DCF_RESULT_V1,
     )?;
     if result.get("format").and_then(Value::as_str) != Some("quant-dcf-result/v1")
-        || !result.get("sensitivity").is_some_and(|grid| grid.is_object())
+        || !result
+            .get("sensitivity")
+            .is_some_and(|grid| grid.is_object())
     {
         return Err(ContractValueError::Shape(QUANT_DCF_RESULT_V1));
     }
@@ -3301,8 +3395,9 @@ mod tests {
         verify_registry().expect("all registry contracts must be canonical and hash-bound");
         // Round-1 registry (71 descriptors including front/guru/product) +
         // 20 openbb round-2 contracts + the 2 quant DCF contracts + the 2
-        // openbb round-3 filings contracts.
-        assert_eq!(descriptors().len(), 95);
+        // openbb round-3 filings contracts + the 2 openbb round-4 news
+        // contracts.
+        assert_eq!(descriptors().len(), 97);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -3440,6 +3535,45 @@ mod tests {
             )
             .is_err()
         );
+
+        // Round-4 news: the model names a ticker (the article limit is
+        // optional), never a provider; the physical input pins fmp and a
+        // bounded article count.
+        assert!(
+            validate_value(
+                OPENBB_NEWS_REQUEST_V1,
+                &serde_json::json!({"ticker": "PLTR", "limit": 5})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_NEWS_REQUEST_V1,
+                &serde_json::json!({"ticker": "PLTR", "provider": "fmp"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_NEWS_REQUEST_V1,
+                &serde_json::json!({"ticker": "PLTR", "limit": 11})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_value(
+                OPENBB_NEWS_INPUT_V1,
+                &serde_json::json!({"provider": "fmp", "symbol": "PLTR", "limit": 5})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_value(
+                OPENBB_NEWS_INPUT_V1,
+                &serde_json::json!({"provider": "benzinga", "symbol": "PLTR", "limit": 5})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3450,9 +3584,11 @@ mod tests {
             "pin must equal the canonical schema hash"
         );
         assert!(verify_pin(REPORT_SECTIONS_V1, &descriptor.content_hash().unwrap()).is_ok());
-        assert!(descriptors()
-            .iter()
-            .any(|descriptor| descriptor.id == REPORT_SECTIONS_V1));
+        assert!(
+            descriptors()
+                .iter()
+                .any(|descriptor| descriptor.id == REPORT_SECTIONS_V1)
+        );
         let schema: serde_json::Value =
             serde_json::from_slice(descriptor.schema).expect("valid json schema");
         assert_eq!(schema["$id"], "krw-agent/kernel/report-sections/v1");
@@ -3545,9 +3681,11 @@ mod tests {
             "pin must equal the canonical schema hash"
         );
         assert!(verify_pin(ANSWER_IR_V2, &descriptor.content_hash().unwrap()).is_ok());
-        assert!(descriptors()
-            .iter()
-            .any(|descriptor| descriptor.id == ANSWER_IR_V2));
+        assert!(
+            descriptors()
+                .iter()
+                .any(|descriptor| descriptor.id == ANSWER_IR_V2)
+        );
         let schema: serde_json::Value =
             serde_json::from_slice(descriptor.schema).expect("valid json schema");
         assert_eq!(schema["$id"], "krw-agent/kernel/answer-ir/v2");

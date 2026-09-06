@@ -716,7 +716,9 @@ pub(crate) fn thinking_turn_is_below_provider_minimum(
         input,
         state,
         remaining_output_tokens,
-        state.decision_retry_requested.load(std::sync::atomic::Ordering::SeqCst),
+        state
+            .decision_retry_requested
+            .load(std::sync::atomic::Ordering::SeqCst),
     ) {
         Ok(policy) => Ok(policy.thinking == ThinkingMode::Enabled
             && policy.max_output_tokens < MIN_THINKING_TURN_MAX_TOKENS),

@@ -222,6 +222,14 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-filings-input-v1
     content_hash: sha256:080415cbbbac36d41eaa0b9614a2cc9b0ae0fd005f1520bea490cb529f478011
     semantic_authority: krw-agent-capability-runtime
+  - id: openbb-news-request/v1
+    schema_ref: canonical:krw-agent/openbb-news-request-v1
+    content_hash: sha256:ce26132394b35b355216fa38d8489079099c0964dfed01ff1cb762a28c2b6fb3
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-news-input/v1
+    schema_ref: canonical:krw-agent/openbb-news-input-v1
+    content_hash: sha256:07d729bbf5ec2eb88f8c0d29c70c6dd738e1582e675975f0c706efdf84e7f3c8
+    semantic_authority: krw-agent-capability-runtime
   # Deterministic local quant computation (financial-services P2/P4: the
   # tools compute, the model interprets).
   - id: quant-dcf-request/v1
@@ -953,6 +961,38 @@ capabilities:
         expected_tool_cost_micros: 400
         expected_result_bytes: 8192
       conflict_domain: openbb.equity_fundamental_filings
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  # ── openbb curation round 4: company news (2026-09-07) ──
+  - id: openbb.news
+    execution: { kind: remote, binding_key: openbb_news_company }
+    permission: read
+    # Ticker-scoped company-news read (date, headline, source, excerpt, url)
+    # from the FMP provider — recent-headline and earnings-call coverage
+    # color for any canonical ticker, covered or not. Advisory observation
+    # only: a headline never grounds a business-fact claim on its own.
+    input_contract: openbb-news-input/v1
+    model_input_contract: openbb-news-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 900000
+        expected_duplicate_ppm: 20000
+        failure_risk_upper_ppm: 100000
+        expected_latency_ms: 2000
+        expected_tokens: 1800
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 8192
+      conflict_domain: openbb.news_company
     scope_binding:
       kind: market_plane
       ticker_references:

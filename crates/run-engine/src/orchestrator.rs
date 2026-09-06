@@ -108,7 +108,7 @@ where
             // executor's deferral lane can re-lease and retry. Only
             // non-retryable/capacity-class errors fall back immediately.
             Err(error) if matches!(&error, EngineError::Dependency { failure, .. } if failure.retryable) => {
-                return Err(error)
+                return Err(error);
             }
             Err(error) if error_allows_ledger_fallback(&error) => {
                 self.commit_ledger_fallback(&input, &identity, &mut state, error, deadline)

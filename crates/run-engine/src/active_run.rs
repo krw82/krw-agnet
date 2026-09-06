@@ -609,14 +609,12 @@ impl ActiveRun {
     /// compose/product state.
     pub(crate) fn section_output_contract(&self) -> Result<Option<ContractPin>, EngineError> {
         let section_contract = ContractPin::canonical(REPORT_SECTIONS_V1)?;
-        Ok(
-            matches!(
-                self.interpreter.current_operation()?,
-                StateOperation::ModelDecision { output_contracts, .. }
-                    if output_contracts.contains(&section_contract)
-            )
-            .then_some(section_contract),
+        Ok(matches!(
+            self.interpreter.current_operation()?,
+            StateOperation::ModelDecision { output_contracts, .. }
+                if output_contracts.contains(&section_contract)
         )
+        .then_some(section_contract))
     }
 
     pub(crate) fn lifecycle_stage_for_checkpoint(
@@ -1657,9 +1655,7 @@ impl ActiveRun {
             .provider_turns
             .checked_add(1)
             .ok_or(EngineError::CounterOverflow("provider_turns"))?;
-        if self.direct_answer_retry_requested
-            || self.current_operation_emits_answer(image)?
-        {
+        if self.direct_answer_retry_requested || self.current_operation_emits_answer(image)? {
             // The direct-answer retry holds an inviolable one-turn grant. A
             // research-heavy transcript can already sit past the cumulative
             // input cap (production GLM 2026-09-01 AMZN: 193k > 168k input
@@ -1668,8 +1664,7 @@ impl ActiveRun {
             // `provider_turn_policy`. Only the provider-turn ceiling still
             // applies to this turn; the token overshoot is bounded by the
             // single retry request.
-            if u64::from(self.usage.provider_turns) > u64::from(self.limits.max_provider_turns)
-            {
+            if u64::from(self.usage.provider_turns) > u64::from(self.limits.max_provider_turns) {
                 return Err(EngineError::Contract(
                     krw_agent_protocol::ContractError::BudgetExceeded {
                         resource: "provider_turns",
@@ -1824,11 +1819,17 @@ impl ActiveRun {
             // homogeneous non-research batch: the first call dispatches now,
             // the kernel drains the rest one statechart visit at a time.
             if calls.len() <= Self::MAX_SUPPLEMENTAL_BATCH
-                && calls.iter().all(|call| call.capability.research_action.is_none())
+                && calls
+                    .iter()
+                    .all(|call| call.capability.research_action.is_none())
                 && let Some(episode_hash) = self.last_provider_episode_hash.clone()
             {
-                self.pending_supplemental_calls
-                    .extend(calls[1..].iter().cloned().map(|call| (episode_hash.clone(), call)));
+                self.pending_supplemental_calls.extend(
+                    calls[1..]
+                        .iter()
+                        .cloned()
+                        .map(|call| (episode_hash.clone(), call)),
+                );
                 return Ok(ResearchDispatchDecision::Execute { selected_index: 0 });
             }
             return Err(EngineError::WorkflowResolution {
@@ -2111,7 +2112,7 @@ impl ActiveRun {
                 ImageResearchActionKind::Targeted => "supplemental_targeted_query_truncated",
                 ImageResearchActionKind::Trace => "supplemental_trace_truncated",
                 ImageResearchActionKind::Context | ImageResearchActionKind::Observation => {
-                    return None
+                    return None;
                 }
             },
             (ImageResearchActionKind::Observation, _) => return None,
@@ -2580,10 +2581,9 @@ impl ActiveRun {
             .capability_calls
             .keys()
             .any(|capability_id| EVENT_LADDER_CAPABILITY_IDS.contains(&capability_id.as_str()));
-        let ontology_targeted_dispatched = self
-            .capability_calls
-            .keys()
-            .any(|capability_id| matches!(capability_id.as_str(), "ontology.query" | "ontology.trace"));
+        let ontology_targeted_dispatched = self.capability_calls.keys().any(|capability_id| {
+            matches!(capability_id.as_str(), "ontology.query" | "ontology.trace")
+        });
         let market_observation_dispatched = self.capability_calls.keys().any(|capability_id| {
             matches!(
                 capability_id.as_str(),
@@ -2609,8 +2609,7 @@ impl ActiveRun {
         if let Some(hint) = crate::capability_dispatch::model_observation_no_data_hint(
             &call.capability.id,
             &result.provider_content,
-        )
-        {
+        ) {
             if let Some(object) = content.as_object_mut() {
                 object.insert("kernel_observation_no_data_hint".into(), hint);
             }

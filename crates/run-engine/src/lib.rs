@@ -72,16 +72,15 @@ use active_run::ACTIVE_RUN_CHECKPOINT_SCHEMA;
 #[cfg(test)]
 use capability_dispatch::{
     TargetedQueryAttribution, assemble_company_context_request, assemble_openbb_request,
-    canonicalize_required_gap_targeted_query, exact_required_gap_arguments,
-    model_cross_plane_hint, model_event_ladder_hint, model_market_context_hint,
-    model_observation_no_data_hint, model_research_gap_hint,
-    normalize_physical_capability_arguments,
+    canonicalize_required_gap_targeted_query, exact_required_gap_arguments, model_cross_plane_hint,
+    model_event_ladder_hint, model_market_context_hint, model_observation_no_data_hint,
+    model_research_gap_hint, normalize_physical_capability_arguments,
     normalize_provider_model_input, selected_targeted_response_detail,
 };
 #[cfg(test)]
 use finalization::{
-    fallback_answer_from_ledger, run_outcome_after_commit, sanitize_answer,
-    validate_product_output_linkage, LedgerFallbackCause,
+    LedgerFallbackCause, fallback_answer_from_ledger, run_outcome_after_commit, sanitize_answer,
+    validate_product_output_linkage,
 };
 #[cfg(test)]
 use provider::{
@@ -115,19 +114,17 @@ use krw_agent_bounded_child::{
 };
 use krw_agent_contracts::{
     ANSWER_IR_V1, ANSWER_IR_V2, CANONICAL_DISPLAY_SOURCE_V1, CanonicalDisplaySourceV1,
-    DISPLAY_PLAN_V2,
-    DisplayPlanV2, FINAL_MARKDOWN_V1, GURU_QUERY_REQUEST_V1, GuruCompanyBriefResult,
-    KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1, KRW_FEED_LIST_ITEMS_RESULT_V1,
-    KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1, KRW_FILING_METADATA_V1,
-    KRW_FILING_READ_DOCUMENT_RESULT_V1, KRW_FILING_READ_SECTION_RESULT_V1,
+    DISPLAY_PLAN_V2, DisplayPlanV2, FINAL_MARKDOWN_V1, GURU_QUERY_REQUEST_V1,
+    GuruCompanyBriefResult, KRW_FEED_CONTEXT_V2, KRW_FEED_GET_ITEMS_RESULT_V1,
+    KRW_FEED_LIST_ITEMS_RESULT_V1, KRW_FILING_BRIEF_RESULT_V1, KRW_FILING_DOCUMENTS_RESULT_V1,
+    KRW_FILING_METADATA_V1, KRW_FILING_READ_DOCUMENT_RESULT_V1, KRW_FILING_READ_SECTION_RESULT_V1,
     KRW_FILING_SEARCH_RESULT_V1, KRW_FILING_SECTIONS_RESULT_V1, KRW_FORM4_TRANSACTIONS_RESULT_V1,
     KRW_GURU_COMPANY_BRIEF_RESULT_V1, KRW_GURU_INVESTIGATION_QUESTION_DRAFT_V1,
     NORMALIZED_CAPABILITY_RESULT_V1, NOTEBOOK_TRANSFORM_INPUT_V1, NOTEBOOK_TRANSFORM_V2,
     NotebookTransformInputV1, NotebookTransformV2, QUERY_CONTEXT_INPUT_CORRECTION_V1,
     REPORT_SECTIONS_V1, RESEARCH_PROPOSAL_V4, RESEARCH_STATE_V2, ROUTING_DECISION_V2,
-    ROUTING_REQUEST_V1,
-    ResearchProposalRepairDirective, ResearchProposalViolation, RoutingDecisionV2,
-    RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1, build_company_brief_input,
+    ROUTING_REQUEST_V1, ResearchProposalRepairDirective, ResearchProposalViolation,
+    RoutingDecisionV2, RoutingRequestV1, SKILL_LOAD_V1, STATE_FACTS_V1, build_company_brief_input,
     build_company_research_context, build_evidence_review_input, compile_guru_research_frame,
     contract as canonical_contract, enrich_guru_query_input_with_result_context,
     normalize_guru_agent_evidence_analysis, research_proposal_v4_repair_directive,
@@ -526,7 +523,10 @@ fn normalized_recent_closes(root: &serde_json::Map<String, Value>) -> Vec<Value>
         ) else {
             continue;
         };
-        if close.is_finite() && close > 0.0 && trusted_market_timestamp(Some(&Value::String(date.to_owned()))).is_some() {
+        if close.is_finite()
+            && close > 0.0
+            && trusted_market_timestamp(Some(&Value::String(date.to_owned()))).is_some()
+        {
             normalized.push(serde_json::json!({"date": date, "close": close}));
         }
     }
@@ -2326,6 +2326,26 @@ mod tests {
         assert_eq!(calendar["start_date"], "2026-09-01");
         assert!(calendar.get("end_date").is_none());
 
+        // Round-4 company news: the kernel pins the article limit when the
+        // model omits it; the recency window stays upstream-owned (the
+        // physical tool reads the trailing two weeks by default).
+        let news = assemble_openbb_request(
+            &serde_json::json!({"ticker": "PLTR"}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-news-input/v1",
+        )
+        .unwrap();
+        assert_eq!(news["provider"], "fmp");
+        assert_eq!(news["symbol"], "PLTR");
+        assert_eq!(news["limit"], 5);
+        let news_explicit = assemble_openbb_request(
+            &serde_json::json!({"ticker": "PLTR", "limit": 10}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-news-input/v1",
+        )
+        .unwrap();
+        assert_eq!(news_explicit["limit"], 10);
+
         // Round-2 yield curve: fully kernel-defaulted apart from the date.
         let curve = assemble_openbb_request(
             &serde_json::json!({}),
@@ -2471,38 +2491,39 @@ mod tests {
     fn market_context_hint_fires_until_a_market_observation_dispatches() {
         let hint = model_market_context_hint(false).expect("hint before any market read");
         assert_eq!(hint["kind"], "market_context_unretrieved");
-        assert!(hint["note"]
-            .as_str()
-            .expect("note text")
-            .contains("openbb.price_history"));
+        assert!(
+            hint["note"]
+                .as_str()
+                .expect("note text")
+                .contains("openbb.price_history")
+        );
         assert!(model_market_context_hint(true).is_none());
     }
 
     #[test]
     fn observation_no_data_hint_points_at_the_openbb_fallback() {
         let no_data = serde_json::json!({"status": "no_data", "points": []});
-        let hint = crate::capability_dispatch::model_observation_no_data_hint(
-            "market.series",
-            &no_data,
-        )
-        .expect("no_data store read must carry the fallback note");
+        let hint =
+            crate::capability_dispatch::model_observation_no_data_hint("market.series", &no_data)
+                .expect("no_data store read must carry the fallback note");
         assert_eq!(hint["kind"], "observation_no_data_fallback");
-        assert!(hint["note"]
-            .as_str()
-            .expect("note text")
-            .contains("openbb.price_history"));
+        assert!(
+            hint["note"]
+                .as_str()
+                .expect("note text")
+                .contains("openbb.price_history")
+        );
         // A store with points, or another capability, stays silent.
-        let available = serde_json::json!({"status": "available", "points": [{"date": "2026-08-30"}]});
-        assert!(crate::capability_dispatch::model_observation_no_data_hint(
-            "market.series",
-            &available
-        )
-        .is_none());
-        assert!(crate::capability_dispatch::model_observation_no_data_hint(
-            "ontology.query",
-            &no_data
-        )
-        .is_none());
+        let available =
+            serde_json::json!({"status": "available", "points": [{"date": "2026-08-30"}]});
+        assert!(
+            crate::capability_dispatch::model_observation_no_data_hint("market.series", &available)
+                .is_none()
+        );
+        assert!(
+            crate::capability_dispatch::model_observation_no_data_hint("ontology.query", &no_data)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2526,10 +2547,8 @@ mod tests {
     #[test]
     fn cross_plane_hint_present_on_observation_results_before_ontology_confirmation() {
         for capability_id in ["openbb.yield_curve", "openbb.quote", "macro.series"] {
-            let hint =
-                model_cross_plane_hint(capability_id, false).unwrap_or_else(|| {
-                    panic!("{capability_id} is an observation-plane capability")
-                });
+            let hint = model_cross_plane_hint(capability_id, false)
+                .unwrap_or_else(|| panic!("{capability_id} is an observation-plane capability"));
             assert_eq!(hint["kind"], "observation_cross_plane_hint");
             assert_eq!(hint["observation_capability"], capability_id);
             assert_eq!(hint["ontology_confirmation_dispatched"], false);
@@ -3677,7 +3696,8 @@ mod tests {
         }
 
         fn truncate_first_content_turn(&self) {
-            self.truncate_first_content_turn.store(true, Ordering::SeqCst);
+            self.truncate_first_content_turn
+                .store(true, Ordering::SeqCst);
         }
 
         fn truncate_after_n_contentless_turns(&self, n: usize) {
@@ -6239,7 +6259,8 @@ mod tests {
         let mut fixture = fixture();
         fixture.request.budget.max_capability_calls = 8;
         fixture.snapshot.budget = fixture.request.budget.clone();
-        let pinned_release = fixture.snapshot.capability_release_hashes["ontology.query_context"].clone();
+        let pinned_release =
+            fixture.snapshot.capability_release_hashes["ontology.query_context"].clone();
         fixture
             .snapshot
             .capability_release_hashes
@@ -6317,14 +6338,27 @@ mod tests {
             None,
             false,
         );
-        let outcome = rig.engine.run(fixture.input()).await.unwrap_or_else(|error| {
-            panic!("supplemental batch must drain, got {error:?}; log={:?}", *rig.log.lock().unwrap())
-        });
+        let outcome = rig
+            .engine
+            .run(fixture.input())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "supplemental batch must drain, got {error:?}; log={:?}",
+                    *rig.log.lock().unwrap()
+                )
+            });
         assert_eq!(outcome.final_status, FinalStatus::Committed);
         // company context + query context + BOTH supplemental reads: the
         // batch's second call was dispatched by the kernel drain.
-        let calls = rig.capability.calls.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(calls >= 4, "expected both batched reads to dispatch, got {calls}");
+        let calls = rig
+            .capability
+            .calls
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            calls >= 4,
+            "expected both batched reads to dispatch, got {calls}"
+        );
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
     }
     #[test]
@@ -6379,8 +6413,6 @@ mod tests {
         ));
     }
 
-
-
     async fn not_dispatched_capability_failure_voids_the_begun_action_and_still_falls_back() {
         let fixture = fixture();
         // Two capability calls succeed (company context, query context);
@@ -6432,7 +6464,10 @@ mod tests {
             assert_eq!(stuck, 0, "no action row may stay begun after a failure");
         }
         assert!(
-            rig.log.lock().unwrap().contains(&"action_ambiguous".to_owned()),
+            rig.log
+                .lock()
+                .unwrap()
+                .contains(&"action_ambiguous".to_owned()),
             "the not-dispatched failure must record the ambiguous void"
         );
     }
@@ -9640,18 +9675,26 @@ mod tests {
         input.macro_context = Some(&macro_context);
         rig.engine.run(input).await.expect("research run succeeds");
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("<trusted-macro-context>")));
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("\"series_id\":\"UST10Y\"")));
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("decimal fractions")));
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("curve-steepness")));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("<trusted-macro-context>"))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("\"series_id\":\"UST10Y\""))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("decimal fractions"))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("curve-steepness"))
+        );
     }
 
     #[tokio::test]
@@ -9686,9 +9729,9 @@ mod tests {
         input.market_snapshot_context = Some(&unavailable);
         rig.engine.run(input).await.expect("research run succeeds");
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("retrieve the recent daily close series through the `openbb.price_history` capability")));
+        assert!(requests.iter().all(|request| request.system.contains(
+            "retrieve the recent daily close series through the `openbb.price_history` capability"
+        )));
 
         // (b) No snapshot at all on a company run: the note appears.
         drop(requests);
@@ -9697,12 +9740,16 @@ mod tests {
         assert_eq!(input.request.run_kind, "company_research");
         rig.engine.run(input).await.expect("research run succeeds");
         let requests = rig.provider.requests.lock().unwrap();
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("<market-context-note>")));
-        assert!(requests.iter().all(|request| request
-            .system
-            .contains("`openbb.price_history`")));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("<market-context-note>"))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.system.contains("`openbb.price_history`"))
+        );
     }
 
     #[tokio::test]
@@ -11151,7 +11198,12 @@ mod tests {
     #[test]
     fn question_only_context_authorizes_universe_and_market_plane_capabilities() {
         let image = loaded_agent("krw-ontology");
-        let mut entrypoint = image.body.entrypoints.get("idea_generation").unwrap().clone();
+        let mut entrypoint = image
+            .body
+            .entrypoints
+            .get("idea_generation")
+            .unwrap()
+            .clone();
         entrypoint.scope.allowed_context = krw_agent_protocol::RunContextKind::QuestionOnly;
         entrypoint.scope.cardinality = krw_agent_image::ScopeCardinality::Max { value: 12 };
         let context = RunContextV1::QuestionOnly {};
@@ -11228,7 +11280,12 @@ mod tests {
         // name no company at all, so macro questions could never observe
         // their indicators.
         let image = loaded_agent("krw-ontology");
-        let mut entrypoint = image.body.entrypoints.get("idea_generation").unwrap().clone();
+        let mut entrypoint = image
+            .body
+            .entrypoints
+            .get("idea_generation")
+            .unwrap()
+            .clone();
         entrypoint.scope.allowed_context = krw_agent_protocol::RunContextKind::QuestionOnly;
         entrypoint.scope.cardinality = krw_agent_image::ScopeCardinality::Max { value: 12 };
         let macro_series = image
@@ -12063,7 +12120,9 @@ mod tests {
     /// an image declared it here.
     fn sectioned_active_run(fallback_edge: bool) -> ActiveRun {
         use krw_agent_image::{CompiledTransition, TransitionGuard};
-        use krw_agent_state_artifact::{ArtifactGuard, ArtifactTransition, StateNode, StateProgram};
+        use krw_agent_state_artifact::{
+            ArtifactGuard, ArtifactTransition, StateNode, StateProgram,
+        };
 
         let fixture = fixture();
         let image_hash = fixture.image.manifest.content_hash.clone();

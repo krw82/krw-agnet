@@ -882,11 +882,11 @@ where
 /// without changing an immutable run boundary. Metric identifiers and JSON
 /// pointers in the detail are safe to disclose: they are already advertised
 /// in the system prompt ontology catalog and tool schema.
-    pub(crate) fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirective> {
-        match error {
-            EngineError::ModelProposalRejected(rejection) => {
-                if let ModelProposalRejection::Order { codes } = rejection {
-                    return Some(ModelRecoveryDirective::with_detail(
+pub(crate) fn model_recovery_directive(error: &EngineError) -> Option<ModelRecoveryDirective> {
+    match error {
+        EngineError::ModelProposalRejected(rejection) => {
+            if let ModelProposalRejection::Order { codes } = rejection {
+                return Some(ModelRecoveryDirective::with_detail(
                         rejection.code(),
                         rejection.repair_mode(),
                         RecoveryDetailV1 {
@@ -900,8 +900,8 @@ where
                             hint: "This tool call violates a state-order rule (for example the news fallback ladder: filing-catalog search before feed news, and feed news before web news). Pick the earlier rung of the violated rule, or proceed with the already-admitted evidence. The last-resort rung is never the first call.".to_string(),
                         },
                     ));
-                }
-                if rejection.code() == "guru_company_brief_input_empty" {
+            }
+            if rejection.code() == "guru_company_brief_input_empty" {
                 return Some(ModelRecoveryDirective::with_detail(
                     rejection.code(),
                     rejection.repair_mode(),

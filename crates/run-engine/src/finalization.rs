@@ -881,7 +881,8 @@ fn direct_markdown_line_is_structural(line: &str) -> bool {
 pub(crate) fn markdown_content_gate_feedback(
     content: &str,
     forbidden_terms: &[String],
-) -> Option<String> {    let lower = content.to_lowercase();
+) -> Option<String> {
+    let lower = content.to_lowercase();
     for term in forbidden_terms {
         let term_lower = term.trim().to_lowercase();
         if term_lower.is_empty() {
@@ -1452,29 +1453,49 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
         object.remove("__admitted_evidence_ids__");
     }
     const CLAIM_KEYS: [&str; 14] = [
-        "claim_id", "kind", "strength", "text", "goal_ids", "evidence_ids",
-        "counter_evidence_ids", "calculation_ids", "subject", "predicate",
-        "value", "unit", "period", "comparison_basis",
+        "claim_id",
+        "kind",
+        "strength",
+        "text",
+        "goal_ids",
+        "evidence_ids",
+        "counter_evidence_ids",
+        "calculation_ids",
+        "subject",
+        "predicate",
+        "value",
+        "unit",
+        "period",
+        "comparison_basis",
     ];
     const SECTION_KEYS: [&str; 5] = [
-        "section_id", "heading", "intent", "claim_ids", "disclosed_uncertainty",
+        "section_id",
+        "heading",
+        "intent",
+        "claim_ids",
+        "disclosed_uncertainty",
     ];
     // Option<String> fields: a wrongly-typed value (map, array) is dropped
     // rather than failing the parse — the claim's required `text` carries the
     // substance (2026-09-02 EN loop: third shape drift, a map in a string
     // field).
     const CLAIM_OPTIONAL_STRINGS: [&str; 6] = [
-        "subject", "predicate", "unit", "period", "comparison_basis", "strength_label",
+        "subject",
+        "predicate",
+        "unit",
+        "period",
+        "comparison_basis",
+        "strength_label",
     ];
-    let Some(root) = output.as_object_mut() else { return };
+    let Some(root) = output.as_object_mut() else {
+        return;
+    };
     let mut seen_section_ids: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     // Root scalars: composers occasionally echo the contract name into
     // `schema_version` ("answer_ir/v1") or omit `locale`; both normalize
     // deterministically (2026-09-02 EN loop, sixth drift).
-    let version_ok = root
-        .get("schema_version")
-        .is_some_and(Value::is_u64);
+    let version_ok = root.get("schema_version").is_some_and(Value::is_u64);
     if !version_ok {
         root.insert("schema_version".to_owned(), Value::from(1_u64));
     }
@@ -1487,7 +1508,9 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             continue;
         };
         rows.retain(|row| {
-            let Some(object) = row.as_object() else { return true };
+            let Some(object) = row.as_object() else {
+                return true;
+            };
             if field != "claims" {
                 return true;
             }
@@ -1508,48 +1531,36 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                         || object.contains_key("evidence_ids")))
         });
         for (index, row) in rows.iter_mut().enumerate() {
-            let Some(object) = row.as_object_mut() else { continue };
+            let Some(object) = row.as_object_mut() else {
+                continue;
+            };
             // Sections require `intent`; composers rarely emit it. A
             // missing or wrongly-typed intent defaults to a bounded label
             // (2026-09-02 EN loop, seventh drift). `heading` likewise.
             if field == "sections" {
-                let heading_ok = object
-                    .get("heading")
-                    .is_some_and(Value::is_string);
+                let heading_ok = object.get("heading").is_some_and(Value::is_string);
                 if !heading_ok
-                    && let Some(heading) = object.remove("title")
+                    && let Some(heading) = object
+                        .remove("title")
                         .or_else(|| object.remove("name"))
                         .filter(Value::is_string)
                 {
                     object.insert("heading".to_owned(), heading);
                 }
-                if !object
-                    .get("heading")
-                    .is_some_and(Value::is_string)
-                {
-                    object.insert(
-                        "heading".to_owned(),
-                        Value::String("Analysis".to_owned()),
-                    );
+                if !object.get("heading").is_some_and(Value::is_string) {
+                    object.insert("heading".to_owned(), Value::String("Analysis".to_owned()));
                 }
-                let intent_ok = object
-                    .get("intent")
-                    .is_some_and(Value::is_string);
+                let intent_ok = object.get("intent").is_some_and(Value::is_string);
                 if !intent_ok
-                    && let Some(intent) = object.remove("purpose")
+                    && let Some(intent) = object
+                        .remove("purpose")
                         .or_else(|| object.remove("summary"))
                         .filter(Value::is_string)
                 {
                     object.insert("intent".to_owned(), intent);
                 }
-                if !object
-                    .get("intent")
-                    .is_some_and(Value::is_string)
-                {
-                    object.insert(
-                        "intent".to_owned(),
-                        Value::String("orientation".to_owned()),
-                    );
+                if !object.get("intent").is_some_and(Value::is_string) {
+                    object.insert("intent".to_owned(), Value::String("orientation".to_owned()));
                 }
                 // section_id must satisfy the bounded identifier rule
                 // (lowercase alphanumerics plus ._-:) AND stay unique across
@@ -1590,24 +1601,21 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 // wrongly-typed value defaults to empty (the section simply
                 // carries no claim bindings — 2026-09-02 EN loop, ninth
                 // drift).
-                let ids_ok = object
-                    .get("claim_ids")
-                    .is_some_and(|ids| ids.as_array().is_some_and(
-                        |rows| rows.iter().all(Value::is_string),
-                    ));
+                let ids_ok = object.get("claim_ids").is_some_and(|ids| {
+                    ids.as_array()
+                        .is_some_and(|rows| rows.iter().all(Value::is_string))
+                });
                 if !ids_ok
-                    && let Some(ids) = object.remove("claims")
-                        .filter(|ids| ids.as_array().is_some_and(
-                            |rows| rows.iter().all(Value::is_string),
-                        ))
+                    && let Some(ids) = object.remove("claims").filter(|ids| {
+                        ids.as_array()
+                            .is_some_and(|rows| rows.iter().all(Value::is_string))
+                    })
                 {
                     object.insert("claim_ids".to_owned(), ids);
-                } else if !object
-                    .get("claim_ids")
-                    .is_some_and(|ids| ids.as_array().is_some_and(
-                        |rows| rows.iter().all(Value::is_string),
-                    ))
-                {
+                } else if !object.get("claim_ids").is_some_and(|ids| {
+                    ids.as_array()
+                        .is_some_and(|rows| rows.iter().all(Value::is_string))
+                }) {
                     object.insert("claim_ids".to_owned(), Value::Array(Vec::new()));
                 }
             }
@@ -1626,17 +1634,8 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             // prose (2026-09-02 matrix dump: 10 such claims). Render the
             // tuple into bounded text so the evidence binding survives the
             // prose gate.
-            if field == "claims"
-                && !object
-                    .get("text")
-                    .is_some_and(Value::is_string)
-            {
-                let scalar = |key: &str| {
-                    object
-                        .get(key)
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                };
+            if field == "claims" && !object.get("text").is_some_and(Value::is_string) {
+                let scalar = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
                 let value = object
                     .get("value")
                     .map(|value| match value {
@@ -1656,16 +1655,17 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                 .flatten()
                 .collect();
                 if !parts.is_empty() {
-                    object.insert(
-                        "text".to_owned(),
-                        Value::String(parts.join(" ")),
-                    );
+                    object.insert("text".to_owned(), Value::String(parts.join(" ")));
                 }
             }
             // The single most common id rename (`id` for `claim_id` /
             // `section_id`) is aliased deterministically (2026-09-02 EN
             // loop: fourth shape drift, a missing `claim_id`).
-            let id_field = if field == "claims" { "claim_id" } else { "section_id" };
+            let id_field = if field == "claims" {
+                "claim_id"
+            } else {
+                "section_id"
+            };
             if !object.contains_key(id_field) {
                 for alias in ["id", "claim", "cid", "claimId", "sectionId"] {
                     if let Some(id) = object.remove(alias).filter(Value::is_string) {
@@ -1677,13 +1677,14 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             // Still missing after aliases: mint a deterministic id from the
             // row's position so a claim never dies on its identifier alone
             // (2026-09-02 EN loop, eighth drift: `claimId` camelCase).
-            if !object
-                .get(id_field)
-                .is_some_and(Value::is_string)
-            {
+            if !object.get(id_field).is_some_and(Value::is_string) {
                 let minted = format!(
                     "{}-{}",
-                    if field == "claims" { "claim" } else { "section" },
+                    if field == "claims" {
+                        "claim"
+                    } else {
+                        "section"
+                    },
                     object.len()
                 );
                 object.insert(id_field.to_owned(), Value::String(minted));
@@ -1702,10 +1703,7 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     .get("kind")
                     .and_then(Value::as_str)
                     .is_some_and(|kind| {
-                        matches!(
-                            kind,
-                            "fact" | "number" | "interpretation" | "uncertainty"
-                        )
+                        matches!(kind, "fact" | "number" | "interpretation" | "uncertainty")
                     });
                 if !kind_ok {
                     object.insert("kind".to_owned(), Value::String("fact".into()));
@@ -1715,35 +1713,34 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
                     .and_then(Value::as_str)
                     .is_some_and(|strength| matches!(strength, "qualified" | "strong"));
                 if !strength_ok {
-                    object.insert(
-                        "strength".to_owned(),
-                        Value::String("qualified".into()),
-                    );
+                    object.insert("strength".to_owned(), Value::String("qualified".into()));
                 }
             }
             if field == "claims" {
                 // Composers name the evidence list "sources" or "citations"
                 // before falling back to evidence_ids (2026-09-02 EN
                 // matrix: claim_has_no_evidence with sources dropped).
-                if !object
-                    .get("evidence_ids")
-                    .is_some_and(Value::is_array)
-                {
+                if !object.get("evidence_ids").is_some_and(Value::is_array) {
                     for alias in ["sources", "citations"] {
-                        if let Some(list) = object.remove(alias)
-                            .filter(|list| list.as_array().is_some_and(
-                                |rows| rows.iter().all(Value::is_string),
-                            ))
-                        {
+                        if let Some(list) = object.remove(alias).filter(|list| {
+                            list.as_array()
+                                .is_some_and(|rows| rows.iter().all(Value::is_string))
+                        }) {
                             object.insert("evidence_ids".to_owned(), list);
                             break;
                         }
                     }
                 }
-                for key in ["goal_ids", "evidence_ids", "counter_evidence_ids", "calculation_ids"] {
-                    let ok = object.get(key).is_some_and(|ids| ids.as_array().is_some_and(
-                        |rows| rows.iter().all(Value::is_string),
-                    ));
+                for key in [
+                    "goal_ids",
+                    "evidence_ids",
+                    "counter_evidence_ids",
+                    "calculation_ids",
+                ] {
+                    let ok = object.get(key).is_some_and(|ids| {
+                        ids.as_array()
+                            .is_some_and(|rows| rows.iter().all(Value::is_string))
+                    });
                     if !ok {
                         object.insert(key.to_owned(), Value::Array(Vec::new()));
                     }
@@ -1796,12 +1793,8 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
     // orphaned claims to the first section — deterministic, and the renderer
     // places them under that heading (2026-09-02 EN loop: x9).
     let orphan_ids: Vec<String> = {
-        let sections = root
-            .get("sections")
-            .and_then(Value::as_array);
-        let claims = root
-            .get("claims")
-            .and_then(Value::as_array);
+        let sections = root.get("sections").and_then(Value::as_array);
+        let claims = root.get("claims").and_then(Value::as_array);
         match (sections, claims) {
             (Some(sections), Some(claims)) => {
                 let bound: std::collections::BTreeSet<String> = sections
@@ -1836,29 +1829,31 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
     // coerce array-of-string fields (2026-09-02 EN loop, tenth drift: an
     // `evidence_ids` key appeared on a calculation).
     const CALCULATION_KEYS: [&str; 11] = [
-        "calculation_id", "expression", "label", "input_evidence_ids",
-        "output", "unit", "rounding", "subject", "metric", "period", "currency",
+        "calculation_id",
+        "expression",
+        "label",
+        "input_evidence_ids",
+        "output",
+        "unit",
+        "rounding",
+        "subject",
+        "metric",
+        "period",
+        "currency",
     ];
-    if let Some(rows) = root
-        .get_mut("calculations")
-        .and_then(Value::as_array_mut)
-    {
+    if let Some(rows) = root.get_mut("calculations").and_then(Value::as_array_mut) {
         for (index, row) in rows.iter_mut().enumerate() {
-            let Some(object) = row.as_object_mut() else { continue };
+            let Some(object) = row.as_object_mut() else {
+                continue;
+            };
             // Calculation ids drift like claim ids: alias then mint
             // positionally (2026-09-02 EN: missing field calculation_id).
-            if !object
-                .get("calculation_id")
-                .is_some_and(Value::is_string)
-            {
+            if !object.get("calculation_id").is_some_and(Value::is_string) {
                 if let Some(id) = object.remove("id").filter(Value::is_string) {
                     object.insert("calculation_id".to_owned(), id);
                 }
             }
-            if !object
-                .get("calculation_id")
-                .is_some_and(Value::is_string)
-            {
+            if !object.get("calculation_id").is_some_and(Value::is_string) {
                 object.insert(
                     "calculation_id".to_owned(),
                     Value::String(format!("calc-{index}")),
@@ -1868,18 +1863,12 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             // Calculation prose fields drift like every other key: alias
             // then bound-default so a missing `expression`/`output` never
             // fails the strict parse (2026-09-02 matrix: two live runs).
-            if !object
-                .get("expression")
-                .is_some_and(Value::is_string)
-            {
+            if !object.get("expression").is_some_and(Value::is_string) {
                 if let Some(expr) = object.remove("formula").filter(Value::is_string) {
                     object.insert("expression".to_owned(), expr);
                 }
             }
-            if !object
-                .get("expression")
-                .is_some_and(Value::is_string)
-            {
+            if !object.get("expression").is_some_and(Value::is_string) {
                 object.insert(
                     "expression".to_owned(),
                     Value::String("not_disclosed".to_owned()),
@@ -1888,18 +1877,16 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             if !object.contains_key("output") {
                 object.insert("output".to_owned(), Value::Null);
             }
-            let ids_ok = object
-                .get("input_evidence_ids")
-                .is_some_and(|ids| ids.as_array().is_some_and(
-                    |values| values.iter().all(Value::is_string),
-                ));
+            let ids_ok = object.get("input_evidence_ids").is_some_and(|ids| {
+                ids.as_array()
+                    .is_some_and(|values| values.iter().all(Value::is_string))
+            });
             if !ids_ok {
-                object.insert(
-                    "input_evidence_ids".to_owned(),
-                    Value::Array(Vec::new()),
-                );
+                object.insert("input_evidence_ids".to_owned(), Value::Array(Vec::new()));
             }
-            for key in ["label", "unit", "rounding", "subject", "metric", "period", "currency"] {
+            for key in [
+                "label", "unit", "rounding", "subject", "metric", "period", "currency",
+            ] {
                 if let Some(value) = object.get(key)
                     && !value.is_string()
                     && !value.is_null()
@@ -1972,18 +1959,12 @@ fn strip_unknown_typed_answer_fields(output: &mut Value) {
             // Bind by position: the capture preserved section order, and the
             // section-id pass above may have renamed or minted ids, so key
             // matching would miss every row.
-            if let Some(sections) = object
-                .get_mut("sections")
-                .and_then(Value::as_array_mut)
-            {
+            if let Some(sections) = object.get_mut("sections").and_then(Value::as_array_mut) {
                 for (index, section) in sections.iter_mut().enumerate() {
                     if index >= ids.len() {
                         break;
                     }
-                    if let Some(list) = section
-                        .get_mut("claim_ids")
-                        .and_then(Value::as_array_mut)
-                    {
+                    if let Some(list) = section.get_mut("claim_ids").and_then(Value::as_array_mut) {
                         list.push(ids[index].clone());
                     }
                 }
@@ -2011,9 +1992,7 @@ fn validate_typed_output(
         // parse — a bounded, deterministic tolerance for a one-key wrapper,
         // never a deep or repeated unwrap.
         let mut typed_output = match output.as_object() {
-            Some(object)
-                if object.len() == 1 && object.contains_key("answer_ir") =>
-            {
+            Some(object) if object.len() == 1 && object.contains_key("answer_ir") => {
                 object["answer_ir"].clone()
             }
             _ => output.clone(),
@@ -2189,7 +2168,7 @@ pub(crate) fn retain_section_batch(
             _ => {
                 return Err(EngineError::WorkflowResolution {
                     outcome: "section verifier",
-                })
+                });
             }
         };
         let more_event = state.program.unique_transition_event(
@@ -2235,7 +2214,12 @@ pub(crate) fn retain_section_batch(
     } else {
         Value::String(rendered_content.clone())
     };
-    Ok(Some((final_output, answer_ir, completion, rendered_content)))
+    Ok(Some((
+        final_output,
+        answer_ir,
+        completion,
+        rendered_content,
+    )))
 }
 
 /// Research-goal aliases are created by the kernel after proposal lowering,
@@ -2518,228 +2502,247 @@ where
         // sectioned compose state produced this turn (its `section_submitted`
         // model artifact carries the batch, not the assembled final); `None`
         // for every ordinary output whose model artifact is the final itself.
-        let (output, answer_ir, completion, rendered_content, section_batch) = match final_output_mode {
-            ModelOutputMode::Markdown => {
-                let output = Value::String(content.to_owned());
-                validate_canonical_value(&output_contract.id, &output)
-                    .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
-                // Direct Markdown carries no typed AnswerIR to sanitize, so
-                // two deterministic content gates stand in for it: internal
-                // vocabulary must not surface in user-facing prose, and the
-                // answer may not open by framing itself as an unavailability.
-                // One bounded retry; a second identically framed draft is
-                // accepted rather than looping the run over prose judgment.
-                if !state.direct_answer_retry_requested() {
-                    if let Some(feedback) = markdown_content_gate_feedback(
-                        content,
-                        &input.image.body.answer_policy.forbidden_user_terms,
-                    ) {
-                        state.request_direct_answer_retry();
-                        state.append_answer_content_gate_feedback(&feedback);
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                }
-                // Narration guard, same one-bounded-retry lane: the composer
-                // occasionally answers the final turn with a short process
-                // note ("이어서 … 확인합니다") instead of the report. The first
-                // offense retries with explicit feedback; a second
-                // substance-free draft must never commit — it escapes to the
-                // deterministic ledger fallback instead.
-                if markdown_is_narration_shaped(content) {
+        let (output, answer_ir, completion, rendered_content, section_batch) =
+            match final_output_mode {
+                ModelOutputMode::Markdown => {
+                    let output = Value::String(content.to_owned());
+                    validate_canonical_value(&output_contract.id, &output)
+                        .map_err(|error| EngineError::CanonicalRegistry(format!("{error:?}")))?;
+                    // Direct Markdown carries no typed AnswerIR to sanitize, so
+                    // two deterministic content gates stand in for it: internal
+                    // vocabulary must not surface in user-facing prose, and the
+                    // answer may not open by framing itself as an unavailability.
+                    // One bounded retry; a second identically framed draft is
+                    // accepted rather than looping the run over prose judgment.
                     if !state.direct_answer_retry_requested() {
-                        state.request_direct_answer_retry();
-                        state.append_answer_content_gate_feedback(
+                        if let Some(feedback) = markdown_content_gate_feedback(
+                            content,
+                            &input.image.body.answer_policy.forbidden_user_terms,
+                        ) {
+                            state.request_direct_answer_retry();
+                            state.append_answer_content_gate_feedback(&feedback);
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                    }
+                    // Narration guard, same one-bounded-retry lane: the composer
+                    // occasionally answers the final turn with a short process
+                    // note ("이어서 … 확인합니다") instead of the report. The first
+                    // offense retries with explicit feedback; a second
+                    // substance-free draft must never commit — it escapes to the
+                    // deterministic ledger fallback instead.
+                    if markdown_is_narration_shaped(content) {
+                        if !state.direct_answer_retry_requested() {
+                            state.request_direct_answer_retry();
+                            state.append_answer_content_gate_feedback(
                             "the draft is process narration, not the final answer; write the complete final report now",
                         );
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                    return Err(EngineError::ComposerNarrationNotAnswer);
-                }
-                // Direct Markdown has no typed AnswerIR to sanitize; the
-                // canonical contract is its own validation.
-                (
-                    output,
-                    None,
-                    ResearchCompletion::Accepted,
-                    content.to_owned(),
-                    None,
-                )
-            }
-            ModelOutputMode::TypedJson => {
-                let output: Value = match parse_typed_json_content(content) {
-                    Ok(output) => output,
-                    Err(error)
-                        if constraint_mode != ProviderConstraintMode::JsonSchema
-                            && state.reserve_repair()? =>
-                    {
-                        let code = answer_error_code(&EngineError::Json(error));
-                        tracing::warn!(%code, "typed answer repair: content parse");
-                        state.append_assistant(episode);
-                        state.append_repair_feedback(&output_contract.id, code);
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                    Err(_error) if constraint_mode == ProviderConstraintMode::JsonSchema => {
-                        return Err(EngineError::ProviderConstrainedOutputViolation(
-                            "invalid JSON",
-                        ));
-                    }
-                    Err(error) => return Err(EngineError::Json(error)),
-                };
-                // E1: a sectioned compose state declares report-sections/v1
-                // as its own output grammar; the image-level internal format
-                // stays the committed final-output contract. Canonical
-                // validation always runs against the grammar the state
-                // actually declares.
-                let section_contract = state.section_output_contract()?;
-                let validation_contract = section_contract
-                    .clone()
-                    .unwrap_or_else(|| output_contract.clone());
-                if let Err(error) = validate_canonical_value(&validation_contract.id, &output) {
-                    if constraint_mode == ProviderConstraintMode::JsonSchema {
-                        return Err(EngineError::ProviderConstrainedOutputViolation(
-                            "canonical schema",
-                        ));
-                    }
-                    if state.reserve_repair()? {
-                        let code = answer_error_code(&EngineError::CanonicalRegistry(format!(
-                            "{error:?}"
-                        )));
-                        tracing::warn!(%code, "typed answer repair: canonical validation");
-                        state.append_assistant(episode);
-                        state.append_repair_feedback(&validation_contract.id, code);
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                    return Err(EngineError::CanonicalRegistry(format!("{error:?}")));
-                }
-                if let Err(error) =
-                    validate_product_output_linkage(input.request, &validation_contract, &output)
-                {
-                    if state.reserve_repair()? {
-                        state.append_assistant(episode);
-                        state.append_repair_feedback(
-                            &validation_contract.id,
-                            answer_error_code(&error),
-                        );
-                        state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                        return Ok(None);
-                    }
-                    return Err(error);
-                }
-
-                let candidate =
-                    validate_typed_output(input, state, &validation_contract, &output);
-                if let Some(section_pin) = section_contract {
-                    // E1 engine-owned section accumulation loop: retain the
-                    // validated batch, walk `section_submitted`, and either
-                    // admit exactly one more section turn or assemble the
-                    // final and continue through the ordinary verify→render
-                    // path. Batch retention and assembly failures ride the
-                    // same bounded repair lanes as any typed answer.
-                    let assembled = candidate.and_then(|_| {
-                        retain_section_batch(
-                            self.config.max_conversation_bytes,
-                            input,
-                            state,
-                            episode,
-                            &section_pin,
-                            &output_contract,
-                            &output,
-                        )
-                    });
-                    match assembled {
-                        Ok(Some((final_output, answer_ir, completion, rendered_content))) => {
-                            // The compose→verify artifact carries the batch
-                            // itself; the assembled final below is the
-                            // committed output.
-                            (
-                                final_output,
-                                Some(answer_ir),
-                                completion,
-                                rendered_content,
-                                Some(output),
-                            )
-                        }
-                        Ok(None) => return Ok(None),
-                        Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
-                            let code = answer_error_code(&error);
-                            tracing::warn!(%code, "section batch repair: answer validation");
-                            state.append_assistant(episode);
-                            state.append_repair_feedback(&section_pin.id, code);
                             state.check_conversation_limit(self.config.max_conversation_bytes)?;
                             return Ok(None);
                         }
-                        Err(error) if state.reserve_repair()? => {
-                            state.append_assistant(episode);
-                            state
-                                .append_repair_feedback(&section_pin.id, answer_error_code(&error));
-                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
-                            return Ok(None);
-                        }
-                        Err(error) => return Err(error),
+                        return Err(EngineError::ComposerNarrationNotAnswer);
                     }
-                } else {
-                    let (answer_ir, completion) = match candidate {
-                        Ok(Some((answer_ir, completion))) => (Some(answer_ir), completion),
-                        // Product outputs (routing, notebook, display planning)
-                        // intentionally produce no AnswerIR and no research
-                        // completion class beyond the default.
-                        Ok(None) => (None, ResearchCompletion::Accepted),
-                        Err(error) if state.apply_answer_repair(answer_error_code(&error))? => {
-                            let code = answer_error_code(&error);
-                            tracing::warn!(%code, "typed answer repair: answer validation");
+                    // Direct Markdown has no typed AnswerIR to sanitize; the
+                    // canonical contract is its own validation.
+                    (
+                        output,
+                        None,
+                        ResearchCompletion::Accepted,
+                        content.to_owned(),
+                        None,
+                    )
+                }
+                ModelOutputMode::TypedJson => {
+                    let output: Value = match parse_typed_json_content(content) {
+                        Ok(output) => output,
+                        Err(error)
+                            if constraint_mode != ProviderConstraintMode::JsonSchema
+                                && state.reserve_repair()? =>
+                        {
+                            let code = answer_error_code(&EngineError::Json(error));
+                            tracing::warn!(%code, "typed answer repair: content parse");
                             state.append_assistant(episode);
                             state.append_repair_feedback(&output_contract.id, code);
                             state.check_conversation_limit(self.config.max_conversation_bytes)?;
                             return Ok(None);
                         }
-                        // A contract-shaped mistake inside the compose state has
-                        // no verify-state repair transition; give it the same
-                        // bounded conversational retry used for canonical
-                        // violations instead of failing the run terminally.
-                        Err(error) if state.reserve_repair()? => {
+                        Err(_error) if constraint_mode == ProviderConstraintMode::JsonSchema => {
+                            return Err(EngineError::ProviderConstrainedOutputViolation(
+                                "invalid JSON",
+                            ));
+                        }
+                        Err(error) => return Err(EngineError::Json(error)),
+                    };
+                    // E1: a sectioned compose state declares report-sections/v1
+                    // as its own output grammar; the image-level internal format
+                    // stays the committed final-output contract. Canonical
+                    // validation always runs against the grammar the state
+                    // actually declares.
+                    let section_contract = state.section_output_contract()?;
+                    let validation_contract = section_contract
+                        .clone()
+                        .unwrap_or_else(|| output_contract.clone());
+                    if let Err(error) = validate_canonical_value(&validation_contract.id, &output) {
+                        if constraint_mode == ProviderConstraintMode::JsonSchema {
+                            return Err(EngineError::ProviderConstrainedOutputViolation(
+                                "canonical schema",
+                            ));
+                        }
+                        if state.reserve_repair()? {
+                            let code = answer_error_code(&EngineError::CanonicalRegistry(format!(
+                                "{error:?}"
+                            )));
+                            tracing::warn!(%code, "typed answer repair: canonical validation");
+                            state.append_assistant(episode);
+                            state.append_repair_feedback(&validation_contract.id, code);
+                            state.check_conversation_limit(self.config.max_conversation_bytes)?;
+                            return Ok(None);
+                        }
+                        return Err(EngineError::CanonicalRegistry(format!("{error:?}")));
+                    }
+                    if let Err(error) = validate_product_output_linkage(
+                        input.request,
+                        &validation_contract,
+                        &output,
+                    ) {
+                        if state.reserve_repair()? {
                             state.append_assistant(episode);
                             state.append_repair_feedback(
-                                &output_contract.id,
+                                &validation_contract.id,
                                 answer_error_code(&error),
                             );
                             state.check_conversation_limit(self.config.max_conversation_bytes)?;
                             return Ok(None);
                         }
-                        Err(error) => return Err(error),
-                    };
-                    let rendered_content = render_typed_output(
-                        &output_contract,
-                        &output,
-                        answer_ir.as_ref(),
-                        &state.ledger,
-                    )?;
-                    // `bind_kernel_goal_ids` may normalize kernel-owned linkage
-                    // after the model response is parsed. Persist that normalized
-                    // AnswerIR as the canonical output too, otherwise the final
-                    // answer hash and the session-memory hash would disagree at
-                    // the durable commit boundary.
-                    let normalized_output = match &answer_ir {
-                        Some(answer_ir) => serde_json::to_value(answer_ir)?,
-                        // Product runs such as routing, notebook, and display
-                        // planning intentionally do not produce AnswerIR. Keep
-                        // their already-validated typed payload as the state
-                        // artifact instead of serializing `None` to `null` and
-                        // failing the product contract at the commit boundary.
-                        None => output.clone(),
-                    };
-                    (normalized_output, answer_ir, completion, rendered_content, None)
+                        return Err(error);
+                    }
+
+                    let candidate =
+                        validate_typed_output(input, state, &validation_contract, &output);
+                    if let Some(section_pin) = section_contract {
+                        // E1 engine-owned section accumulation loop: retain the
+                        // validated batch, walk `section_submitted`, and either
+                        // admit exactly one more section turn or assemble the
+                        // final and continue through the ordinary verify→render
+                        // path. Batch retention and assembly failures ride the
+                        // same bounded repair lanes as any typed answer.
+                        let assembled = candidate.and_then(|_| {
+                            retain_section_batch(
+                                self.config.max_conversation_bytes,
+                                input,
+                                state,
+                                episode,
+                                &section_pin,
+                                &output_contract,
+                                &output,
+                            )
+                        });
+                        match assembled {
+                            Ok(Some((final_output, answer_ir, completion, rendered_content))) => {
+                                // The compose→verify artifact carries the batch
+                                // itself; the assembled final below is the
+                                // committed output.
+                                (
+                                    final_output,
+                                    Some(answer_ir),
+                                    completion,
+                                    rendered_content,
+                                    Some(output),
+                                )
+                            }
+                            Ok(None) => return Ok(None),
+                            Err(error)
+                                if state.apply_answer_repair(answer_error_code(&error))? =>
+                            {
+                                let code = answer_error_code(&error);
+                                tracing::warn!(%code, "section batch repair: answer validation");
+                                state.append_assistant(episode);
+                                state.append_repair_feedback(&section_pin.id, code);
+                                state
+                                    .check_conversation_limit(self.config.max_conversation_bytes)?;
+                                return Ok(None);
+                            }
+                            Err(error) if state.reserve_repair()? => {
+                                state.append_assistant(episode);
+                                state.append_repair_feedback(
+                                    &section_pin.id,
+                                    answer_error_code(&error),
+                                );
+                                state
+                                    .check_conversation_limit(self.config.max_conversation_bytes)?;
+                                return Ok(None);
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    } else {
+                        let (answer_ir, completion) = match candidate {
+                            Ok(Some((answer_ir, completion))) => (Some(answer_ir), completion),
+                            // Product outputs (routing, notebook, display planning)
+                            // intentionally produce no AnswerIR and no research
+                            // completion class beyond the default.
+                            Ok(None) => (None, ResearchCompletion::Accepted),
+                            Err(error)
+                                if state.apply_answer_repair(answer_error_code(&error))? =>
+                            {
+                                let code = answer_error_code(&error);
+                                tracing::warn!(%code, "typed answer repair: answer validation");
+                                state.append_assistant(episode);
+                                state.append_repair_feedback(&output_contract.id, code);
+                                state
+                                    .check_conversation_limit(self.config.max_conversation_bytes)?;
+                                return Ok(None);
+                            }
+                            // A contract-shaped mistake inside the compose state has
+                            // no verify-state repair transition; give it the same
+                            // bounded conversational retry used for canonical
+                            // violations instead of failing the run terminally.
+                            Err(error) if state.reserve_repair()? => {
+                                state.append_assistant(episode);
+                                state.append_repair_feedback(
+                                    &output_contract.id,
+                                    answer_error_code(&error),
+                                );
+                                state
+                                    .check_conversation_limit(self.config.max_conversation_bytes)?;
+                                return Ok(None);
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        let rendered_content = render_typed_output(
+                            &output_contract,
+                            &output,
+                            answer_ir.as_ref(),
+                            &state.ledger,
+                        )?;
+                        // `bind_kernel_goal_ids` may normalize kernel-owned linkage
+                        // after the model response is parsed. Persist that normalized
+                        // AnswerIR as the canonical output too, otherwise the final
+                        // answer hash and the session-memory hash would disagree at
+                        // the durable commit boundary.
+                        let normalized_output = match &answer_ir {
+                            Some(answer_ir) => serde_json::to_value(answer_ir)?,
+                            // Product runs such as routing, notebook, and display
+                            // planning intentionally do not produce AnswerIR. Keep
+                            // their already-validated typed payload as the state
+                            // artifact instead of serializing `None` to `null` and
+                            // failing the product contract at the commit boundary.
+                            None => output.clone(),
+                        };
+                        (
+                            normalized_output,
+                            answer_ir,
+                            completion,
+                            rendered_content,
+                            None,
+                        )
+                    }
                 }
-            }
-            _ => {
-                return Err(EngineError::WorkflowResolution {
-                    outcome: "final output mode",
-                });
-            }
-        };
+                _ => {
+                    return Err(EngineError::WorkflowResolution {
+                        outcome: "final output mode",
+                    });
+                }
+            };
 
         // The sectioned compose flow already walked compose→verify inside
         // `retain_section_batch` (its `section_submitted` model artifact
@@ -2754,7 +2757,8 @@ where
                     matches!(
                         candidate.operation,
                         StateOperation::Builtin {
-                            handler: BuiltinHandler::ValidateArtifact | BuiltinHandler::VerifyOutput,
+                            handler: BuiltinHandler::ValidateArtifact
+                                | BuiltinHandler::VerifyOutput,
                             ..
                         }
                     )
@@ -3252,7 +3256,10 @@ mod typed_answer_tolerance_tests {
         });
         strip_unknown_typed_answer_fields(&mut output);
         let claims = output["claims"].as_array().unwrap();
-        assert!(!claims.is_empty(), "pure tuple claims survive the prose gate");
+        assert!(
+            !claims.is_empty(),
+            "pure tuple claims survive the prose gate"
+        );
         assert!(claims[0]["text"].as_str().unwrap().contains("cloud_growth"));
         assert_eq!(claims[0]["evidence_ids"][0], "ev:abc123");
     }
@@ -3283,10 +3290,7 @@ mod typed_answer_tolerance_tests {
         strip_unknown_typed_answer_fields(&mut output);
         let claims = output["claims"].as_array().unwrap();
         assert!(!claims.is_empty(), "the object-prose claim survives");
-        assert!(claims[0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("grew 34%"));
+        assert!(claims[0]["text"].as_str().unwrap().contains("grew 34%"));
         assert_eq!(claims[0]["evidence_ids"][0], "ev:abc123");
     }
 
@@ -3346,7 +3350,10 @@ mod typed_answer_tolerance_tests {
         output["claims"].as_array_mut().unwrap().push(drift);
         output["schema_version"] = json!("answer_ir/v1");
         output["claims"][0]["unit"] = json!({"label": "USD"});
-        output["sections"][0].as_object_mut().unwrap().remove("claim_ids");
+        output["sections"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("claim_ids");
         output["claims"][1]["evidence_ids"] = json!("e2");
         output["schema_version"] = json!("ir");
         strip_unknown_typed_answer_fields(&mut output);
@@ -3382,15 +3389,14 @@ mod typed_answer_tolerance_tests {
             "prose-less claims are dropped, not fatal"
         );
         assert!(
-            claims
-                .iter()
-                .all(|claim| claim.get("claim_id").map(serde_json::Value::is_string).unwrap_or(false)),
+            claims.iter().all(|claim| claim
+                .get("claim_id")
+                .map(serde_json::Value::is_string)
+                .unwrap_or(false)),
             "camelCase ids alias or mint — never fatal"
         );
         assert!(
-            claims
-                .iter()
-                .all(|claim| claim["evidence_ids"].is_array()),
+            claims.iter().all(|claim| claim["evidence_ids"].is_array()),
             "wrongly-typed array fields normalize to arrays"
         );
         assert!(
@@ -3408,16 +3414,22 @@ mod typed_answer_tolerance_tests {
         }));
         strip_unknown_typed_answer_fields(&mut output);
         let calcs = output["calculations"].as_array().unwrap();
-        assert!(calcs[0].get("evidence_ids").is_none(), "calculation unknown keys strip");
+        assert!(
+            calcs[0].get("evidence_ids").is_none(),
+            "calculation unknown keys strip"
+        );
         let questions = output["follow_up_questions"].as_array().unwrap();
         assert!(
-            questions.iter().all(|question| question
-                .as_str()
-                .is_some_and(|text| text.ends_with('?'))),
+            questions
+                .iter()
+                .all(|question| question.as_str().is_some_and(|text| text.ends_with('?'))),
             "numbered or unterminated follow-ups normalize and empty ones drop"
         );
         assert_eq!(questions.len(), 2);
-        assert!(calcs[0]["input_evidence_ids"].is_array(), "calculation ids coerce to arrays");
+        assert!(
+            calcs[0]["input_evidence_ids"].is_array(),
+            "calculation ids coerce to arrays"
+        );
         assert!(output["claims"][0].get("interpretation").is_none());
         assert!(
             output["claims"][0].get("unit").is_none(),
@@ -3541,8 +3553,8 @@ mod markdown_gate_tests {
 #[cfg(test)]
 mod narration_gate_tests {
     use super::{
-        fallback_answer_from_ledger, markdown_is_narration_shaped, EvidenceLedger,
-        LedgerFallbackCause,
+        EvidenceLedger, LedgerFallbackCause, fallback_answer_from_ledger,
+        markdown_is_narration_shaped,
     };
     use std::collections::BTreeMap;
 
@@ -3558,9 +3570,15 @@ mod narration_gate_tests {
 
     #[test]
     fn plan_style_progress_notes_are_detected() {
-        assert!(markdown_is_narration_shaped("이어서 순이익 계보를 확인합니다."));
-        assert!(markdown_is_narration_shaped("자료를 추가로 조회한 뒤 정리하겠습니다."));
-        assert!(markdown_is_narration_shaped("다음 단계: 매출 검증 후 작성."));
+        assert!(markdown_is_narration_shaped(
+            "이어서 순이익 계보를 확인합니다."
+        ));
+        assert!(markdown_is_narration_shaped(
+            "자료를 추가로 조회한 뒤 정리하겠습니다."
+        ));
+        assert!(markdown_is_narration_shaped(
+            "다음 단계: 매출 검증 후 작성."
+        ));
     }
 
     #[test]
@@ -3582,7 +3600,10 @@ mod narration_gate_tests {
 
     #[test]
     fn full_length_prose_is_never_narration() {
-        let prose = format!("{}매출은 전년 대비 증가했습니다. ", "구간별로 보면 안정적입니다. ".repeat(60));
+        let prose = format!(
+            "{}매출은 전년 대비 증가했습니다. ",
+            "구간별로 보면 안정적입니다. ".repeat(60)
+        );
         assert!(prose.chars().count() >= 400);
         assert!(!markdown_is_narration_shaped(&prose));
     }

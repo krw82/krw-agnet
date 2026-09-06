@@ -3576,6 +3576,13 @@ fn validate_capability_input_abi(
                         OpenbbPinnedProvider::Fmp,
                         true,
                     ),
+                    // Round-4: ticker-scoped FMP company news.
+                    "openbb-news-input/v1" => (
+                        "openbb-news-input/v1",
+                        "openbb-news-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
                     _ => (
                         capability.input_contract.as_str(),
                         "",
@@ -5197,8 +5204,7 @@ mod tests {
             entrypoint.run_kind = "test_open_research".into();
             entrypoint.scope.allowed_context = RunContextKind::QuestionOnly;
             entrypoint.scope.cardinality = cardinality;
-            entrypoint.scope.ticker_canonicalization =
-                TickerCanonicalizationPolicy::NotApplicable;
+            entrypoint.scope.ticker_canonicalization = TickerCanonicalizationPolicy::NotApplicable;
             spec
         }
         assert!(validate_spec(&entrypoint_spec(ScopeCardinality::Max { value: 12 })).is_ok());
@@ -5601,8 +5607,16 @@ mod tests {
         // consensus/price targets, peers, and the ticker-scoped earnings
         // calendar — all fmp-pinned and ticker-scoped.
         for (capability_id, input_contract, model_contract) in [
-            ("openbb.quote", "openbb-quote-input/v1", "openbb-quote-request/v1"),
-            ("openbb.metrics", "openbb-metrics-input/v1", "openbb-metrics-request/v1"),
+            (
+                "openbb.quote",
+                "openbb-quote-input/v1",
+                "openbb-quote-request/v1",
+            ),
+            (
+                "openbb.metrics",
+                "openbb-metrics-input/v1",
+                "openbb-metrics-request/v1",
+            ),
             (
                 "openbb.income_statement",
                 "openbb-income-input/v1",
@@ -5623,7 +5637,11 @@ mod tests {
                 "openbb-consensus-input/v1",
                 "openbb-consensus-request/v1",
             ),
-            ("openbb.peers", "openbb-peer-input/v1", "openbb-peer-request/v1"),
+            (
+                "openbb.peers",
+                "openbb-peer-input/v1",
+                "openbb-peer-request/v1",
+            ),
             (
                 "openbb.earnings_calendar",
                 "openbb-earnings-calendar-input/v1",
@@ -5674,6 +5692,17 @@ mod tests {
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),
         );
+        // Round-4: the ticker-scoped FMP company-news read (recent-headline
+        // and earnings-call coverage color for any canonical ticker).
+        expected.insert(
+            "openbb.news",
+            (
+                "openbb-news-input/v1",
+                "openbb-news-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
         for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
             let capability = image
                 .body
@@ -5699,13 +5728,18 @@ mod tests {
             // direct assess lane). No openbb capability may carry any other
             // action kind.
             match capability_id.as_ref() {
-                "openbb.macro_series" | "openbb.macro_cpi" | "openbb.yield_curve"
+                "openbb.macro_series"
+                | "openbb.macro_cpi"
+                | "openbb.yield_curve"
                 | "openbb.macro_calendar" => {
                     assert!(capability.research_action.is_none());
                 }
                 _ => {
                     assert!(matches!(
-                        capability.research_action.as_ref().map(|policy| policy.kind),
+                        capability
+                            .research_action
+                            .as_ref()
+                            .map(|policy| policy.kind),
                         Some(ResearchActionKind::Observation)
                     ));
                 }
@@ -5774,7 +5808,10 @@ mod tests {
             ("openbb_cash_lookup", "openbb.cash_statement"),
             ("openbb_consensus_lookup", "openbb.consensus"),
             ("openbb_peers_lookup", "openbb.peers"),
-            ("openbb_earnings_calendar_lookup", "openbb.earnings_calendar"),
+            (
+                "openbb_earnings_calendar_lookup",
+                "openbb.earnings_calendar",
+            ),
             ("openbb_yield_curve_lookup", "openbb.yield_curve"),
             ("openbb_macro_calendar_lookup", "openbb.macro_calendar"),
         ];

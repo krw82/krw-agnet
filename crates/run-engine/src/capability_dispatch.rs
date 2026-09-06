@@ -261,7 +261,9 @@ pub(crate) fn model_visible_capability_result(
     // "no data" (production TSLA 2026-09-01: market.series returned no_data
     // and the answer confessed missing numbers while openbb price history
     // was alive and unused).
-    if let Some(hint) = model_observation_no_data_hint(&call.capability.id, &result.provider_content) {
+    if let Some(hint) =
+        model_observation_no_data_hint(&call.capability.id, &result.provider_content)
+    {
         visible
             .as_object_mut()
             .expect("JSON object literal")
@@ -286,10 +288,9 @@ pub(crate) fn model_visible_capability_result(
                 .expect("JSON object literal")
                 .insert("kernel_market_context_hint".into(), hint);
         }
-        if let Some(hint) = model_cross_plane_hint(
-            &call.capability.id,
-            ontology_targeted_dispatched,
-        ) {
+        if let Some(hint) =
+            model_cross_plane_hint(&call.capability.id, ontology_targeted_dispatched)
+        {
             visible
                 .as_object_mut()
                 .expect("JSON object literal")
@@ -345,9 +346,7 @@ pub(crate) fn model_cross_plane_hint(
     capability_id: &str,
     ontology_targeted_dispatched: bool,
 ) -> Option<Value> {
-    if ontology_targeted_dispatched
-        || !OBSERVATION_PLANE_CAPABILITY_IDS.contains(&capability_id)
-    {
+    if ontology_targeted_dispatched || !OBSERVATION_PLANE_CAPABILITY_IDS.contains(&capability_id) {
         return None;
     }
     Some(serde_json::json!({
@@ -1126,6 +1125,24 @@ pub(crate) fn assemble_openbb_request(
                 }
             }
         }
+        // Round-4 company news: the ticker plus a bounded article count. The
+        // physical tool owns the recency window (trailing two weeks by
+        // default); the kernel pins the article limit so the projected read
+        // stays inside the adapter's advisory byte bound.
+        "openbb-news-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            let limit = request
+                .get("limit")
+                .and_then(Value::as_u64)
+                .filter(|limit| (1..=10).contains(limit))
+                .unwrap_or(5);
+            physical.insert("limit".into(), Value::from(limit));
+        }
         _ => return Err(invalid()),
     }
     Ok(Value::Object(physical))
@@ -1517,11 +1534,13 @@ pub(crate) fn prepare_calls(
         {
             return Err(EngineError::UnsafeCapability(capability.id.clone()));
         }
-        if !capability
-            .prerequisites
-            .iter()
-            .all(|required| prerequisite_satisfied(required, &state.completed_capabilities, &program_state_capabilities))
-        {
+        if !capability.prerequisites.iter().all(|required| {
+            prerequisite_satisfied(
+                required,
+                &state.completed_capabilities,
+                &program_state_capabilities,
+            )
+        }) {
             return Err(EngineError::CapabilityPrerequisiteMissing(
                 capability.id.clone(),
             ));
@@ -1831,11 +1850,15 @@ pub(crate) fn prepare_calls(
 /// prompt, never user text, evidence, or internal state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelProposalRejection {
-    Generic { reason_code: &'static str },
+    Generic {
+        reason_code: &'static str,
+    },
     /// A proposal-time state-order violation (for example the news fallback
     /// ladder). The violated rule codes ride along so the recovery directive
     /// can teach the model which earlier rung to pick instead.
-    Order { codes: Vec<String> },
+    Order {
+        codes: Vec<String>,
+    },
     ResearchProposalV4(ResearchProposalRepairDirective),
 }
 

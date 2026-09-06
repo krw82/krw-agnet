@@ -2306,9 +2306,7 @@ mod tests {
             let mut row = metadata.clone();
             static ROW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
             let n = ROW.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            row["filing_event_id"] = Value::String(format!(
-                "00000000-0000-4000-8000-{n:012}"
-            ));
+            row["filing_event_id"] = Value::String(format!("00000000-0000-4000-8000-{n:012}"));
             row["ticker"] = Value::String(ticker.into());
             if let Some(cik) = cik {
                 let old_cik = row["cik"]
@@ -2321,10 +2319,7 @@ mod tests {
                 for key in ["filing_detail_url", "primary_document_url"] {
                     if let Some(url) = row[key].as_str() {
                         row[key] = Value::String(
-                            url.replace(
-                                &format!("data/{old_cik}/"),
-                                &format!("data/{new_cik}/"),
-                            ),
+                            url.replace(&format!("data/{old_cik}/"), &format!("data/{new_cik}/")),
                         );
                     }
                 }
@@ -2376,8 +2371,7 @@ mod tests {
         );
 
         // Two vendor labels mix listing identities: fail closed.
-        let two_labels =
-            Value::Array(vec![relabeled("GOOG", None), relabeled("GOOGL", None)]);
+        let two_labels = Value::Array(vec![relabeled("GOOG", None), relabeled("GOOGL", None)]);
         assert!(
             validate_front_exchange(
                 KRW_FILING_SEARCH_INPUT_V1,

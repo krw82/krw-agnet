@@ -522,12 +522,9 @@ pub(crate) fn validate_capability_run_scope(
             CapabilityScopeBinding::ObservedResultIds { .. },
             RunContextV1::CompanyTickerSet { .. } | RunContextV1::ResearchNotebook { .. },
         ) => Ok(()),
-        (
-            _,
-            RunContextV1::RoutingRequest { .. } | RunContextV1::ExistingAnswer { .. },
-        ) => Err(EngineError::RunScopeViolation(
-            "no-scope context cannot authorize capability dispatch",
-        )),
+        (_, RunContextV1::RoutingRequest { .. } | RunContextV1::ExistingAnswer { .. }) => Err(
+            EngineError::RunScopeViolation("no-scope context cannot authorize capability dispatch"),
+        ),
         _ => Err(EngineError::RunScopeViolation(
             "capability scope binding does not authorize this run context",
         )),
