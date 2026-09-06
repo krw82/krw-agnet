@@ -1,6 +1,6 @@
 ---
 name: open_research_analysis
-description: "Use when investigating a free-form question with no trusted ticker scope: discover candidate companies inside the covered universe, observe market-plane data (quotes, fundamentals, filings lists, news) for any canonical ticker including issuers outside the ontology coverage, and keep every claim on its correct evidence grade."
+description: "Use when investigating a free-form question with no trusted ticker scope: discover candidate companies inside the covered universe, observe market-plane data (quotes, fundamentals, filings lists, news) for any canonical ticker including issuers outside the ontology coverage, and keep every claim grounded at the right evidence depth — without ever surfacing which engine layer produced a number."
 when_to_use: "open research, tickerless question, uncovered ticker, free-form market question, concept-to-company discovery"
 ---
 
@@ -47,24 +47,38 @@ whole run, so treat them as absolute:
    macro/market series (`openbb.*`, `news.web_search`, `market.series`) may
    name ANY canonical ticker — including issuers outside the ontology
    coverage. Use them freely when the question names a company the ontology
-   does not cover.
-3. **Evidence grades stay honest.** Filing-grade claims (business facts,
-   outlook, risk) must cite ontology objects — the server found the issuer,
-   so the citation is vouched. Market-plane reads about a company YOU picked
-   are observation-grade (시장·뉴스급): numbers, dates, and headlines — never
-   the sole basis for a business-fact claim, and always labeled as market
-   data. State explicitly when a company is outside the filing-ontology
-   coverage and only market data was available.
-4. **Indicator observation duty.** Whatever the question, observe the
-   relevant indicators alongside the subject: macro series (inflation,
-   rates, yields, CPI, calendars) directly from the observation plane, and
-   micro/industry conditions from the ontology objects of related covered
-   companies (their filings carry the industry-outlook hints). Look at time
-   series, not just the latest value.
-5. **Honest refusals.** If neither the covered universe nor the market plane
-   produces grounding, say so and describe what the current coverage can and
-   cannot answer. Never fabricate. Name the gap in the answer so the user
-   knows what to supply next.
+   does not cover. When the question's subject company itself is outside
+   the covered universe, fetch the SUBJECT's own numbers from the market
+   plane (income statement, metrics, quote) — never answer with only
+   peers, and never answer with only a refusal. Peers are seasoning, not
+   a substitute for the subject.
+3. **Evidence depth stays honest — internal rule, never surfaced.**
+   Business-fact claims (facts, outlook, risk) about a server-discovered
+   company must cite ontology objects — the server found the issuer, so
+   the citation is vouched. Market-plane reads are observations (numbers,
+   dates, headlines) — never the sole basis for a business-fact claim.
+   This vouching split decides WHAT you may claim; it is not a labeling
+   scheme for the answer. Cite sources naturally inside the sentence
+   (예: "실적발표 기준", "최근 시세 데이터 기준") and never mention
+   ontology coverage, filing-ontology, evidence grades, or which engine
+   layer produced a number. The reader cannot tell whether the ontology
+   was used.
+4. **Indicator observation duty.** A macro-framed question (inflation,
+   rates, prices, 경기 국면) REQUIRES actually observing macro series
+   (`macro.series`, or the openbb CPI / yield-curve / calendar lookups)
+   before composing — reporting "미확보" without having looked is a
+   contract failure. Whatever the question, observe the relevant
+   indicators alongside the subject: micro/industry conditions from the
+   ontology objects of related covered companies (their filings carry the
+   industry-outlook hints). Look at time series, not just the latest
+   value.
+5. **Grounding, not refusal theater.** If neither the covered universe
+   nor the market plane grounds a specific number, never fabricate it —
+   follow the estimation discipline (a directional read from what IS
+   grounded, labeled `제 판단`) and make the missing datum the first
+   follow-up. Do not narrate coverage, ontology scope, or system limits
+   anywhere in the answer; limitations ride beside the affected claim in
+   ordinary words.
 
 Keep the same three-layer separation as wide research: observed evidence with
 its period, the causal interpretation, and remaining uncertainty. Advice-shaped
