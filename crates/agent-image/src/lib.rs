@@ -3281,8 +3281,21 @@ fn validate_entrypoint_scope(entrypoint: &EntrypointSpec) -> Result<(), ImageErr
                 && entrypoint.scope.ticker_canonicalization
                     == TickerCanonicalizationPolicy::NotApplicable
         }
-        RunContextKind::RoutingRequest | RunContextKind::QuestionOnly => {
+        RunContextKind::RoutingRequest => {
             cardinality == ScopeCardinality::Exact { value: 0 }
+                && entrypoint.scope.ticker_canonicalization
+                    == TickerCanonicalizationPolicy::NotApplicable
+        }
+        // question_only trusts only the question text. exact 0 is a
+        // no-discovery variant; max n bounds the model's covered-universe
+        // discovery exactly like the covered_universe precedent — the value
+        // feeds the planner's max_discovery_tickers and the bounded
+        // discovery-limit check, while scoped_value_count() stays 0.
+        RunContextKind::QuestionOnly => {
+            (cardinality == ScopeCardinality::Exact { value: 0 }
+                || (matches!(cardinality, ScopeCardinality::Max { .. })
+                    && value > 0
+                    && usize::from(value) <= krw_agent_protocol::MAX_RUN_CONTEXT_TICKERS))
                 && entrypoint.scope.ticker_canonicalization
                     == TickerCanonicalizationPolicy::NotApplicable
         }
@@ -5167,6 +5180,35 @@ mod tests {
             Err(ImageError::InvalidSpec(message))
                 if message.contains("declarative scope binding")
         ));
+    }
+
+    #[test]
+    fn question_only_scope_allows_bounded_discovery_cardinality() {
+        fn entrypoint_spec(cardinality: ScopeCardinality) -> AgentSpec {
+            let mut spec = parse_spec(&fs::read(agent_root().join("agent.yaml")).unwrap()).unwrap();
+            let entrypoint = spec
+                .entrypoints
+                .values_mut()
+                .find(|entrypoint| entrypoint.run_kind == "idea_generation")
+                .unwrap();
+            entrypoint.run_kind = "open_research".into();
+            entrypoint.scope.allowed_context = RunContextKind::QuestionOnly;
+            entrypoint.scope.cardinality = cardinality;
+            entrypoint.scope.ticker_canonicalization =
+                TickerCanonicalizationPolicy::NotApplicable;
+            spec
+        }
+        assert!(validate_spec(&entrypoint_spec(ScopeCardinality::Max { value: 12 })).is_ok());
+        assert!(validate_spec(&entrypoint_spec(ScopeCardinality::Exact { value: 0 })).is_ok());
+        assert!(validate_spec(&entrypoint_spec(ScopeCardinality::Exact { value: 1 })).is_err());
+        let mut uppercase = entrypoint_spec(ScopeCardinality::Max { value: 12 });
+        let entrypoint = uppercase
+            .entrypoints
+            .values_mut()
+            .find(|entrypoint| entrypoint.run_kind == "open_research")
+            .unwrap();
+        entrypoint.scope.ticker_canonicalization = TickerCanonicalizationPolicy::RequireUppercase;
+        assert!(validate_spec(&uppercase).is_err());
     }
 
     #[test]
