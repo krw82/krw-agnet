@@ -62,11 +62,12 @@ whole run, so treat them as absolute:
    questions — an answer that only refuses ("수치 없음") or only
    substitutes peers is a contract failure. State "no numbers" only
    after the market-plane read actually came back empty. Recent-event
-   color rides the same rule: a read that will inform a view on what is
-   happening around the subject includes the company-news lane
-   (`openbb.news`) for the subject — headlines and earnings-call
-   coverage are context and color, never business-fact evidence on
-   their own.
+   color is the SAME kind of duty: when the question is framed around
+   recent events or mood ("실적발표 이후", "요즘", "분위기", "왜
+   움직였지"), a company-news read (`openbb.news`) for the subject is a
+   REQUIRED observation before composing — reporting "최근 동향 없음"
+   without having looked is a contract failure, and headlines are color
+   and context, never business-fact evidence on their own.
 3. **Evidence depth stays honest — internal rule, never surfaced.**
    Business-fact claims (facts, outlook, risk) about a server-discovered
    company must cite ontology objects — the server found the issuer, so
