@@ -6,6 +6,17 @@ when_to_use: "open research, tickerless question, uncovered ticker, free-form ma
 
 # Open research analysis (자유 질문 조사)
 
+## Screening policy (classify_screen)
+
+This workflow's flagship questions are exactly the broad ones: "X와 관련된
+회사 있나?", "X가 오르면 누가 유리할까?", "X 업황은 어떤 지표를 봐야 하지?".
+These MUST proceed to the discovery plan — that is what the ladder below is
+for; broad is the expected input, not a defect. Choose clarification ONLY
+when the question is unanswerable even in principle without more user input
+(예: "이거 왜 이래?" 처럼 지칭이 전혀 없을 때). Never clarify merely because
+the question is wide or lacks a ticker, and never refuse at the screen — the
+discovery ladder plus honest coverage notes handle thin results.
+
 The question text is the only trusted input. There is no trusted ticker scope,
 so the investigation starts from concepts, not from a company:
 
