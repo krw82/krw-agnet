@@ -331,3 +331,23 @@ screener은 fmp 응답 파싱 500 — 둘 다 배치 3(제공자 enum 확장)로
 용량 3곳 동반 상향: ingest 32→44, MAX_CONTRACTS_PER_OPERATION 32→64
 (프론티어 메뉴 36 상태), 바인딩 예제 35→47. 첫 부트에서 낡은 바이너리가
 구 상한으로 거부 — 재빌드 후 정상(이중 확인 절차 다시 입증).
+
+## 이터레이션 11 예비 — 배치 3 검증과 회복 경로 3결함 (2026-09-08 01:00)
+
+배치 3(제공자 enum 6종 확장+7라인) 배선·커밋. 실전 검증: 테슬라 문
+(mda+short_interest+income_growth+eps_history 9콜) 통과 — MD&A는 바우처
+분할 규칙(시장 평면=관측)대로 "공시 원문 미확인"으로 정직 강등, 공매도는
+FINRA 실데이터(2021 정산까지)를 날짜와 함께 렌더. MU 문(배치2) 통과 —
+ratios·price_target·eps_history 실사용, 목표가 테이블 8개.
+
+**미해결: 섹터 업황 문 2/2 실패(재시도도 동일 단계)**. 도구 평문 오류
+(provider_tool_error_text, 재시도 분류 정상 작동) 뒤에 회복 경로가
+3가지 양상으로 죽음 — ① InvalidRecoverySnapshot("checkpoint contains
+an unreplayed action") ② InvalidProviderEpisode("provider episode
+contract mismatch") ③ WorkflowResolution{outcome: "non-research
+capability decision batch"}. 세 양상 모두 재시도 직후 발생 → 재시도-
+재개(replay) 경로의 엔진 결함군으로 보임(핀비즈 레인이 오류를 자주
+던져 첫 노출). 차세션 루트픽스 1순위. APP 재실행(전송 수정 검증)은
+폴백 없이 통과했으나 뉴스 읽기 누락으로 1.4천 자 — 3축 규칙의 환경 축에
+"왜 움직였지 문의 뉴스 의무" 명시로 대응(배치3 커밋에 포함, 효과는
+차회 측정).
