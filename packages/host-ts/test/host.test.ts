@@ -677,6 +677,7 @@ test("readFinalProjection sends full ownership and parses the projection envelop
     final_output_hash: hash("b"),
     markdown: "# final answer",
     visualizations: [],
+    evidence_ids: ["quote:NVDA:CY2024:10K:item7_00:0001:001"],
     usage: { input_tokens: 100, output_tokens: 20 },
     evidence_ledger_hash: hash("c"),
     memory_revision: 4,
@@ -709,6 +710,7 @@ test("readFinalProjection sends full ownership and parses the projection envelop
         final_output_hash: hash("b"),
         markdown: "# final answer",
         visualizations: [],
+        evidence_ids: [],
         usage: {},
         evidence_ledger_hash: null,
         memory_revision: null,
@@ -724,12 +726,23 @@ test("readFinalProjection sends full ownership and parses the projection envelop
   // Unknown fields are rejected (exactObject contract).
   const transportExtra = new (class implements JsonProcedureTransport<HostProcedure> {
     async execute(): Promise<unknown> {
-      return { ...validProjection, evidence_ids: ["must-not-leak"] };
+      return { ...validProjection, must_not_leak: ["must-not-leak"] };
     }
   })();
   await assert.rejects(
     () => new HostAgentClient(transportExtra).readFinalProjection(ownership),
     /unknown_or_missing_response_field/,
+  );
+
+  // Evidence ids must be a bounded string array.
+  const transportBadIds = new (class implements JsonProcedureTransport<HostProcedure> {
+    async execute(): Promise<unknown> {
+      return { ...validProjection, evidence_ids: [42] };
+    }
+  })();
+  await assert.rejects(
+    () => new HostAgentClient(transportBadIds).readFinalProjection(ownership),
+    /invalid_final_projection_evidence_ids/,
   );
 
   // Malformed hash is rejected.

@@ -431,6 +431,7 @@ async function readRun(
       markdown: finalOutput.markdown,
       final_output_hash: finalOutput.final_output_hash,
       visualizations: finalOutput.visualizations,
+      evidence_ids: finalOutput.evidence_ids,
     },
     usage: projectPublicRunUsage(finalOutput.usage),
     retry_message: null,

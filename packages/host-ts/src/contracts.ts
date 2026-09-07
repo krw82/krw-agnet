@@ -288,6 +288,8 @@ export interface ReadFinalProjectionResponse {
   readonly markdown: string;
   /** Deterministic visualization artifacts; empty for pre-cutover bundles. */
   readonly visualizations: readonly JsonValue[];
+  /** Cited evidence ids (bounded, string-typed); empty for pre-cutover bundles. */
+  readonly evidence_ids: readonly string[];
   readonly usage: JsonValue;
   readonly evidence_ledger_hash: ContentHash | null;
   readonly memory_revision: number | null;

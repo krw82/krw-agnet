@@ -307,6 +307,16 @@ function assertVisualizations(value: unknown): asserts value is readonly JsonVal
   }
 }
 
+function assertEvidenceIds(value: unknown): asserts value is readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 64 ||
+    !value.every((item) => typeof item === "string" && item.length > 0 && item.length <= 256)
+  ) {
+    throw new ContractViolation("invalid_final_projection_evidence_ids");
+  }
+}
+
 function parseFinalProjectionResponse(
   value: unknown,
   runId: string,
@@ -317,6 +327,7 @@ function parseFinalProjectionResponse(
     "final_output_hash",
     "markdown",
     "visualizations",
+    "evidence_ids",
     "usage",
     "evidence_ledger_hash",
     "memory_revision",
@@ -338,6 +349,7 @@ function parseFinalProjectionResponse(
     throw new ContractViolation("invalid_final_projection_markdown");
   }
   assertVisualizations(object.visualizations);
+  assertEvidenceIds(object.evidence_ids);
   if (!isJsonValue(object.usage)) {
     throw new ContractViolation("invalid_final_projection_usage");
   }
