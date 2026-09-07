@@ -967,7 +967,6 @@ pub(crate) enum LedgerFallbackCause {
 const LEDGER_FALLBACK_MAX_RECORDS: usize = 6;
 const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 3;
 const LEDGER_FALLBACK_MAX_CALCULATIONS: usize = 4;
-const LEDGER_FALLBACK_MAX_GOALS: usize = 4;
 
 /// Deterministic ledger-fallback answer: the Markdown bytes are a pure
 /// function of the admitted ledger, committed calculations, user-linked
@@ -1283,17 +1282,15 @@ pub(crate) fn fallback_answer_from_ledger(
             .graph
             .goals()
             .filter(|goal| goal.status != GoalStatus::Satisfied)
-            .take(LEDGER_FALLBACK_MAX_GOALS)
-            .map(|goal| fallback_public_inline(&goal.goal_id))
-            .filter(|goal_id| !goal_id.is_empty())
-            .collect::<Vec<_>>();
-        if !uncovered.is_empty() {
+            .count();
+        if uncovered > 0 {
+            // Goal ids are kernel-internal hashes: a reader cannot act on
+            // them and they must never leak into the public markdown. The
+            // count carries the same honesty in plain words.
             markdown.push_str("\n## 이번에 확인하지 못한 부분\n\n");
-            for goal_id in uncovered {
-                markdown.push_str(&format!(
-                    "- {goal_id} 은(는) 이번 실행에서 끝까지 확인하지 못했습니다.\n"
-                ));
-            }
+            markdown.push_str(&format!(
+                "- 이번 실행에서 끝까지 확인하지 못한 확인 과제가 {uncovered}건 있습니다.\n"
+            ));
         }
     }
 

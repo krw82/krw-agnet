@@ -17,11 +17,14 @@ use krw_agent_contracts::{
     NORMALIZED_CAPABILITY_RESULT_V1, ONTOLOGY_COMPANY_CONTEXT_V1, ONTOLOGY_TARGETED_QUERY_V1,
     ONTOLOGY_TRACE_INPUT_V1, OPENBB_BALANCE_INPUT_V1, OPENBB_CASH_INPUT_V1,
     OPENBB_CONSENSUS_INPUT_V1, OPENBB_CPI_INPUT_V1, OPENBB_EARNINGS_CALENDAR_INPUT_V1,
-    OPENBB_FRED_SERIES_INPUT_V1, OPENBB_FILINGS_INPUT_V1, OPENBB_INCOME_INPUT_V1,
+    OPENBB_ESTIMATES_HISTORICAL_INPUT_V1, OPENBB_FORWARD_EBITDA_INPUT_V1,
+    OPENBB_FORWARD_EPS_INPUT_V1, OPENBB_FRED_SERIES_INPUT_V1, OPENBB_FILINGS_INPUT_V1,
+    OPENBB_GEOGRAPHY_INPUT_V1, OPENBB_INCOME_INPUT_V1, OPENBB_INSIDER_INPUT_V1,
     OPENBB_MACRO_CALENDAR_INPUT_V1,
     OPENBB_METRICS_INPUT_V1, OPENBB_NEWS_INPUT_V1, OPENBB_PEER_INPUT_V1,
-    OPENBB_PRICE_HISTORICAL_INPUT_V1,
-    OPENBB_QUOTE_INPUT_V1, OPENBB_YIELD_CURVE_INPUT_V1, QUANT_DCF_REQUEST_V1,
+    OPENBB_PRICE_HISTORICAL_INPUT_V1, OPENBB_PRICE_PERFORMANCE_INPUT_V1, OPENBB_PROFILE_INPUT_V1,
+    OPENBB_QUOTE_INPUT_V1, OPENBB_SEGMENT_INPUT_V1, OPENBB_YIELD_CURVE_INPUT_V1,
+    QUANT_DCF_REQUEST_V1,
     QUANT_DCF_RESULT_V1, QUERY_CONTEXT_INPUT_CORRECTION_V1, RESEARCH_STATE_V2, SEARCH_PLAN_V2,
     SKILL_CONTENT_V1, SKILL_LOAD_V1, validate_value, verify_pin,
 };
@@ -260,6 +263,14 @@ impl EvidenceMapping {
                     | OPENBB_MACRO_CALENDAR_INPUT_V1
                     | OPENBB_FILINGS_INPUT_V1
                     | OPENBB_NEWS_INPUT_V1
+                    | OPENBB_SEGMENT_INPUT_V1
+                    | OPENBB_GEOGRAPHY_INPUT_V1
+                    | OPENBB_PRICE_PERFORMANCE_INPUT_V1
+                    | OPENBB_PROFILE_INPUT_V1
+                    | OPENBB_INSIDER_INPUT_V1
+                    | OPENBB_FORWARD_EPS_INPUT_V1
+                    | OPENBB_FORWARD_EBITDA_INPUT_V1
+                    | OPENBB_ESTIMATES_HISTORICAL_INPUT_V1
             ),
             _ => contract_id == self.input_contract(),
         }
@@ -2519,7 +2530,25 @@ fn extract_json_tool_payload(
         let parsed: Result<Value, _> = serde_json::from_str(&text);
         text.zeroize();
         scrub_json(&mut item);
-        let mut parsed = parsed.map_err(|error| reject("mcp_text_json", format!("{error:?}")))?;
+        let mut parsed = parsed.map_err(|error| {
+            if expected_is_error {
+                // Vendor gateways (the openbb transport) report upstream
+                // 4xx/5xx bodies as plain-text error items, not as a typed
+                // JSON error contract. An error result has no data payload
+                // to corrupt, so route it to the same bounded retryable
+                // class the untyped-error mapping already defines instead
+                // of killing the whole run as a terminal dependency (live
+                // 2026-09-07: an fmp 422 `period=quarterly` literal error
+                // ended an APP run with zero usable evidence). A successful
+                // non-JSON payload stays fail-closed below.
+                retryable_tool_error(
+                    "provider_tool_error_text",
+                    format!("non-json tool error text: {error:?}"),
+                )
+            } else {
+                reject("mcp_text_json", format!("{error:?}"))
+            }
+        })?;
         let structured = object.remove("structuredContent");
         let payload = if let Some(mut structured) = structured {
             // Some Streamable HTTP MCP implementations serialize an otherwise
@@ -4643,6 +4672,46 @@ mod tests {
                 .code,
             "mcp_envelope_content_count"
         );
+    }
+
+    #[test]
+    fn plain_text_tool_error_is_retryable_but_plain_text_success_stays_terminal() {
+        // Vendor gateways (openbb) report upstream 4xx bodies as plain-text
+        // error items. An error has no data payload to corrupt, so the run
+        // must survive it through the retryable class (live 2026-09-07: an
+        // fmp 422 literal error killed an APP run with zero usable
+        // evidence).
+        let error_envelope = serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Error calling tool 'equity_fundamental_metrics': HTTP error 422: Unprocessable Entity"
+                }
+            ],
+            "isError": true
+        });
+        let failure = extract_json_tool_payload(error_envelope, true)
+            .map(|_| ())
+            .expect_err("plain-text error must classify");
+        assert_eq!(failure.code, "provider_tool_error_text");
+        assert!(failure.retryable, "plain-text tool errors are retryable");
+
+        // A successful result that is not JSON is still fail-closed: it
+        // claims to be data and cannot be trusted.
+        let success_envelope = serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Error calling tool: not an error flag though"
+                }
+            ],
+            "isError": false
+        });
+        let failure = extract_json_tool_payload(success_envelope, false)
+            .map(|_| ())
+            .expect_err("plain-text success must stay terminal");
+        assert_eq!(failure.code, "mcp_text_json");
+        assert!(!failure.retryable, "success payloads stay fail-closed");
     }
 
     // --- Supplemental ladder: filing events, news, and the web-news builtin ---
