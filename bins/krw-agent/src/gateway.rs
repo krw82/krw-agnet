@@ -60,6 +60,21 @@ pub(crate) struct GatewayUsage {
     pub billable_tokens: u32,
     pub provider_total_ms: u64,
     pub capability_total_ms: u64,
+    /// Diagnostic phase timers added by the gateway alongside the credit
+    /// counters (2026-09-07 optimization loop). Purely informational; the
+    /// credit validation above never reads them.
+    #[serde(default)]
+    pub compact_total_ms: u64,
+    #[serde(default)]
+    pub provider_queue_wait_ms: u64,
+    #[serde(default)]
+    pub session_memory_total_ms: u64,
+    #[serde(default)]
+    pub market_preflight_ms: u64,
+    #[serde(default)]
+    pub prompt_build_total_ms: u64,
+    #[serde(default)]
+    pub checkpoint_total_ms: u64,
 }
 
 /// Whether the provider reported both sides of the token ledger.  When GLM's
@@ -333,6 +348,10 @@ struct FinalOutputResponse {
     final_output_hash: ContentHash,
     #[serde(default)]
     visualizations: Vec<Value>,
+    /// Grounded evidence record ids for the committed answer (empty for
+    /// pre-cutover bundles and clarification-style outputs).
+    #[serde(default)]
+    evidence_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
