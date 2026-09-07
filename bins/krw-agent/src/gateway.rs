@@ -558,6 +558,12 @@ mod tests {
             billable_tokens: 800,
             provider_total_ms: 5_000,
             capability_total_ms: 120,
+            compact_total_ms: 0,
+            provider_queue_wait_ms: 0,
+            session_memory_total_ms: 0,
+            market_preflight_ms: 0,
+            prompt_build_total_ms: 0,
+            checkpoint_total_ms: 0,
         };
         assert!(valid_usage(&output_only));
 

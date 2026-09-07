@@ -98,9 +98,20 @@ whole run, so treat them as absolute:
 2. **Market plane.** Quotes, fundamentals, statements, consensus, peers,
    earnings calendars, filing lists, company news, web headlines, price
    history, revenue mix (segment/geography), performance, profiles,
-   insider reads, forward estimates, and macro/market series (`openbb.*`,
+   insider reads, forward estimates, growth rates, market-cap history,
+   ratios, price targets, share statistics, executive roster, reported-EPS
+   history, congressional trades, world headlines, treasury rates, equity
+   risk premium, and most-active discovery (`openbb.*`,
    `news.web_search`, `market.series`) may name ANY canonical ticker —
-   including issuers outside the ontology coverage. **US listings only:** the market data
+   including issuers outside the ontology coverage. Valuation and depth
+   lanes for the analyst note: `openbb.ratios` (annual ratio rows) and
+   `openbb.price_target` (sell-side targets) fill the 수익성·전망 section
+   when consensus reads are thin; `openbb.income_growth` gives the
+   year-over-year growth table directly; `openbb.treasury_rates` /
+   `openbb.risk_premium` ground rate-driven landscape questions in the
+   actual curve, and `openbb.news_world` (ticker-less world headlines) is
+   the event-color lane for industry questions.
+   **US listings only:** the market data
    plane serves US-listed tickers; a non-US listing (Korea `005930.KS`,
    Japan `7203.T`, most foreign exchanges) will not resolve — do NOT
    spend calls or universe-plan clauses on it (live 2026-09-07: a

@@ -430,10 +430,15 @@ fn classify_wire_failure(error: &WireError) -> (bool, DeliveryCertainty) {
         | WireError::EmptyMessageContent
         | WireError::ToolResultInNonUserMessage
         | WireError::UnexpectedToolResultInAssistant => (false, DeliveryCertainty::NotDispatched),
-        WireError::Http(error) => (
-            error.is_timeout() || error.is_connect(),
-            DeliveryCertainty::MayHaveDispatched,
-        ),
+        // Production 2026-09-08 (run_3262739a): a mid-stream HTTP transport
+        // error that was neither timeout nor connect classified as
+        // non-retryable here and the answer-always catch committed the ledger
+        // fallback with the evidence already collected. Every transport-level
+        // failure is a network condition — the deferral lane's bounded retry
+        // is the right first response and the episode receipts keep the
+        // replay safe. This mirrors the 2026-09-02 run-engine postmortem,
+        // which fixed only the mirror copy in run-engine/src/provider.rs.
+        WireError::Http(_) => (true, DeliveryCertainty::MayHaveDispatched),
         WireError::ApiStatus { status, .. } => (
             matches!(status, 429 | 500 | 503),
             DeliveryCertainty::MayHaveDispatched,
@@ -1026,6 +1031,30 @@ impl RuntimeStageTimings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_failures_of_every_kind_classify_retryable() {
+        // Production 2026-09-08: a mid-stream connection reset (neither
+        // timeout nor connect) reached the ledger fallback because this
+        // production classifier narrowed HTTP retryability to two kinds.
+        // The deferral lane's bounded retry must own every transport-level
+        // failure.
+        #[cfg(feature = "http")]
+        {
+            for kind in [
+                krw_agent_provider_wire::TransportErrorKind::Connect,
+                krw_agent_provider_wire::TransportErrorKind::Timeout,
+                krw_agent_provider_wire::TransportErrorKind::Other,
+            ] {
+                let failure = provider_failure(
+                    krw_agent_protocol::ProviderKind::Glm,
+                    &WireError::Http(krw_agent_provider_wire::TransportError::from_kind(kind)),
+                );
+                assert!(failure.retryable, "{kind:?} must stay retryable");
+                assert_eq!(failure.code, "glm_http_transport");
+            }
+        }
+    }
 
     #[test]
     fn counters_saturate_and_snapshot_without_a_lock() {

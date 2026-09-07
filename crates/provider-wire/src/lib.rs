@@ -1261,6 +1261,12 @@ impl TransportError {
     pub const fn is_timeout(&self) -> bool {
         matches!(self.kind, TransportErrorKind::Timeout)
     }
+
+    /// Test seam: build the redacted classification directly from a kind so
+    /// downstream retry rules can be exercised without a live socket.
+    pub const fn from_kind(kind: TransportErrorKind) -> Self {
+        Self { kind }
+    }
 }
 
 #[cfg(feature = "http")]

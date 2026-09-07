@@ -316,7 +316,7 @@ pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
 /// observations — the cross-plane note reminds the analyst that anything
 /// observation-derived which the answer relies on still needs an ontology
 /// (filing) confirmation read.
-pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 24] = [
+pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 36] = [
     "market.series",
     "macro.series",
     "openbb.price_history",
@@ -341,6 +341,18 @@ pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 24] = [
     "openbb.forward_eps",
     "openbb.forward_ebitda",
     "openbb.estimates_historical",
+    "openbb.income_growth",
+    "openbb.market_cap",
+    "openbb.share_statistics",
+    "openbb.management",
+    "openbb.eps_history",
+    "openbb.government_trades",
+    "openbb.price_target",
+    "openbb.ratios",
+    "openbb.news_world",
+    "openbb.treasury_rates",
+    "openbb.risk_premium",
+    "openbb.discovery_active",
 ];
 
 /// Kernel-owned cross-plane note, mirroring `model_event_ladder_hint`: the
@@ -1179,6 +1191,63 @@ pub(crate) fn assemble_openbb_request(
             physical.insert("symbol".into(), Value::String(ticker.to_owned()));
             physical.insert("limit".into(), Value::from(10_u64));
         }
+        // Round-6 fmp supplementary lanes whose only model-authored argument
+        // is the ticker (growth rates, market-cap series, share statistics,
+        // executive roster).
+        "openbb-income-growth-input/v1"
+        | "openbb-market-cap-input/v1"
+        | "openbb-share-statistics-input/v1"
+        | "openbb-management-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+        }
+        // Round-6 plan-bounded reads (reported EPS history, congressional
+        // trades, price targets) — same pinned-limit shape as round 5.
+        "openbb-eps-history-input/v1"
+        | "openbb-government-trades-input/v1"
+        | "openbb-price-target-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("limit".into(), Value::from(10_u64));
+        }
+        // Round-6 ratios: pinned limit AND pinned annual period — the
+        // quarterly ratios lane is what the Starter plan walls off.
+        "openbb-ratios-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("limit".into(), Value::from(10_u64));
+            physical.insert("period".into(), Value::String("annual".into()));
+        }
+        // Round-6 ticker-less world news: the kernel pins the headline count
+        // (the tool's own default page is far past the adapter's advisory
+        // record bound).
+        "openbb-news-world-input/v1" => {
+            physical.insert("limit".into(), Value::from(10_u64));
+        }
+        // Round-6 treasury rates: the model may narrow the date window; the
+        // kernel passes a valid window through untouched.
+        "openbb-treasury-rates-input/v1" => {
+            for date_field in ["start_date", "end_date"] {
+                if let Some(date) = bounded_optional_str(date_field) {
+                    physical.insert(date_field.into(), Value::String(date));
+                }
+            }
+        }
+        // Round-6 provider-only reads (equity risk premium, most-active
+        // discovery): nothing model-authored survives onto the wire.
+        "openbb-risk-premium-input/v1" | "openbb-discovery-active-input/v1" => {}
         _ => return Err(invalid()),
     }
     Ok(Value::Object(physical))

@@ -297,6 +297,104 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-estimates-historical-input-v1
     content_hash: sha256:fc6d862c52ab25c8b0780bdbe7126612b067fde54315af4b2186f3fe5a01e374
     semantic_authority: krw-agent-capability-runtime
+  # openbb curation round 6 (2026-09-07): fmp supplementary reads — growth,
+  # valuation color, ownership/governance, and the ticker-less macro lanes.
+  - id: openbb-income-growth-request/v1
+    schema_ref: canonical:krw-agent/openbb-income-growth-request-v1
+    content_hash: sha256:5e013373f5c68c9c43aa5045c47ce459d4d585f666835ccfa2203e3ee418586e
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-income-growth-input/v1
+    schema_ref: canonical:krw-agent/openbb-income-growth-input-v1
+    content_hash: sha256:edc510331bd4460b33b6c9cbb1d14784b512945993a4ae019b6ff0c56bafdeb9
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-market-cap-request/v1
+    schema_ref: canonical:krw-agent/openbb-market-cap-request-v1
+    content_hash: sha256:f78d8f62727ec0f194322d5bcbd6c54d616c1531521f800befbf8db8e00dbd3d
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-market-cap-input/v1
+    schema_ref: canonical:krw-agent/openbb-market-cap-input-v1
+    content_hash: sha256:01876a8ed575a9e68140391ac892270115e523c4325a954c6c8724116466a32c
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-share-statistics-request/v1
+    schema_ref: canonical:krw-agent/openbb-share-statistics-request-v1
+    content_hash: sha256:0421fc99884f9fcd17ef2a07cbce830e2c6104e3daa12450902d2334e55a078c
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-share-statistics-input/v1
+    schema_ref: canonical:krw-agent/openbb-share-statistics-input-v1
+    content_hash: sha256:d6cf4691f5b18a2a0e8a9a6cdd4f58aed1765bee9a2bc544ad9793f99e111197
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-management-request/v1
+    schema_ref: canonical:krw-agent/openbb-management-request-v1
+    content_hash: sha256:862858081767713143a9afe7f4a2128941e8fdfa5c74b8607ef4e7713e229ba7
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-management-input/v1
+    schema_ref: canonical:krw-agent/openbb-management-input-v1
+    content_hash: sha256:b7f05282df8ce8ecff5b8e7196b0d467b9ab53b1522e768d65cd056efe61bec5
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-eps-history-request/v1
+    schema_ref: canonical:krw-agent/openbb-eps-history-request-v1
+    content_hash: sha256:31b92a4f5f967b4dabf2047947ab784a4ec72944e92b1c6e0af7e798b0719014
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-eps-history-input/v1
+    schema_ref: canonical:krw-agent/openbb-eps-history-input-v1
+    content_hash: sha256:2f1a9a9697746d09da098104d7bd8b65f7e0047330ac0e06bff7b726ce0a72f2
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-government-trades-request/v1
+    schema_ref: canonical:krw-agent/openbb-government-trades-request-v1
+    content_hash: sha256:7071ea6b72c7efcc0fdb7bd6bbcc9704d767e57f4a20c242d84900fd8f280d6a
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-government-trades-input/v1
+    schema_ref: canonical:krw-agent/openbb-government-trades-input-v1
+    content_hash: sha256:0a0fc0402055873e3a8dae3d926b8c5216784b8298e6ff04f078dd56a75b61f8
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-price-target-request/v1
+    schema_ref: canonical:krw-agent/openbb-price-target-request-v1
+    content_hash: sha256:306cc4718db9b8f8bf4c0160d461a93966b2291f2be7ca83a3384aa7a4379580
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-price-target-input/v1
+    schema_ref: canonical:krw-agent/openbb-price-target-input-v1
+    content_hash: sha256:c5d878d6033f2f69c97b2ab30df271267ae19cfb705b95dc0eadcea703e2e414
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-ratios-request/v1
+    schema_ref: canonical:krw-agent/openbb-ratios-request-v1
+    content_hash: sha256:1e1fd1f3b8086c5e657a021d76f6151970b8676b62b80c199e173c99f2074edc
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-ratios-input/v1
+    schema_ref: canonical:krw-agent/openbb-ratios-input-v1
+    content_hash: sha256:569c6fdff1e2540e1ef32ab90f19a54b3e73a8e176d1c7746f745914fd16d654
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-news-world-request/v1
+    schema_ref: canonical:krw-agent/openbb-news-world-request-v1
+    content_hash: sha256:840f825f7fb8c49a18e061701db675b223d57959b9c5de85986dab9f39293dbb
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-news-world-input/v1
+    schema_ref: canonical:krw-agent/openbb-news-world-input-v1
+    content_hash: sha256:b094ecbea3a113c80152eec7c5865a353939fc77c827af0f6ccad076bb0b70fd
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-treasury-rates-request/v1
+    schema_ref: canonical:krw-agent/openbb-treasury-rates-request-v1
+    content_hash: sha256:fab4426f1e0257f84cf6841e2e7c80dc52533f0d57a3a279c064679a5cf042b5
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-treasury-rates-input/v1
+    schema_ref: canonical:krw-agent/openbb-treasury-rates-input-v1
+    content_hash: sha256:b13d6c765298dc2c1892a2e91d595e8074dd80cdb4f719da19b4073e3a63cf0d
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-risk-premium-request/v1
+    schema_ref: canonical:krw-agent/openbb-risk-premium-request-v1
+    content_hash: sha256:df449d36e1b05ca5e615a6c7f367a0e7741e2475be743ebe216c806841698c40
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-risk-premium-input/v1
+    schema_ref: canonical:krw-agent/openbb-risk-premium-input-v1
+    content_hash: sha256:c982e53c37de2d6ec3c9be793d55d4988c745078ed9a93e975451ab9330f5f83
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-discovery-active-request/v1
+    schema_ref: canonical:krw-agent/openbb-discovery-active-request-v1
+    content_hash: sha256:e7c03c19debc2a23e33db4bb7c501c6ac70c42c006aeb8e572f63589549daec0
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-discovery-active-input/v1
+    schema_ref: canonical:krw-agent/openbb-discovery-active-input-v1
+    content_hash: sha256:26c768864f6def471abccd15db267e8062a4ee1911dc98921f792ec6eb842e85
+    semantic_authority: krw-agent-capability-runtime
   # Deterministic local quant computation (financial-services P2/P4: the
   # tools compute, the model interprets).
   - id: quant-dcf-request/v1
@@ -1257,6 +1355,285 @@ capabilities:
       require_any_of: [symbol]
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # ── openbb curation round 6: fmp supplementary lanes (2026-09-07) ──
+  # Ticker-scoped growth/valuation/ownership color for the analyst note's
+  # trajectory and valuation sections; the kernel pins provider (and the
+  # plan-bounded limits) so the model proposes only the ticker.
+  - id: openbb.income_growth
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_income_growth }
+    permission: read
+    input_contract: openbb-income-growth-input/v1
+    model_input_contract: openbb-income-growth-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1800
+        expected_tool_cost_micros: 400
+        expected_result_bytes: 8192
+      conflict_domain: openbb.equity_fundamental_income_growth
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.market_cap
+    execution: { kind: remote, binding_key: openbb_equity_historical_market_cap }
+    permission: read
+    input_contract: openbb-market-cap-input/v1
+    model_input_contract: openbb-market-cap-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1200
+        expected_tool_cost_micros: 400
+        expected_result_bytes: 6144
+      conflict_domain: openbb.equity_historical_market_cap
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.share_statistics
+    execution: { kind: remote, binding_key: openbb_equity_ownership_share_statistics }
+    permission: read
+    input_contract: openbb-share-statistics-input/v1
+    model_input_contract: openbb-share-statistics-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2000
+        expected_tokens: 400
+        expected_tool_cost_micros: 200
+        expected_result_bytes: 1024
+      conflict_domain: openbb.equity_ownership_share_statistics
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.management
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_management }
+    permission: read
+    input_contract: openbb-management-input/v1
+    model_input_contract: openbb-management-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2000
+        expected_tokens: 700
+        expected_tool_cost_micros: 200
+        expected_result_bytes: 2048
+      conflict_domain: openbb.equity_fundamental_management
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.eps_history
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_historical_eps }
+    permission: read
+    # Annual reported-EPS rows; the kernel pins limit=10 (Starter ceiling).
+    input_contract: openbb-eps-history-input/v1
+    model_input_contract: openbb-eps-history-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 900
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 4096
+      conflict_domain: openbb.equity_fundamental_historical_eps
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.government_trades
+    execution: { kind: remote, binding_key: openbb_equity_ownership_government_trades }
+    permission: read
+    # Congressional trading color (pinned limit) — never causal evidence.
+    input_contract: openbb-government-trades-input/v1
+    model_input_contract: openbb-government-trades-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 800000
+        expected_duplicate_ppm: 50000
+        failure_risk_upper_ppm: 150000
+        expected_latency_ms: 2500
+        expected_tokens: 900
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 4096
+      conflict_domain: openbb.equity_ownership_government_trades
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.price_target
+    execution: { kind: remote, binding_key: openbb_equity_estimates_price_target }
+    permission: read
+    # Sell-side price-target rows (pinned limit) — consensus context only.
+    input_contract: openbb-price-target-input/v1
+    model_input_contract: openbb-price-target-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1000
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 4096
+      conflict_domain: openbb.equity_estimates_price_target
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.ratios
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_ratios }
+    permission: read
+    # Annual ratio rows; the kernel pins limit=10 and period=annual (the
+    # quarterly lane is Starter-walled).
+    input_contract: openbb-ratios-input/v1
+    model_input_contract: openbb-ratios-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 2500
+        expected_tokens: 1000
+        expected_tool_cost_micros: 300
+        expected_result_bytes: 4096
+      conflict_domain: openbb.equity_fundamental_ratios
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  # Ticker-less round-6 lanes (world headlines, treasury rates, risk premium,
+  # most-active discovery): landscape color for industry questions.
+  - id: openbb.news_world
+    execution: { kind: remote, binding_key: openbb_news_world }
+    permission: read
+    # Bounded world-news headlines (kernel pins the count at 10).
+    input_contract: openbb-news-world-input/v1
+    model_input_contract: openbb-news-world-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.treasury_rates
+    execution: { kind: remote, binding_key: openbb_fixedincome_government_treasury_rates }
+    permission: read
+    # US Treasury rate history; the model may narrow the date window.
+    input_contract: openbb-treasury-rates-input/v1
+    model_input_contract: openbb-treasury-rates-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.risk_premium
+    execution: { kind: remote, binding_key: openbb_economy_risk_premium }
+    permission: read
+    # Equity risk-premium table — valuation framing, no model-authored args.
+    input_contract: openbb-risk-premium-input/v1
+    model_input_contract: openbb-risk-premium-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.discovery_active
+    execution: { kind: remote, binding_key: openbb_equity_discovery_active }
+    permission: read
+    # Most-active tape snapshot — where volume attention sits today.
+    input_contract: openbb-discovery-active-input/v1
+    model_input_contract: openbb-discovery-active-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: fmp }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   # ── openbb curation round 4: company news (2026-09-07) ──
   - id: openbb.news
     execution: { kind: remote, binding_key: openbb_news_company }
@@ -1957,7 +2334,7 @@ workflows:
       # x3, trace x2, market/macro series x2, the fourteen openbb lookups
       # (round 4 adds company news), and the web-news lookup, with
       # company-lane headroom.
-      - { id: ingest_evidence, kind: ingest, max_visits: 32 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 44 }
       - { id: assess_frontier, kind: assess, role_id: open_analyst, max_visits: 8 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
@@ -1982,6 +2359,18 @@ workflows:
       - { id: openbb_forward_eps_lookup, kind: capability, capability_id: openbb.forward_eps, max_visits: 1 }
       - { id: openbb_forward_ebitda_lookup, kind: capability, capability_id: openbb.forward_ebitda, max_visits: 1 }
       - { id: openbb_estimates_historical_lookup, kind: capability, capability_id: openbb.estimates_historical, max_visits: 1 }
+      - { id: openbb_income_growth_lookup, kind: capability, capability_id: openbb.income_growth, max_visits: 1 }
+      - { id: openbb_market_cap_lookup, kind: capability, capability_id: openbb.market_cap, max_visits: 1 }
+      - { id: openbb_share_statistics_lookup, kind: capability, capability_id: openbb.share_statistics, max_visits: 1 }
+      - { id: openbb_management_lookup, kind: capability, capability_id: openbb.management, max_visits: 1 }
+      - { id: openbb_eps_history_lookup, kind: capability, capability_id: openbb.eps_history, max_visits: 1 }
+      - { id: openbb_government_trades_lookup, kind: capability, capability_id: openbb.government_trades, max_visits: 1 }
+      - { id: openbb_price_target_lookup, kind: capability, capability_id: openbb.price_target, max_visits: 1 }
+      - { id: openbb_ratios_lookup, kind: capability, capability_id: openbb.ratios, max_visits: 1 }
+      - { id: openbb_news_world_lookup, kind: capability, capability_id: openbb.news_world, max_visits: 1 }
+      - { id: openbb_treasury_rates_lookup, kind: capability, capability_id: openbb.treasury_rates, max_visits: 1 }
+      - { id: openbb_risk_premium_lookup, kind: capability, capability_id: openbb.risk_premium, max_visits: 1 }
+      - { id: openbb_discovery_active_lookup, kind: capability, capability_id: openbb.discovery_active, max_visits: 1 }
       - { id: openbb_macro_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
       - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
       - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
@@ -2058,6 +2447,30 @@ workflows:
       - { from: openbb_forward_ebitda_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_estimates_historical_lookup, on: correction_required, to: assess_frontier }
       - { from: openbb_estimates_historical_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_income_growth_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_income_growth_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_market_cap_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_market_cap_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_share_statistics_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_share_statistics_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_management_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_management_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_eps_history_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_eps_history_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_government_trades_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_government_trades_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_price_target_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_price_target_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_ratios_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_ratios_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_news_world_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_news_world_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_treasury_rates_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_treasury_rates_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_risk_premium_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_risk_premium_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_discovery_active_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_discovery_active_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_macro_cpi_lookup, on: correction_required, to: assess_frontier }
       - { from: openbb_macro_cpi_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_yield_curve_lookup, on: correction_required, to: assess_frontier }
@@ -2090,6 +2503,18 @@ workflows:
       - { from: assess_frontier, on: openbb_forward_eps_has_value, to: openbb_forward_eps_lookup }
       - { from: assess_frontier, on: openbb_forward_ebitda_has_value, to: openbb_forward_ebitda_lookup }
       - { from: assess_frontier, on: openbb_estimates_historical_has_value, to: openbb_estimates_historical_lookup }
+      - { from: assess_frontier, on: openbb_income_growth_has_value, to: openbb_income_growth_lookup }
+      - { from: assess_frontier, on: openbb_market_cap_has_value, to: openbb_market_cap_lookup }
+      - { from: assess_frontier, on: openbb_share_statistics_has_value, to: openbb_share_statistics_lookup }
+      - { from: assess_frontier, on: openbb_management_has_value, to: openbb_management_lookup }
+      - { from: assess_frontier, on: openbb_eps_history_has_value, to: openbb_eps_history_lookup }
+      - { from: assess_frontier, on: openbb_government_trades_has_value, to: openbb_government_trades_lookup }
+      - { from: assess_frontier, on: openbb_price_target_has_value, to: openbb_price_target_lookup }
+      - { from: assess_frontier, on: openbb_ratios_has_value, to: openbb_ratios_lookup }
+      - { from: assess_frontier, on: openbb_news_world_has_value, to: openbb_news_world_lookup }
+      - { from: assess_frontier, on: openbb_treasury_rates_has_value, to: openbb_treasury_rates_lookup }
+      - { from: assess_frontier, on: openbb_risk_premium_has_value, to: openbb_risk_premium_lookup }
+      - { from: assess_frontier, on: openbb_discovery_active_has_value, to: openbb_discovery_active_lookup }
       - { from: assess_frontier, on: openbb_cpi_has_value, to: openbb_macro_cpi_lookup }
       - { from: assess_frontier, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
       - { from: assess_frontier, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
@@ -2130,6 +2555,18 @@ workflows:
       - { from: openbb_forward_eps_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_forward_ebitda_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_estimates_historical_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_income_growth_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_market_cap_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_share_statistics_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_management_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_eps_history_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_government_trades_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_price_target_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_ratios_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_news_world_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_treasury_rates_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_risk_premium_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_discovery_active_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_cpi_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }

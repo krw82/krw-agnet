@@ -25,11 +25,11 @@ pub const PHASE_COMPACTION_SCHEMA_VERSION: u16 = 1;
 const MAX_STATES: usize = 128;
 const MAX_TRANSITIONS: usize = 512;
 /// One model-decision state can advertise a direct menu of capability input
-/// contracts (company_research_v2's obligation assessment now reaches 24
-/// capability states after the openbb round-2 curation, plus its state-facts
+/// contracts (open_research_v1's frontier assessment reaches 36 capability
+/// states after the openbb round-5/6 curations, plus its state-facts
 /// contract), so the per-operation contract bound tracks the widest legit
 /// menu with headroom rather than the round-1 trio's narrower one.
-const MAX_CONTRACTS_PER_OPERATION: usize = 32;
+const MAX_CONTRACTS_PER_OPERATION: usize = 64;
 const MAX_ID_BYTES: usize = 160;
 const MAX_LINEAGE_REFS: usize = 64;
 const MAX_EVIDENCE_REFS: usize = 256;

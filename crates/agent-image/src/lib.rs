@@ -3635,6 +3635,78 @@ fn validate_capability_input_abi(
                         OpenbbPinnedProvider::Fmp,
                         true,
                     ),
+                    "openbb-income-growth-input/v1" => (
+                        "openbb-income-growth-input/v1",
+                        "openbb-income-growth-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-market-cap-input/v1" => (
+                        "openbb-market-cap-input/v1",
+                        "openbb-market-cap-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-share-statistics-input/v1" => (
+                        "openbb-share-statistics-input/v1",
+                        "openbb-share-statistics-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-management-input/v1" => (
+                        "openbb-management-input/v1",
+                        "openbb-management-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-eps-history-input/v1" => (
+                        "openbb-eps-history-input/v1",
+                        "openbb-eps-history-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-government-trades-input/v1" => (
+                        "openbb-government-trades-input/v1",
+                        "openbb-government-trades-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-price-target-input/v1" => (
+                        "openbb-price-target-input/v1",
+                        "openbb-price-target-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-ratios-input/v1" => (
+                        "openbb-ratios-input/v1",
+                        "openbb-ratios-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-news-world-input/v1" => (
+                        "openbb-news-world-input/v1",
+                        "openbb-news-world-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        false,
+                    ),
+                    "openbb-treasury-rates-input/v1" => (
+                        "openbb-treasury-rates-input/v1",
+                        "openbb-treasury-rates-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        false,
+                    ),
+                    "openbb-risk-premium-input/v1" => (
+                        "openbb-risk-premium-input/v1",
+                        "openbb-risk-premium-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        false,
+                    ),
+                    "openbb-discovery-active-input/v1" => (
+                        "openbb-discovery-active-input/v1",
+                        "openbb-discovery-active-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        false,
+                    ),
                     _ => (
                         capability.input_contract.as_str(),
                         "",
@@ -5829,6 +5901,114 @@ mod tests {
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),
         );
+        expected.insert(
+            "openbb.income_growth",
+            (
+                "openbb-income-growth-input/v1",
+                "openbb-income-growth-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.market_cap",
+            (
+                "openbb-market-cap-input/v1",
+                "openbb-market-cap-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.share_statistics",
+            (
+                "openbb-share-statistics-input/v1",
+                "openbb-share-statistics-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.management",
+            (
+                "openbb-management-input/v1",
+                "openbb-management-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.eps_history",
+            (
+                "openbb-eps-history-input/v1",
+                "openbb-eps-history-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.government_trades",
+            (
+                "openbb-government-trades-input/v1",
+                "openbb-government-trades-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.price_target",
+            (
+                "openbb-price-target-input/v1",
+                "openbb-price-target-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.ratios",
+            (
+                "openbb-ratios-input/v1",
+                "openbb-ratios-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.news_world",
+            (
+                "openbb-news-world-input/v1",
+                "openbb-news-world-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.treasury_rates",
+            (
+                "openbb-treasury-rates-input/v1",
+                "openbb-treasury-rates-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.risk_premium",
+            (
+                "openbb-risk-premium-input/v1",
+                "openbb-risk-premium-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.discovery_active",
+            (
+                "openbb-discovery-active-input/v1",
+                "openbb-discovery-active-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
         for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
             let capability = image
                 .body
@@ -5857,7 +6037,11 @@ mod tests {
                 "openbb.macro_series"
                 | "openbb.macro_cpi"
                 | "openbb.yield_curve"
-                | "openbb.macro_calendar" => {
+                | "openbb.macro_calendar"
+                | "openbb.news_world"
+                | "openbb.treasury_rates"
+                | "openbb.risk_premium"
+                | "openbb.discovery_active" => {
                     assert!(capability.research_action.is_none());
                 }
                 _ => {

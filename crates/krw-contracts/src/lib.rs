@@ -266,6 +266,102 @@ const OPENBB_ESTIMATES_HISTORICAL_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-estimates-historical-input-v1.json"
 ));
+const OPENBB_INCOME_GROWTH_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-income-growth-request-v1.json"
+));
+const OPENBB_INCOME_GROWTH_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-income-growth-input-v1.json"
+));
+const OPENBB_MARKET_CAP_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-market-cap-request-v1.json"
+));
+const OPENBB_MARKET_CAP_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-market-cap-input-v1.json"
+));
+const OPENBB_SHARE_STATISTICS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-share-statistics-request-v1.json"
+));
+const OPENBB_SHARE_STATISTICS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-share-statistics-input-v1.json"
+));
+const OPENBB_MANAGEMENT_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-management-request-v1.json"
+));
+const OPENBB_MANAGEMENT_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-management-input-v1.json"
+));
+const OPENBB_EPS_HISTORY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-eps-history-request-v1.json"
+));
+const OPENBB_EPS_HISTORY_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-eps-history-input-v1.json"
+));
+const OPENBB_GOVERNMENT_TRADES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-government-trades-request-v1.json"
+));
+const OPENBB_GOVERNMENT_TRADES_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-government-trades-input-v1.json"
+));
+const OPENBB_PRICE_TARGET_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-target-request-v1.json"
+));
+const OPENBB_PRICE_TARGET_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-target-input-v1.json"
+));
+const OPENBB_RATIOS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-ratios-request-v1.json"
+));
+const OPENBB_RATIOS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-ratios-input-v1.json"
+));
+const OPENBB_NEWS_WORLD_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-news-world-request-v1.json"
+));
+const OPENBB_NEWS_WORLD_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-news-world-input-v1.json"
+));
+const OPENBB_TREASURY_RATES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-treasury-rates-request-v1.json"
+));
+const OPENBB_TREASURY_RATES_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-treasury-rates-input-v1.json"
+));
+const OPENBB_RISK_PREMIUM_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-risk-premium-request-v1.json"
+));
+const OPENBB_RISK_PREMIUM_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-risk-premium-input-v1.json"
+));
+const OPENBB_DISCOVERY_ACTIVE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-discovery-active-request-v1.json"
+));
+const OPENBB_DISCOVERY_ACTIVE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-discovery-active-input-v1.json"
+));
 const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
@@ -487,6 +583,79 @@ pub const OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1: &str = "openbb-estimates-histo
 /// Physical MCP input for the curated openbb `equity_estimates_historical`
 /// tool with the kernel-injected fmp provider and a pinned limit.
 pub const OPENBB_ESTIMATES_HISTORICAL_INPUT_V1: &str = "openbb-estimates-historical-input/v1";
+/// Model-authored request for an annual income-statement growth read
+/// (revenue/margin/EPS growth rates) — the trend axis behind the analyst
+/// note's financial-trajectory table. Round-6 curation (2026-09-07).
+pub const OPENBB_INCOME_GROWTH_REQUEST_V1: &str = "openbb-income-growth-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_income_growth`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_INCOME_GROWTH_INPUT_V1: &str = "openbb-income-growth-input/v1";
+/// Model-authored request for a historical market-capitalization series —
+/// how the market re-rated the issuer across periods.
+pub const OPENBB_MARKET_CAP_REQUEST_V1: &str = "openbb-market-cap-request/v1";
+/// Physical MCP input for the curated openbb `equity_historical_market_cap`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_MARKET_CAP_INPUT_V1: &str = "openbb-market-cap-input/v1";
+/// Model-authored request for share-class statistics (shares outstanding,
+/// float, holders) — dilution and ownership context.
+pub const OPENBB_SHARE_STATISTICS_REQUEST_V1: &str = "openbb-share-statistics-request/v1";
+/// Physical MCP input for the curated openbb `equity_ownership_share_statistics`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_SHARE_STATISTICS_INPUT_V1: &str = "openbb-share-statistics-input/v1";
+/// Model-authored request for the executive roster read (officers and
+/// titles) — governance color for subject questions.
+pub const OPENBB_MANAGEMENT_REQUEST_V1: &str = "openbb-management-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_management`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_MANAGEMENT_INPUT_V1: &str = "openbb-management-input/v1";
+/// Model-authored request for a reported-EPS history read (annual rows,
+/// pinned limit — same Starter-plan bound as the estimate lanes).
+pub const OPENBB_EPS_HISTORY_REQUEST_V1: &str = "openbb-eps-history-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_historical_eps`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_EPS_HISTORY_INPUT_V1: &str = "openbb-eps-history-input/v1";
+/// Model-authored request for a congressional-trading read on the ticker
+/// (pinned limit) — positioning color, never causal evidence on its own.
+pub const OPENBB_GOVERNMENT_TRADES_REQUEST_V1: &str = "openbb-government-trades-request/v1";
+/// Physical MCP input for the curated openbb `equity_ownership_government_trades`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_GOVERNMENT_TRADES_INPUT_V1: &str = "openbb-government-trades-input/v1";
+/// Model-authored request for a sell-side price-target read (pinned limit)
+/// — consensus target context for the valuation section.
+pub const OPENBB_PRICE_TARGET_REQUEST_V1: &str = "openbb-price-target-request/v1";
+/// Physical MCP input for the curated openbb `equity_estimates_price_target`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_PRICE_TARGET_INPUT_V1: &str = "openbb-price-target-input/v1";
+/// Model-authored request for an annual ratios read (liquidity/leverage/
+/// efficiency ratios, pinned limit and annual period).
+pub const OPENBB_RATIOS_REQUEST_V1: &str = "openbb-ratios-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_ratios`
+/// tool with the kernel-injected fmp provider and pinned limit + period.
+pub const OPENBB_RATIOS_INPUT_V1: &str = "openbb-ratios-input/v1";
+/// Model-authored request for a world-news headlines read (no subject
+/// ticker) — macro/industry event color for landscape questions.
+pub const OPENBB_NEWS_WORLD_REQUEST_V1: &str = "openbb-news-world-request/v1";
+/// Physical MCP input for the curated openbb `news_world` tool with the
+/// kernel-injected fmp provider and a pinned headline limit.
+pub const OPENBB_NEWS_WORLD_INPUT_V1: &str = "openbb-news-world-input/v1";
+/// Model-authored request for a US Treasury rates history read (optional
+/// date window) — the discount-rate axis for rate-sensitive sectors.
+pub const OPENBB_TREASURY_RATES_REQUEST_V1: &str = "openbb-treasury-rates-request/v1";
+/// Physical MCP input for the curated openbb `fixedincome_government_treasury_rates`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_TREASURY_RATES_INPUT_V1: &str = "openbb-treasury-rates-input/v1";
+/// Model-authored request for the equity risk-premium table read — the
+/// long-horizon premium context for valuation framing.
+pub const OPENBB_RISK_PREMIUM_REQUEST_V1: &str = "openbb-risk-premium-request/v1";
+/// Physical MCP input for the curated openbb `economy_risk_premium` tool
+/// with the kernel-injected fmp provider.
+pub const OPENBB_RISK_PREMIUM_INPUT_V1: &str = "openbb-risk-premium-input/v1";
+/// Model-authored request for the most-active discovery read (no ticker) —
+/// where volume attention is concentrated today.
+pub const OPENBB_DISCOVERY_ACTIVE_REQUEST_V1: &str = "openbb-discovery-active-request/v1";
+/// Physical MCP input for the curated openbb `equity_discovery_active`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_DISCOVERY_ACTIVE_INPUT_V1: &str = "openbb-discovery-active-input/v1";
 /// Model-authored request for the deterministic local DCF builtin. The
 /// model supplies labeled inputs it already collected; the builtin owns
 /// every arithmetic step and fails closed on `terminal_growth >= wacc`.
@@ -646,6 +815,54 @@ pub const OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:fff3b0202b300844467b47c0cdbd2e2829ce728b21c61098870e84042c28d639";
 pub const OPENBB_ESTIMATES_HISTORICAL_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:fc6d862c52ab25c8b0780bdbe7126612b067fde54315af4b2186f3fe5a01e374";
+pub const OPENBB_INCOME_GROWTH_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:5e013373f5c68c9c43aa5045c47ce459d4d585f666835ccfa2203e3ee418586e";
+pub const OPENBB_INCOME_GROWTH_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:edc510331bd4460b33b6c9cbb1d14784b512945993a4ae019b6ff0c56bafdeb9";
+pub const OPENBB_MARKET_CAP_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:f78d8f62727ec0f194322d5bcbd6c54d616c1531521f800befbf8db8e00dbd3d";
+pub const OPENBB_MARKET_CAP_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:01876a8ed575a9e68140391ac892270115e523c4325a954c6c8724116466a32c";
+pub const OPENBB_SHARE_STATISTICS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:0421fc99884f9fcd17ef2a07cbce830e2c6104e3daa12450902d2334e55a078c";
+pub const OPENBB_SHARE_STATISTICS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:d6cf4691f5b18a2a0e8a9a6cdd4f58aed1765bee9a2bc544ad9793f99e111197";
+pub const OPENBB_MANAGEMENT_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:862858081767713143a9afe7f4a2128941e8fdfa5c74b8607ef4e7713e229ba7";
+pub const OPENBB_MANAGEMENT_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:b7f05282df8ce8ecff5b8e7196b0d467b9ab53b1522e768d65cd056efe61bec5";
+pub const OPENBB_EPS_HISTORY_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:31b92a4f5f967b4dabf2047947ab784a4ec72944e92b1c6e0af7e798b0719014";
+pub const OPENBB_EPS_HISTORY_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:2f1a9a9697746d09da098104d7bd8b65f7e0047330ac0e06bff7b726ce0a72f2";
+pub const OPENBB_GOVERNMENT_TRADES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:7071ea6b72c7efcc0fdb7bd6bbcc9704d767e57f4a20c242d84900fd8f280d6a";
+pub const OPENBB_GOVERNMENT_TRADES_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:0a0fc0402055873e3a8dae3d926b8c5216784b8298e6ff04f078dd56a75b61f8";
+pub const OPENBB_PRICE_TARGET_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:306cc4718db9b8f8bf4c0160d461a93966b2291f2be7ca83a3384aa7a4379580";
+pub const OPENBB_PRICE_TARGET_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:c5d878d6033f2f69c97b2ab30df271267ae19cfb705b95dc0eadcea703e2e414";
+pub const OPENBB_RATIOS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:1e1fd1f3b8086c5e657a021d76f6151970b8676b62b80c199e173c99f2074edc";
+pub const OPENBB_RATIOS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:569c6fdff1e2540e1ef32ab90f19a54b3e73a8e176d1c7746f745914fd16d654";
+pub const OPENBB_NEWS_WORLD_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:840f825f7fb8c49a18e061701db675b223d57959b9c5de85986dab9f39293dbb";
+pub const OPENBB_NEWS_WORLD_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:b094ecbea3a113c80152eec7c5865a353939fc77c827af0f6ccad076bb0b70fd";
+pub const OPENBB_TREASURY_RATES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:fab4426f1e0257f84cf6841e2e7c80dc52533f0d57a3a279c064679a5cf042b5";
+pub const OPENBB_TREASURY_RATES_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:b13d6c765298dc2c1892a2e91d595e8074dd80cdb4f719da19b4073e3a63cf0d";
+pub const OPENBB_RISK_PREMIUM_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:df449d36e1b05ca5e615a6c7f367a0e7741e2475be743ebe216c806841698c40";
+pub const OPENBB_RISK_PREMIUM_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:c982e53c37de2d6ec3c9be793d55d4988c745078ed9a93e975451ab9330f5f83";
+pub const OPENBB_DISCOVERY_ACTIVE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:e7c03c19debc2a23e33db4bb7c501c6ac70c42c006aeb8e572f63589549daec0";
+pub const OPENBB_DISCOVERY_ACTIVE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:26c768864f6def471abccd15db267e8062a4ee1911dc98921f792ec6eb842e85";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -961,6 +1178,126 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_ESTIMATES_HISTORICAL_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_ESTIMATES_HISTORICAL_INPUT_BYTES,
         }),
+        OPENBB_INCOME_GROWTH_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_INCOME_GROWTH_REQUEST_V1,
+            schema_sha256: OPENBB_INCOME_GROWTH_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_INCOME_GROWTH_REQUEST_BYTES,
+        }),
+        OPENBB_INCOME_GROWTH_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_INCOME_GROWTH_INPUT_V1,
+            schema_sha256: OPENBB_INCOME_GROWTH_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_INCOME_GROWTH_INPUT_BYTES,
+        }),
+        OPENBB_MARKET_CAP_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_MARKET_CAP_REQUEST_V1,
+            schema_sha256: OPENBB_MARKET_CAP_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_MARKET_CAP_REQUEST_BYTES,
+        }),
+        OPENBB_MARKET_CAP_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_MARKET_CAP_INPUT_V1,
+            schema_sha256: OPENBB_MARKET_CAP_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_MARKET_CAP_INPUT_BYTES,
+        }),
+        OPENBB_SHARE_STATISTICS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SHARE_STATISTICS_REQUEST_V1,
+            schema_sha256: OPENBB_SHARE_STATISTICS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SHARE_STATISTICS_REQUEST_BYTES,
+        }),
+        OPENBB_SHARE_STATISTICS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SHARE_STATISTICS_INPUT_V1,
+            schema_sha256: OPENBB_SHARE_STATISTICS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SHARE_STATISTICS_INPUT_BYTES,
+        }),
+        OPENBB_MANAGEMENT_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_MANAGEMENT_REQUEST_V1,
+            schema_sha256: OPENBB_MANAGEMENT_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_MANAGEMENT_REQUEST_BYTES,
+        }),
+        OPENBB_MANAGEMENT_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_MANAGEMENT_INPUT_V1,
+            schema_sha256: OPENBB_MANAGEMENT_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_MANAGEMENT_INPUT_BYTES,
+        }),
+        OPENBB_EPS_HISTORY_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_EPS_HISTORY_REQUEST_V1,
+            schema_sha256: OPENBB_EPS_HISTORY_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_EPS_HISTORY_REQUEST_BYTES,
+        }),
+        OPENBB_EPS_HISTORY_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_EPS_HISTORY_INPUT_V1,
+            schema_sha256: OPENBB_EPS_HISTORY_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_EPS_HISTORY_INPUT_BYTES,
+        }),
+        OPENBB_GOVERNMENT_TRADES_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_GOVERNMENT_TRADES_REQUEST_V1,
+            schema_sha256: OPENBB_GOVERNMENT_TRADES_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_GOVERNMENT_TRADES_REQUEST_BYTES,
+        }),
+        OPENBB_GOVERNMENT_TRADES_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_GOVERNMENT_TRADES_INPUT_V1,
+            schema_sha256: OPENBB_GOVERNMENT_TRADES_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_GOVERNMENT_TRADES_INPUT_BYTES,
+        }),
+        OPENBB_PRICE_TARGET_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_TARGET_REQUEST_V1,
+            schema_sha256: OPENBB_PRICE_TARGET_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_TARGET_REQUEST_BYTES,
+        }),
+        OPENBB_PRICE_TARGET_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_TARGET_INPUT_V1,
+            schema_sha256: OPENBB_PRICE_TARGET_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_TARGET_INPUT_BYTES,
+        }),
+        OPENBB_RATIOS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_RATIOS_REQUEST_V1,
+            schema_sha256: OPENBB_RATIOS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_RATIOS_REQUEST_BYTES,
+        }),
+        OPENBB_RATIOS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_RATIOS_INPUT_V1,
+            schema_sha256: OPENBB_RATIOS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_RATIOS_INPUT_BYTES,
+        }),
+        OPENBB_NEWS_WORLD_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_NEWS_WORLD_REQUEST_V1,
+            schema_sha256: OPENBB_NEWS_WORLD_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_NEWS_WORLD_REQUEST_BYTES,
+        }),
+        OPENBB_NEWS_WORLD_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_NEWS_WORLD_INPUT_V1,
+            schema_sha256: OPENBB_NEWS_WORLD_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_NEWS_WORLD_INPUT_BYTES,
+        }),
+        OPENBB_TREASURY_RATES_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_TREASURY_RATES_REQUEST_V1,
+            schema_sha256: OPENBB_TREASURY_RATES_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_TREASURY_RATES_REQUEST_BYTES,
+        }),
+        OPENBB_TREASURY_RATES_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_TREASURY_RATES_INPUT_V1,
+            schema_sha256: OPENBB_TREASURY_RATES_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_TREASURY_RATES_INPUT_BYTES,
+        }),
+        OPENBB_RISK_PREMIUM_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_RISK_PREMIUM_REQUEST_V1,
+            schema_sha256: OPENBB_RISK_PREMIUM_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_RISK_PREMIUM_REQUEST_BYTES,
+        }),
+        OPENBB_RISK_PREMIUM_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_RISK_PREMIUM_INPUT_V1,
+            schema_sha256: OPENBB_RISK_PREMIUM_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_RISK_PREMIUM_INPUT_BYTES,
+        }),
+        OPENBB_DISCOVERY_ACTIVE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_DISCOVERY_ACTIVE_REQUEST_V1,
+            schema_sha256: OPENBB_DISCOVERY_ACTIVE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_DISCOVERY_ACTIVE_REQUEST_BYTES,
+        }),
+        OPENBB_DISCOVERY_ACTIVE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_DISCOVERY_ACTIVE_INPUT_V1,
+            schema_sha256: OPENBB_DISCOVERY_ACTIVE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_DISCOVERY_ACTIVE_INPUT_BYTES,
+        }),
         QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
             id: QUANT_DCF_REQUEST_V1,
             schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
@@ -1109,6 +1446,32 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(OPENBB_FORWARD_EBITDA_INPUT_V1).expect("static contract"),
         contract(OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1).expect("static contract"),
         contract(OPENBB_ESTIMATES_HISTORICAL_INPUT_V1).expect("static contract"),
+        // openbb curation round 6 (fmp supplementary: growth, valuation,
+        // ownership color, and the ticker-less macro/discovery lanes).
+        contract(OPENBB_INCOME_GROWTH_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_INCOME_GROWTH_INPUT_V1).expect("static contract"),
+        contract(OPENBB_MARKET_CAP_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_MARKET_CAP_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SHARE_STATISTICS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SHARE_STATISTICS_INPUT_V1).expect("static contract"),
+        contract(OPENBB_MANAGEMENT_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_MANAGEMENT_INPUT_V1).expect("static contract"),
+        contract(OPENBB_EPS_HISTORY_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_EPS_HISTORY_INPUT_V1).expect("static contract"),
+        contract(OPENBB_GOVERNMENT_TRADES_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_GOVERNMENT_TRADES_INPUT_V1).expect("static contract"),
+        contract(OPENBB_PRICE_TARGET_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PRICE_TARGET_INPUT_V1).expect("static contract"),
+        contract(OPENBB_RATIOS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_RATIOS_INPUT_V1).expect("static contract"),
+        contract(OPENBB_NEWS_WORLD_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_NEWS_WORLD_INPUT_V1).expect("static contract"),
+        contract(OPENBB_TREASURY_RATES_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_TREASURY_RATES_INPUT_V1).expect("static contract"),
+        contract(OPENBB_RISK_PREMIUM_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_RISK_PREMIUM_INPUT_V1).expect("static contract"),
+        contract(OPENBB_DISCOVERY_ACTIVE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_DISCOVERY_ACTIVE_INPUT_V1).expect("static contract"),
         // Deterministic local quant computation (financial-services P2/P4).
         contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
         contract(QUANT_DCF_RESULT_V1).expect("static contract"),
@@ -1290,6 +1653,102 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_ESTIMATES_HISTORICAL_INPUT_V1 => validate_openbb_limit_symbol_input(
             value,
             OPENBB_ESTIMATES_HISTORICAL_INPUT_V1,
+        ),
+        OPENBB_INCOME_GROWTH_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_INCOME_GROWTH_REQUEST_V1,
+        ),
+        OPENBB_INCOME_GROWTH_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_INCOME_GROWTH_INPUT_V1,
+        ),
+        OPENBB_MARKET_CAP_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_MARKET_CAP_REQUEST_V1,
+        ),
+        OPENBB_MARKET_CAP_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_MARKET_CAP_INPUT_V1,
+        ),
+        OPENBB_SHARE_STATISTICS_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_SHARE_STATISTICS_REQUEST_V1,
+        ),
+        OPENBB_SHARE_STATISTICS_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_SHARE_STATISTICS_INPUT_V1,
+        ),
+        OPENBB_MANAGEMENT_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_MANAGEMENT_REQUEST_V1,
+        ),
+        OPENBB_MANAGEMENT_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_MANAGEMENT_INPUT_V1,
+        ),
+        OPENBB_EPS_HISTORY_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_EPS_HISTORY_REQUEST_V1,
+        ),
+        OPENBB_EPS_HISTORY_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_EPS_HISTORY_INPUT_V1,
+        ),
+        OPENBB_GOVERNMENT_TRADES_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_GOVERNMENT_TRADES_REQUEST_V1,
+        ),
+        OPENBB_GOVERNMENT_TRADES_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_GOVERNMENT_TRADES_INPUT_V1,
+        ),
+        OPENBB_PRICE_TARGET_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_PRICE_TARGET_REQUEST_V1,
+        ),
+        OPENBB_PRICE_TARGET_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_PRICE_TARGET_INPUT_V1,
+        ),
+        OPENBB_RATIOS_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_RATIOS_REQUEST_V1,
+        ),
+        OPENBB_RATIOS_INPUT_V1 => validate_openbb_limit_period_symbol_input(
+            value,
+            OPENBB_RATIOS_INPUT_V1,
+        ),
+        OPENBB_NEWS_WORLD_REQUEST_V1 => validate_openbb_empty_request(
+            value,
+            OPENBB_NEWS_WORLD_REQUEST_V1,
+        ),
+        OPENBB_NEWS_WORLD_INPUT_V1 => validate_openbb_limit_input(
+            value,
+            OPENBB_NEWS_WORLD_INPUT_V1,
+        ),
+        OPENBB_TREASURY_RATES_REQUEST_V1 => validate_openbb_date_window_request(
+            value,
+            OPENBB_TREASURY_RATES_REQUEST_V1,
+        ),
+        OPENBB_TREASURY_RATES_INPUT_V1 => validate_openbb_provider_dates_input(
+            value,
+            OPENBB_TREASURY_RATES_INPUT_V1,
+        ),
+        OPENBB_RISK_PREMIUM_REQUEST_V1 => validate_openbb_empty_request(
+            value,
+            OPENBB_RISK_PREMIUM_REQUEST_V1,
+        ),
+        OPENBB_RISK_PREMIUM_INPUT_V1 => validate_openbb_provider_only_input(
+            value,
+            OPENBB_RISK_PREMIUM_INPUT_V1,
+        ),
+        OPENBB_DISCOVERY_ACTIVE_REQUEST_V1 => validate_openbb_empty_request(
+            value,
+            OPENBB_DISCOVERY_ACTIVE_REQUEST_V1,
+        ),
+        OPENBB_DISCOVERY_ACTIVE_INPUT_V1 => validate_openbb_provider_only_input(
+            value,
+            OPENBB_DISCOVERY_ACTIVE_INPUT_V1,
         ),
         QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
         QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
@@ -3235,6 +3694,135 @@ fn validate_openbb_limit_symbol_input(
     Ok(())
 }
 
+/// Round-6 ratios input: the pinned row limit plus the pinned annual period
+/// — fmp returns quarterly rows by default and the quarterly lane is what
+/// the Starter plan walls off, so the kernel fixes `period: annual`.
+fn validate_openbb_limit_period_symbol_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(
+        request,
+        &["provider", "symbol", "limit", "period"],
+        contract_id,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=10).contains(&limit))
+        || request.get("period").and_then(Value::as_str) != Some("annual")
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-6 shared request validator for ticker-less reads: the model
+/// proposes nothing; every physical argument is kernel-owned.
+fn validate_openbb_empty_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &[], contract_id)?;
+    Ok(())
+}
+
+/// Round-6 news-world input: kernel-injected fmp provider plus the pinned
+/// headline limit, nothing else on the wire.
+fn validate_openbb_limit_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["provider", "limit"], contract_id)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=10).contains(&limit))
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-6 provider-only input: the kernel injects the fmp pin and nothing
+/// else (risk-premium table, most-active discovery).
+fn validate_openbb_provider_only_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["provider"], contract_id)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp") {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-6 treasury-rates request: an optional date window the model may
+/// narrow; dates are plain ISO literals.
+fn validate_openbb_date_window_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let window_keys_ok = match keys.as_slice() {
+        [] | ["end_date"] | ["start_date"] | ["end_date", "start_date"] => true,
+        _ => false,
+    };
+    let iso_date = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|date| date.len() == 10 && date.as_bytes()[4] == b'-')
+    };
+    if !window_keys_ok || !request.values().all(iso_date) {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-6 treasury-rates input: kernel-injected fmp provider plus the
+/// model's (optional) date window.
+fn validate_openbb_provider_dates_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    if keys.as_slice() != ["provider"]
+        && keys.as_slice() != ["end_date", "provider"]
+        && keys.as_slice() != ["provider", "start_date"]
+        && keys.as_slice() != ["end_date", "provider", "start_date"]
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    if request.get("provider").and_then(Value::as_str) != Some("fmp") {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    for key in ["start_date", "end_date"] {
+        if let Some(date) = request.get(key) {
+            if !date
+                .as_str()
+                .is_some_and(|date| date.len() == 10 && date.as_bytes()[4] == b'-')
+            {
+                return Err(ContractValueError::Shape(contract_id));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_openbb_news_input(value: &Value) -> Result<(), ContractValueError> {
     let request = object(value, OPENBB_NEWS_INPUT_V1)?;
     exact_keys(
@@ -3764,7 +4352,7 @@ mod tests {
         // 20 openbb round-2 contracts + the 2 quant DCF contracts + the 2
         // openbb round-3 filings contracts + the 2 openbb round-4 news
         // contracts.
-        assert_eq!(descriptors().len(), 113);
+        assert_eq!(descriptors().len(), 137);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
