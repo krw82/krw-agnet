@@ -1637,9 +1637,10 @@ workflows:
       # series fired because no query_context state existed in this workflow).
       - { id: query_context, kind: capability, capability_id: ontology.query_context_universe, max_visits: 2 }
       # Must cover every advertised evidence read: discovery x2, targeted
-      # x3, trace x2, market/macro series x2, the thirteen openbb lookups,
-      # and the web-news lookup, with company-lane headroom.
-      - { id: ingest_evidence, kind: ingest, max_visits: 29 }
+      # x3, trace x2, market/macro series x2, the fourteen openbb lookups
+      # (round 4 adds company news), and the web-news lookup, with
+      # company-lane headroom.
+      - { id: ingest_evidence, kind: ingest, max_visits: 30 }
       - { id: assess_frontier, kind: assess, role_id: open_analyst, max_visits: 8 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
@@ -1655,6 +1656,7 @@ workflows:
       - { id: openbb_peers_lookup, kind: capability, capability_id: openbb.peers, max_visits: 1 }
       - { id: openbb_earnings_calendar_lookup, kind: capability, capability_id: openbb.earnings_calendar, max_visits: 1 }
       - { id: openbb_filings_lookup, kind: capability, capability_id: openbb.filings, max_visits: 1 }
+      - { id: openbb_news_lookup, kind: capability, capability_id: openbb.news, max_visits: 1 }
       - { id: openbb_macro_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
       - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
       - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
@@ -1694,6 +1696,7 @@ workflows:
       - { from: assess_frontier, on: openbb_peers_has_value, to: openbb_peers_lookup }
       - { from: assess_frontier, on: openbb_earnings_calendar_has_value, to: openbb_earnings_calendar_lookup }
       - { from: assess_frontier, on: openbb_filings_has_value, to: openbb_filings_lookup }
+      - { from: assess_frontier, on: openbb_news_has_value, to: openbb_news_lookup }
       - { from: assess_frontier, on: openbb_cpi_has_value, to: openbb_macro_cpi_lookup }
       - { from: assess_frontier, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
       - { from: assess_frontier, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
@@ -1725,6 +1728,7 @@ workflows:
       - { from: openbb_peers_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_earnings_calendar_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_filings_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_news_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_cpi_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }
