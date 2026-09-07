@@ -268,3 +268,34 @@ ingest 정원 가드(32)가 정확히 발동해 상한 동기화.
 **다음(이어서)**: 차트 copilotMessageArtifact 변환(서비스+엔진 팩 합성)
 → 배치2(fmp 부가) → 배치3(제공자 핀 확장 + MD&A·13F·공매도·섹터·발굴·
 티커검색). mimosa 전체 감사 재실행 예약(enobufs 2회).
+
+## 이터레이션 9 — 차트 파이프라인 실전 개통 (2026-09-07 심야)
+
+워크스페이스 최고 경험의 마지막 큰 조각. 이전 재판정(copilotMessageArtifact가 진짜
+프로토콜, presentationSeries _meta는 우리 관습)대로 두 반쪽을 만들었다.
+
+**엔진(ecfc365)**: openbb 관측 시리즈 인제스트 직후 커널이 같은 데이터로
+presentation pack을 합성(`run-engine/src/openbb_presentation.rs`). 모든 포인트가
+인제스트된 증거 레코드 id를 참조 — 근거 필터·용량 상한 전부 기존 메커니즘 재사용,
+합성 결함은 차트 누락으로만 발생(텍스트 답변 불변). 라이브가 가르친 가드 3종:
+① 어댑터는 price 레인만 content ticker를 심어준다 — 호출부의 physical symbol을
+별도 전달(ingest 시그니처 +3 호출부). ② 같은 메트릭에 두 fmp 필드(기본/희석 EPS,
+지속/최종 순이익)가 별칭 매핑되면 조항 조인에서 2×2=4벌 중복 선으로 렌더 —
+메트릭당 첫 필드만 채택. ③ TTM 행은 축에서 제외, 연간·분기 혼합은 연간 승리.
+forward EPS 레인은 `mean` 필드를 capability 게이트로만 eps로 읽는다(타 레인
+오독 방지).
+
+**서비스(fbfed73)**: 엔진 visualizations를 SDK 2.2.0 공식 chart() 헬퍼로
+copilotMessageArtifact 이벤트로 변환(청크 후·인용 전). 아티팩트당 주(主) 뷰만
+발행 — 파생 성장률 뷰는 음수 기저에서 -3248%식 오해 유도 라인(라이브 VRT).
+라벨을 범례 키로, 시리즈 키는 충돌 시 폴백.
+
+**라이브 실증(VRT 추이 질문, 서비스 경유)**: SSE에 copilotMessageArtifact
+2건 + 인용 22건 + 금지 토큰 0. CRWV 런은 answer_bundles.visualizations=1
+(EPS 추이 라인, 근거=openbb-advisory id). 커버된 종목(SMCI)은 회사 문(온톨로지
+경로)이라 차트 대상이 아닌 것도 확인 — 차트는 자유 문 openbb 관측에 성립.
+
+오프라인: run-engine 184 그린(합성 유닛 5종 포함), 서비스 101 그린.
+
+**차기**: 배치2(fmp 부가) → 배치3(제공자 핀 확장). mimosa 전체 감사 재실행
+요청 3회 누적 — 차기 이터레이션 첫 작업으로 강제.
