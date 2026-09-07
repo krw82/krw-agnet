@@ -15,6 +15,7 @@ mod active_run;
 mod bounded_child;
 mod capability_dispatch;
 mod finalization;
+mod openbb_presentation;
 mod orchestrator;
 mod provider;
 mod provider_request;
@@ -10344,7 +10345,9 @@ mod tests {
             truncation: None,
         };
 
-        state.ingest(&result).unwrap();
+        state
+            .ingest(&result, "ontology.targeted_query", None)
+            .unwrap();
 
         assert_eq!(state.ledger.answerability(), Answerability::QualifiedOnly);
     }

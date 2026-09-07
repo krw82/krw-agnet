@@ -217,7 +217,11 @@ where
                 }
                 let result_bytes = serde_jcs::to_vec(&result)?;
                 state.record_evidence_bytes(result_bytes.len())?;
-                state.ingest(&result)?;
+                let symbol = call
+                    .arguments
+                    .get("symbol")
+                    .and_then(serde_json::Value::as_str);
+                state.ingest(&result, call.capability.id.as_str(), symbol)?;
                 state.ingest_scope_projection(&call, &result)?;
                 state.append_capability_tool_result(&call, &result)?;
                 if capability_result_completes_prerequisite(&result) {
@@ -902,7 +906,11 @@ where
                 }
                 let result_bytes = serde_jcs::to_vec(&result)?;
                 state.record_evidence_bytes(result_bytes.len())?;
-                state.ingest(&result)?;
+                let symbol = call
+                    .arguments
+                    .get("symbol")
+                    .and_then(serde_json::Value::as_str);
+                state.ingest(&result, call.capability.id.as_str(), symbol)?;
                 state.ingest_scope_projection(&call, &result)?;
                 if child_policy.is_none() {
                     state.append_capability_tool_result(&call, &result)?;

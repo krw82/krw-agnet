@@ -2642,11 +2642,33 @@ impl ActiveRun {
         ensure_size(bytes, limit, "provider_conversation")
     }
 
-    pub(crate) fn ingest(&mut self, result: &CapabilityResult) -> Result<(), EngineError> {
+    pub(crate) fn ingest(
+        &mut self,
+        result: &CapabilityResult,
+        capability_id: &str,
+        symbol: Option<&str>,
+    ) -> Result<(), EngineError> {
         if let Some(pack) = result.presentation.as_ref()
             && presentation_pack_matches_result(pack, &result.provider_content)
         {
             self.retain_presentation_pack(pack);
+        } else if let Some(evidence_id) = result
+            .evidence
+            .first()
+            .map(|record| record.evidence_id.clone())
+            && let Some(pack) = crate::openbb_presentation::synthesize(
+                &result.provider_content,
+                capability_id,
+                symbol,
+                &evidence_id,
+            )
+            && presentation_pack_matches_result(&pack, &result.provider_content)
+        {
+            // The openbb transport never attaches presentation packs, so the
+            // kernel synthesizes one from the just-ingested observation
+            // series. Points reference the ingested evidence record, so the
+            // grounding filter and every existing bound apply unchanged.
+            self.retain_presentation_pack(&pack);
         }
         for record in &result.evidence {
             self.ledger.append(record.clone())?;
