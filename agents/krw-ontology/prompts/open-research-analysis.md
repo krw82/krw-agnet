@@ -77,9 +77,17 @@ whole run, so treat them as absolute:
    earnings calendars, filing lists, company news, web headlines, price
    history, and macro/market series (`openbb.*`, `news.web_search`,
    `market.series`) may name ANY canonical ticker — including issuers
-   outside the ontology coverage. Use them freely when the question names
-   a company the ontology does not cover. When the question's subject
-   company itself is outside the covered universe, fetching the
+   outside the ontology coverage. **US listings only:** the market data
+   plane serves US-listed tickers; a non-US listing (Korea `005930.KS`,
+   Japan `7203.T`, most foreign exchanges) will not resolve — do NOT
+   spend calls or universe-plan clauses on it (live 2026-09-07: a
+   삼성전자 question burned its whole repair budget retrying universe
+   clauses that name the foreign issuer, then a `005930.KS` market batch,
+   and died with zero subject data). For a non-US subject, anchor on the
+   covered SAME-INDUSTRY issuers' filings for the competitive/micro
+   context and state the subject's own numbers as outside this data
+   range in ordinary words. When the question's subject company itself
+   is outside the covered universe, fetching the
    SUBJECT's own numbers from the market plane (income statement,
    metrics, quote) is a REQUIRED observation for performance/financial
    questions — an answer that only refuses ("수치 없음") or only
