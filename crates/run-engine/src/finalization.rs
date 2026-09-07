@@ -960,10 +960,14 @@ pub(crate) enum LedgerFallbackCause {
     ComposerNarration,
 }
 
-const LEDGER_FALLBACK_MAX_RECORDS: usize = 16;
-const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 8;
-const LEDGER_FALLBACK_MAX_CALCULATIONS: usize = 8;
-const LEDGER_FALLBACK_MAX_GOALS: usize = 8;
+// The degraded lane renders a NOTE, not a data dump: a few strongest
+// records with their headline facts. Live 2026-09-07 (COIN run): 16×8
+// caps plus raw `metric_context` provenance blobs produced a 8KB
+// ledger dump that read like a machine export.
+const LEDGER_FALLBACK_MAX_RECORDS: usize = 6;
+const LEDGER_FALLBACK_MAX_FACTS_PER_RECORD: usize = 3;
+const LEDGER_FALLBACK_MAX_CALCULATIONS: usize = 4;
+const LEDGER_FALLBACK_MAX_GOALS: usize = 4;
 
 /// Deterministic ledger-fallback answer: the Markdown bytes are a pure
 /// function of the admitted ledger, committed calculations, user-linked
@@ -1047,6 +1051,11 @@ fn fallback_fact_line(
     fact: &krw_agent_evidence::NormalizedFact,
     citations: &mut FallbackCitations,
 ) -> Option<String> {
+    // `metric_context` is engine-internal provenance (period windows,
+    // conflict counts) — it never belongs in reader-facing text.
+    if fact.predicate == "metric_context" {
+        return None;
+    }
     let subject = fallback_public_inline(&fact.subject);
     let predicate = fallback_public_inline(&fact.predicate);
     if subject.is_empty() || predicate.is_empty() {

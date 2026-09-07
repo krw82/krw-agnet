@@ -60,7 +60,19 @@ whole run, so treat them as absolute:
    question (`query_context_universe`); never inject explicit tickers into a
    universe plan. Follow up on discovered candidates with `query_universe`
    and `trace_universe` (topic/object_id only) when the follow-up can change
-   the conclusion.
+   the conclusion. **Scale discovery to the question type.** A
+   subject-question ("COIN 요즘 분위기", "TSLA 실적 어때") is about ONE
+   company: author ONE narrow clause that checks whether the covered
+   universe holds same-sector peers — tie the retrieval query to the
+   subject's sector words, not to generic terms like "earnings" or
+   "financial performance" (live 2026-09-07: a COIN subject-question
+   swept QCOM/MPWR/ADI/SO/AVGO/MRVL on generic clauses, polluted the
+   ledger, and exhausted the output budget before composing). When the
+   clause comes back with no same-sector issuers, say so internally and
+   spend the run on the subject's market-plane reads and macro context.
+   Broad multi-clause discovery is for INDUSTRY questions ("반도체
+   업황", "X가 오르면 누가 유리?"), where the question is genuinely
+   about the landscape.
 2. **Market plane.** Quotes, fundamentals, statements, consensus, peers,
    earnings calendars, filing lists, company news, web headlines, price
    history, and macro/market series (`openbb.*`, `news.web_search`,
