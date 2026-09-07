@@ -299,3 +299,35 @@ copilotMessageArtifact 이벤트로 변환(청크 후·인용 전). 아티팩트
 
 **차기**: 배치2(fmp 부가) → 배치3(제공자 핀 확장). mimosa 전체 감사 재실행
 요청 3회 누적 — 차기 이터레이션 첫 작업으로 강제.
+
+## 이터레이션 10 — 답변 깊이 3종 세트 + 배치 2 (2026-09-08 새벽)
+
+소유주 피드백 "길이가 너무 짧다, 보고서 안 같다"에 대한 1·2·3단계 전부 즉시 적용.
+
+**깊이(26776ac)**: ① 출력 계약에 애널리스트 노트 뼈대+길이 기대치(주제형
+4천 자+/업황형 6천 자+, 단 "근거 확보 축만 깊이, padding 금지"). ② 프론티어에
+3축 커버 규칙 — 실적/전망/환경 중 빈 축이 있으면 evidence_sufficient 금지,
+남은 방문 예산은 가장 빈 축부터. ③ GLM 레인 전체를 glm-5.3-flash → glm-5.3으로
+교체(엔진 설계상 role은 모델을 못 고르고 registry 슬롯이 단일 모델 — 컴포저만
+바꾸는 건 구조적으로 불가능하여 워크플로 전체 승격. 프로토콜 상수+2 registry+
+스택 스크립트+릴리스 도구+systemd/launchd+host-ts 미러+픽스처 핀까지 30파일).
+전후 비교(고정 3문): VRT 1,835→2,286자·뼈대 7섹션·표 5개, 금리↔반도체 3,016자·
+전달경로 3갈래(동종업종 공시 인용: AVGO 672억 달러 부채 만기구조 등)·표 7개,
+금지토큰 0 유지. 액션 5→9회로 3축 규칙 실제 작동 확인(실적 배치→전망 배치→환경).
+
+**같은 밤에 잡은 결함 2종**: ① 게이트웨이가 evidence_ids(642f939)와 타이밍
+필드를 응답에 실으면서 Rust CLI의 deny_unknown_fields 파서가 매 폴링 실패 —
+CLI 계약 확장(144588e). ② APP 재실행에서 mid-stream 전송 오류가 "timeout도
+connect도 아님→재시도 불가"로 분류돼 증거 다 모은 뒤 폴백 강제(run_3262739a) —
+2026-09-02 포스트모템이 run-engine 미러만 고치고 프로덕션 분류기
+(execution-contracts)를 놓친 것. Http는 항상 재시도로(6f70032).
+
+**배치 2(6f70032)**: 실측 프로브 14종 중 12통과 → 티커형 8(income_growth,
+market_cap, share_statistics, management, eps_history, government_trades,
+price_target, ratios — 후자 4종은 limit=10 핀, ratios는 period=annual 추가 핀)
++ 비티커형 4(news_world limit 핀, treasury_rates 날짜창 패스스루,
+risk_premium, discovery_active). sp500_multiples은 multpl 전용 제공자,
+screener은 fmp 응답 파싱 500 — 둘 다 배치 3(제공자 enum 확장)로 이월.
+용량 3곳 동반 상향: ingest 32→44, MAX_CONTRACTS_PER_OPERATION 32→64
+(프론티어 메뉴 36 상태), 바인딩 예제 35→47. 첫 부트에서 낡은 바이너리가
+구 상한으로 거부 — 재빌드 후 정상(이중 확인 절차 다시 입증).
