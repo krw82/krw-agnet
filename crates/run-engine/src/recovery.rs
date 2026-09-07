@@ -325,20 +325,150 @@ where
                 has_action_receipt,
             }
         });
-        if pending.is_none()
-            && recovery.state.as_ref().is_some_and(|checkpoint| {
-                checkpoint.action_frontier_seq != recovery.current_action_frontier_seq
-                    || checkpoint.action_frontier_hash != recovery.current_action_frontier_hash
-            })
-        {
-            return Err(EngineError::InvalidRecoverySnapshot(
-                "action frontier advanced without a pending episode",
-            ));
+        if pending.is_none() {
+            // Post-checkpoint actions must bind to a known episode. The old
+            // implication — "frontier advanced past the checkpoint ⇒ an
+            // unprocessed episode must exist" — broke with the supplemental
+            // drain (2026-09-08 deferral incidents): drain receipts and
+            // failed attempts record against the last COMMITTED episode
+            // after the checkpoint, with no pending episode at all. The
+            // genuine inconsistency is an action bound to an episode that is
+            // neither committed base history nor the last committed episode.
+            let last_committed = recovery
+                .episodes
+                .last()
+                .map(|episode| episode.episode_hash.clone());
+            let orphaned_action = recovery.actions.iter().any(|action| {
+                Some(&action.episode_hash) != last_committed.as_ref()
+                    && !base_episode_hashes.contains(&action.episode_hash)
+            });
+            if orphaned_action {
+                return Err(EngineError::InvalidRecoverySnapshot(
+                    "action frontier advanced without a pending episode",
+                ));
+            }
         }
         Ok(RecoveredExecution {
             pending,
             child: recovery.child,
         })
+    }
+
+    /// Replay one drained supplemental observation action from its committed
+    /// receipt, mirroring the live drain's settlement order (route →
+    /// receipt-validated restore → ingest → transcript → capability
+    /// completion → compaction). Added 2026-09-08: the live supplemental
+    /// drain executes the remainder of a homogeneous observation batch one
+    /// statechart visit at a time with receipts bound to the emitting
+    /// episode, and deferral-resumed runs must reconstruct those settlements
+    /// instead of tripping the "unreplayed action" invariant.
+    async fn replay_committed_observation_action(
+        &self,
+        input: &RunInput<'_>,
+        state: &mut ActiveRun,
+        call: &PreparedCall,
+        action: &RecoveredAction,
+        episode_hash: ContentHash,
+        append_transcript: bool,
+        consumed_actions: &mut BTreeSet<String>,
+    ) -> Result<(), EngineError> {
+        if let Some(cached) = state.cached_action_result(call) {
+            state.complete_cached_capability(
+                input.image,
+                call,
+                &cached,
+                episode_hash,
+                self.config.max_compacted_context_bytes,
+                append_transcript,
+            )?;
+            if !consumed_actions.insert(call.action_key.clone()) {
+                return Err(EngineError::InvalidRecoverySnapshot(
+                    "action was replayed more than once",
+                ));
+            }
+            return state.check_conversation_limit(self.config.max_conversation_bytes);
+        }
+        if action.tool_call_id != call.tool_call_id
+            || action.capability_id != call.capability.id
+            || action.request_hash != call.request_hash
+            || action.input_schema_hash != call.contracts.input.content_hash
+            || action.output_schema_hash != call.contracts.output_contract_set_hash
+            || action.data_release_hash != call.binding.data_release_hash
+            || !action.retryable_read
+        {
+            return Err(EngineError::RecoveryArtifactMismatch("action receipt"));
+        }
+        let result_hash = action
+            .result_hash
+            .as_ref()
+            .ok_or(EngineError::RecoveryArtifactMismatch("action result hash"))?;
+        let result_bytes = action
+            .result_bytes
+            .as_ref()
+            .ok_or(EngineError::RecoveryArtifactMismatch("action result bytes"))?;
+        if ContentHash::sha256(result_bytes) != *result_hash {
+            return Err(EngineError::RecoveryArtifactMismatch("action result"));
+        }
+        let result: CapabilityResult = serde_json::from_slice(result_bytes)?;
+        state.route_to_capability(call, episode_hash.clone())?;
+        let invocation = capability_invocation(&input.request.run_id, call);
+        self.capabilities
+            .restore_committed_result(&invocation, &result)
+            .await
+            .map_err(|failure| EngineError::Dependency {
+                component: "capability.restore_recovered_result",
+                failure,
+            })?;
+        if state.commit_research_result(call, &result).is_err() {
+            // Live parity: a drain call whose research-result commit fails is
+            // skipped, not fatal.
+            consumed_actions.insert(call.action_key.clone());
+            return Ok(());
+        }
+        state.reserve_capability_call(&call.capability.id, &call.action_key)?;
+        state.record_evidence_bytes(result_bytes.len())?;
+        let symbol = call
+            .arguments
+            .get("symbol")
+            .and_then(serde_json::Value::as_str);
+        state.ingest(&result, call.capability.id.as_str(), symbol)?;
+        state.ingest_scope_projection(call, &result)?;
+        if append_transcript {
+            state.append_capability_tool_result(call, &result)?;
+        }
+        if capability_result_completes_prerequisite(&result) {
+            state.completed_capabilities.insert(call.capability.id.clone());
+        }
+        state.record_accepted_action(call)?;
+        if capability_result_cacheable(
+            call.capability
+                .research_action
+                .as_ref()
+                .map(|policy| policy.kind),
+            &result,
+        ) {
+            state
+                .action_cache
+                .insert(call.action_key.clone(), result.clone());
+        }
+        state.complete_capability(
+            input.image,
+            call,
+            &result,
+            accepted_action_receipt_hash(call, &result)?,
+        )?;
+        if capability_result_completes_prerequisite(&result) {
+            state.compact_settled_phase(
+                episode_hash,
+                self.config.max_compacted_context_bytes,
+            )?;
+        }
+        if !consumed_actions.insert(call.action_key.clone()) {
+            return Err(EngineError::InvalidRecoverySnapshot(
+                "action was replayed more than once",
+            ));
+        }
+        state.check_conversation_limit(self.config.max_conversation_bytes)
     }
 
     pub(crate) async fn replay_committed_episode(
@@ -415,11 +545,20 @@ where
         // not re-verification of the request envelope. We therefore trust the
         // episode's own `request_hash` rather than the rebuilt one.
         let _ = request_hash; // still computed for diagnostic parity
+        // Same trust decision for the tool frontier (2026-09-08,
+        // run_b23662 family): the interpreter has already advanced past the
+        // checkpoint-captured state during replay, so the rebuilt capability
+        // frontier — and therefore `state.tool_schema_hash` — legitimately
+        // diverges from the schema the episode was validated against at
+        // live-run time. The live orchestrator validated the frontier when
+        // the episode was admitted; replay re-validates against the
+        // episode's own recorded hash instead of failing resumed runs with
+        // a spurious "provider episode contract mismatch".
         validate_episode(
             &episode,
             &episode.request_hash,
             input.image,
-            &state.tool_schema_hash,
+            &episode.tool_schema_hash,
             &input.snapshot.resolved_model,
             &input.snapshot.provider_api_version,
             input.snapshot.provider_wire_capabilities,
@@ -629,41 +768,67 @@ where
             input.request.context,
             krw_agent_protocol::RunContextV1::QuestionOnly {}
         );
-        let selected_index = match state.decide_research_dispatch(&prepared, question_only)? {
-            ResearchDispatchDecision::Execute { selected_index } => selected_index,
-            ResearchDispatchDecision::NoPositiveValue(reason) => {
+        // Live parity (2026-09-08, run_8806a8ce): a replayed episode whose
+        // decision the live path recovered through a repair directive (an
+        // over-size observation batch, a mixed batch) must recover the same
+        // way here. Propagating the decision error killed deferral-resumed
+        // runs terminally even though the identical live decision had a
+        // repair path.
+        let selected_index = match state.decide_research_dispatch(&prepared, question_only) {
+            Ok(ResearchDispatchDecision::Execute { selected_index }) => selected_index,
+            Ok(decision) => match decision {
+                ResearchDispatchDecision::NoPositiveValue(reason) => {
+                    if actions
+                        .iter()
+                        .any(|action| action.episode_hash == recovered.episode_hash)
+                    {
+                        return Err(EngineError::RecoveryArtifactMismatch(
+                            "no-positive episode has an action receipt",
+                        ));
+                    }
+                    if child_policy.is_some() {
+                        let parent_messages = std::mem::take(&mut state.messages);
+                        state.append_no_positive_value_result(&episode, &prepared, reason)?;
+                        state.messages = parent_messages;
+                    } else {
+                        state.append_no_positive_value_result(&episode, &prepared, reason)?;
+                    }
+                    return state.check_conversation_limit(self.config.max_conversation_bytes);
+                }
+                ResearchDispatchDecision::ProposalRejected(reason) => {
+                    if actions
+                        .iter()
+                        .any(|action| action.episode_hash == recovered.episode_hash)
+                    {
+                        return Err(EngineError::RecoveryArtifactMismatch(
+                            "rejected proposal episode has an action receipt",
+                        ));
+                    }
+                    if child_policy.is_some() {
+                        let parent_messages = std::mem::take(&mut state.messages);
+                        state.append_proposal_rejected_result(&episode, &prepared, reason)?;
+                        state.messages = parent_messages;
+                    } else {
+                        state.append_proposal_rejected_result(&episode, &prepared, reason)?;
+                    }
+                    return state.check_conversation_limit(self.config.max_conversation_bytes);
+                }
+                ResearchDispatchDecision::Execute { .. } => unreachable!("matched above"),
+            },
+            Err(error) => {
+                let Some(directive) = model_recovery_directive(&error) else {
+                    return Err(error);
+                };
                 if actions
                     .iter()
                     .any(|action| action.episode_hash == recovered.episode_hash)
                 {
                     return Err(EngineError::RecoveryArtifactMismatch(
-                        "no-positive episode has an action receipt",
+                        "recovered dispatch rejection has an action receipt",
                     ));
                 }
-                if child_policy.is_some() {
-                    let parent_messages = std::mem::take(&mut state.messages);
-                    state.append_no_positive_value_result(&episode, &prepared, reason)?;
-                    state.messages = parent_messages;
-                } else {
-                    state.append_no_positive_value_result(&episode, &prepared, reason)?;
-                }
-                return state.check_conversation_limit(self.config.max_conversation_bytes);
-            }
-            ResearchDispatchDecision::ProposalRejected(reason) => {
-                if actions
-                    .iter()
-                    .any(|action| action.episode_hash == recovered.episode_hash)
-                {
-                    return Err(EngineError::RecoveryArtifactMismatch(
-                        "rejected proposal episode has an action receipt",
-                    ));
-                }
-                if child_policy.is_some() {
-                    let parent_messages = std::mem::take(&mut state.messages);
-                    state.append_proposal_rejected_result(&episode, &prepared, reason)?;
-                    state.messages = parent_messages;
-                } else {
-                    state.append_proposal_rejected_result(&episode, &prepared, reason)?;
+                if !state.recover_model_decision(input.image, &episode, directive)? {
+                    return Err(error);
                 }
                 return state.check_conversation_limit(self.config.max_conversation_bytes);
             }
@@ -688,7 +853,62 @@ where
         state.route_to_capability(&selected, recovered.episode_hash.clone())?;
         if child_policy.is_none() {
             state.append_assistant(&episode);
-            state.append_unselected_research_results(&prepared)?;
+        }
+        // Live parity for the supplemental drain (2026-09-08, run_8806a8ce):
+        // the live path executes a homogeneous non-research batch by
+        // dispatching the first call and draining the rest one statechart
+        // visit at a time — each drained call leaves an accepted action
+        // receipt bound to THIS episode. Replay used to mark the remainder
+        // "unselected", which left those receipts unconsumed and tripped the
+        // "unreplayed action" invariant on every deferral-resumed run.
+        // Rebuild the live settlement instead: research alternatives stay
+        // unselected; drained observation calls replay from their receipts;
+        // a drained call whose attempt failed (ambiguous stage, the exact
+        // deferral trigger) consumes as a failed attempt; a call the
+        // interruption never reached returns to the pending drain.
+        let mut drained_calls = Vec::new();
+        let mut unselected = Vec::new();
+        for call in prepared {
+            if call.capability.research_action.is_some() {
+                unselected.push(call);
+            } else {
+                drained_calls.push(call);
+            }
+        }
+        if child_policy.is_none() {
+            state.append_unselected_research_results(&unselected)?;
+        }
+        for call in drained_calls {
+            let receipt = actions.iter().find(|action| {
+                action.action_key == call.action_key
+                    && action.episode_hash == recovered.episode_hash
+            });
+            match receipt {
+                Some(action) if action.stage == ActionStage::Accepted => {
+                    self.replay_committed_observation_action(
+                        input,
+                        state,
+                        &call,
+                        action,
+                        recovered.episode_hash.clone(),
+                        child_policy.is_none(),
+                        consumed_actions,
+                    )
+                    .await?;
+                }
+                Some(_) => {
+                    // A recorded non-accepted stage is a failed attempt (the
+                    // deferral trigger itself). The live path continued past
+                    // it; replay consumes it without re-execution.
+                    consumed_actions.insert(call.action_key.clone());
+                }
+                None => {
+                    state.pending_supplemental_calls.push((
+                        recovered.episode_hash.clone(),
+                        call,
+                    ));
+                }
+            }
         }
         for call in [selected] {
             // Mirror the live cache-hit branch: when the replayed episode's

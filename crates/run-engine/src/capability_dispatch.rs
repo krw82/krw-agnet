@@ -2679,9 +2679,26 @@ where
         .await?;
         validate_action_receipt(&receipt, call)?;
 
-        match receipt.stage {
+        // A retryable read whose previous attempt landed in the ambiguous
+        // lane (MayHaveDispatched transport failure) is safe to re-issue:
+        // canonical-args reads are idempotent and the deferral lane's whole
+        // purpose is to re-lease and retry the run (2026-09-08 sector
+        // incidents — the resumed drain re-begun the same action key and
+        // died terminally on AmbiguousAction). Non-retryable ambiguity
+        // keeps failing closed below.
+        let effective_stage = match receipt.stage {
+            ActionStage::Ambiguous if receipt.retryable_read => ActionStage::Begun,
+            stage => stage,
+        };
+
+        match effective_stage {
             ActionStage::Begun => {
-                action.bind_receipt(&receipt)?;
+                // For the retryable-ambiguous retry the normalized receipt
+                // is what the action state machine may bind — the durable
+                // row itself stays ambiguous until this attempt observes.
+                let mut bindable = receipt.clone();
+                bindable.stage = ActionStage::Begun;
+                action.bind_receipt(&bindable)?;
                 self.guard_control(identity, deadline).await?;
                 action.mark_dispatched()?;
                 // Local skill-body lookup (progressive disclosure). The body is

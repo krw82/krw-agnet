@@ -3779,6 +3779,7 @@ mod tests {
         /// When set, the NEXT invoke returns this dependency failure instead
         /// of a scripted payload, replaying adapter contract rejections.
         fail_invoke: Mutex<Option<DependencyFailure>>,
+        fail_invoke_on: Mutex<Option<(usize, DependencyFailure)>>,
         /// Optional per-call committed calculation batches (one batch per
         /// capability call, in call order). Empty by default so ordinary
         /// fixtures are unaffected.
@@ -3788,6 +3789,12 @@ mod tests {
     impl ScriptedCapability {
         fn fail_next_invoke(&self, failure: DependencyFailure) {
             *self.fail_invoke.lock().unwrap() = Some(failure);
+        }
+
+        /// Fail the Nth invoke (1-based) instead of the next one — lets a
+        /// test interrupt a supplemental drain between its calls.
+        fn fail_invoke_on(&self, call_number: usize, failure: DependencyFailure) {
+            *self.fail_invoke_on.lock().unwrap() = Some((call_number, failure));
         }
     }
 
@@ -3810,6 +3817,20 @@ mod tests {
                 self.cancel_after_dispatch.store(true, Ordering::SeqCst);
             }
             if let Some(failure) = self.fail_invoke.lock().unwrap().take() {
+                return Err(failure);
+            }
+            let targeted_failure = {
+                let mut slot = self.fail_invoke_on.lock().unwrap();
+                match slot.as_mut() {
+                    Some((target, failure)) if call_number == *target => {
+                        let failure = failure.clone();
+                        *slot = None;
+                        Some(failure)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(failure) = targeted_failure {
                 return Err(failure);
             }
             let payload_hash = ContentHash::sha256(format!(
@@ -5107,6 +5128,7 @@ mod tests {
             should_cancel,
             presentation_packs,
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::from(calculation_batches)),
         });
         let persistence = Arc::new(ScriptedPersistence::new(
@@ -5802,6 +5824,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -6366,6 +6389,159 @@ mod tests {
         );
         assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
     }
+
+    #[tokio::test]
+    async fn supplemental_drain_interrupt_survives_deferral_resume() {
+        // Production 2026-09-08 (sector-question incidents): a retryable
+        // tool error in the middle of a supplemental drain deferred the run,
+        // and the deferral resume died terminally in recovery replay — the
+        // drained sibling's action receipt was bound to the emitting episode
+        // while replay only settled the first selected call ("checkpoint
+        // contains an unreplayed action"). Replay must rebuild the live
+        // drain settlement: completed drains replay from their receipts,
+        // the interrupted call returns to the pending queue, and the run
+        // continues instead of dying.
+        let mut fixture = fixture();
+        fixture.request.budget.max_capability_calls = 8;
+        fixture.snapshot.budget = fixture.request.budget.clone();
+        let pinned_release =
+            fixture.snapshot.capability_release_hashes["ontology.query_context"].clone();
+        fixture
+            .snapshot
+            .capability_release_hashes
+            .insert("filing.search_events".into(), pinned_release.clone());
+        fixture
+            .snapshot
+            .capability_release_hashes
+            .insert("news.feed_list".into(), pinned_release);
+        {
+            let mut binding = fixture.deployment.capabilities[0].clone();
+            binding.binding_key = "search_catalog_filings".into();
+            binding.mcp_tool_name = "search_catalog_filings".into();
+            fixture.deployment.capabilities.push(binding);
+            let mut binding = fixture.deployment.capabilities[0].clone();
+            binding.binding_key = "list_feed_items".into();
+            binding.mcp_tool_name = "list_feed_items".into();
+            fixture.deployment.capabilities.push(binding);
+        }
+        let script = VecDeque::from([
+            company_context_tool_call("company-context"),
+            query_context_tool_call("call-1", &fixture_research_state()["plan"]),
+            research_tool_call_batch(vec![
+                (
+                    "ladder-search",
+                    "filing.search_events",
+                    serde_json::json!({"ticker": "VG", "limit": 5}),
+                ),
+                (
+                    "feed-list",
+                    "news.feed_list",
+                    serde_json::json!({"tickers": ["VG"], "limit": 5}),
+                ),
+            ]),
+        ]);
+        let usage_script = (0..script.len()).map(|_| scripted_token_usage(5)).collect();
+        let lrcx_catalog = serde_json::json!([{
+            "filing_event_id": "01234567-89ab-4cde-8123-456789abcdef",
+            "ticker": "VG",
+            "cik": "0000103126",
+            "accession_number": "0000103126-26-012345",
+            "form_type": "8-K",
+            "filing_date": "2026-08-27",
+            "report_date": "2026-08-27",
+            "accepted_at": "2026-08-27T16:01:00Z",
+            "sec_items": ["5.02"],
+            "event_tags": ["leadership_or_board_change"],
+            "filing_detail_url": "https://www.sec.gov/Archives/edgar/data/103126/000010312626012345/index.htm",
+            "primary_document_url": "https://www.sec.gov/Archives/edgar/data/103126/000010312626012345/vg-20260827.htm",
+            "enrichment_status": "ready"
+        }]);
+        let feed_list = serde_json::json!({
+            "pagination": {"limit": 5, "next_cursor": null, "has_more": false},
+            "items": []
+        });
+        let resumed_feed_list = feed_list.clone();
+        let rig = engine_with_script_results_and_usage(
+            script,
+            usage_script,
+            VecDeque::from([
+                fixture_company_context(),
+                fixture_research_state(),
+                lrcx_catalog,
+                feed_list,
+            ]),
+            true,
+            None,
+            false,
+        );
+        // Invoke order: company-context (1), query context (2), the batch's
+        // first drain call (3) — then fail the SECOND drain call (4) with a
+        // retryable tool error, exactly like the finviz lane incident.
+        rig.capability.fail_invoke_on(
+            4,
+            DependencyFailure::redacted(
+                "provider_tool_error_text",
+                "diag",
+                true,
+                DeliveryCertainty::MayHaveDispatched,
+            ),
+        );
+        let interrupted = rig.engine.run(fixture.input()).await.unwrap_err();
+        assert!(
+            matches!(
+                interrupted,
+                EngineError::Dependency { component, .. } if component == "capability"
+            ),
+            "interrupted drain must surface a retryable dependency, got {interrupted:?}"
+        );
+        assert_eq!(rig.capability.calls.load(Ordering::SeqCst), 4);
+        let recovery = captured_recovery(&rig.persistence);
+        *rig.persistence.recovery.lock().unwrap() = recovery;
+
+        let resumed_log = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ScriptedProvider::with_script(
+            Arc::clone(&resumed_log),
+            VecDeque::from([
+                workflow_transition_message("transition-assess", "evidence_sufficient"),
+                AssistantMessage {
+                    content: Some(final_markdown()),
+                    reasoning_content: None,
+                    reasoning_signature: None,
+                    tool_calls: Vec::new(),
+                },
+            ]),
+        ));
+        let capability = Arc::new(ScriptedCapability {
+            log: Arc::clone(&resumed_log),
+            calls: AtomicUsize::new(4),
+            provider_results: Mutex::new(VecDeque::from([resumed_feed_list])),
+            echo_context_plan: true,
+            cancel_after_dispatch: Arc::new(AtomicBool::new(false)),
+            should_cancel: false,
+            presentation_packs: Vec::new(),
+            fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
+            calculation_batches: Mutex::new(VecDeque::new()),
+        });
+        let resumed = RunEngine::new(
+            provider,
+            Arc::clone(&capability),
+            Arc::clone(&rig.persistence),
+            EngineConfig::default(),
+        );
+
+        let outcome = resumed.run(fixture.input()).await.unwrap_or_else(|error| {
+            panic!("deferral resume must survive the drained batch, got {error:?}")
+        });
+        assert_eq!(outcome.final_status, FinalStatus::Committed);
+        // The interrupted drain call (feed-list) is re-drained after resume:
+        // replay settles the first call from its receipt, the failed sibling
+        // returns to the pending queue, and the resumed drain executes it
+        // once more.
+        assert_eq!(capability.calls.load(Ordering::SeqCst), 5);
+        assert!(outcome.answer_bundle.rendered_markdown.contains("## 결론"));
+    }
+
     #[test]
     fn provider_transport_failures_are_retryable_for_the_deferral_lane() {
         // Production GOOGL 2026-09-02: a mid-stream HTTP transport error
@@ -7867,6 +8043,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8052,6 +8229,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8400,6 +8578,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8878,6 +9057,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -8963,6 +9143,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -9154,6 +9335,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -9209,6 +9391,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
@@ -10441,6 +10624,7 @@ mod tests {
             should_cancel: false,
             presentation_packs: Vec::new(),
             fail_invoke: Mutex::new(None),
+            fail_invoke_on: Mutex::new(None),
             calculation_batches: Mutex::new(VecDeque::new()),
         });
         let resumed = RunEngine::new(
