@@ -3583,6 +3583,58 @@ fn validate_capability_input_abi(
                         OpenbbPinnedProvider::Fmp,
                         true,
                     ),
+                    // Round-5 (2026-09-07): fmp core lanes — segment and
+                    // geography revenue mix, multi-period performance,
+                    // issuer profile, Form-4 insider reads, and the three
+                    // plan-bounded annual estimate reads.
+                    "openbb-segment-input/v1" => (
+                        "openbb-segment-input/v1",
+                        "openbb-segment-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-geography-input/v1" => (
+                        "openbb-geography-input/v1",
+                        "openbb-geography-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-price-performance-input/v1" => (
+                        "openbb-price-performance-input/v1",
+                        "openbb-price-performance-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-profile-input/v1" => (
+                        "openbb-profile-input/v1",
+                        "openbb-profile-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-insider-input/v1" => (
+                        "openbb-insider-input/v1",
+                        "openbb-insider-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-forward-eps-input/v1" => (
+                        "openbb-forward-eps-input/v1",
+                        "openbb-forward-eps-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-forward-ebitda-input/v1" => (
+                        "openbb-forward-ebitda-input/v1",
+                        "openbb-forward-ebitda-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
+                    "openbb-estimates-historical-input/v1" => (
+                        "openbb-estimates-historical-input/v1",
+                        "openbb-estimates-historical-request/v1",
+                        OpenbbPinnedProvider::Fmp,
+                        true,
+                    ),
                     _ => (
                         capability.input_contract.as_str(),
                         "",
@@ -5699,6 +5751,80 @@ mod tests {
             (
                 "openbb-news-input/v1",
                 "openbb-news-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        // Round-5: the fmp core lanes (segment/geography mix, performance,
+        // profile, insider, plan-bounded annual estimates x3).
+        expected.insert(
+            "openbb.revenue_segment",
+            (
+                "openbb-segment-input/v1",
+                "openbb-segment-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.revenue_geography",
+            (
+                "openbb-geography-input/v1",
+                "openbb-geography-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.price_performance",
+            (
+                "openbb-price-performance-input/v1",
+                "openbb-price-performance-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.profile",
+            (
+                "openbb-profile-input/v1",
+                "openbb-profile-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.insider_trading",
+            (
+                "openbb-insider-input/v1",
+                "openbb-insider-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.forward_eps",
+            (
+                "openbb-forward-eps-input/v1",
+                "openbb-forward-eps-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.forward_ebitda",
+            (
+                "openbb-forward-ebitda-input/v1",
+                "openbb-forward-ebitda-request/v1",
+                OpenbbPinnedProvider::Fmp,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.estimates_historical",
+            (
+                "openbb-estimates-historical-input/v1",
+                "openbb-estimates-historical-request/v1",
                 OpenbbPinnedProvider::Fmp,
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),

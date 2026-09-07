@@ -51,14 +51,36 @@ whole run, so treat them as absolute:
   gets the call rejected). Lead observation batches with the subject's
   OWN data reads (income statement, quote, price history) and keep news
   later in the order.
+- **Mix and estimates lanes (round 5).** Revenue-mix questions ("사업부문별
+  매출", "어느 지역이 커", "믹스가 어떻게 바뀌어") have dedicated reads:
+  `openbb.revenue_segment` (business line) and `openbb.revenue_geography`
+  (region). Outlook questions ("전망", "애널리스트들이 어떻게 보") use
+  `openbb.forward_eps` / `openbb.forward_ebitda` (annual consensus rows) and
+  `openbb.estimates_historical` (revisions context) — these are the RIGHT
+  lanes; do not re-derive outlook from a price history. "얼마나 움직였지"
+  performance context is one `openbb.price_performance` read (multi-period
+  returns), cheaper than a full price history. For a subject outside the
+  covered universe, an `openbb.profile` read (sector/industry/description)
+  is the natural FIRST read — it names the industry in the answer's own
+  words and tells you which peers make honest comparisons. Sudden-move or
+  rumor questions ("왜 이렇게 움직였지", "인수 소문") pair `openbb.news`
+  with `openbb.insider_trading` (recent Form-4 buys/sells) — insider reads
+  are color for timing, never causal evidence on their own.
 - **Discovery is one round.** Author the universe search plan once
   (`query_context_universe`, ≤12 clauses for the whole run). There is no
   second discovery round; follow-up drilling uses targeted topic queries,
   the market plane, macro series, and news.
+- **Period literals on statement/metrics reads.** The transport accepts
+  `period` values `annual` and `quarter` ONLY — never `quarterly` (live
+  2026-09-07: a `quarterly` literal on income/metrics came back as an
+  upstream 422 and the run lost the whole batch).
 
 1. **Discovery ladder.** Author the covered-universe search plan from the
    question (`query_context_universe`); never inject explicit tickers into a
-   universe plan. Follow up on discovered candidates with `query_universe`
+   universe plan. Every objective in the proposal must carry ALL its schema
+   fields — including `priority` (live 2026-09-07: two runs died in the plan
+   repair loop over a missing "priority" and composed with zero reads).
+   Follow up on discovered candidates with `query_universe`
    and `trace_universe` (topic/object_id only) when the follow-up can change
    the conclusion. **Scale discovery to the question type.** A
    subject-question ("COIN 요즘 분위기", "TSLA 실적 어때") is about ONE
@@ -75,9 +97,10 @@ whole run, so treat them as absolute:
    about the landscape.
 2. **Market plane.** Quotes, fundamentals, statements, consensus, peers,
    earnings calendars, filing lists, company news, web headlines, price
-   history, and macro/market series (`openbb.*`, `news.web_search`,
-   `market.series`) may name ANY canonical ticker — including issuers
-   outside the ontology coverage. **US listings only:** the market data
+   history, revenue mix (segment/geography), performance, profiles,
+   insider reads, forward estimates, and macro/market series (`openbb.*`,
+   `news.web_search`, `market.series`) may name ANY canonical ticker —
+   including issuers outside the ontology coverage. **US listings only:** the market data
    plane serves US-listed tickers; a non-US listing (Korea `005930.KS`,
    Japan `7203.T`, most foreign exchanges) will not resolve — do NOT
    spend calls or universe-plan clauses on it (live 2026-09-07: a

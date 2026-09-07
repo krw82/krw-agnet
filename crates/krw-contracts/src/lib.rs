@@ -202,6 +202,70 @@ const OPENBB_NEWS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-news-input-v1.json"
 ));
+const OPENBB_SEGMENT_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-segment-request-v1.json"
+));
+const OPENBB_SEGMENT_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-segment-input-v1.json"
+));
+const OPENBB_GEOGRAPHY_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-geography-request-v1.json"
+));
+const OPENBB_GEOGRAPHY_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-geography-input-v1.json"
+));
+const OPENBB_PRICE_PERFORMANCE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-performance-request-v1.json"
+));
+const OPENBB_PRICE_PERFORMANCE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-price-performance-input-v1.json"
+));
+const OPENBB_PROFILE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-profile-request-v1.json"
+));
+const OPENBB_PROFILE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-profile-input-v1.json"
+));
+const OPENBB_INSIDER_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-insider-request-v1.json"
+));
+const OPENBB_INSIDER_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-insider-input-v1.json"
+));
+const OPENBB_FORWARD_EPS_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-forward-eps-request-v1.json"
+));
+const OPENBB_FORWARD_EPS_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-forward-eps-input-v1.json"
+));
+const OPENBB_FORWARD_EBITDA_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-forward-ebitda-request-v1.json"
+));
+const OPENBB_FORWARD_EBITDA_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-forward-ebitda-input-v1.json"
+));
+const OPENBB_ESTIMATES_HISTORICAL_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-estimates-historical-request-v1.json"
+));
+const OPENBB_ESTIMATES_HISTORICAL_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-estimates-historical-input-v1.json"
+));
 const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
@@ -373,6 +437,56 @@ pub const OPENBB_NEWS_REQUEST_V1: &str = "openbb-news-request/v1";
 /// Physical MCP input for the curated openbb `news_company` tool with the
 /// kernel-injected fmp provider and a pinned article limit.
 pub const OPENBB_NEWS_INPUT_V1: &str = "openbb-news-input/v1";
+/// Model-authored request for a revenue-by-business-line read. Round-5
+/// curation (2026-09-07): the segment-mix axis the ontology serves only for
+/// covered issuers, opened for any canonical ticker via fmp.
+pub const OPENBB_SEGMENT_REQUEST_V1: &str = "openbb-segment-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_revenue_per_segment`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_SEGMENT_INPUT_V1: &str = "openbb-segment-input/v1";
+/// Model-authored request for a revenue-by-region read (same round-5 axis
+/// as the segment lane, geographic mix instead of business line).
+pub const OPENBB_GEOGRAPHY_REQUEST_V1: &str = "openbb-geography-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_revenue_per_geography`
+/// tool with the kernel-injected fmp provider.
+pub const OPENBB_GEOGRAPHY_INPUT_V1: &str = "openbb-geography-input/v1";
+/// Model-authored request for a multi-period price-performance read
+/// (1d..5y returns) — the light lane for "how much did it move" questions.
+pub const OPENBB_PRICE_PERFORMANCE_REQUEST_V1: &str = "openbb-price-performance-request/v1";
+/// Physical MCP input for the curated openbb `equity_price_performance` tool
+/// with the kernel-injected fmp provider.
+pub const OPENBB_PRICE_PERFORMANCE_INPUT_V1: &str = "openbb-price-performance-input/v1";
+/// Model-authored request for an issuer profile read (sector, industry,
+/// description, listing facts) — the grounding step for uncovered names.
+pub const OPENBB_PROFILE_REQUEST_V1: &str = "openbb-profile-request/v1";
+/// Physical MCP input for the curated openbb `equity_profile` tool with the
+/// kernel-injected fmp provider.
+pub const OPENBB_PROFILE_INPUT_V1: &str = "openbb-profile-input/v1";
+/// Model-authored request for a Form-4 insider-transactions read —
+/// positioning color for rumor and sudden-move questions.
+pub const OPENBB_INSIDER_REQUEST_V1: &str = "openbb-insider-request/v1";
+/// Physical MCP input for the curated openbb `equity_ownership_insider_trading`
+/// tool with the kernel-injected fmp provider and a pinned row limit.
+pub const OPENBB_INSIDER_INPUT_V1: &str = "openbb-insider-input/v1";
+/// Model-authored request for a forward-EPS estimates read. Annual rows
+/// only: the pinned `limit <= 10` keeps the call inside the Starter plan
+/// (a bare call defaults past the limit ceiling and 402s).
+pub const OPENBB_FORWARD_EPS_REQUEST_V1: &str = "openbb-forward-eps-request/v1";
+/// Physical MCP input for the curated openbb `equity_estimates_forward_eps`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_FORWARD_EPS_INPUT_V1: &str = "openbb-forward-eps-input/v1";
+/// Model-authored request for a forward-EBITDA estimates read (annual rows,
+/// pinned limit — same Starter-plan bound as the forward-EPS lane).
+pub const OPENBB_FORWARD_EBITDA_REQUEST_V1: &str = "openbb-forward-ebitda-request/v1";
+/// Physical MCP input for the curated openbb `equity_estimates_forward_ebitda`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_FORWARD_EBITDA_INPUT_V1: &str = "openbb-forward-ebitda-input/v1";
+/// Model-authored request for a historical analyst-estimates read (annual
+/// consensus revisions context, pinned limit — same plan bound).
+pub const OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1: &str = "openbb-estimates-historical-request/v1";
+/// Physical MCP input for the curated openbb `equity_estimates_historical`
+/// tool with the kernel-injected fmp provider and a pinned limit.
+pub const OPENBB_ESTIMATES_HISTORICAL_INPUT_V1: &str = "openbb-estimates-historical-input/v1";
 /// Model-authored request for the deterministic local DCF builtin. The
 /// model supplies labeled inputs it already collected; the builtin owns
 /// every arithmetic step and fails closed on `terminal_growth >= wacc`.
@@ -500,6 +614,38 @@ pub const OPENBB_NEWS_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:ce26132394b35b355216fa38d8489079099c0964dfed01ff1cb762a28c2b6fb3";
 pub const OPENBB_NEWS_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:07d729bbf5ec2eb88f8c0d29c70c6dd738e1582e675975f0c706efdf84e7f3c8";
+pub const OPENBB_SEGMENT_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:6d796aa044d24df64b17522652a03dcd02c20a1cedcfb9874e0f13522d8a929a";
+pub const OPENBB_SEGMENT_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:5ff02d5ab41b901b44c6543751ebfe605f3bb63da5b93d7ac236d97f166724c9";
+pub const OPENBB_GEOGRAPHY_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:fc04a17d6e2645c64647f42447e18074e0c5fe7fa6326122bd3154c24da8c751";
+pub const OPENBB_GEOGRAPHY_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:e60c2b7d7915388fc0531f4d4dc4ad2f57e0568f4e85c2ae978c773bb1677198";
+pub const OPENBB_PRICE_PERFORMANCE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:bee20d17f0d6fa34d92f57d27296896ebeb221cbd1a9b9655e0c28caedb4ac3c";
+pub const OPENBB_PRICE_PERFORMANCE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:1b7155c2c2e620d0a972d042b41bf761eb02fb8920f3446b1f99324d9244675f";
+pub const OPENBB_PROFILE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:a63f93a5ca2edf7c555d3481dd5d4fdba1c1ab5f31de61e741e3e9680121eb02";
+pub const OPENBB_PROFILE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:b982111de61a68efe652c983c19bb3dfc832a8719d0dda30bf3b6b8c3805922e";
+pub const OPENBB_INSIDER_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:2bae94d9377b09c362543cba5860df1692c903772d845676aad558040d99ef46";
+pub const OPENBB_INSIDER_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:0499f8c8eae0e152ac45591a204b0c8b7646cc6bf6d090d88bab2e75b0601787";
+pub const OPENBB_FORWARD_EPS_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:0262b8d8289454222cf722cf886d25d725ba416c24f46dd127b63062f37c995c";
+pub const OPENBB_FORWARD_EPS_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:c498f75fe16d31726d88947ba1857f4c4e21457162e36eb90985b7b6928f1f40";
+pub const OPENBB_FORWARD_EBITDA_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:f016cbd3b45d6042f3b79569662f1095b05d94f18d73ef1174d6219e60d58ad1";
+pub const OPENBB_FORWARD_EBITDA_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:884e74e8b622543c5931089c9b6c67c6d7a9819359853d96b590646ece605e6a";
+pub const OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:fff3b0202b300844467b47c0cdbd2e2829ce728b21c61098870e84042c28d639";
+pub const OPENBB_ESTIMATES_HISTORICAL_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:fc6d862c52ab25c8b0780bdbe7126612b067fde54315af4b2186f3fe5a01e374";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -735,6 +881,86 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_NEWS_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_NEWS_INPUT_BYTES,
         }),
+        OPENBB_SEGMENT_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SEGMENT_REQUEST_V1,
+            schema_sha256: OPENBB_SEGMENT_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SEGMENT_REQUEST_BYTES,
+        }),
+        OPENBB_SEGMENT_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SEGMENT_INPUT_V1,
+            schema_sha256: OPENBB_SEGMENT_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SEGMENT_INPUT_BYTES,
+        }),
+        OPENBB_GEOGRAPHY_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_GEOGRAPHY_REQUEST_V1,
+            schema_sha256: OPENBB_GEOGRAPHY_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_GEOGRAPHY_REQUEST_BYTES,
+        }),
+        OPENBB_GEOGRAPHY_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_GEOGRAPHY_INPUT_V1,
+            schema_sha256: OPENBB_GEOGRAPHY_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_GEOGRAPHY_INPUT_BYTES,
+        }),
+        OPENBB_PRICE_PERFORMANCE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_PERFORMANCE_REQUEST_V1,
+            schema_sha256: OPENBB_PRICE_PERFORMANCE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_PERFORMANCE_REQUEST_BYTES,
+        }),
+        OPENBB_PRICE_PERFORMANCE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_PRICE_PERFORMANCE_INPUT_V1,
+            schema_sha256: OPENBB_PRICE_PERFORMANCE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_PRICE_PERFORMANCE_INPUT_BYTES,
+        }),
+        OPENBB_PROFILE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_PROFILE_REQUEST_V1,
+            schema_sha256: OPENBB_PROFILE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_PROFILE_REQUEST_BYTES,
+        }),
+        OPENBB_PROFILE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_PROFILE_INPUT_V1,
+            schema_sha256: OPENBB_PROFILE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_PROFILE_INPUT_BYTES,
+        }),
+        OPENBB_INSIDER_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_INSIDER_REQUEST_V1,
+            schema_sha256: OPENBB_INSIDER_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_INSIDER_REQUEST_BYTES,
+        }),
+        OPENBB_INSIDER_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_INSIDER_INPUT_V1,
+            schema_sha256: OPENBB_INSIDER_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_INSIDER_INPUT_BYTES,
+        }),
+        OPENBB_FORWARD_EPS_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_FORWARD_EPS_REQUEST_V1,
+            schema_sha256: OPENBB_FORWARD_EPS_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_FORWARD_EPS_REQUEST_BYTES,
+        }),
+        OPENBB_FORWARD_EPS_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_FORWARD_EPS_INPUT_V1,
+            schema_sha256: OPENBB_FORWARD_EPS_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_FORWARD_EPS_INPUT_BYTES,
+        }),
+        OPENBB_FORWARD_EBITDA_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_FORWARD_EBITDA_REQUEST_V1,
+            schema_sha256: OPENBB_FORWARD_EBITDA_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_FORWARD_EBITDA_REQUEST_BYTES,
+        }),
+        OPENBB_FORWARD_EBITDA_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_FORWARD_EBITDA_INPUT_V1,
+            schema_sha256: OPENBB_FORWARD_EBITDA_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_FORWARD_EBITDA_INPUT_BYTES,
+        }),
+        OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1,
+            schema_sha256: OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_ESTIMATES_HISTORICAL_REQUEST_BYTES,
+        }),
+        OPENBB_ESTIMATES_HISTORICAL_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_ESTIMATES_HISTORICAL_INPUT_V1,
+            schema_sha256: OPENBB_ESTIMATES_HISTORICAL_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_ESTIMATES_HISTORICAL_INPUT_BYTES,
+        }),
         QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
             id: QUANT_DCF_REQUEST_V1,
             schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
@@ -865,6 +1091,24 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         // Round-4 company news (FMP news color for any canonical ticker).
         contract(OPENBB_NEWS_REQUEST_V1).expect("static contract"),
         contract(OPENBB_NEWS_INPUT_V1).expect("static contract"),
+        // Round-5 fmp core lanes (segment/geography mix, performance,
+        // profile, insider, forward estimates x2, historical estimates).
+        contract(OPENBB_SEGMENT_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SEGMENT_INPUT_V1).expect("static contract"),
+        contract(OPENBB_GEOGRAPHY_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_GEOGRAPHY_INPUT_V1).expect("static contract"),
+        contract(OPENBB_PRICE_PERFORMANCE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PRICE_PERFORMANCE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_PROFILE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_PROFILE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_INSIDER_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_INSIDER_INPUT_V1).expect("static contract"),
+        contract(OPENBB_FORWARD_EPS_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_FORWARD_EPS_INPUT_V1).expect("static contract"),
+        contract(OPENBB_FORWARD_EBITDA_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_FORWARD_EBITDA_INPUT_V1).expect("static contract"),
+        contract(OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_ESTIMATES_HISTORICAL_INPUT_V1).expect("static contract"),
         // Deterministic local quant computation (financial-services P2/P4).
         contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
         contract(QUANT_DCF_RESULT_V1).expect("static contract"),
@@ -983,6 +1227,70 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
         OPENBB_FILINGS_INPUT_V1 => validate_openbb_filings_input(value),
         OPENBB_NEWS_REQUEST_V1 => validate_openbb_news_request(value),
         OPENBB_NEWS_INPUT_V1 => validate_openbb_news_input(value),
+        OPENBB_SEGMENT_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_SEGMENT_REQUEST_V1,
+        ),
+        OPENBB_SEGMENT_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_SEGMENT_INPUT_V1,
+        ),
+        OPENBB_GEOGRAPHY_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_GEOGRAPHY_REQUEST_V1,
+        ),
+        OPENBB_GEOGRAPHY_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_GEOGRAPHY_INPUT_V1,
+        ),
+        OPENBB_PRICE_PERFORMANCE_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_PRICE_PERFORMANCE_REQUEST_V1,
+        ),
+        OPENBB_PRICE_PERFORMANCE_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_PRICE_PERFORMANCE_INPUT_V1,
+        ),
+        OPENBB_PROFILE_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_PROFILE_REQUEST_V1,
+        ),
+        OPENBB_PROFILE_INPUT_V1 => validate_openbb_symbol_input(
+            value,
+            OPENBB_PROFILE_INPUT_V1,
+        ),
+        OPENBB_INSIDER_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_INSIDER_REQUEST_V1,
+        ),
+        OPENBB_INSIDER_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_INSIDER_INPUT_V1,
+        ),
+        OPENBB_FORWARD_EPS_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_FORWARD_EPS_REQUEST_V1,
+        ),
+        OPENBB_FORWARD_EPS_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_FORWARD_EPS_INPUT_V1,
+        ),
+        OPENBB_FORWARD_EBITDA_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_FORWARD_EBITDA_REQUEST_V1,
+        ),
+        OPENBB_FORWARD_EBITDA_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_FORWARD_EBITDA_INPUT_V1,
+        ),
+        OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1,
+        ),
+        OPENBB_ESTIMATES_HISTORICAL_INPUT_V1 => validate_openbb_limit_symbol_input(
+            value,
+            OPENBB_ESTIMATES_HISTORICAL_INPUT_V1,
+        ),
         QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
         QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
@@ -2864,6 +3172,69 @@ fn validate_openbb_news_request(value: &Value) -> Result<(), ContractValueError>
     Ok(())
 }
 
+/// Round-5 shared request validator: a bare canonical ticker. The kernel
+/// owns every other physical argument (provider, and the pinned limits that
+/// keep estimate reads inside the transport plan), so the model proposes
+/// nothing beyond the identifier.
+fn validate_openbb_ticker_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["ticker"], contract_id)?;
+    if !request
+        .get("ticker")
+        .and_then(Value::as_str)
+        .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-5 shared input validator: kernel-injected fmp provider plus the
+/// canonical symbol, nothing else on the wire.
+fn validate_openbb_symbol_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["provider", "symbol"], contract_id)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-5 shared input validator for the plan-bounded estimate reads: the
+/// kernel also pins a row limit (1..=10; a bare call defaults past the
+/// Starter ceiling and the transport 402s before any data moves).
+fn validate_openbb_limit_symbol_input(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["provider", "symbol", "limit"], contract_id)?;
+    if request.get("provider").and_then(Value::as_str) != Some("fmp")
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=10).contains(&limit))
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
 fn validate_openbb_news_input(value: &Value) -> Result<(), ContractValueError> {
     let request = object(value, OPENBB_NEWS_INPUT_V1)?;
     exact_keys(
@@ -3393,7 +3764,7 @@ mod tests {
         // 20 openbb round-2 contracts + the 2 quant DCF contracts + the 2
         // openbb round-3 filings contracts + the 2 openbb round-4 news
         // contracts.
-        assert_eq!(descriptors().len(), 97);
+        assert_eq!(descriptors().len(), 113);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()
@@ -3570,6 +3941,91 @@ mod tests {
             )
             .is_err()
         );
+
+        // Round-5 core lanes: every request is a bare canonical ticker and
+        // every physical input is fmp + symbol (the estimate reads also pin
+        // a plan-bounded row limit). Anything extra — a provider the model
+        // chose, a quarterly period flag, a limit above the Starter
+        // ceiling — must reject.
+        for request_contract in [
+            OPENBB_SEGMENT_REQUEST_V1,
+            OPENBB_GEOGRAPHY_REQUEST_V1,
+            OPENBB_PRICE_PERFORMANCE_REQUEST_V1,
+            OPENBB_PROFILE_REQUEST_V1,
+            OPENBB_INSIDER_REQUEST_V1,
+            OPENBB_FORWARD_EPS_REQUEST_V1,
+            OPENBB_FORWARD_EBITDA_REQUEST_V1,
+            OPENBB_ESTIMATES_HISTORICAL_REQUEST_V1,
+        ] {
+            assert!(
+                validate_value(request_contract, &serde_json::json!({"ticker": "VRT"})).is_ok()
+            );
+            assert!(validate_value(
+                request_contract,
+                &serde_json::json!({"ticker": "VRT", "provider": "fmp"})
+            )
+            .is_err());
+            assert!(validate_value(
+                request_contract,
+                &serde_json::json!({"ticker": "samsung-electronics"})
+            )
+            .is_err());
+        }
+        for input_contract in [
+            OPENBB_SEGMENT_INPUT_V1,
+            OPENBB_GEOGRAPHY_INPUT_V1,
+            OPENBB_PRICE_PERFORMANCE_INPUT_V1,
+            OPENBB_PROFILE_INPUT_V1,
+        ] {
+            assert!(
+                validate_value(
+                    input_contract,
+                    &serde_json::json!({"provider": "fmp", "symbol": "VRT"})
+                )
+                .is_ok()
+            );
+            // The unpinned shapes must reject: a foreign provider, a smuggled
+            // limit, or a missing symbol.
+            assert!(validate_value(
+                input_contract,
+                &serde_json::json!({"provider": "intrinio", "symbol": "VRT"})
+            )
+            .is_err());
+            assert!(validate_value(
+                input_contract,
+                &serde_json::json!({"provider": "fmp", "symbol": "VRT", "limit": 5})
+            )
+            .is_err());
+            assert!(validate_value(
+                input_contract,
+                &serde_json::json!({"provider": "fmp"})
+            )
+            .is_err());
+        }
+        for input_contract in [
+            OPENBB_INSIDER_INPUT_V1,
+            OPENBB_FORWARD_EPS_INPUT_V1,
+            OPENBB_FORWARD_EBITDA_INPUT_V1,
+            OPENBB_ESTIMATES_HISTORICAL_INPUT_V1,
+        ] {
+            assert!(
+                validate_value(
+                    input_contract,
+                    &serde_json::json!({"provider": "fmp", "symbol": "MU", "limit": 10})
+                )
+                .is_ok()
+            );
+            assert!(validate_value(
+                input_contract,
+                &serde_json::json!({"provider": "fmp", "symbol": "MU", "limit": 11})
+            )
+            .is_err());
+            assert!(validate_value(
+                input_contract,
+                &serde_json::json!({"provider": "fmp", "symbol": "MU", "fiscal_period": "quarter"})
+            )
+            .is_err());
+        }
     }
 
     #[test]

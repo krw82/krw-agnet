@@ -349,3 +349,95 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 2
     request_timeout_ms: 15000
+  # Round-5 fmp core lanes (2026-09-07): revenue mix (business line and
+  # region), multi-period performance, issuer profile, Form-4 insider
+  # reads, and the plan-bounded annual estimate lanes (the kernel pins
+  # limit=10; a bare call 402s past the Starter ceiling).
+  - binding_key: openbb_equity_fundamental_revenue_segment
+    mcp_tool_name: equity_fundamental_revenue_per_segment
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 20000
+  - binding_key: openbb_equity_fundamental_revenue_geography
+    mcp_tool_name: equity_fundamental_revenue_per_geography
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 20000
+  - binding_key: openbb_equity_price_performance
+    mcp_tool_name: equity_price_performance
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_profile
+    mcp_tool_name: equity_profile
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_ownership_insider_trading
+    mcp_tool_name: equity_ownership_insider_trading
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_estimates_forward_eps
+    mcp_tool_name: equity_estimates_forward_eps
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 20000
+  - binding_key: openbb_equity_estimates_forward_ebitda
+    mcp_tool_name: equity_estimates_forward_ebitda
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 20000
+  - binding_key: openbb_equity_estimates_historical
+    mcp_tool_name: equity_estimates_historical
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 20000

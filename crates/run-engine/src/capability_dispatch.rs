@@ -316,7 +316,7 @@ pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
 /// observations — the cross-plane note reminds the analyst that anything
 /// observation-derived which the answer relies on still needs an ontology
 /// (filing) confirmation read.
-pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 16] = [
+pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 24] = [
     "market.series",
     "macro.series",
     "openbb.price_history",
@@ -333,6 +333,14 @@ pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 16] = [
     "openbb.yield_curve",
     "openbb.macro_calendar",
     "openbb.filings",
+    "openbb.revenue_segment",
+    "openbb.revenue_geography",
+    "openbb.price_performance",
+    "openbb.profile",
+    "openbb.insider_trading",
+    "openbb.forward_eps",
+    "openbb.forward_ebitda",
+    "openbb.estimates_historical",
 ];
 
 /// Kernel-owned cross-plane note, mirroring `model_event_ladder_hint`: the
@@ -1142,6 +1150,34 @@ pub(crate) fn assemble_openbb_request(
                 .filter(|limit| (1..=10).contains(limit))
                 .unwrap_or(5);
             physical.insert("limit".into(), Value::from(limit));
+        }
+        // Round-5 fmp core lanes whose only model-authored argument is the
+        // ticker: the kernel adds the pinned provider above.
+        "openbb-segment-input/v1"
+        | "openbb-geography-input/v1"
+        | "openbb-price-performance-input/v1"
+        | "openbb-profile-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+        }
+        // Round-5 plan-bounded estimate reads: the kernel also pins the row
+        // limit. A bare transport call defaults past the Starter ceiling and
+        // 402s before any data moves, so the limit is never model-authored.
+        "openbb-insider-input/v1"
+        | "openbb-forward-eps-input/v1"
+        | "openbb-forward-ebitda-input/v1"
+        | "openbb-estimates-historical-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("limit".into(), Value::from(10_u64));
         }
         _ => return Err(invalid()),
     }
