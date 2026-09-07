@@ -1,7 +1,7 @@
 schema_version: 4
 registry_id: glm-production-2026-08
 models:
-  - model_id: glm-5.3-flash
+  - model_id: glm-5.3
     api_base: https://api.z.ai/api/anthropic
     api_version: anthropic-messages-v1
     max_context_tokens: 204800
@@ -26,14 +26,14 @@ models:
       requires_assistant_content_for_tool_calls: false
 profiles:
   - profile_id: glm_high
-    model_id: glm-5.3-flash
+    model_id: glm-5.3
     thinking: enabled
     reasoning_effort: high
   - profile_id: glm_max
-    model_id: glm-5.3-flash
+    model_id: glm-5.3
     thinking: enabled
     reasoning_effort: max
   - profile_id: glm_direct
-    model_id: glm-5.3-flash
+    model_id: glm-5.3
     thinking: disabled
     reasoning_effort: null

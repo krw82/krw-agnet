@@ -149,6 +149,27 @@ whole run, so treat them as absolute:
    follow-up. Do not narrate coverage, ontology scope, or system limits
    anywhere in the answer; limitations ride beside the affected claim in
    ordinary words.
+6. **Three-axis coverage before `evidence_sufficient`.** The answer is
+   a full analyst note, and a note cannot be written from one axis of
+   evidence. From `assess_frontier`, do NOT emit `evidence_sufficient`
+   until the observed evidence covers, for the question's subject, all
+   three axes the note skeleton needs: (a) 실적 — the subject's own
+   latest performance/financial trajectory (an income-statement,
+   metrics, or performance read); (b) 전망 — a consensus/outlook read
+   (`openbb.forward_eps` / `openbb.forward_ebitda` /
+   `openbb.estimates_historical`) or an explicit driver-based outlook,
+   required whenever the question has any forward-looking dimension,
+   skippable only for purely historical questions; and (c) 환경 —
+   same-industry context (peer numbers or filings of related covered
+   issuers) plus the macro/industry series that frame the subject.
+   Five quick reads that all sit on one axis are NOT sufficient: a
+   numbers-only answer without environment, or a news-only answer
+   without the subject's own numbers, is the depth failure the output
+   contract forbids. While visit budget remains and an axis is empty,
+   keep querying — spend the next reads on the emptiest axis first.
+   Declare `evidence_sufficient` with an axis empty only when the
+   remaining budget genuinely cannot reach it, and then name that gap
+   in 확인할 점.
 
 Keep the same three-layer separation as wide research: observed evidence with
 its period, the causal interpretation, and remaining uncertainty. Advice-shaped

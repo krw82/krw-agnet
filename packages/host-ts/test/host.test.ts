@@ -75,8 +75,8 @@ function descriptor(): PublicReleaseDescriptor {
           model_registry_hash: hash("3"),
           budget_registry_hash: hash("4"),
           model_profile: "glm_high",
-          requested_model: "glm-5.3-flash",
-          resolved_model: "glm-5.3-flash",
+          requested_model: "glm-5.3",
+          resolved_model: "glm-5.3",
           provider_api_version: "anthropic-messages-v1",
           provider_max_context_tokens: 204_800,
           provider_wire_capabilities: {
@@ -212,7 +212,7 @@ test("enqueue claim is exact, hash-bound and contains no provider injection surf
   const built = buildEnqueueRunRequest(descriptor(), input());
   assert.equal(built.agent_image_hash, hash("1"));
   assert.equal(built.priority, 0);
-    assert.equal(built.immutable_snapshot.request.requested_model, "glm-5.3-flash");
+    assert.equal(built.immutable_snapshot.request.requested_model, "glm-5.3");
   assert.equal(built.immutable_snapshot.request.model_profile, "glm_high");
   assert.equal(built.immutable_snapshot.execution.provider_api_version, "anthropic-messages-v1");
   assert.equal(built.immutable_snapshot.execution.thinking, "enabled");
@@ -471,7 +471,7 @@ test("Gateway company-research request cannot inject a route, ownership, or memo
   });
   assert.equal(immutable.request.session_memory, null);
   assert.equal(Object.hasOwn(immutable.request, "requested_model"), true);
-    assert.equal(immutable.request.requested_model, "glm-5.3-flash");
+    assert.equal(immutable.request.requested_model, "glm-5.3");
 });
 
 function openResearchDescriptor(): PublicReleaseDescriptor {

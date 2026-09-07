@@ -7,7 +7,7 @@ import json
 import pathlib
 
 PROVIDER_MODELS: dict[str, str] = {
-    "glm": "glm-5.3-flash",
+    "glm": "glm-5.3",
     "deepseek": "deepseek-v4-flash",
 }
 

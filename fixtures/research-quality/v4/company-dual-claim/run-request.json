@@ -6,7 +6,7 @@
   "run_kind": "company_research",
   "locale": "ko-KR",
   "question": "VG의 현금창출력과 부채 부담이 공시 기준으로 어떻게 함께 나타나는지 설명해줘",
-  "requested_model": "glm-5.3-flash",
+  "requested_model": "glm-5.3",
   "model_profile": "glm_high",
   "budget": {
     "max_provider_turns": 8,

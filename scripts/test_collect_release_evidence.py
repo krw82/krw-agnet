@@ -30,14 +30,14 @@ def receipt(provider: str, model: str) -> dict[str, object]:
 
 class ProviderBoundReceiptTest(unittest.TestCase):
     def test_glm_receipt_is_bound_to_glm(self) -> None:
-        validate_live_receipt(receipt("glm", "glm-5.3-flash"), HASH, "glm")
+        validate_live_receipt(receipt("glm", "glm-5.3"), HASH, "glm")
 
     def test_deepseek_receipt_is_bound_to_deepseek(self) -> None:
         validate_live_receipt(receipt("deepseek", "deepseek-v4-flash"), HASH, "deepseek")
 
     def test_mixed_provider_receipt_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            validate_live_receipt(receipt("glm", "glm-5.3-flash"), HASH, "deepseek")
+            validate_live_receipt(receipt("glm", "glm-5.3"), HASH, "deepseek")
 
 
 if __name__ == "__main__":

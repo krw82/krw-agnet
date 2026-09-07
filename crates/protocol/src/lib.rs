@@ -16,7 +16,7 @@ pub const PROTOCOL_VERSION: u16 = 7;
 pub const CLAIM_PAYLOAD_SCHEMA_VERSION: u16 = 7;
 pub const PUBLIC_RELEASE_DESCRIPTOR_SCHEMA_VERSION: u16 = 3;
 pub const DEEPSEEK_MODEL_ID: &str = "deepseek-v4-flash";
-pub const GLM_MODEL_ID: &str = "glm-5.3-flash";
+pub const GLM_MODEL_ID: &str = "glm-5.3";
 /// Closed set of model ids the protocol admits. Adding a new provider means
 /// extending this slice, never bypassing it: every resolved profile must be
 /// backed by one of these exact ids so that downstream codecs can dispatch on
@@ -1371,7 +1371,7 @@ mod tests {
                     provider_wire_capabilities: ProviderWireCapabilities::deepseek_v4_flash(),
                 },
                 ModelDescriptor {
-                    model_id: "glm-5.3-flash".into(),
+                    model_id: "glm-5.3".into(),
                     api_base: "https://api.z.ai/api/anthropic".into(),
                     api_version: "anthropic-messages-v1".into(),
                     max_context_tokens: 128_000,
@@ -1389,7 +1389,7 @@ mod tests {
                 },
                 ModelExecutionProfile {
                     profile_id: "glm_max".into(),
-                    model_id: "glm-5.3-flash".into(),
+                    model_id: "glm-5.3".into(),
                     thinking: ThinkingMode::Enabled,
                     reasoning_effort: Some(ReasoningEffort::Max),
                 },
@@ -1403,10 +1403,10 @@ mod tests {
         assert_eq!(deepseek_model.model_id, "deepseek-v4-flash");
 
         let (glm_profile, glm_model) = registry
-            .resolve_profile_exact("glm_max", "glm-5.3-flash")
-            .expect("glm-5.3-flash resolves under the generalized allow-list");
-        assert_eq!(glm_profile.model_id, "glm-5.3-flash");
-        assert_eq!(glm_model.model_id, "glm-5.3-flash");
+            .resolve_profile_exact("glm_max", "glm-5.3")
+            .expect("glm-5.3 resolves under the generalized allow-list");
+        assert_eq!(glm_profile.model_id, "glm-5.3");
+        assert_eq!(glm_model.model_id, "glm-5.3");
         assert!(
             !glm_model
                 .provider_wire_capabilities
@@ -1416,7 +1416,7 @@ mod tests {
         // A profile that requests GLM through a deepseek-only profile id must
         // still surface the model mismatch rather than silently substituting.
         assert!(matches!(
-            registry.resolve_profile_exact("glm_high", "glm-5.3-flash"),
+            registry.resolve_profile_exact("glm_high", "glm-5.3"),
             Err(ContractError::ModelMismatch { .. })
         ));
     }

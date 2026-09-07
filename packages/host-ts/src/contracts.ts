@@ -11,7 +11,7 @@ export const PROVIDER_API_VERSION = "anthropic-messages-v1" as const;
 /** Backwards-compatible name for callers that still describe the test lane. */
 export const GLM_PROVIDER_API_VERSION = PROVIDER_API_VERSION;
 export const DEEPSEEK_PROVIDER_API_VERSION = PROVIDER_API_VERSION;
-export const GLM_MODEL_ID = "glm-5.3-flash" as const;
+export const GLM_MODEL_ID = "glm-5.3" as const;
 export const DEEPSEEK_MODEL_ID = "deepseek-v4-flash" as const;
 export const GLM_MAX_CONTEXT_TOKENS = 204_800 as const;
 export const DEEPSEEK_MAX_CONTEXT_TOKENS = 1_000_000 as const;
