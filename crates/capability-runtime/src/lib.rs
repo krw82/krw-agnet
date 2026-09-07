@@ -4237,7 +4237,6 @@ mod tests {
             "ticker": "VG",
             "topic": "cash generation",
             "limit": 1,
-            "response_format": "json",
             "response_detail": "compact"
         });
         let payload = serde_json::json!({
@@ -4420,7 +4419,6 @@ mod tests {
             "ticker": "VG",
             "topic": "cash generation",
             "limit": 60,
-            "response_format": "json",
             "response_detail": "compact"
         });
         let payload = oversized_targeted_payload(60);
@@ -4469,7 +4467,6 @@ mod tests {
                     "ticker": "VG",
                     "topic": "cash generation",
                     "limit": 60,
-                    "response_format": "json",
                     "response_detail": "compact"
                 }),
             ))
@@ -4488,7 +4485,6 @@ mod tests {
             "ticker": "VG",
             "topic": "cash generation",
             "limit": 72,
-            "response_format": "json",
             "response_detail": "compact"
         });
         // 72 items of ~120 KiB push the canonical payload itself past the
@@ -4523,7 +4519,6 @@ mod tests {
             "ticker": "VG",
             "topic": "cash generation",
             "limit": 1,
-            "response_format": "json",
             "response_detail": "compact"
         });
         // A successful query with zero rows is a success-class capability

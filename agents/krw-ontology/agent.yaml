@@ -1435,6 +1435,17 @@ workflows:
       - { from: repair_plan, on: plan_ready, to: validate_plan }
       - { from: query_context, on: correction_required, to: repair_plan }
       - { from: query_context, on: correction_unresolved, to: reconcile_periods_and_commentary }
+      # Every evidence-read state exposes the engine's generic correction
+      # routing: a server input-invalid result returns the model to the
+      # frontier with the violations visible instead of dying unresolved
+      # (root fix 2026-09-07: lookup states had no correction edges, so any
+      # server-side 4xx on a read burned the run as capability_failure).
+      - { from: targeted_query, on: correction_required, to: reconcile_periods_and_commentary }
+      - { from: targeted_query, on: correction_unresolved, to: reconcile_periods_and_commentary }
+      - { from: trace_selected, on: correction_required, to: reconcile_periods_and_commentary }
+      - { from: trace_selected, on: correction_unresolved, to: reconcile_periods_and_commentary }
+      - { from: chain_selected, on: correction_required, to: reconcile_periods_and_commentary }
+      - { from: chain_selected, on: correction_unresolved, to: reconcile_periods_and_commentary }
       - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: reconcile_periods_and_commentary }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
@@ -1489,6 +1500,13 @@ workflows:
       - { from: repair_plan, on: plan_ready, to: validate_plan }
       - { from: query_context, on: correction_required, to: repair_plan }
       - { from: query_context, on: correction_unresolved, to: assess_transmission_path }
+      # Generic correction routing for evidence reads (root fix 2026-09-07).
+      - { from: targeted_query, on: correction_required, to: assess_transmission_path }
+      - { from: targeted_query, on: correction_unresolved, to: assess_transmission_path }
+      - { from: trace_selected, on: correction_required, to: assess_transmission_path }
+      - { from: trace_selected, on: correction_unresolved, to: assess_transmission_path }
+      - { from: chain_selected, on: correction_required, to: assess_transmission_path }
+      - { from: chain_selected, on: correction_unresolved, to: assess_transmission_path }
       - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: assess_transmission_path }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
@@ -1551,6 +1569,11 @@ workflows:
       - { from: repair_discovery_plan, on: plan_ready, to: validate_discovery_plan }
       - { from: query_context, on: correction_required, to: repair_discovery_plan }
       - { from: query_context, on: correction_unresolved, to: assess_candidates }
+      # Generic correction routing for evidence reads (root fix 2026-09-07).
+      - { from: candidate_query, on: correction_required, to: assess_candidates }
+      - { from: candidate_query, on: correction_unresolved, to: assess_candidates }
+      - { from: candidate_trace, on: correction_required, to: assess_candidates }
+      - { from: candidate_trace, on: correction_unresolved, to: assess_candidates }
       - { from: query_context, on: evidence_observed, to: ingest_candidates }
       - { from: ingest_candidates, on: ingested, to: assess_candidates }
       - { from: ingest_candidates, on: output_budget_reserved, to: compose_ir }
@@ -1599,6 +1622,11 @@ workflows:
       - { from: repair_wide_plan, on: plan_ready, to: validate_wide_plan }
       - { from: query_context, on: correction_required, to: repair_wide_plan }
       - { from: query_context, on: correction_unresolved, to: assess_wide_impacts }
+      # Generic correction routing for evidence reads (root fix 2026-09-07).
+      - { from: targeted_query, on: correction_required, to: assess_wide_impacts }
+      - { from: targeted_query, on: correction_unresolved, to: assess_wide_impacts }
+      - { from: trace_selected, on: correction_required, to: assess_wide_impacts }
+      - { from: trace_selected, on: correction_unresolved, to: assess_wide_impacts }
       - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: assess_wide_impacts }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
@@ -1681,6 +1709,50 @@ workflows:
       - { from: repair_plan, on: plan_ready, to: validate_plan }
       - { from: query_context, on: correction_required, to: repair_plan }
       - { from: query_context, on: correction_unresolved, to: assess_frontier }
+      # Generic correction routing for every evidence read (root fix
+      # 2026-09-07): a server input-invalid result returns the model to the
+      # frontier with the violations visible — the engine's correction
+      # mechanism was generic, but lookup states never declared the edges,
+      # so any server-side 4xx on a read died as capability_failure
+      # (live: response_format drift burned two semiconductor runs).
+      - { from: targeted_query, on: correction_required, to: assess_frontier }
+      - { from: targeted_query, on: correction_unresolved, to: assess_frontier }
+      - { from: trace_selected, on: correction_required, to: assess_frontier }
+      - { from: trace_selected, on: correction_unresolved, to: assess_frontier }
+      - { from: market_series_lookup, on: correction_required, to: assess_frontier }
+      - { from: market_series_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: macro_series_lookup, on: correction_required, to: assess_frontier }
+      - { from: macro_series_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_price_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_price_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_quote_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_quote_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_metrics_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_metrics_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_income_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_income_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_balance_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_balance_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_cash_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_cash_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_consensus_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_consensus_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_peers_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_peers_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_earnings_calendar_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_earnings_calendar_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_filings_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_filings_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_news_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_news_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_macro_cpi_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_macro_cpi_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_yield_curve_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_yield_curve_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_macro_calendar_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_macro_calendar_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: news_web_search, on: correction_required, to: assess_frontier }
+      - { from: news_web_search, on: correction_unresolved, to: assess_frontier }
       - { from: query_context, on: evidence_observed, to: ingest_evidence }
       - { from: ingest_evidence, on: ingested, to: assess_frontier }
       - { from: ingest_evidence, on: output_budget_reserved, to: compose_ir }
