@@ -213,3 +213,58 @@ research-planner 58 / agent-service 94 — 전부 통과.
   사이드카까지 정리.
 - 게이트웨이 레이트 가드 기본 120req/60s(노드 local-gateway.ts,
   KRW_AGENT_GATEWAY_RATE_LIMIT_MAX). 서비스 러너는 이제 429를 흡수.
+
+## 이터레이션 8 — fmp 스타터 전수 조사 → 배치1 8라인 실전 배선 (2026-09-07 오후)
+
+에이전트팀 3종(fmp 46콜 실측 / transcript·추정치 심층 / 워크스페이스 Apps·SDK)을
+돌려 사용자 백엔드(OpenBB MCP 3.4.7)의 실제 커버리지 지도를 만들었다.
+
+**실측 결론(Starter 플랜)**
+- forward EPS/EBITDA/과거 추정치는 `limit≤10` 명시 시 연간 단위로 열림
+  (기본 호출이 limit 초과로 402 — "유료"가 아니라 플랜 상한). 분기는 유료.
+- transcript: 이 설치에서 provider가 fmp 단일(목록 엔드포인트 자체가 Starter
+  위) + quarter 직렬화 버그. 워크스페이스 UI에 보이는 건 OpenBB 호스티드
+  백엔드 경로라 내 키와 무관 — 로컬로는 불가 확정.
+- Apps = 대시보드 템플릿(위젯 조합), 새 데이터 레인 없음. 번들 스킬 4종은
+  개발 문서. 단, 워크스페이스 차트의 진짜 프로토콜 발견:
+  `copilotMessageArtifact`(type table/chart/html + chart_params) —
+  `presentationSeries` _meta는 공개 코드 전체 0건(우리 관습이었다).
+  → 차트 백로그 재판정: 서비스가 엔진 visualizations를 이 이벤트로
+  변환하면 됨(온톨로지 릴리스 불필요). 이후 슬라이스로 예정.
+- fmp 비지원 20종 중 무키 대체 경로 발견: SEC(MD&A·13F·company_facts),
+  finra(공매도), finviz(섹터 성과), yfinance(저평가 발굴), cboe(티커 검색)
+  — 배치3에서 제공자 핀 확장(sec/finra/finviz/yfinance/cboe) 후 부착.
+- FRED 라인은 백엔드에 fred_api_key가 없어 현재 사망(CPI는 OECD 핀이라
+  정상). 사용자 액션 필요(무료 키).
+
+**배치1 라인 8종 배선** (a9eb7c0): revenue_segment, revenue_geography,
+price_performance, profile, insider_trading, forward_eps, forward_ebitda,
+estimates_historical — 요청 계약 {ticker} 단일, 추정 3종은 limit=10 커널
+핀. 스키마 16 + 디스크립터 113 + 런타임 목록 + 어셈블리 2암 +
+open_research_v1 상태/엣지/교정 라우팅 + 바인딩 + 프롬프트 레인.
+ingest 정원 가드(32)가 정확히 발동해 상한 동기화.
+
+**라이브 배터리 B1/B2/B3 (커버 밖 발행체, 서비스 경유) — 3/3 통과**
+- B1 VRT: 부문(제품 76%)·지역(미국 40%)·forward EPS 5개년(6.72→17.35,
+  CAGR 27%) 테이블 + 프로필 색. 인용 34.
+- B2 APP: 기간수익(-52% YTD)·내부자 Form 4 5인 'F-InKind 현물 이전' 정독
+  ·뉴스 색(보도/공시 분리)·forward EPS. 인용 22.
+- B3 RKLB: forward EBITDA 5개년(-5,592만→+9.58억)·EPS 경로·흑자전환 테제
+  + 반증 포인트. 인용 33. 전 런 금지 토큰 0.
+
+**루프가 잡아낸 결함 4종(전부 근본 수정)**
+1. 이중 부트로 낡은 이미지 캐시(도구 없음)가 14518을 잡고 있었음 —
+   게이트웨이가 서빙하는 agentd의 --image-dir와 캐시 이미지에 새 도구
+   grep으로 검증하는 절차를 부팅 검증에 추가(운영 교훈).
+2. openbb 업스트림 4xx가 평문 텍스트로 오면 mcp_text_json 단말 의존성
+   실패로 런 전체 사망(APP 1차 런, period=quarterly 422) → 에러 플래그
+   참이면 재시도 가능 provider_tool_error_text로 분류(성공 비JSON은
+   기존대로 단말). 5d3e351 + 테스트.
+3. 폴백 미달성 목표의 goal-<sha> 원본 id가 공개 마크다운으로 새어 나감
+   (기계 검사 적중) → 건수 한 줄로 자연화. 5d3e351.
+4. 계획 검증 플레이크 2종(objectives priority 누락 / period=quarterly)
+   → 프롬프트에 스키마 필드·리터럴 규칙 명시(라이브 사례 인용).
+
+**다음(이어서)**: 차트 copilotMessageArtifact 변환(서비스+엔진 팩 합성)
+→ 배치2(fmp 부가) → 배치3(제공자 핀 확장 + MD&A·13F·공매도·섹터·발굴·
+티커검색). mimosa 전체 감사 재실행 예약(enobufs 2회).
