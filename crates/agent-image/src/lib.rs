@@ -432,6 +432,18 @@ pub enum OpenbbPinnedProvider {
     /// OECD harmonised CPI — serves keylessly where FRED requires an absent
     /// `fred_api_key` on the openbb plane (2026-09-02).
     Oecd,
+    /// SEC EDGAR structured data — MD&A narrative bodies, keyless.
+    Sec,
+    /// FINRA short-interest reporting, keyless.
+    Finra,
+    /// Finviz group analytics (sector performance/valuation), keyless.
+    Finviz,
+    /// Yahoo Finance discovery screens (undervalued sets), keyless.
+    Yfinance,
+    /// CBOE symbol directory search, keyless.
+    Cboe,
+    /// multpl.com S&P 500 multiple series, keyless.
+    Multpl,
 }
 
 impl OpenbbPinnedProvider {
@@ -440,6 +452,12 @@ impl OpenbbPinnedProvider {
             Self::Fmp => "fmp",
             Self::Fred => "fred",
             Self::Oecd => "oecd",
+            Self::Sec => "sec",
+            Self::Finra => "finra",
+            Self::Finviz => "finviz",
+            Self::Yfinance => "yfinance",
+            Self::Cboe => "cboe",
+            Self::Multpl => "multpl",
         }
     }
 }
@@ -3707,6 +3725,48 @@ fn validate_capability_input_abi(
                         OpenbbPinnedProvider::Fmp,
                         false,
                     ),
+                    "openbb-mda-input/v1" => (
+                        "openbb-mda-input/v1",
+                        "openbb-mda-request/v1",
+                        OpenbbPinnedProvider::Sec,
+                        true,
+                    ),
+                    "openbb-short-interest-input/v1" => (
+                        "openbb-short-interest-input/v1",
+                        "openbb-short-interest-request/v1",
+                        OpenbbPinnedProvider::Finra,
+                        true,
+                    ),
+                    "openbb-sector-performance-input/v1" => (
+                        "openbb-sector-performance-input/v1",
+                        "openbb-sector-performance-request/v1",
+                        OpenbbPinnedProvider::Finviz,
+                        false,
+                    ),
+                    "openbb-undervalued-input/v1" => (
+                        "openbb-undervalued-input/v1",
+                        "openbb-undervalued-request/v1",
+                        OpenbbPinnedProvider::Yfinance,
+                        false,
+                    ),
+                    "openbb-symbol-search-input/v1" => (
+                        "openbb-symbol-search-input/v1",
+                        "openbb-symbol-search-request/v1",
+                        OpenbbPinnedProvider::Cboe,
+                        false,
+                    ),
+                    "openbb-sp500-multiples-input/v1" => (
+                        "openbb-sp500-multiples-input/v1",
+                        "openbb-sp500-multiples-request/v1",
+                        OpenbbPinnedProvider::Multpl,
+                        false,
+                    ),
+                    "openbb-screener-input/v1" => (
+                        "openbb-screener-input/v1",
+                        "openbb-screener-request/v1",
+                        OpenbbPinnedProvider::Finviz,
+                        false,
+                    ),
                     _ => (
                         capability.input_contract.as_str(),
                         "",
@@ -6009,6 +6069,69 @@ mod tests {
                 CapabilityResultIngest::OpenbbSeriesV1,
             ),
         );
+        expected.insert(
+            "openbb.mda",
+            (
+                "openbb-mda-input/v1",
+                "openbb-mda-request/v1",
+                OpenbbPinnedProvider::Sec,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.short_interest",
+            (
+                "openbb-short-interest-input/v1",
+                "openbb-short-interest-request/v1",
+                OpenbbPinnedProvider::Finra,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.sector_performance",
+            (
+                "openbb-sector-performance-input/v1",
+                "openbb-sector-performance-request/v1",
+                OpenbbPinnedProvider::Finviz,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.undervalued",
+            (
+                "openbb-undervalued-input/v1",
+                "openbb-undervalued-request/v1",
+                OpenbbPinnedProvider::Yfinance,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.symbol_search",
+            (
+                "openbb-symbol-search-input/v1",
+                "openbb-symbol-search-request/v1",
+                OpenbbPinnedProvider::Cboe,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.sp500_multiples",
+            (
+                "openbb-sp500-multiples-input/v1",
+                "openbb-sp500-multiples-request/v1",
+                OpenbbPinnedProvider::Multpl,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
+        expected.insert(
+            "openbb.screener",
+            (
+                "openbb-screener-input/v1",
+                "openbb-screener-request/v1",
+                OpenbbPinnedProvider::Finviz,
+                CapabilityResultIngest::OpenbbSeriesV1,
+            ),
+        );
         for (capability_id, (input_contract, model_contract, provider, ingest)) in &expected {
             let capability = image
                 .body
@@ -6041,7 +6164,12 @@ mod tests {
                 | "openbb.news_world"
                 | "openbb.treasury_rates"
                 | "openbb.risk_premium"
-                | "openbb.discovery_active" => {
+                | "openbb.discovery_active"
+                | "openbb.sector_performance"
+                | "openbb.undervalued"
+                | "openbb.symbol_search"
+                | "openbb.sp500_multiples"
+                | "openbb.screener" => {
                     assert!(capability.research_action.is_none());
                 }
                 _ => {

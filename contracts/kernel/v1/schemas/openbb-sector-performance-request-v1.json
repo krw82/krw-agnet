@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"metric":{"enum":["performance","valuation","overview"],"type":"string"}},"required":["metric"],"title":"OpenbbSectorPerformanceRequestV1","type":"object"}

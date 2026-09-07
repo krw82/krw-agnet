@@ -1883,8 +1883,8 @@ mod tests {
         );
         assert_eq!(
             runtime.physical_binding_count(),
-            47,
-            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, the curated openbb endpoint fourteen base bindings, and rounds 4/5/6 add company news, the eight fmp estimate/mix/performance/profile/insider lanes, and the twelve supplementary growth/valuation/macro lanes"
+            54,
+            "universe aliases share the query bindings while local skill loading has no physical deployment binding; the filing/news ladder adds four, the observation series tools two, the curated openbb endpoint fourteen base bindings, and rounds 4-7 add company news, the eight fmp estimate/mix/performance/profile/insider lanes, the twelve supplementary growth/valuation/macro lanes, and the seven keyless non-fmp lanes"
         );
         assert!(Arc::ptr_eq(
             runtime.capabilities.get("ontology.query_context").unwrap(),
@@ -1917,11 +1917,9 @@ mod tests {
 
         assert!(!runtime.capabilities.contains_key("skill.load"));
         // 26 base physical bindings + openbb news (round 4) + the eight
-        // round-5 fmp lanes + the twelve round-6 supplementary lanes
-        // (growth, market cap, share stats, management, EPS history,
-        // congressional trades, price targets, ratios, world news, treasury
-        // rates, risk premium, most-active discovery) = 47.
-        assert_eq!(runtime.physical_binding_count(), 47);
+        // round-5 fmp lanes + the twelve round-6 supplementary lanes + the
+        // seven round-7 keyless non-fmp lanes = 54.
+        assert_eq!(runtime.physical_binding_count(), 54);
     }
 
     /// The observation series bindings are held to the same fail-closed

@@ -362,6 +362,62 @@ const OPENBB_DISCOVERY_ACTIVE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/openbb-discovery-active-input-v1.json"
 ));
+const OPENBB_MDA_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-mda-request-v1.json"
+));
+const OPENBB_MDA_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-mda-input-v1.json"
+));
+const OPENBB_SHORT_INTEREST_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-short-interest-request-v1.json"
+));
+const OPENBB_SHORT_INTEREST_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-short-interest-input-v1.json"
+));
+const OPENBB_SECTOR_PERFORMANCE_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-sector-performance-request-v1.json"
+));
+const OPENBB_SECTOR_PERFORMANCE_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-sector-performance-input-v1.json"
+));
+const OPENBB_UNDERVALUED_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-undervalued-request-v1.json"
+));
+const OPENBB_UNDERVALUED_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-undervalued-input-v1.json"
+));
+const OPENBB_SYMBOL_SEARCH_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-symbol-search-request-v1.json"
+));
+const OPENBB_SYMBOL_SEARCH_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-symbol-search-input-v1.json"
+));
+const OPENBB_SP500_MULTIPLES_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-sp500-multiples-request-v1.json"
+));
+const OPENBB_SP500_MULTIPLES_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-sp500-multiples-input-v1.json"
+));
+const OPENBB_SCREENER_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-screener-request-v1.json"
+));
+const OPENBB_SCREENER_INPUT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/kernel/v1/schemas/openbb-screener-input-v1.json"
+));
 const QUANT_DCF_REQUEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/kernel/v1/schemas/quant-dcf-request-v1.json"
@@ -656,6 +712,48 @@ pub const OPENBB_DISCOVERY_ACTIVE_REQUEST_V1: &str = "openbb-discovery-active-re
 /// Physical MCP input for the curated openbb `equity_discovery_active`
 /// tool with the kernel-injected fmp provider.
 pub const OPENBB_DISCOVERY_ACTIVE_INPUT_V1: &str = "openbb-discovery-active-input/v1";
+/// Model-authored request for the issuer's MD&A narrative body (SEC EDGAR,
+/// tables excluded to bound the payload). Round-7 curation (2026-09-08).
+pub const OPENBB_MDA_REQUEST_V1: &str = "openbb-mda-request/v1";
+/// Physical MCP input for the curated openbb `equity_fundamental_management_discussion_analysis`
+/// tool with the kernel-injected sec provider and include_tables=false.
+pub const OPENBB_MDA_INPUT_V1: &str = "openbb-mda-input/v1";
+/// Model-authored request for a FINRA short-interest history read — the
+/// bear-positioning axis for crowded-short questions.
+pub const OPENBB_SHORT_INTEREST_REQUEST_V1: &str = "openbb-short-interest-request/v1";
+/// Physical MCP input for the curated openbb `equity_shorts_short_interest`
+/// tool with the kernel-injected finra provider.
+pub const OPENBB_SHORT_INTEREST_INPUT_V1: &str = "openbb-short-interest-input/v1";
+/// Model-authored request for a sector-group read (performance/valuation/
+/// overview) — the cross-sector backdrop for industry questions.
+pub const OPENBB_SECTOR_PERFORMANCE_REQUEST_V1: &str = "openbb-sector-performance-request/v1";
+/// Physical MCP input for the curated openbb `equity_compare_groups` tool
+/// with the kernel-injected finviz provider and the sector group pin.
+pub const OPENBB_SECTOR_PERFORMANCE_INPUT_V1: &str = "openbb-sector-performance-input/v1";
+/// Model-authored request for the undervalued large-cap discovery screen
+/// (ticker-less value-fishing lane).
+pub const OPENBB_UNDERVALUED_REQUEST_V1: &str = "openbb-undervalued-request/v1";
+/// Physical MCP input for the curated openbb `equity_discovery_undervalued_large_caps`
+/// tool with the kernel-injected yfinance provider.
+pub const OPENBB_UNDERVALUED_INPUT_V1: &str = "openbb-undervalued-input/v1";
+/// Model-authored company-name-to-ticker directory search (the resolution
+/// lane for questions that name a company but no ticker).
+pub const OPENBB_SYMBOL_SEARCH_REQUEST_V1: &str = "openbb-symbol-search-request/v1";
+/// Physical MCP input for the curated openbb `equity_search` tool with the
+/// kernel-injected cboe provider and pinned directory-mode flags.
+pub const OPENBB_SYMBOL_SEARCH_INPUT_V1: &str = "openbb-symbol-search-input/v1";
+/// Model-authored S&P 500 multiple-series read (multpl.com). The required
+/// start_date keeps the 1871~ history inside the advisory record bound.
+pub const OPENBB_SP500_MULTIPLES_REQUEST_V1: &str = "openbb-sp500-multiples-request/v1";
+/// Physical MCP input for the curated openbb `index_sp500_multiples` tool
+/// with the kernel-injected multpl provider.
+pub const OPENBB_SP500_MULTIPLES_INPUT_V1: &str = "openbb-sp500-multiples-input/v1";
+/// Model-authored Finviz screener read (metric group plus optional sector
+/// filter) — the broad tape screen the fmp screener's parse bug forecloses.
+pub const OPENBB_SCREENER_REQUEST_V1: &str = "openbb-screener-request/v1";
+/// Physical MCP input for the curated openbb `equity_screener` tool with
+/// the kernel-injected finviz provider.
+pub const OPENBB_SCREENER_INPUT_V1: &str = "openbb-screener-input/v1";
 /// Model-authored request for the deterministic local DCF builtin. The
 /// model supplies labeled inputs it already collected; the builtin owns
 /// every arithmetic step and fails closed on `terminal_growth >= wacc`.
@@ -863,6 +961,34 @@ pub const OPENBB_DISCOVERY_ACTIVE_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:e7c03c19debc2a23e33db4bb7c501c6ac70c42c006aeb8e572f63589549daec0";
 pub const OPENBB_DISCOVERY_ACTIVE_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:26c768864f6def471abccd15db267e8062a4ee1911dc98921f792ec6eb842e85";
+pub const OPENBB_MDA_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:cda95fedfef0f728763f33d78152331dbff1f00fb1a534450bec39abf4822077";
+pub const OPENBB_MDA_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:65c99170d079cddee4a7ff1cdd027a630c8bfb6f43cb13bd99d89f979aaf0a72";
+pub const OPENBB_SHORT_INTEREST_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:315d44e74743cc626d25ff99a507bbece40de5dbd40fef80678a81c2133f3e3c";
+pub const OPENBB_SHORT_INTEREST_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:e1416aaa275e4140ecf39e3cc6d5670a82621f7a5a9819ed97d7c82e66458e04";
+pub const OPENBB_SECTOR_PERFORMANCE_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:68d48a1f24750145091198123dcbddb9dc3af56d879429dd93548d04012d1f24";
+pub const OPENBB_SECTOR_PERFORMANCE_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:5fd14293c0ed3673a301d1896cd1448f4f933ddc0f5ca517313d9fb119710a81";
+pub const OPENBB_UNDERVALUED_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:efdf914af6cf61cfcfb477e72312103bc19ad16b908f705ea41dfe8e699e97e5";
+pub const OPENBB_UNDERVALUED_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:c9fd6c32e7c90b7eee2196e9308981ca6b5c9482c25c7401034f0e41df68e9b8";
+pub const OPENBB_SYMBOL_SEARCH_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:83509d98614093418f11bafb4d7387bdbb77e89cd83e74f278e0ca0caa768642";
+pub const OPENBB_SYMBOL_SEARCH_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:3aeb175833103084ecdd9721b5adffad83dc9da2faea3a6688cf14ec33221bf9";
+pub const OPENBB_SP500_MULTIPLES_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:3c0508430101f1a9c8fcb873cbecc1aaa315601210b12431e8b0ec2427e43a92";
+pub const OPENBB_SP500_MULTIPLES_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:d735616868ac147900d7da5c08c1cdd3b97bc41ff9af0d0bb29eee3ba568631d";
+pub const OPENBB_SCREENER_REQUEST_V1_SCHEMA_SHA256: &str =
+    "sha256:fe025df9fa7e280687e992547f96eedbda3f979f44840427381659b9f3effda6";
+pub const OPENBB_SCREENER_INPUT_V1_SCHEMA_SHA256: &str =
+    "sha256:de792a51285ae183ed7784f8df302bf7773580fd4915e7dc9873dcd9c8c54eed";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -1298,6 +1424,76 @@ pub fn contract(contract_id: &str) -> Option<ContractDescriptor> {
             schema_sha256: OPENBB_DISCOVERY_ACTIVE_INPUT_V1_SCHEMA_SHA256,
             schema: OPENBB_DISCOVERY_ACTIVE_INPUT_BYTES,
         }),
+        OPENBB_MDA_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_MDA_REQUEST_V1,
+            schema_sha256: OPENBB_MDA_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_MDA_REQUEST_BYTES,
+        }),
+        OPENBB_MDA_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_MDA_INPUT_V1,
+            schema_sha256: OPENBB_MDA_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_MDA_INPUT_BYTES,
+        }),
+        OPENBB_SHORT_INTEREST_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SHORT_INTEREST_REQUEST_V1,
+            schema_sha256: OPENBB_SHORT_INTEREST_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SHORT_INTEREST_REQUEST_BYTES,
+        }),
+        OPENBB_SHORT_INTEREST_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SHORT_INTEREST_INPUT_V1,
+            schema_sha256: OPENBB_SHORT_INTEREST_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SHORT_INTEREST_INPUT_BYTES,
+        }),
+        OPENBB_SECTOR_PERFORMANCE_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SECTOR_PERFORMANCE_REQUEST_V1,
+            schema_sha256: OPENBB_SECTOR_PERFORMANCE_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SECTOR_PERFORMANCE_REQUEST_BYTES,
+        }),
+        OPENBB_SECTOR_PERFORMANCE_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SECTOR_PERFORMANCE_INPUT_V1,
+            schema_sha256: OPENBB_SECTOR_PERFORMANCE_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SECTOR_PERFORMANCE_INPUT_BYTES,
+        }),
+        OPENBB_UNDERVALUED_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_UNDERVALUED_REQUEST_V1,
+            schema_sha256: OPENBB_UNDERVALUED_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_UNDERVALUED_REQUEST_BYTES,
+        }),
+        OPENBB_UNDERVALUED_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_UNDERVALUED_INPUT_V1,
+            schema_sha256: OPENBB_UNDERVALUED_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_UNDERVALUED_INPUT_BYTES,
+        }),
+        OPENBB_SYMBOL_SEARCH_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SYMBOL_SEARCH_REQUEST_V1,
+            schema_sha256: OPENBB_SYMBOL_SEARCH_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SYMBOL_SEARCH_REQUEST_BYTES,
+        }),
+        OPENBB_SYMBOL_SEARCH_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SYMBOL_SEARCH_INPUT_V1,
+            schema_sha256: OPENBB_SYMBOL_SEARCH_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SYMBOL_SEARCH_INPUT_BYTES,
+        }),
+        OPENBB_SP500_MULTIPLES_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SP500_MULTIPLES_REQUEST_V1,
+            schema_sha256: OPENBB_SP500_MULTIPLES_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SP500_MULTIPLES_REQUEST_BYTES,
+        }),
+        OPENBB_SP500_MULTIPLES_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SP500_MULTIPLES_INPUT_V1,
+            schema_sha256: OPENBB_SP500_MULTIPLES_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SP500_MULTIPLES_INPUT_BYTES,
+        }),
+        OPENBB_SCREENER_REQUEST_V1 => Some(ContractDescriptor {
+            id: OPENBB_SCREENER_REQUEST_V1,
+            schema_sha256: OPENBB_SCREENER_REQUEST_V1_SCHEMA_SHA256,
+            schema: OPENBB_SCREENER_REQUEST_BYTES,
+        }),
+        OPENBB_SCREENER_INPUT_V1 => Some(ContractDescriptor {
+            id: OPENBB_SCREENER_INPUT_V1,
+            schema_sha256: OPENBB_SCREENER_INPUT_V1_SCHEMA_SHA256,
+            schema: OPENBB_SCREENER_INPUT_BYTES,
+        }),
         QUANT_DCF_REQUEST_V1 => Some(ContractDescriptor {
             id: QUANT_DCF_REQUEST_V1,
             schema_sha256: QUANT_DCF_REQUEST_V1_SCHEMA_SHA256,
@@ -1472,6 +1668,23 @@ pub fn descriptors() -> Vec<ContractDescriptor> {
         contract(OPENBB_RISK_PREMIUM_INPUT_V1).expect("static contract"),
         contract(OPENBB_DISCOVERY_ACTIVE_REQUEST_V1).expect("static contract"),
         contract(OPENBB_DISCOVERY_ACTIVE_INPUT_V1).expect("static contract"),
+        // openbb curation round 7 (keyless non-fmp providers: SEC MD&A,
+        // FINRA short interest, Finviz groups/screener, Yahoo discovery,
+        // CBOE directory, multpl index multiples).
+        contract(OPENBB_MDA_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_MDA_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SHORT_INTEREST_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SHORT_INTEREST_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SECTOR_PERFORMANCE_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SECTOR_PERFORMANCE_INPUT_V1).expect("static contract"),
+        contract(OPENBB_UNDERVALUED_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_UNDERVALUED_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SYMBOL_SEARCH_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SYMBOL_SEARCH_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SP500_MULTIPLES_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SP500_MULTIPLES_INPUT_V1).expect("static contract"),
+        contract(OPENBB_SCREENER_REQUEST_V1).expect("static contract"),
+        contract(OPENBB_SCREENER_INPUT_V1).expect("static contract"),
         // Deterministic local quant computation (financial-services P2/P4).
         contract(QUANT_DCF_REQUEST_V1).expect("static contract"),
         contract(QUANT_DCF_RESULT_V1).expect("static contract"),
@@ -1750,6 +1963,49 @@ pub fn validate_value(contract_id: &str, value: &Value) -> Result<(), ContractVa
             value,
             OPENBB_DISCOVERY_ACTIVE_INPUT_V1,
         ),
+        OPENBB_MDA_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_MDA_REQUEST_V1,
+        ),
+        OPENBB_MDA_INPUT_V1 => validate_openbb_mda_input(value),
+        OPENBB_SHORT_INTEREST_REQUEST_V1 => validate_openbb_ticker_request(
+            value,
+            OPENBB_SHORT_INTEREST_REQUEST_V1,
+        ),
+        OPENBB_SHORT_INTEREST_INPUT_V1 => validate_openbb_pinned_symbol_input(
+            value,
+            OPENBB_SHORT_INTEREST_INPUT_V1,
+            "finra",
+        ),
+        OPENBB_SECTOR_PERFORMANCE_REQUEST_V1 => validate_openbb_metric3_request(
+            value,
+            OPENBB_SECTOR_PERFORMANCE_REQUEST_V1,
+        ),
+        OPENBB_SECTOR_PERFORMANCE_INPUT_V1 => validate_openbb_sector_performance_input(value),
+        OPENBB_UNDERVALUED_REQUEST_V1 => validate_openbb_empty_request(
+            value,
+            OPENBB_UNDERVALUED_REQUEST_V1,
+        ),
+        OPENBB_UNDERVALUED_INPUT_V1 => validate_openbb_provider_value_input(
+            value,
+            OPENBB_UNDERVALUED_INPUT_V1,
+            "yfinance",
+        ),
+        OPENBB_SYMBOL_SEARCH_REQUEST_V1 => validate_openbb_symbol_search_request(
+            value,
+            OPENBB_SYMBOL_SEARCH_REQUEST_V1,
+        ),
+        OPENBB_SYMBOL_SEARCH_INPUT_V1 => validate_openbb_symbol_search_input(value),
+        OPENBB_SP500_MULTIPLES_REQUEST_V1 => validate_openbb_sp500_multiples_request(
+            value,
+            OPENBB_SP500_MULTIPLES_REQUEST_V1,
+        ),
+        OPENBB_SP500_MULTIPLES_INPUT_V1 => validate_openbb_sp500_multiples_input(value),
+        OPENBB_SCREENER_REQUEST_V1 => validate_openbb_screener_request(
+            value,
+            OPENBB_SCREENER_REQUEST_V1,
+        ),
+        OPENBB_SCREENER_INPUT_V1 => validate_openbb_screener_input(value),
         QUANT_DCF_REQUEST_V1 => validate_quant_dcf_request(value),
         QUANT_DCF_RESULT_V1 => validate_quant_dcf_result(value),
         GURU_QUERY_REQUEST_V1 => validate_guru_query_request(value),
@@ -3759,10 +4015,274 @@ fn validate_openbb_provider_only_input(
     value: &Value,
     contract_id: &'static str,
 ) -> Result<(), ContractValueError> {
+    validate_openbb_provider_value_input(value, contract_id, "fmp")
+}
+
+/// Round-7 shared provider-only input with a per-lane provider constant
+/// (round-7 admits keyless non-fmp providers).
+fn validate_openbb_provider_value_input(
+    value: &Value,
+    contract_id: &'static str,
+    provider: &'static str,
+) -> Result<(), ContractValueError> {
     let request = object(value, contract_id)?;
     exact_keys(request, &["provider"], contract_id)?;
-    if request.get("provider").and_then(Value::as_str) != Some("fmp") {
+    if request.get("provider").and_then(Value::as_str) != Some(provider) {
         return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 shared symbol input with a per-lane provider constant.
+fn validate_openbb_pinned_symbol_input(
+    value: &Value,
+    contract_id: &'static str,
+    provider: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["provider", "symbol"], contract_id)?;
+    if request.get("provider").and_then(Value::as_str) != Some(provider)
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 MD&A input: sec provider, symbol, tables excluded (the table
+/// payload is what would blow the advisory record bound).
+fn validate_openbb_mda_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_MDA_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["include_tables", "provider", "symbol"],
+        OPENBB_MDA_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("sec")
+        || request.get("include_tables") != Some(&Value::Bool(false))
+        || !request
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_market_ticker)
+    {
+        return Err(ContractValueError::Shape(OPENBB_MDA_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Round-7 sector-group request: one of the three finviz metric groups.
+fn validate_openbb_metric3_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["metric"], contract_id)?;
+    if !matches!(
+        request.get("metric").and_then(Value::as_str),
+        Some("performance") | Some("valuation") | Some("overview")
+    ) {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 sector-group input: finviz provider, sector group pin, metric.
+fn validate_openbb_sector_performance_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_SECTOR_PERFORMANCE_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["group", "metric", "provider"],
+        OPENBB_SECTOR_PERFORMANCE_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("finviz")
+        || request.get("group").and_then(Value::as_str) != Some("sector")
+        || !matches!(
+            request.get("metric").and_then(Value::as_str),
+            Some("performance") | Some("valuation") | Some("overview")
+        )
+    {
+        return Err(ContractValueError::Shape(OPENBB_SECTOR_PERFORMANCE_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Round-7 symbol-directory request: the model names the company in plain
+/// words; the kernel owns everything physical.
+fn validate_openbb_symbol_search_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    exact_keys(request, &["query"], contract_id)?;
+    if !request
+        .get("query")
+        .and_then(Value::as_str)
+        .is_some_and(|query| !query.trim().is_empty() && query.len() <= 64)
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 symbol-directory input: cboe provider, directory-mode flags
+/// pinned, bounded result count.
+fn validate_openbb_symbol_search_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_SYMBOL_SEARCH_INPUT_V1)?;
+    exact_keys(
+        request,
+        &["is_symbol", "limit", "provider", "query"],
+        OPENBB_SYMBOL_SEARCH_INPUT_V1,
+    )?;
+    if request.get("provider").and_then(Value::as_str) != Some("cboe")
+        || request.get("is_symbol") != Some(&Value::Bool(false))
+        || !request
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| (1..=10).contains(&limit))
+        || !request
+            .get("query")
+            .and_then(Value::as_str)
+            .is_some_and(|query| !query.trim().is_empty() && query.len() <= 64)
+    {
+        return Err(ContractValueError::Shape(OPENBB_SYMBOL_SEARCH_INPUT_V1));
+    }
+    Ok(())
+}
+
+/// Round-7 S&P 500 multiples request: a series choice plus a REQUIRED
+/// start date — the multpl series starts in 1871 and an unbounded read
+/// would blow the advisory record bound.
+fn validate_openbb_sp500_multiples_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let keys_ok = match keys.as_slice() {
+        ["series_name", "start_date"] | ["end_date", "series_name", "start_date"] => true,
+        _ => false,
+    };
+    let series = request.get("series_name").and_then(Value::as_str);
+    let series_ok = matches!(
+        series,
+        Some("pe_month")
+            | Some("pe_year")
+            | Some("shiller_pe_month")
+            | Some("shiller_pe_year")
+            | Some("dividend_yield_month")
+            | Some("dividend_yield_year")
+            | Some("earnings_month")
+            | Some("earnings_year")
+    );
+    let iso_date = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|date| date.len() == 10 && date.as_bytes()[4] == b'-')
+    };
+    let start_ok = request.get("start_date").is_some_and(|date| iso_date(date));
+    let end_ok = request
+        .get("end_date")
+        .is_none_or(|date| iso_date(date));
+    if !keys_ok || !series_ok || !start_ok || !end_ok {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 S&P 500 multiples input: multpl provider plus the model's
+/// series choice and date window.
+fn validate_openbb_sp500_multiples_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_SP500_MULTIPLES_INPUT_V1)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let keys_ok = match keys.as_slice() {
+        ["provider", "series_name", "start_date"]
+        | ["end_date", "provider", "series_name", "start_date"] => true,
+        _ => false,
+    };
+    if !keys_ok || request.get("provider").and_then(Value::as_str) != Some("multpl") {
+        return Err(ContractValueError::Shape(OPENBB_SP500_MULTIPLES_INPUT_V1));
+    }
+    for key in ["series_name", "start_date", "end_date"] {
+        match (key, request.get(key)) {
+            ("series_name", Some(series)) => {
+                if !matches!(
+                    series.as_str(),
+                    Some("pe_month")
+                        | Some("pe_year")
+                        | Some("shiller_pe_month")
+                        | Some("shiller_pe_year")
+                        | Some("dividend_yield_month")
+                        | Some("dividend_yield_year")
+                        | Some("earnings_month")
+                        | Some("earnings_year")
+                ) {
+                    return Err(ContractValueError::Shape(OPENBB_SP500_MULTIPLES_INPUT_V1));
+                }
+            }
+            (_, Some(date)) => {
+                if !date
+                    .as_str()
+                    .is_some_and(|date| date.len() == 10 && date.as_bytes()[4] == b'-')
+                {
+                    return Err(ContractValueError::Shape(OPENBB_SP500_MULTIPLES_INPUT_V1));
+                }
+            }
+            (_, None) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Round-7 screener request: a required metric group plus an optional
+/// sector filter that keeps the row count bounded.
+fn validate_openbb_screener_request(
+    value: &Value,
+    contract_id: &'static str,
+) -> Result<(), ContractValueError> {
+    let request = object(value, contract_id)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let keys_ok = match keys.as_slice() {
+        ["metric"] | ["metric", "sector"] => true,
+        _ => false,
+    };
+    if !keys_ok
+        || !matches!(
+            request.get("metric").and_then(Value::as_str),
+            Some("performance") | Some("valuation") | Some("overview")
+        )
+        || request
+            .get("sector")
+            .is_some_and(|sector| !sector.as_str().is_some_and(|sector| !sector.is_empty() && sector.len() <= 64))
+    {
+        return Err(ContractValueError::Shape(contract_id));
+    }
+    Ok(())
+}
+
+/// Round-7 screener input: finviz provider plus the request's metric and
+/// optional sector.
+fn validate_openbb_screener_input(value: &Value) -> Result<(), ContractValueError> {
+    let request = object(value, OPENBB_SCREENER_INPUT_V1)?;
+    let mut keys: Vec<&str> = request.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let keys_ok = match keys.as_slice() {
+        ["metric", "provider"] | ["metric", "provider", "sector"] => true,
+        _ => false,
+    };
+    if !keys_ok
+        || request.get("provider").and_then(Value::as_str) != Some("finviz")
+        || !matches!(
+            request.get("metric").and_then(Value::as_str),
+            Some("performance") | Some("valuation") | Some("overview")
+        )
+    {
+        return Err(ContractValueError::Shape(OPENBB_SCREENER_INPUT_V1));
     }
     Ok(())
 }
@@ -4352,7 +4872,7 @@ mod tests {
         // 20 openbb round-2 contracts + the 2 quant DCF contracts + the 2
         // openbb round-3 filings contracts + the 2 openbb round-4 news
         // contracts.
-        assert_eq!(descriptors().len(), 137);
+        assert_eq!(descriptors().len(), 151);
         assert_eq!(
             contract(ANSWER_IR_V1)
                 .unwrap()

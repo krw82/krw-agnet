@@ -575,3 +575,83 @@ capabilities:
     data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
     max_connections: 2
     request_timeout_ms: 15000
+  # Round-7 keyless non-fmp providers (2026-09-08): SEC MD&A, FINRA
+  # short interest, Finviz groups/screener, Yahoo discovery, CBOE
+  # directory, multpl index multiples.
+  - binding_key: openbb_equity_fundamental_management_discussion_analysis
+    mcp_tool_name: equity_fundamental_management_discussion_analysis
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 30000
+  - binding_key: openbb_equity_shorts_short_interest
+    mcp_tool_name: equity_shorts_short_interest
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 30000
+  - binding_key: openbb_equity_compare_groups
+    mcp_tool_name: equity_compare_groups
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_equity_discovery_undervalued_large_caps
+    mcp_tool_name: equity_discovery_undervalued_large_caps
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 30000
+  - binding_key: openbb_equity_search
+    mcp_tool_name: equity_search
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 15000
+  - binding_key: openbb_index_sp500_multiples
+    mcp_tool_name: index_sp500_multiples
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 30000
+  - binding_key: openbb_equity_screener
+    mcp_tool_name: equity_screener
+    endpoint_ref: krw-openbb-local
+    credential_ref: null
+    auth_scope: tenant
+    tool_session_reuse: run-scoped
+    server_schema_bundle_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    server_build: fixture
+    data_release_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    max_connections: 2
+    request_timeout_ms: 30000

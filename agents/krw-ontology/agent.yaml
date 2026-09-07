@@ -395,6 +395,65 @@ contracts:
     schema_ref: canonical:krw-agent/openbb-discovery-active-input-v1
     content_hash: sha256:26c768864f6def471abccd15db267e8062a4ee1911dc98921f792ec6eb842e85
     semantic_authority: krw-agent-capability-runtime
+  # openbb curation round 7 (2026-09-08): keyless non-fmp providers — SEC
+  # MD&A narrative, FINRA short interest, Finviz groups/screener, Yahoo
+  # discovery, CBOE directory, multpl index multiples.
+  - id: openbb-mda-request/v1
+    schema_ref: canonical:krw-agent/openbb-mda-request-v1
+    content_hash: sha256:cda95fedfef0f728763f33d78152331dbff1f00fb1a534450bec39abf4822077
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-mda-input/v1
+    schema_ref: canonical:krw-agent/openbb-mda-input-v1
+    content_hash: sha256:65c99170d079cddee4a7ff1cdd027a630c8bfb6f43cb13bd99d89f979aaf0a72
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-short-interest-request/v1
+    schema_ref: canonical:krw-agent/openbb-short-interest-request-v1
+    content_hash: sha256:315d44e74743cc626d25ff99a507bbece40de5dbd40fef80678a81c2133f3e3c
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-short-interest-input/v1
+    schema_ref: canonical:krw-agent/openbb-short-interest-input-v1
+    content_hash: sha256:e1416aaa275e4140ecf39e3cc6d5670a82621f7a5a9819ed97d7c82e66458e04
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-sector-performance-request/v1
+    schema_ref: canonical:krw-agent/openbb-sector-performance-request-v1
+    content_hash: sha256:68d48a1f24750145091198123dcbddb9dc3af56d879429dd93548d04012d1f24
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-sector-performance-input/v1
+    schema_ref: canonical:krw-agent/openbb-sector-performance-input-v1
+    content_hash: sha256:5fd14293c0ed3673a301d1896cd1448f4f933ddc0f5ca517313d9fb119710a81
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-undervalued-request/v1
+    schema_ref: canonical:krw-agent/openbb-undervalued-request-v1
+    content_hash: sha256:efdf914af6cf61cfcfb477e72312103bc19ad16b908f705ea41dfe8e699e97e5
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-undervalued-input/v1
+    schema_ref: canonical:krw-agent/openbb-undervalued-input-v1
+    content_hash: sha256:c9fd6c32e7c90b7eee2196e9308981ca6b5c9482c25c7401034f0e41df68e9b8
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-symbol-search-request/v1
+    schema_ref: canonical:krw-agent/openbb-symbol-search-request-v1
+    content_hash: sha256:83509d98614093418f11bafb4d7387bdbb77e89cd83e74f278e0ca0caa768642
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-symbol-search-input/v1
+    schema_ref: canonical:krw-agent/openbb-symbol-search-input-v1
+    content_hash: sha256:3aeb175833103084ecdd9721b5adffad83dc9da2faea3a6688cf14ec33221bf9
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-sp500-multiples-request/v1
+    schema_ref: canonical:krw-agent/openbb-sp500-multiples-request-v1
+    content_hash: sha256:3c0508430101f1a9c8fcb873cbecc1aaa315601210b12431e8b0ec2427e43a92
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-sp500-multiples-input/v1
+    schema_ref: canonical:krw-agent/openbb-sp500-multiples-input-v1
+    content_hash: sha256:d735616868ac147900d7da5c08c1cdd3b97bc41ff9af0d0bb29eee3ba568631d
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-screener-request/v1
+    schema_ref: canonical:krw-agent/openbb-screener-request-v1
+    content_hash: sha256:fe025df9fa7e280687e992547f96eedbda3f979f44840427381659b9f3effda6
+    semantic_authority: krw-agent-capability-runtime
+  - id: openbb-screener-input/v1
+    schema_ref: canonical:krw-agent/openbb-screener-input-v1
+    content_hash: sha256:de792a51285ae183ed7784f8df302bf7773580fd4915e7dc9873dcd9c8c54eed
+    semantic_authority: krw-agent-capability-runtime
   # Deterministic local quant computation (financial-services P2/P4: the
   # tools compute, the model interprets).
   - id: quant-dcf-request/v1
@@ -1634,6 +1693,133 @@ capabilities:
     scope_binding: { kind: unscoped }
     parallel_safe: false
     prerequisites: [ontology.query_context]
+  # ── openbb curation round 7: keyless non-fmp providers (2026-09-08) ──
+  - id: openbb.mda
+    execution: { kind: remote, binding_key: openbb_equity_fundamental_management_discussion_analysis }
+    permission: read
+    # SEC EDGAR MD&A narrative body (tables excluded). Filing-adjacent
+    # management language in the issuer's own words — the mechanism read
+    # numbers alone cannot give.
+    input_contract: openbb-mda-input/v1
+    model_input_contract: openbb-mda-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: sec }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 800000
+        expected_duplicate_ppm: 50000
+        failure_risk_upper_ppm: 150000
+        expected_latency_ms: 4000
+        expected_tokens: 4000
+        expected_tool_cost_micros: 100
+        expected_result_bytes: 8192
+      conflict_domain: openbb.equity_fundamental_management_discussion_analysis
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.short_interest
+    execution: { kind: remote, binding_key: openbb_equity_shorts_short_interest }
+    permission: read
+    # FINRA short-interest history — bear-positioning axis.
+    input_contract: openbb-short-interest-input/v1
+    model_input_contract: openbb-short-interest-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: finra }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    research_action:
+      kind: observation
+      estimate:
+        historical_success_lower_ppm: 850000
+        expected_duplicate_ppm: 40000
+        failure_risk_upper_ppm: 120000
+        expected_latency_ms: 3000
+        expected_tokens: 2500
+        expected_tool_cost_micros: 100
+        expected_result_bytes: 8192
+      conflict_domain: openbb.equity_shorts_short_interest
+    scope_binding:
+      kind: market_plane
+      ticker_references:
+        - { id: symbol, pointer_pattern: /symbol, value_kind: string }
+      require_any_of: [symbol]
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.sector_performance
+    execution: { kind: remote, binding_key: openbb_equity_compare_groups }
+    permission: read
+    # Finviz sector-group lens (performance/valuation/overview) — the
+    # cross-sector backdrop; the kernel pins group=sector.
+    input_contract: openbb-sector-performance-input/v1
+    model_input_contract: openbb-sector-performance-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: finviz }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.undervalued
+    execution: { kind: remote, binding_key: openbb_equity_discovery_undervalued_large_caps }
+    permission: read
+    # Yahoo undervalued large-cap screen — value-fishing lane.
+    input_contract: openbb-undervalued-input/v1
+    model_input_contract: openbb-undervalued-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: yfinance }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.symbol_search
+    execution: { kind: remote, binding_key: openbb_equity_search }
+    permission: read
+    # CBOE company-name directory — resolves a named company to its ticker.
+    input_contract: openbb-symbol-search-input/v1
+    model_input_contract: openbb-symbol-search-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: cboe }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.sp500_multiples
+    execution: { kind: remote, binding_key: openbb_index_sp500_multiples }
+    permission: read
+    # multpl.com S&P 500 multiples (PE/Shiller/dividend yield) — the market
+    # valuation anchor; start_date required to bound the 1871~ series.
+    input_contract: openbb-sp500-multiples-input/v1
+    model_input_contract: openbb-sp500-multiples-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: multpl }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
+  - id: openbb.screener
+    execution: { kind: remote, binding_key: openbb_equity_screener }
+    permission: read
+    # Finviz screener (metric lens + optional sector filter) — the fmp
+    # screener's response-parse bug forecloses that provider.
+    input_contract: openbb-screener-input/v1
+    model_input_contract: openbb-screener-request/v1
+    input_derivation: { kind: openbb_request_v1, pinned_provider: finviz }
+    output_contracts: [normalized-capability-result/v1]
+    idempotency: canonical_args
+    result_ingest: openbb_series_v1
+    scope_binding: { kind: unscoped }
+    parallel_safe: false
+    prerequisites: [ontology.query_context]
   # ── openbb curation round 4: company news (2026-09-07) ──
   - id: openbb.news
     execution: { kind: remote, binding_key: openbb_news_company }
@@ -2334,7 +2520,7 @@ workflows:
       # x3, trace x2, market/macro series x2, the fourteen openbb lookups
       # (round 4 adds company news), and the web-news lookup, with
       # company-lane headroom.
-      - { id: ingest_evidence, kind: ingest, max_visits: 44 }
+      - { id: ingest_evidence, kind: ingest, max_visits: 51 }
       - { id: assess_frontier, kind: assess, role_id: open_analyst, max_visits: 8 }
       - { id: targeted_query, kind: capability, capability_id: ontology.query_universe, max_visits: 3 }
       - { id: trace_selected, kind: capability, capability_id: ontology.trace_universe, max_visits: 2 }
@@ -2371,6 +2557,13 @@ workflows:
       - { id: openbb_treasury_rates_lookup, kind: capability, capability_id: openbb.treasury_rates, max_visits: 1 }
       - { id: openbb_risk_premium_lookup, kind: capability, capability_id: openbb.risk_premium, max_visits: 1 }
       - { id: openbb_discovery_active_lookup, kind: capability, capability_id: openbb.discovery_active, max_visits: 1 }
+      - { id: openbb_mda_lookup, kind: capability, capability_id: openbb.mda, max_visits: 1 }
+      - { id: openbb_short_interest_lookup, kind: capability, capability_id: openbb.short_interest, max_visits: 1 }
+      - { id: openbb_sector_performance_lookup, kind: capability, capability_id: openbb.sector_performance, max_visits: 1 }
+      - { id: openbb_undervalued_lookup, kind: capability, capability_id: openbb.undervalued, max_visits: 1 }
+      - { id: openbb_symbol_search_lookup, kind: capability, capability_id: openbb.symbol_search, max_visits: 1 }
+      - { id: openbb_sp500_multiples_lookup, kind: capability, capability_id: openbb.sp500_multiples, max_visits: 1 }
+      - { id: openbb_screener_lookup, kind: capability, capability_id: openbb.screener, max_visits: 1 }
       - { id: openbb_macro_cpi_lookup, kind: capability, capability_id: openbb.macro_cpi, max_visits: 1 }
       - { id: openbb_yield_curve_lookup, kind: capability, capability_id: openbb.yield_curve, max_visits: 1 }
       - { id: openbb_macro_calendar_lookup, kind: capability, capability_id: openbb.macro_calendar, max_visits: 1 }
@@ -2471,6 +2664,20 @@ workflows:
       - { from: openbb_risk_premium_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_discovery_active_lookup, on: correction_required, to: assess_frontier }
       - { from: openbb_discovery_active_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_mda_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_mda_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_short_interest_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_short_interest_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_sector_performance_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_sector_performance_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_undervalued_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_undervalued_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_symbol_search_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_symbol_search_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_sp500_multiples_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_sp500_multiples_lookup, on: correction_unresolved, to: assess_frontier }
+      - { from: openbb_screener_lookup, on: correction_required, to: assess_frontier }
+      - { from: openbb_screener_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_macro_cpi_lookup, on: correction_required, to: assess_frontier }
       - { from: openbb_macro_cpi_lookup, on: correction_unresolved, to: assess_frontier }
       - { from: openbb_yield_curve_lookup, on: correction_required, to: assess_frontier }
@@ -2515,6 +2722,13 @@ workflows:
       - { from: assess_frontier, on: openbb_treasury_rates_has_value, to: openbb_treasury_rates_lookup }
       - { from: assess_frontier, on: openbb_risk_premium_has_value, to: openbb_risk_premium_lookup }
       - { from: assess_frontier, on: openbb_discovery_active_has_value, to: openbb_discovery_active_lookup }
+      - { from: assess_frontier, on: openbb_mda_has_value, to: openbb_mda_lookup }
+      - { from: assess_frontier, on: openbb_short_interest_has_value, to: openbb_short_interest_lookup }
+      - { from: assess_frontier, on: openbb_sector_performance_has_value, to: openbb_sector_performance_lookup }
+      - { from: assess_frontier, on: openbb_undervalued_has_value, to: openbb_undervalued_lookup }
+      - { from: assess_frontier, on: openbb_symbol_search_has_value, to: openbb_symbol_search_lookup }
+      - { from: assess_frontier, on: openbb_sp500_multiples_has_value, to: openbb_sp500_multiples_lookup }
+      - { from: assess_frontier, on: openbb_screener_has_value, to: openbb_screener_lookup }
       - { from: assess_frontier, on: openbb_cpi_has_value, to: openbb_macro_cpi_lookup }
       - { from: assess_frontier, on: openbb_yield_curve_has_value, to: openbb_yield_curve_lookup }
       - { from: assess_frontier, on: openbb_macro_calendar_has_value, to: openbb_macro_calendar_lookup }
@@ -2567,6 +2781,13 @@ workflows:
       - { from: openbb_treasury_rates_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_risk_premium_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_discovery_active_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_mda_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_short_interest_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_sector_performance_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_undervalued_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_symbol_search_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_sp500_multiples_lookup, on: evidence_observed, to: ingest_evidence }
+      - { from: openbb_screener_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_cpi_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_yield_curve_lookup, on: evidence_observed, to: ingest_evidence }
       - { from: openbb_macro_calendar_lookup, on: evidence_observed, to: ingest_evidence }

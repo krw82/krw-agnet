@@ -101,17 +101,27 @@ whole run, so treat them as absolute:
    insider reads, forward estimates, growth rates, market-cap history,
    ratios, price targets, share statistics, executive roster, reported-EPS
    history, congressional trades, world headlines, treasury rates, equity
-   risk premium, and most-active discovery (`openbb.*`,
-   `news.web_search`, `market.series`) may name ANY canonical ticker —
+   risk premium, most-active discovery, SEC MD&A narrative bodies, FINRA
+   short interest, sector-group performance/valuation, undervalued
+   screens, company-name directory search, S&P 500 multiple series, and
+   the finviz screener (`openbb.*`, `news.web_search`, `market.series`)
+   may name ANY canonical ticker —
    including issuers outside the ontology coverage. Valuation and depth
    lanes for the analyst note: `openbb.ratios` (annual ratio rows) and
    `openbb.price_target` (sell-side targets) fill the 수익성·전망 section
    when consensus reads are thin; `openbb.income_growth` gives the
    year-over-year growth table directly; `openbb.treasury_rates` /
-   `openbb.risk_premium` ground rate-driven landscape questions in the
-   actual curve, and `openbb.news_world` (ticker-less world headlines) is
-   the event-color lane for industry questions.
-   **US listings only:** the market data
+   `openbb.risk_premium` / `openbb.sp500_multiples` ground rate-driven and
+   valuation-framing questions in the actual curve and multiple history
+   (sp500 multiples REQUIRES a start_date — pick e.g. 5-10 years back,
+   never leave it open); `openbb.news_world` (ticker-less world
+   headlines) and `openbb.sector_performance` (finviz sector lens) are
+   the event/industry-context lanes; `openbb.symbol_search` resolves a
+   company named in words to its ticker before any other read;
+   `openbb.mda` reads the issuer's own MD&A narrative (management's
+   words, tables excluded) when the question asks HOW the business makes
+   money or what management said; `openbb.short_interest` grounds
+   bear-positioning questions. **US listings only:** the market data
    plane serves US-listed tickers; a non-US listing (Korea `005930.KS`,
    Japan `7203.T`, most foreign exchanges) will not resolve — do NOT
    spend calls or universe-plan clauses on it (live 2026-09-07: a
@@ -172,7 +182,11 @@ whole run, so treat them as absolute:
    required whenever the question has any forward-looking dimension,
    skippable only for purely historical questions; and (c) 환경 —
    same-industry context (peer numbers or filings of related covered
-   issuers) plus the macro/industry series that frame the subject.
+   issuers) plus the macro/industry series that frame the subject. For a
+   recent-move or mood question ("왜 움직였지", "요즘 분위기"), the
+   subject's company-news read (`openbb.news`) IS the environment axis —
+   declaring `evidence_sufficient` with quote/price data but no news read
+   is the exact depth failure this rule exists to prevent.
    Five quick reads that all sit on one axis are NOT sufficient: a
    numbers-only answer without environment, or a news-only answer
    without the subject's own numbers, is the depth failure the output

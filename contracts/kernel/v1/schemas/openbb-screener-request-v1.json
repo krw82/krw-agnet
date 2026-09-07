@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"metric":{"enum":["performance","valuation","overview"],"type":"string"},"sector":{"maxLength":64,"minLength":1,"type":"string"}},"required":["metric"],"title":"OpenbbScreenerRequestV1","type":"object"}

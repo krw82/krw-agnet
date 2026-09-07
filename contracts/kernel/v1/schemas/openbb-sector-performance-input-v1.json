@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"group":{"const":"sector","type":"string"},"metric":{"enum":["performance","valuation","overview"],"type":"string"},"provider":{"const":"finviz","type":"string"}},"required":["group","metric","provider"],"title":"OpenbbSectorPerformanceInputV1","type":"object"}

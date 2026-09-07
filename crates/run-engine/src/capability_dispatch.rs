@@ -316,7 +316,7 @@ pub(crate) const EVENT_LADDER_CAPABILITY_IDS: [&str; 5] = [
 /// observations — the cross-plane note reminds the analyst that anything
 /// observation-derived which the answer relies on still needs an ontology
 /// (filing) confirmation read.
-pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 36] = [
+pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 43] = [
     "market.series",
     "macro.series",
     "openbb.price_history",
@@ -353,6 +353,13 @@ pub(crate) const OBSERVATION_PLANE_CAPABILITY_IDS: [&str; 36] = [
     "openbb.treasury_rates",
     "openbb.risk_premium",
     "openbb.discovery_active",
+    "openbb.mda",
+    "openbb.short_interest",
+    "openbb.sector_performance",
+    "openbb.undervalued",
+    "openbb.symbol_search",
+    "openbb.sp500_multiples",
+    "openbb.screener",
 ];
 
 /// Kernel-owned cross-plane note, mirroring `model_event_ladder_hint`: the
@@ -1248,6 +1255,87 @@ pub(crate) fn assemble_openbb_request(
         // Round-6 provider-only reads (equity risk premium, most-active
         // discovery): nothing model-authored survives onto the wire.
         "openbb-risk-premium-input/v1" | "openbb-discovery-active-input/v1" => {}
+        // Round-7 SEC MD&A: ticker plus the table-exclusion pin that keeps
+        // the narrative body inside the advisory record bound.
+        "openbb-mda-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("include_tables".into(), Value::Bool(false));
+        }
+        // Round-7 FINRA short interest: ticker only.
+        "openbb-short-interest-input/v1" => {
+            let ticker = request
+                .get("ticker")
+                .and_then(Value::as_str)
+                .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
+                .ok_or_else(invalid)?;
+            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+        }
+        // Round-7 Finviz sector groups: the kernel pins the group, the model
+        // picks the metric lens (performance/valuation/overview).
+        "openbb-sector-performance-input/v1" => {
+            let metric = request
+                .get("metric")
+                .and_then(Value::as_str)
+                .filter(|metric| {
+                    matches!(*metric, "performance" | "valuation" | "overview")
+                })
+                .ok_or_else(invalid)?;
+            physical.insert("group".into(), Value::String("sector".into()));
+            physical.insert("metric".into(), Value::String(metric.to_owned()));
+        }
+        // Round-7 Yahoo undervalued discovery: nothing model-authored.
+        "openbb-undervalued-input/v1" => {}
+        // Round-7 CBOE directory search: the model's company-name query plus
+        // pinned directory-mode flags and result count.
+        "openbb-symbol-search-input/v1" => {
+            let query = request
+                .get("query")
+                .and_then(Value::as_str)
+                .filter(|query| !query.trim().is_empty() && query.len() <= 64)
+                .ok_or_else(invalid)?;
+            physical.insert("query".into(), Value::String(query.to_owned()));
+            physical.insert("is_symbol".into(), Value::Bool(false));
+            physical.insert("limit".into(), Value::from(10_u64));
+        }
+        // Round-7 multpl S&P 500 multiples: series plus the model's required
+        // date window (the series starts in 1871).
+        "openbb-sp500-multiples-input/v1" => {
+            let series = request
+                .get("series_name")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?;
+            let start = request
+                .get("start_date")
+                .and_then(Value::as_str)
+                .filter(|date| date.len() == 10 && date.as_bytes()[4] == b'-')
+                .ok_or_else(invalid)?;
+            physical.insert("series_name".into(), Value::String(series.to_owned()));
+            physical.insert("start_date".into(), Value::String(start.to_owned()));
+            if let Some(end) = bounded_optional_str("end_date") {
+                physical.insert("end_date".into(), Value::String(end));
+            }
+        }
+        // Round-7 Finviz screener: metric lens plus optional sector filter.
+        "openbb-screener-input/v1" => {
+            let metric = request
+                .get("metric")
+                .and_then(Value::as_str)
+                .filter(|metric| {
+                    matches!(*metric, "performance" | "valuation" | "overview")
+                })
+                .ok_or_else(invalid)?;
+            physical.insert("metric".into(), Value::String(metric.to_owned()));
+            if let Some(sector) = request.get("sector").and_then(Value::as_str) {
+                if !sector.is_empty() && sector.len() <= 64 {
+                    physical.insert("sector".into(), Value::String(sector.to_owned()));
+                }
+            }
+        }
         _ => return Err(invalid()),
     }
     Ok(Value::Object(physical))
