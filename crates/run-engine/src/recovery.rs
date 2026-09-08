@@ -287,23 +287,80 @@ where
                 // Security-critical fields (interpreter state, evidence ledger,
                 // action frontier) are still fully compared.
                 let rebuilt = state.checkpoint_value()?;
-                if declared.interpreter != rebuilt.interpreter
-                    || declared.state_trace != rebuilt.state_trace
-                    || declared.capability_calls != rebuilt.capability_calls
-                    || declared.completed_capabilities != rebuilt.completed_capabilities
-                    || declared.logical_action_keys != rebuilt.logical_action_keys
-                    || declared.evidence_ledger_hash != rebuilt.evidence_ledger_hash
-                    || declared.presentation_packs_hash != rebuilt.presentation_packs_hash
-                    || declared.composed_sections_hash != rebuilt.composed_sections_hash
-                    || declared.calculations_hash != rebuilt.calculations_hash
-                    || declared.action_cache_hash != rebuilt.action_cache_hash
-                    || declared.accepted_actions_hash != rebuilt.accepted_actions_hash
-                    || declared.last_provider_episode_hash != rebuilt.last_provider_episode_hash
-                    || declared.compacted_context_hash != rebuilt.compacted_context_hash
-                    || declared.research_planner_hash != rebuilt.research_planner_hash
-                    || declared.derived_ticker_scope_hash != rebuilt.derived_ticker_scope_hash
-                    || declared.session_memory_hash != rebuilt.session_memory_hash
-                {
+                let field_mismatches: Vec<&'static str> = [
+                    ("interpreter", declared.interpreter != rebuilt.interpreter),
+                    (
+                        "state_trace",
+                        declared.state_trace != rebuilt.state_trace,
+                    ),
+                    (
+                        "capability_calls",
+                        declared.capability_calls != rebuilt.capability_calls,
+                    ),
+                    (
+                        "completed_capabilities",
+                        declared.completed_capabilities != rebuilt.completed_capabilities,
+                    ),
+                    (
+                        "logical_action_keys",
+                        declared.logical_action_keys != rebuilt.logical_action_keys,
+                    ),
+                    (
+                        "evidence_ledger_hash",
+                        declared.evidence_ledger_hash != rebuilt.evidence_ledger_hash,
+                    ),
+                    (
+                        "presentation_packs_hash",
+                        declared.presentation_packs_hash != rebuilt.presentation_packs_hash,
+                    ),
+                    (
+                        "composed_sections_hash",
+                        declared.composed_sections_hash != rebuilt.composed_sections_hash,
+                    ),
+                    (
+                        "calculations_hash",
+                        declared.calculations_hash != rebuilt.calculations_hash,
+                    ),
+                    (
+                        "action_cache_hash",
+                        declared.action_cache_hash != rebuilt.action_cache_hash,
+                    ),
+                    (
+                        "accepted_actions_hash",
+                        declared.accepted_actions_hash != rebuilt.accepted_actions_hash,
+                    ),
+                    (
+                        "last_provider_episode_hash",
+                        declared.last_provider_episode_hash != rebuilt.last_provider_episode_hash,
+                    ),
+                    (
+                        "compacted_context_hash",
+                        declared.compacted_context_hash != rebuilt.compacted_context_hash,
+                    ),
+                    (
+                        "research_planner_hash",
+                        declared.research_planner_hash != rebuilt.research_planner_hash,
+                    ),
+                    (
+                        "derived_ticker_scope_hash",
+                        declared.derived_ticker_scope_hash != rebuilt.derived_ticker_scope_hash,
+                    ),
+                    (
+                        "session_memory_hash",
+                        declared.session_memory_hash != rebuilt.session_memory_hash,
+                    ),
+                ]
+                .into_iter()
+                .filter(|(_, mismatched)| *mismatched)
+                .map(|(field, _)| field)
+                .collect();
+                if !field_mismatches.is_empty() {
+                    tracing::warn!(
+                        fields = ?field_mismatches,
+                        "recovery equivalence mismatch"
+                    );
+                }
+                if !field_mismatches.is_empty() {
                     return Err(EngineError::RecoveryStateMismatch);
                 }
             }
