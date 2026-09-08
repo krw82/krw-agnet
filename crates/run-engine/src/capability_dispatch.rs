@@ -2650,11 +2650,18 @@ where
             mutation: BeginActionMutation {
                 run_id: identity.run_id.clone(),
                 fencing_token: identity.fencing_token,
-                mutation_id: mutation_id(
-                    "begin_action",
-                    &identity.run_id,
-                    &ContentHash::sha256(&call.action_key),
-                ),
+                // Attempt-scoped: a deferral-resumed run re-proposes the
+                // same action from a NEW episode, and that re-issue must
+                // not collide with the first attempt's recorded mutation
+                // (2026-09-08: a shared action-only id kept hitting
+                // K1004 mutation_conflict across resumes).
+                mutation_id: ContentHash::sha256(format!(
+                    "mutation/v1\0begin_action\0{}\0{}\0{}",
+                    identity.run_id,
+                    call.action_key.to_string(),
+                    episode_hash.to_string(),
+                ))
+                .to_string(),
                 action_key: call.action_key.clone(),
                 request_hash: call.request_hash.clone(),
                 retryable_read: true,

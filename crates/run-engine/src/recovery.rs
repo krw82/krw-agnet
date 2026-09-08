@@ -410,7 +410,16 @@ where
             return Err(EngineError::RecoveryArtifactMismatch("action result"));
         }
         let result: CapabilityResult = serde_json::from_slice(result_bytes)?;
-        state.route_to_capability(call, episode_hash.clone())?;
+        // Live-parity tolerance: the drain's own loop stops routing and
+        // clears its queue when the workflow moves somewhere the remaining
+        // reads cannot follow; replay must not die on the same boundary
+        // (2026-09-08 resume died with WorkflowResolution "capability
+        // proposal source" routing a replayed sibling out of turn).
+        if state.route_to_capability(call, episode_hash.clone()).is_err() {
+            state.pending_supplemental_calls.clear();
+            consumed_actions.insert(call.action_key.clone());
+            return Ok(());
+        }
         let invocation = capability_invocation(&input.request.run_id, call);
         self.capabilities
             .restore_committed_result(&invocation, &result)
