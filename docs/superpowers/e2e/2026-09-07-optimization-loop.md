@@ -379,3 +379,29 @@ Begun으로 정규화해 재발행). 재생 에피소드 검증은 자기 기록
 launchd 관리 production agentd(~/.local/share, deepseek)는 별도 DB라 무관.
 f32c0076 런의 온톨로지 서버 순단(ambiguous→창 밖)은 진짜 인프라 플레이크
 — 폴백이 설계된 답.
+
+## 이터레이션 12 — 재개 체인 관통(스토어 2결함 추가)과 마지막 좁은 문제 (2026-09-08 오후)
+
+스토어 층에서 또 2결함(직접 SQL 재현으로 입증): ⑤ replay_mutation이 리스
+필드(fencing_token/expected_run_version)까지 바이트 비교 — 재클레임마다
+펜스가 바뀌어 재개 begin_action이 K1004 무한충돌(0025: 리스 필드 제외 +
+재생 응답의 리스 필드 현행화). ⑥ begin_action이 액션 행을 최초 에피소드에
+영속 묶음 — 재제안된 재시도 읽기가 K1005(0026: ambiguous+retryable 행은
+새 시도로 재바인딩, 나머지는 폐쇄 유지). 엔진: begin_action mutation_id를
+시도 스코프(action_key+episode_hash)로, 드레인 재생에 라이브의 route 실패
+관용 추가. 진단 인프라: 재생 등가 검사가 불일치 필드명을 로깅(한 줄로
+원인 식별), replay_mutation 진단 버전(어느 키가 갈리는지 메시지 노출).
+
+**멀티티커 NVDA/AMD 최종 통과**(r5): 온톨로지 순단→지연→재개→재독해까지
+전체 회복 체인 실전 가동, 1,535자·4표·금지 0 — "AMD 쪽 자료 미확보"를
+명시하는 정직한 불대칭 비교. 디스패처 다중 티커=null 규칙도 라이브 검증.
+
+**남은 문제(정밀 좁힘 완료)**: 섹터 문 재개가 재생 등가 검사에서 사망 —
+불일치 필드 9개(interpreter·state_trace·capability_calls·completed_
+capabilities·logical_action_keys·evidence_ledger_hash·action_cache_hash·
+accepted_actions_hash·compacted_context_hash) = 드레인 형제의 효과가 재생
+상태에 안 붙음. 유닛 회귀(단일 드레인 형제)는 통과하나 라이브(다중 배치+
+펜딩 에피소드 재개)에서 미적용 — 차회 dump_episode로 run_908a30e2의
+체크포인트 바이트와 재생을 필드 단위 대조. 운영 참고: 게이트웨이-agentd가
+DB 클레임 큐로 연결되어 스택 중첩 시 낡은 agentd가 런을 잡음 — 재부팅
+후 "debug agentd 정확히 1개" 단언 필수(이번 이터레이션에서 두 번 재발).
