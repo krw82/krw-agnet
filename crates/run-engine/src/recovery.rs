@@ -357,10 +357,28 @@ where
                 if !field_mismatches.is_empty() {
                     tracing::warn!(
                         fields = ?field_mismatches,
+                        declared_logical_keys = ?declared.logical_action_keys
+                            .iter()
+                            .map(std::string::String::as_str)
+                            .collect::<Vec<_>>(),
+                        rebuilt_logical_keys = ?rebuilt.logical_action_keys
+                            .iter()
+                            .map(std::string::String::as_str)
+                            .collect::<Vec<_>>(),
+                        declared_completed = ?declared
+                            .completed_capabilities
+                            .iter()
+                            .map(std::string::String::as_str)
+                            .collect::<Vec<_>>(),
+                        rebuilt_completed = ?rebuilt
+                            .completed_capabilities
+                            .iter()
+                            .map(std::string::String::as_str)
+                            .collect::<Vec<_>>(),
+                        declared_state_trace = ?declared.state_trace,
+                        rebuilt_state_trace = ?rebuilt.state_trace,
                         "recovery equivalence mismatch"
                     );
-                }
-                if !field_mismatches.is_empty() {
                     return Err(EngineError::RecoveryStateMismatch);
                 }
             }
@@ -472,7 +490,12 @@ where
         // reads cannot follow; replay must not die on the same boundary
         // (2026-09-08 resume died with WorkflowResolution "capability
         // proposal source" routing a replayed sibling out of turn).
-        if state.route_to_capability(call, episode_hash.clone()).is_err() {
+        if let Err(route_error) = state.route_to_capability(call, episode_hash.clone()) {
+            tracing::warn!(
+                capability = %call.capability.id,
+                error = ?route_error,
+                "recovery drained replay route failed"
+            );
             state.pending_supplemental_calls.clear();
             consumed_actions.insert(call.action_key.clone());
             return Ok(());
@@ -920,18 +943,9 @@ where
         if child_policy.is_none() {
             state.append_assistant(&episode);
         }
-        // Live parity for the supplemental drain (2026-09-08, run_8806a8ce):
-        // the live path executes a homogeneous non-research batch by
-        // dispatching the first call and draining the rest one statechart
-        // visit at a time — each drained call leaves an accepted action
-        // receipt bound to THIS episode. Replay used to mark the remainder
-        // "unselected", which left those receipts unconsumed and tripped the
-        // "unreplayed action" invariant on every deferral-resumed run.
-        // Rebuild the live settlement instead: research alternatives stay
-        // unselected; drained observation calls replay from their receipts;
-        // a drained call whose attempt failed (ambiguous stage, the exact
-        // deferral trigger) consumes as a failed attempt; a call the
-        // interruption never reached returns to the pending drain.
+        // The unselected remainder is split AFTER the selected call settles
+        // (see the drained replay below): research alternatives render as
+        // unselected results, observation siblings were drained live.
         let mut drained_calls = Vec::new();
         let mut unselected = Vec::new();
         for call in prepared {
@@ -943,38 +957,6 @@ where
         }
         if child_policy.is_none() {
             state.append_unselected_research_results(&unselected)?;
-        }
-        for call in drained_calls {
-            let receipt = actions.iter().find(|action| {
-                action.action_key == call.action_key
-                    && action.episode_hash == recovered.episode_hash
-            });
-            match receipt {
-                Some(action) if action.stage == ActionStage::Accepted => {
-                    self.replay_committed_observation_action(
-                        input,
-                        state,
-                        &call,
-                        action,
-                        recovered.episode_hash.clone(),
-                        child_policy.is_none(),
-                        consumed_actions,
-                    )
-                    .await?;
-                }
-                Some(_) => {
-                    // A recorded non-accepted stage is a failed attempt (the
-                    // deferral trigger itself). The live path continued past
-                    // it; replay consumes it without re-execution.
-                    consumed_actions.insert(call.action_key.clone());
-                }
-                None => {
-                    state.pending_supplemental_calls.push((
-                        recovered.episode_hash.clone(),
-                        call,
-                    ));
-                }
-            }
         }
         for call in [selected] {
             // Mirror the live cache-hit branch: when the replayed episode's
@@ -1128,6 +1110,47 @@ where
                 return Err(EngineError::InvalidRecoverySnapshot(
                     "action was replayed more than once",
                 ));
+            }
+        }
+        // Live parity for the supplemental drain (2026-09-08 deferral
+        // incidents): the live path executes a homogeneous non-research
+        // batch by dispatching the first call and draining the rest one
+        // statechart visit at a time — each drained call leaves an accepted
+        // action receipt bound to THIS episode. Replay must rebuild that
+        // settlement AFTER the selected call completes (routing a sibling
+        // while the interpreter is still inside the selected capability's
+        // state fails as "capability proposal source" — the 2026-09-10
+        // sector-run equivalence deaths). Accepted receipts replay fully;
+        // a failed attempt (ambiguous stage, the deferral trigger itself)
+        // consumes without re-execution; a call the interruption never
+        // reached returns to the pending drain.
+        for call in drained_calls {
+            let receipt = actions.iter().find(|action| {
+                action.action_key == call.action_key
+                    && action.episode_hash == recovered.episode_hash
+            });
+            match receipt {
+                Some(action) if action.stage == ActionStage::Accepted => {
+                    self.replay_committed_observation_action(
+                        input,
+                        state,
+                        &call,
+                        action,
+                        recovered.episode_hash.clone(),
+                        child_policy.is_none(),
+                        consumed_actions,
+                    )
+                    .await?;
+                }
+                Some(_) => {
+                    consumed_actions.insert(call.action_key.clone());
+                }
+                None => {
+                    state.pending_supplemental_calls.push((
+                        recovered.episode_hash.clone(),
+                        call,
+                    ));
+                }
             }
         }
         state.check_conversation_limit(self.config.max_conversation_bytes)
