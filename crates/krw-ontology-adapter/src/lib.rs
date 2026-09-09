@@ -1302,20 +1302,18 @@ pub fn map_research_state(
             object_to_evidence.insert(object_id.clone(), unit.evidence_id.clone());
         }
         let entity = clean_optional(unit.ticker.as_deref(), 128);
-        // `unit.period` labels the source document's ontology bucket.  It is
-        // not necessarily the financial observation period: for example, a
-        // document indexed as CY2025 can contain Apple's FY2025 year-to-date
-        // cash-flow point.  Keep the source label for the citation, but use a
-        // single unambiguous metric-point period for the evidence record.
-        // When a record contains several observation periods, deliberately do
-        // not invent one record-wide period; every retained fact still carries
-        // its own period.
-        let raw_document_period = clean_optional(unit.period.as_deref(), 128);
-        let document_period = presentation_document_period(
-            raw_document_period.as_deref(),
-            unit.document_type.as_deref(),
-        );
-        let raw_period = research_metric_record_period(unit, raw_document_period.clone());
+        // `unit.period` is the period the unit itself reports.  Under the
+        // cycle-2 period contract (krw-ontology ed9444c) a metric unit's
+        // period is the observation period of the number (e.g. FY2025); the
+        // filing bucket that surfaced the row is no longer carried here and
+        // rides the source label used for the citation title.  Per-point
+        // periods below still take precedence for the facts, and a record
+        // holding several observation periods deliberately stays
+        // record-period-less rather than inventing one period.
+        let raw_unit_period = clean_optional(unit.period.as_deref(), 128);
+        let document_period =
+            presentation_document_period(raw_unit_period.as_deref(), unit.document_type.as_deref());
+        let raw_period = research_metric_record_period(unit, raw_unit_period.clone());
         let period = if let Some(point) = unit.metric_points.first() {
             presentation_observation_period(
                 raw_period.as_deref(),
@@ -1380,7 +1378,7 @@ pub fn map_research_state(
             // expanding the ontology schema or adding a model turn.
             if facts.len() < MAX_RESEARCH_FACTS_PER_RECORD
                 && let Some(context_value) =
-                    research_metric_context(unit, raw_document_period.as_deref())
+                    research_metric_context(unit, raw_unit_period.as_deref())
             {
                 facts.push(NormalizedFact {
                     subject: safe_single_line(&subject, 256, "company"),
@@ -1416,8 +1414,10 @@ pub fn map_research_state(
                     |title| safe_single_line(title, 512, "KRW ontology evidence"),
                 ),
                 document_type: clean_optional(unit.document_type.as_deref(), 128),
-                // Citation period identifies the filing bucket; the evidence
-                // record and its facts above identify the economic period.
+                // The filing lineage (ticker + filing bucket + document type)
+                // rides the citation title's source label; the citation period
+                // reports the unit's own period, which for metric units is the
+                // observation period under the cycle-2 period contract.
                 period: document_period,
             },
             facts,
@@ -1495,15 +1495,18 @@ pub fn map_research_state(
     })
 }
 
-/// Returns the single economic period shared by a metric record, if there is
-/// one. `EvidenceUnit.period` is a source-document label and must not override
-/// a fiscal observation period carried by the metric point itself.
+/// Returns the single observation period shared by a metric record, if there
+/// is one.  Per-point periods take precedence; the record-level
+/// `EvidenceUnit.period` — itself the observation period under the cycle-2
+/// period contract — only acts as the fallback label.  When the retained
+/// points disagree, the record deliberately stays period-less and each fact
+/// keeps its own period.
 fn research_metric_record_period(
     unit: &EvidenceUnit,
-    document_period: Option<String>,
+    unit_period: Option<String>,
 ) -> Option<String> {
     if unit.metric_points.is_empty() {
-        return document_period;
+        return unit_period;
     }
     let mut periods = BTreeSet::new();
     for point in &unit.metric_points {
@@ -1512,7 +1515,7 @@ fn research_metric_record_period(
         }
     }
     match periods.len() {
-        0 => document_period,
+        0 => unit_period,
         1 => periods.into_iter().next(),
         // A multi-period record is intentionally record-period-less. Each
         // fact retains its own period, which is safer than choosing an
@@ -1632,15 +1635,17 @@ fn presentation_period_basis(period_type: Option<&str>) -> Option<&'static str> 
 /// source ontology already supplies this metadata, but raw capability content
 /// is compacted away after ingestion; without this compact fact an annual
 /// source label can be mistaken for a fiscal quarter or a year-to-date value.
-fn research_metric_context(unit: &EvidenceUnit, document_period: Option<&str>) -> Option<Value> {
+/// Under the cycle-2 period contract the record-level `unit.period` IS the
+/// observation period, so the key carries that name; the filing bucket that
+/// surfaced the row is not a unit field anymore and stays in the citation
+/// title's source label.
+fn research_metric_context(unit: &EvidenceUnit, observation_period: Option<&str>) -> Option<Value> {
     const MAX_OBSERVATIONS: usize = 16;
     const MAX_DIMENSIONS: usize = 16;
 
     let mut context = serde_json::Map::new();
-    if let Some(period) =
-        presentation_document_period(document_period, unit.document_type.as_deref())
-    {
-        context.insert("source_document_period".into(), Value::String(period));
+    if let Some(period) = presentation_observation_period(observation_period, None, None) {
+        context.insert("observation_period".into(), Value::String(period));
     }
     if let Some(document_type) = clean_optional(unit.document_type.as_deref(), 128) {
         context.insert("source_document_type".into(), Value::String(document_type));
@@ -5632,11 +5637,15 @@ mod tests {
     }
 
     #[test]
-    fn primary_metric_evidence_keeps_fiscal_period_and_ytd_basis_separate_from_document_label() {
+    fn primary_metric_evidence_reports_observation_period_with_filing_lineage_in_source_label() {
+        // Cycle-2 period contract (krw-ontology ed9444c): a metric unit's
+        // `period` is the observation period of the number, while the filing
+        // bucket that surfaced the row rides the synthesized source label.
         let mut state = answerable_fixture();
         let unit = &mut state.evidence_units[0];
-        unit.period = Some("CY2025".into());
+        unit.period = Some("FY2025".into());
         unit.document_type = Some("10-Q".into());
+        unit.source.source_label = Some("VG CY2025 10-Q".into());
         unit.metric = Some("operating_cash_flow".into());
         unit.unit = Some("USD".into());
         unit.currency = Some("USD".into());
@@ -5662,8 +5671,11 @@ mod tests {
             .find(|record| record.evidence_id == evidence_id)
             .expect("primary metric record");
         assert_eq!(record.period.as_deref(), Some("FY2025"));
-        assert_eq!(record.citation.period.as_deref(), Some("2025년"));
         assert_eq!(record.as_of.as_deref(), Some("2025-03-29"));
+        // Filing lineage lives in the citation title; the citation period is
+        // the unit-reported observation period, not a filing bucket.
+        assert_eq!(record.citation.title, "VG CY2025 10-Q");
+        assert_eq!(record.citation.period.as_deref(), Some("FY2025"));
         assert!(record.facts.iter().any(|fact| {
             fact.predicate == "operating_cash_flow"
                 && fact.period.as_deref() == Some("FY2025")
@@ -5674,7 +5686,8 @@ mod tests {
             .iter()
             .find(|fact| fact.predicate == "metric_context")
             .expect("metric observation basis");
-        assert_eq!(context.value["source_document_period"], "2025년");
+        assert_eq!(context.value["observation_period"], "FY2025");
+        assert!(context.value.get("source_document_period").is_none());
         assert_eq!(
             context.value["observations"][0]["period_type"],
             "year_to_date"
