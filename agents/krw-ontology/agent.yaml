@@ -142,11 +142,11 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-metrics-request/v1
     schema_ref: canonical:krw-agent/openbb-metrics-request-v1
-    content_hash: sha256:ef640c9f81c5ba44d5df70043138b3aa32e299e578c368a94367a9df2307fce9
+    content_hash: sha256:2bcaff6d62fb5a496323501a066197669bbee1fc98f077887d2d05c0de0aea89
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-metrics-input/v1
     schema_ref: canonical:krw-agent/openbb-metrics-input-v1
-    content_hash: sha256:e67ee6954ae97ac9b4a72bc17c40173c3d48fa88c4be84fa67f433dfd0a5be39
+    content_hash: sha256:72ddc6ccc5b161bd8908bef4f9d8030c18df8e3f6fd9e95e3e0eba97c62017de
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-income-request/v1
     schema_ref: canonical:krw-agent/openbb-income-request-v1
