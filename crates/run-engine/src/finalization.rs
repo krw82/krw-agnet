@@ -1014,6 +1014,35 @@ fn fallback_public_inline(value: &str) -> String {
     output
 }
 
+/// 머리글에 인용할 수 있는 질문 발췌의 상한(문자 수).
+const LEDGER_FALLBACK_SCOPE_MAX_CHARS: usize = 80;
+
+/// The question excerpt the fallback heading may quote. A single short line
+/// is quoted as-is; anything longer — an adapter's conversation envelope, a
+/// pasted brief — is reduced to its last non-empty line (the actual ask of a
+/// long brief is almost always its final line), hard-capped so the raw
+/// question can never flood the answer surface. Live 2026-09-09: a
+/// composition envelope was interpolated verbatim into the heading and
+/// leaked another app's system prompts onto the user's screen.
+fn fallback_scope_excerpt(question: &str) -> String {
+    let Some(last_line) = question
+        .trim()
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+    else {
+        return String::new();
+    };
+    let line = last_line.trim();
+    let mut excerpt: String = line.chars().take(LEDGER_FALLBACK_SCOPE_MAX_CHARS).collect();
+    if excerpt.chars().count() == LEDGER_FALLBACK_SCOPE_MAX_CHARS
+        && line.chars().count() > LEDGER_FALLBACK_SCOPE_MAX_CHARS
+    {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
 fn fallback_json_value(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
 }
@@ -1137,7 +1166,7 @@ pub(crate) fn fallback_answer_from_ledger(
         }
     }
     let scope_subject = if tickers.is_empty() {
-        fallback_public_inline(question)
+        fallback_public_inline(&fallback_scope_excerpt(question))
     } else {
         let tickers_inline = tickers
             .iter()
@@ -1145,10 +1174,13 @@ pub(crate) fn fallback_answer_from_ledger(
             .filter(|ticker| !ticker.is_empty())
             .collect::<Vec<_>>()
             .join(", ");
+        let question_excerpt = fallback_public_inline(&fallback_scope_excerpt(question));
         if tickers_inline.is_empty() {
-            fallback_public_inline(question)
+            question_excerpt
+        } else if question_excerpt.is_empty() {
+            tickers_inline
         } else {
-            format!("{tickers_inline} 에 대한 «{question}» 질문")
+            format!("{tickers_inline} 에 대한 «{question_excerpt}» 질문")
         }
     };
     if !scope_subject.is_empty() {
@@ -3635,6 +3667,88 @@ mod narration_gate_tests {
         assert!(
             !fallback.markdown.contains("응답 예산"),
             "a narration escape must not be narrated as a budget exhaustion"
+        );
+    }
+
+    #[test]
+    fn fallback_heading_never_echos_a_multiline_envelope() {
+        // Live 2026-09-09 (run_d1f6cebc): a composition envelope carrying the
+        // chat app's system prompts was interpolated verbatim into the
+        // heading. The heading must quote only the final-line excerpt.
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let envelope = concat!(
+            "다음은 같은 대화의 이전 맥락이다. 이 맥락에 이어지는 새 질문을 조사해 답하라.\n\n",
+            "[이전 대화]\n시스템: You are a helpful assistant.\n\n",
+            "[이번 질문]\n버크셔 해서웨이 현금 보유량 어떻게 되나?"
+        );
+        let fallback = fallback_answer_from_ledger(
+            envelope,
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            LedgerFallbackCause::DependencyOrRetrieval,
+        );
+        assert!(
+            !fallback.markdown.contains("이전 대화"),
+            "the envelope body must not leak into the heading"
+        );
+        assert!(
+            !fallback.markdown.contains("You are a helpful assistant"),
+            "another app's system prompt must never reach the answer surface"
+        );
+        assert!(
+            fallback
+                .markdown
+                .contains("버크셔 해서웨이 현금 보유량 어떻게 되나? 에 대해")
+        );
+    }
+
+    #[test]
+    fn fallback_heading_quotes_a_short_single_line_question_verbatim() {
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let fallback = fallback_answer_from_ledger(
+            "NVDA의 데이터센터 매출은?",
+            &[],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            LedgerFallbackCause::ComposerNarration,
+        );
+        assert!(
+            fallback
+                .markdown
+                .contains("— NVDA의 데이터센터 매출은? 에 대해 지금까지 확인된 부분입니다.")
+        );
+    }
+
+    #[test]
+    fn fallback_heading_with_tickers_caps_and_escapes_the_excerpt() {
+        let empty = EvidenceLedger::default();
+        let no_calculations = BTreeMap::new();
+        let long_line = format!("[{}] {}매출 전망", "브리프", "아주 ".repeat(60));
+        let fallback = fallback_answer_from_ledger(
+            &long_line,
+            &["SO".to_owned()],
+            &empty,
+            &no_calculations,
+            None,
+            0,
+            LedgerFallbackCause::DependencyOrRetrieval,
+        );
+        assert!(fallback.markdown.contains("SO 에 대한 «"));
+        assert!(
+            !fallback.markdown.contains(&long_line),
+            "a long question must be excerpted, not echoed"
+        );
+        assert!(fallback.markdown.contains('…'));
+        assert!(
+            !fallback.markdown.contains("[브리프]"),
+            "markdown specials inside the excerpt stay escaped"
         );
     }
 }

@@ -980,6 +980,52 @@ fn assemble_guru_query_context(
 /// ever be model-authored. The caller has already validated `proposed`
 /// against the model-facing contract; a failure here is a bounded, declared
 /// repair edge exactly like the company-context assembly.
+/// Lower a model-supplied ticker to the wire notation the openbb data plane
+/// accepts. Class-share dot notation (Yahoo-style `BRK.B`) is the model's
+/// habit, but the pinned FMP-backed wire wants the hyphen form (`BRK-B`) —
+/// the dot form is rejected upstream while the hyphen form of the very same
+/// ticker succeeds (live 2026-09-09 run_d1f6cebc: `openbb.news` for `BRK.B`
+/// failed after `openbb.balance_statement` for `BRK-B` had succeeded). The
+/// rewrite is shape-guarded so no other dotted symbol is ever touched.
+fn wire_symbol(ticker: &str) -> String {
+    if let Some((base, class)) = ticker.rsplit_once('.') {
+        let is_base = |text: &str| {
+            !text.is_empty()
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        };
+        if is_base(base)
+            && class.len() == 1
+            && class.bytes().all(|byte| byte.is_ascii_uppercase())
+        {
+            return format!("{base}-{class}");
+        }
+    }
+    ticker.to_owned()
+}
+
+/// Content-addressed identity of one `begin_action` mutation attempt. The
+/// id is attempt-scoped twice over — by the proposing episode AND by the
+/// fencing token — because the recorded `mutation_hash` binds the request's
+/// fencing token and expected_run_version, and both change when the
+/// executor's deferral lane re-leases the run and re-executes the recovered
+/// pending call from the SAME committed episode (live 2026-09-09
+/// run_d1f6cebc: an episode-only id collided there as K1004
+/// mutation_conflict two seconds after the deferral). Same-claim re-issues
+/// keep the id — and therefore the idempotent-replay semantics.
+fn begin_action_mutation_id(
+    run_id: &str,
+    action_key: &str,
+    episode_hash: &str,
+    fencing_token: u64,
+) -> String {
+    ContentHash::sha256(format!(
+        "mutation/v1\0begin_action\0{run_id}\0{action_key}\0{episode_hash}\0{fencing_token}"
+    ))
+    .to_string()
+}
+
 pub(crate) fn assemble_openbb_request(
     proposed: &Value,
     pinned_provider: &krw_agent_image::OpenbbPinnedProvider,
@@ -1010,7 +1056,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             for date_field in ["start_date", "end_date"] {
                 if let Some(date) = bounded_optional_str(date_field) {
                     physical.insert(date_field.into(), Value::String(date));
@@ -1062,7 +1108,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
         }
         // Round-2 statement tools: the kernel pins the default limit and
         // period so the physical read is always bounded.
@@ -1075,7 +1121,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             let limit = request
                 .get("limit")
                 .and_then(Value::as_u64)
@@ -1104,7 +1150,7 @@ pub(crate) fn assemble_openbb_request(
                 .ok_or_else(invalid)?;
             // The physical tool accepts an unscoped calendar read; the
             // symbol is always injected so the read stays ticker-scoped.
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             for date_field in ["start_date", "end_date"] {
                 if let Some(date) = bounded_optional_str(date_field) {
                     physical.insert(date_field.into(), Value::String(date));
@@ -1139,7 +1185,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             let limit = request
                 .get("limit")
                 .and_then(Value::as_u64)
@@ -1162,7 +1208,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             let limit = request
                 .get("limit")
                 .and_then(Value::as_u64)
@@ -1181,7 +1227,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
         }
         // Round-5 plan-bounded estimate reads: the kernel also pins the row
         // limit. A bare transport call defaults past the Starter ceiling and
@@ -1195,7 +1241,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             physical.insert("limit".into(), Value::from(10_u64));
         }
         // Round-6 fmp supplementary lanes whose only model-authored argument
@@ -1210,7 +1256,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
         }
         // Round-6 plan-bounded reads (reported EPS history, congressional
         // trades, price targets) — same pinned-limit shape as round 5.
@@ -1222,7 +1268,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             physical.insert("limit".into(), Value::from(10_u64));
         }
         // Round-6 ratios: pinned limit AND pinned annual period — the
@@ -1233,7 +1279,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             physical.insert("limit".into(), Value::from(10_u64));
             physical.insert("period".into(), Value::String("annual".into()));
         }
@@ -1263,7 +1309,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
             physical.insert("include_tables".into(), Value::Bool(false));
         }
         // Round-7 FINRA short interest: ticker only.
@@ -1273,7 +1319,7 @@ pub(crate) fn assemble_openbb_request(
                 .and_then(Value::as_str)
                 .filter(|ticker| !ticker.is_empty() && ticker.len() <= 32)
                 .ok_or_else(invalid)?;
-            physical.insert("symbol".into(), Value::String(ticker.to_owned()));
+            physical.insert("symbol".into(), Value::String(wire_symbol(ticker)));
         }
         // Round-7 Finviz sector groups: the kernel pins the group, the model
         // picks the metric lens (performance/valuation/overview).
@@ -2650,18 +2696,14 @@ where
             mutation: BeginActionMutation {
                 run_id: identity.run_id.clone(),
                 fencing_token: identity.fencing_token,
-                // Attempt-scoped: a deferral-resumed run re-proposes the
-                // same action from a NEW episode, and that re-issue must
-                // not collide with the first attempt's recorded mutation
-                // (2026-09-08: a shared action-only id kept hitting
-                // K1004 mutation_conflict across resumes).
-                mutation_id: ContentHash::sha256(format!(
-                    "mutation/v1\0begin_action\0{}\0{}\0{}",
-                    identity.run_id,
-                    call.action_key.to_string(),
-                    episode_hash.to_string(),
-                ))
-                .to_string(),
+                // Attempt-scoped by episode AND fencing token — see
+                // `begin_action_mutation_id`.
+                mutation_id: begin_action_mutation_id(
+                    &identity.run_id,
+                    &call.action_key.to_string(),
+                    &episode_hash.to_string(),
+                    identity.fencing_token,
+                ),
                 action_key: call.action_key.clone(),
                 request_hash: call.request_hash.clone(),
                 retryable_read: true,
@@ -3040,5 +3082,56 @@ where
             self.record_ambiguous(identity, call, reason, Instant::now())
                 .await,
         );
+    }
+}
+
+#[cfg(test)]
+mod wire_symbol_tests {
+    use super::{assemble_openbb_request, wire_symbol};
+    use krw_agent_image::OpenbbPinnedProvider;
+    use serde_json::json;
+
+    #[test]
+    fn class_share_dot_notation_lowers_to_the_hyphen_wire_form() {
+        assert_eq!(wire_symbol("BRK.B"), "BRK-B");
+        assert_eq!(wire_symbol("BF.A"), "BF-A");
+    }
+
+    #[test]
+    fn non_class_shapes_pass_through_untouched() {
+        assert_eq!(wire_symbol("BRK-B"), "BRK-B");
+        assert_eq!(wire_symbol("AAPL"), "AAPL");
+        // A two-letter suffix is not a class share — leave it alone.
+        assert_eq!(wire_symbol("BRK.BR"), "BRK.BR");
+    }
+
+    #[test]
+    fn news_request_carries_the_hyphen_symbol_on_the_wire() {
+        // Live 2026-09-09 run_d1f6cebc regression: the model emitted BRK.B
+        // and the physical news read failed while the hyphen form of the
+        // same ticker had succeeded minutes earlier.
+        let physical = assemble_openbb_request(
+            &json!({"ticker": "BRK.B", "limit": 5}),
+            &OpenbbPinnedProvider::Fmp,
+            "openbb-news-input/v1",
+        )
+        .expect("assembly succeeds");
+        assert_eq!(physical["symbol"], json!("BRK-B"));
+        assert_eq!(physical["provider"], json!("fmp"));
+    }
+
+    #[test]
+    fn begin_action_mutation_id_is_fencing_scoped() {
+        // The same attempt under the same claim must replay idempotently
+        // (stable id), while a deferral re-lease re-executing the SAME
+        // episode under a NEW fencing token must mint a fresh id instead of
+        // colliding with the first attempt's recorded mutation (live
+        // 2026-09-09 run_d1f6cebc died as K1004 mutation_conflict).
+        let same_claim = super::begin_action_mutation_id("run_1", "sha256:aa", "sha256:ee", 7);
+        assert_eq!(same_claim, super::begin_action_mutation_id("run_1", "sha256:aa", "sha256:ee", 7));
+        let re_lease = super::begin_action_mutation_id("run_1", "sha256:aa", "sha256:ee", 8);
+        assert_ne!(same_claim, re_lease);
+        let new_episode = super::begin_action_mutation_id("run_1", "sha256:aa", "sha256:ff", 7);
+        assert_ne!(same_claim, new_episode);
     }
 }
