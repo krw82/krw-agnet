@@ -169,7 +169,7 @@ BEGIN
         'action_frontier_seq',v_run.action_frontier_seq,
         'action_frontier_hash',v_run.action_frontier_hash
     );
-    PERFORM agent_store.record_mutation(v_run.run_id,p_request->>'mutation_id','begin_action',p_request->>'mutation_hash',p_request,p_response_placeholder);
+    PERFORM agent_store.record_mutation(v_run.run_id,p_request->>'mutation_id','begin_action',p_request->>'mutation_hash',p_request,v_response);
     RETURN v_response;
 END;
 $$;
