@@ -3060,11 +3060,20 @@ where
             self.persistence.mark_action_ambiguous(MarkActionAmbiguous {
                 run_id: identity.run_id.clone(),
                 fencing_token: identity.fencing_token,
-                mutation_id: mutation_id(
-                    "mark_action_ambiguous",
-                    &identity.run_id,
-                    &ContentHash::sha256(&call.action_key),
-                ),
+                // Attempt-scoped like begin_action: a retryable read whose
+                // re-issued attempt fails again marks ambiguity a SECOND
+                // time under a fresh lease, and the per-attempt failure
+                // detail differs — an action-only id replays the first
+                // attempt's recorded mutation as K1004 and leaves the row
+                // `begun`, which commit_final then rejects as pending_action
+                // (2026-09-10 run_a7a8a1b0).
+                mutation_id: ContentHash::sha256(format!(
+                    "mutation/v1\0mark_action_ambiguous\0{}\0{}\0{}",
+                    identity.run_id,
+                    call.action_key.to_string(),
+                    identity.fencing_token,
+                ))
+                .to_string(),
                 action_key: call.action_key.clone(),
                 reason_code: reason.into(),
             }),
