@@ -1119,12 +1119,14 @@ where
         // action receipt bound to THIS episode. Replay must rebuild that
         // settlement AFTER the selected call completes (routing a sibling
         // while the interpreter is still inside the selected capability's
-        // state fails as "capability proposal source" — the 2026-09-10
-        // sector-run equivalence deaths). Accepted receipts replay fully;
-        // a failed attempt (ambiguous stage, the deferral trigger itself)
-        // consumes without re-execution; a call the interruption never
-        // reached returns to the pending drain.
-        for call in drained_calls {
+        // state fails as "capability proposal source") and in the LIVE
+        // DRAIN ORDER: the pending queue pops LIFO, so the batch's last
+        // sibling executes first (2026-09-10 run_e5609f1e: identical effect
+        // sets, only the visit order diverged). Accepted receipts replay
+        // fully; a failed attempt (ambiguous stage, the deferral trigger
+        // itself) consumes without re-execution; a call the interruption
+        // never reached returns to the pending drain.
+        for call in drained_calls.into_iter().rev() {
             let receipt = actions.iter().find(|action| {
                 action.action_key == call.action_key
                     && action.episode_hash == recovered.episode_hash
