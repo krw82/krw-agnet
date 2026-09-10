@@ -405,3 +405,29 @@ accepted_actions_hash·compacted_context_hash) = 드레인 형제의 효과가 �
 체크포인트 바이트와 재생을 필드 단위 대조. 운영 참고: 게이트웨이-agentd가
 DB 클레임 큐로 연결되어 스택 중첩 시 낡은 agentd가 런을 잡음 — 재부팅
 후 "debug agentd 정확히 1개" 단언 필수(이번 이터레이션에서 두 번 재발).
+
+## 이터레이션 13 — 재개 체인 종결: 순서 2종+마크 스코프+무한재시도 상한 (2026-09-10)
+
+이터 12가 좁힌 "드레인 효과 미반영"의 정체를 진단 3단계(불일치 필드 값 로깅 →
+드레인 루프 영수증 판정 로깅 → 루트 에러 로깅)로 밝혀냈다. 4결함:
+
+⑦ **드레인 재생 순서 뒤바뀦** — 선택 호출을 route한 직후(완료 전) 드레인
+형제를 재생해 전부 "capability proposal source"로 루트 실패, 관용 분기가
+삼켜 효과 누락 → 등가 사망. 선택 완료 후 재생으로 수정(라이브 순서).
+⑧ **드레인 순서 LIFO 미반영** — 효과는 전부 반영됐는데 방문 순서만 달라
+state_trace/원장 해시 불일치(run_e5609f1e: 집합 동일·순서 상이 실증).
+라이브 드레인은 pending 큐 pop()=LIFO — 재생을 역순으로.
+⑨ **mark_action_ambiguous 시도 충돌** — 재바인딩된 재시도가 또 실패하면
+두 번째 ambiguous 마킹이 액션-only 변이 id로 K1004, 행이 begun에 남어
+commit_final K1016 pending_action 사망. begin_action과 같은 시도 스코프화.
+⑩ **무한 재시도 루프** — 0010이 모든 비활성 클레임에서 deferred_attempts를
+0으로 리셋, 'deferred' 재클레임도 포함이라 0007의 16회 상한이 도달 불가
+(run_1fb583eb: run_version 550+ 돌파, 20분 무진행). 0028: 리셋을
+'queued'(진짜 신규 실행)만으로 — 라이브 claim_run 바디에서 조건 한 줄만
+교체해 생성(수작업 재구성은 이후 마이그레이션과 드리프트 — 생성 방식으로).
+
+**라이브 실증(전부 관찰됨)**: ① 일시 오류 자가복구 — sp500_multiples가
+ambiguous→재시작→accepted로 같은 런에서 회복(재바인딩 체인 실전 작동).
+② 상한 종료 — finviz 스크리너 지속 오류 시 16회(≈2분) 후 깔끔한
+terminal(deferred_attempts_exhausted), 무한 질주 종결. 섹터 문 완주는
+finviz 업스트림이 안정될 때의 과제(엔진 결함은 소진).
