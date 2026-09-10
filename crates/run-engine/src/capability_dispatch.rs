@@ -1367,13 +1367,15 @@ pub(crate) fn assemble_openbb_request(
             }
         }
         // Round-7 Finviz screener: metric lens plus optional sector filter.
+        // valuation is deliberately absent: finviz's valuation payload ships
+        // eps_growth_past_1y='-' rows that OpenBB fails to parse into numbers
+        // (deterministic provider 500 → defer loop), so the contract refuses
+        // the lens up front instead.
         "openbb-screener-input/v1" => {
             let metric = request
                 .get("metric")
                 .and_then(Value::as_str)
-                .filter(|metric| {
-                    matches!(*metric, "performance" | "valuation" | "overview")
-                })
+                .filter(|metric| matches!(*metric, "performance" | "overview"))
                 .ok_or_else(invalid)?;
             physical.insert("metric".into(), Value::String(metric.to_owned()));
             if let Some(sector) = request.get("sector").and_then(Value::as_str) {

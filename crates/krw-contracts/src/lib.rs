@@ -750,6 +750,9 @@ pub const OPENBB_SP500_MULTIPLES_REQUEST_V1: &str = "openbb-sp500-multiples-requ
 pub const OPENBB_SP500_MULTIPLES_INPUT_V1: &str = "openbb-sp500-multiples-input/v1";
 /// Model-authored Finviz screener read (metric group plus optional sector
 /// filter) — the broad tape screen the fmp screener's parse bug forecloses.
+/// The metric lens excludes valuation: finviz's valuation rows carry
+/// eps_growth_past_1y='-' which the OpenBB provider fails to parse
+/// (deterministic 500).
 pub const OPENBB_SCREENER_REQUEST_V1: &str = "openbb-screener-request/v1";
 /// Physical MCP input for the curated openbb `equity_screener` tool with
 /// the kernel-injected finviz provider.
@@ -986,9 +989,9 @@ pub const OPENBB_SP500_MULTIPLES_REQUEST_V1_SCHEMA_SHA256: &str =
 pub const OPENBB_SP500_MULTIPLES_INPUT_V1_SCHEMA_SHA256: &str =
     "sha256:d735616868ac147900d7da5c08c1cdd3b97bc41ff9af0d0bb29eee3ba568631d";
 pub const OPENBB_SCREENER_REQUEST_V1_SCHEMA_SHA256: &str =
-    "sha256:fe025df9fa7e280687e992547f96eedbda3f979f44840427381659b9f3effda6";
+    "sha256:9c04261eae09deef18d9b71caf4e5476e6d56cc222cff2a5309117d1d61c53f7";
 pub const OPENBB_SCREENER_INPUT_V1_SCHEMA_SHA256: &str =
-    "sha256:de792a51285ae183ed7784f8df302bf7773580fd4915e7dc9873dcd9c8c54eed";
+    "sha256:4d57bf964c8611642478828a3027bd9f84e957e5dfe113cabc3acc842ae220ad";
 pub const QUANT_DCF_REQUEST_V1_SCHEMA_SHA256: &str =
     "sha256:c1633281e7f878f17210e77a27753d4301a0b7fe2e14a6282f3f22a76e7ac772";
 pub const QUANT_DCF_RESULT_V1_SCHEMA_SHA256: &str =
@@ -4254,7 +4257,7 @@ fn validate_openbb_screener_request(
     if !keys_ok
         || !matches!(
             request.get("metric").and_then(Value::as_str),
-            Some("performance") | Some("valuation") | Some("overview")
+            Some("performance") | Some("overview")
         )
         || request
             .get("sector")
@@ -4279,7 +4282,7 @@ fn validate_openbb_screener_input(value: &Value) -> Result<(), ContractValueErro
         || request.get("provider").and_then(Value::as_str) != Some("finviz")
         || !matches!(
             request.get("metric").and_then(Value::as_str),
-            Some("performance") | Some("valuation") | Some("overview")
+            Some("performance") | Some("overview")
         )
     {
         return Err(ContractValueError::Shape(OPENBB_SCREENER_INPUT_V1));

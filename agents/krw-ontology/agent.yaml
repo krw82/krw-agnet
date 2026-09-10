@@ -448,11 +448,11 @@ contracts:
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-screener-request/v1
     schema_ref: canonical:krw-agent/openbb-screener-request-v1
-    content_hash: sha256:fe025df9fa7e280687e992547f96eedbda3f979f44840427381659b9f3effda6
+    content_hash: sha256:9c04261eae09deef18d9b71caf4e5476e6d56cc222cff2a5309117d1d61c53f7
     semantic_authority: krw-agent-capability-runtime
   - id: openbb-screener-input/v1
     schema_ref: canonical:krw-agent/openbb-screener-input-v1
-    content_hash: sha256:de792a51285ae183ed7784f8df302bf7773580fd4915e7dc9873dcd9c8c54eed
+    content_hash: sha256:4d57bf964c8611642478828a3027bd9f84e957e5dfe113cabc3acc842ae220ad
     semantic_authority: krw-agent-capability-runtime
   # Deterministic local quant computation (financial-services P2/P4: the
   # tools compute, the model interprets).
@@ -1810,7 +1810,9 @@ capabilities:
     execution: { kind: remote, binding_key: openbb_equity_screener }
     permission: read
     # Finviz screener (metric lens + optional sector filter) — the fmp
-    # screener's response-parse bug forecloses that provider.
+    # screener's response-parse bug forecloses that provider, and the finviz
+    # valuation lens itself deterministically 500s (eps_growth_past_1y='-'
+    # parse failure), so the contract pins the lens to performance/overview.
     input_contract: openbb-screener-input/v1
     model_input_contract: openbb-screener-request/v1
     input_derivation: { kind: openbb_request_v1, pinned_provider: finviz }
