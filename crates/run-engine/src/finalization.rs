@@ -2877,6 +2877,15 @@ where
             .iter()
             .map(|(evidence_id, _)| evidence_id.to_owned())
             .collect::<Vec<_>>();
+        // E1 (2026-09-12, D1): the public citation contract is cited-only in
+        // rendered-footnote order — the shared walk behind the renderer's
+        // numbering, not the full audit index above. Direct-Markdown lanes
+        // carry no typed linkage and leave it empty (the projection then
+        // falls back to the audit index for those bundles).
+        let cited_evidence_ids = answer_ir
+            .as_ref()
+            .map(krw_agent_evidence::cited_evidence_order)
+            .unwrap_or_default();
         let visualizations = self.compile_visualizations(&state.presentation_packs, &state.ledger);
         let answer_bundle = AnswerBundle {
             schema_version: 5,
@@ -2884,6 +2893,7 @@ where
             output: output.clone(),
             evidence_ledger_hash,
             evidence_ids,
+            cited_evidence_ids,
             answer_ir,
             sections: state.composed_sections.clone(),
             rendered_content: rendered_content.clone(),
@@ -3071,7 +3081,10 @@ where
             output_contract: output_contract.clone(),
             output: output.clone(),
             evidence_ledger_hash,
-            evidence_ids: fallback.cited_evidence_ids,
+            evidence_ids: fallback.cited_evidence_ids.clone(),
+            // The deterministic fallback is cited-only by construction; the
+            // public list mirrors it exactly (E1).
+            cited_evidence_ids: fallback.cited_evidence_ids,
             answer_ir: None,
             // The ledger fallback is answer-always: a sectioned run that
             // escaped terminally still carries every batch it had committed.

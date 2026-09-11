@@ -43,6 +43,10 @@ pub(crate) struct FinalOutput {
     /// Deterministic visualization artifacts compiled by the run engine.
     /// Empty for pre-cutover (schema v3) bundles.
     pub visualizations: Vec<Value>,
+    /// Cited evidence record ids for the committed answer, in rendered
+    /// footnote order (E1). Empty for pre-cutover bundles and
+    /// direct-Markdown lanes without typed linkage.
+    pub evidence_ids: Vec<String>,
 }
 
 /// Public, credit-oriented usage counters returned for a committed final or
@@ -399,6 +403,7 @@ async fn parse_status_response(
                 markdown: final_output.markdown,
                 final_output_hash: final_output.final_output_hash,
                 visualizations: final_output.visualizations,
+                evidence_ids: final_output.evidence_ids,
             })
         }
         (GatewayRunState::Final, None | Some(_)) => {

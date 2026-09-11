@@ -653,7 +653,9 @@ pub fn validate_answer(
         })
         .count();
     let language_mismatch = if policy.expected_locale == "en-US" {
-        latin == 0 || (foreign_script > 0 && foreign_script > latin) || (hangul > 0 && hangul > latin)
+        latin == 0
+            || (foreign_script > 0 && foreign_script > latin)
+            || (hangul > 0 && hangul > latin)
     } else {
         hangul == 0 || (foreign_script > 0 && foreign_script > hangul)
     };
@@ -1239,6 +1241,40 @@ pub fn render_markdown(
     Ok(output)
 }
 
+/// First-occurrence citation order over the typed answer's
+/// sections→claim_ids→claim.evidence_ids walk — the exact order
+/// :func:`render_markdown` numbers its footnotes. Shared by the renderer's
+/// numbering and the finalizer's E1 emission so the wire list can never
+/// drift from the rendered footnotes (kept honest by the
+/// `cited_order_matches_render_numbering` test).
+///
+/// E1 (2026-09-12): the finalizer commits this as the bundle's public
+/// `cited_evidence_ids` so the gateway projection serves cited-only ids in
+/// footnote order instead of the full audit index. Unknown claim ids are
+/// skipped here — the renderer remains the validation authority.
+pub fn cited_evidence_order(answer: &AnswerIr) -> Vec<String> {
+    let claims = answer
+        .claims
+        .iter()
+        .map(|claim| (claim.claim_id.as_str(), claim))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut order = Vec::new();
+    for section in &answer.sections {
+        for claim_id in &section.claim_ids {
+            let Some(claim) = claims.get(claim_id.as_str()) else {
+                continue;
+            };
+            for evidence_id in &claim.evidence_ids {
+                if seen.insert(evidence_id.clone()) {
+                    order.push(evidence_id.clone());
+                }
+            }
+        }
+    }
+    order
+}
+
 fn push_inline(output: &mut String, value: &str) -> Result<(), EvidenceError> {
     if value.chars().any(|character| {
         character == '\0' || character == '\n' || character == '\r' || character.is_control()
@@ -1466,7 +1502,7 @@ mod tests {
                 require_unit_for_numbers: true,
                 require_counter_signal_for_interpretation: true,
                 exact_follow_up_count: 3,
-            expected_locale: "ko-KR".to_owned(),
+                expected_locale: "ko-KR".to_owned(),
             },
         )
         .unwrap_err();
@@ -1522,9 +1558,11 @@ mod tests {
             "결론: { \"stop_reason\": \"context_plan_capacity_reached\", \"class\": \"kernel\" }",
         ));
         let issues = validate_answer(&leaked, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_control_payload_leak"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_control_payload_leak")
+        );
 
         // Assess-lane judgment envelope echoed as the answer (the 2026-09-01
         // matrix AMZN shape).
@@ -1532,17 +1570,21 @@ mod tests {
             "{\"assessment\":\"user_judgment\",\"goal_id\":\"goal-abc\"}",
         ));
         let issues = validate_answer(&assess_leak, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_control_payload_leak"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_control_payload_leak")
+        );
 
         // Korean process narration of kernel rejections (the 2026-09-01
         // matrix INTC shape: the entire answer was "커널이 거부했습니다").
         let narrated = answer_with(sectioned_claim("두 번째 시도도 커널이 거부했습니다."));
         let issues = validate_answer(&narrated, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_control_payload_leak"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_control_payload_leak")
+        );
 
         // Assess-lane decision-batch envelope echoed as the entire answer
         // (the 2026-09-02 TSLA shape).
@@ -1550,9 +1592,11 @@ mod tests {
             "{\"action_type\":\"capability_alternatives\",\"alternatives\":[]}",
         ));
         let issues = validate_answer(&batch_leak, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_control_payload_leak"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_control_payload_leak")
+        );
 
         // Capability-call envelope echo (the 2026-09-01 third variant):
         // `kernel {"capability":"krw_ontology_query__…"}` — the class-level
@@ -1561,18 +1605,22 @@ mod tests {
             "kernel {\"capability\":\"krw_ontology_query__f0c3c51ca8e7d557\",\"params\":{}}",
         ));
         let issues = validate_answer(&envelope, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_control_payload_leak"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_control_payload_leak")
+        );
 
         // Wrong-script dominance: Arabic prose outnumbering Hangul.
         let derailed = answer_with(sectioned_claim(
             "استنفد ميزانية الاسترجاع الآن. 결론은 제한적입니다.",
         ));
         let issues = validate_answer(&derailed, &ledger, &policy).unwrap_err();
-        assert!(issues
-            .iter()
-            .any(|issue| issue.code == "answer_language_mismatch"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "answer_language_mismatch")
+        );
 
         // Korean prose with quoted English tickers stays clean.
         let clean = answer_with(sectioned_claim("AAPL의 현금창출력은 안정적입니다."));
@@ -1729,6 +1777,77 @@ mod tests {
         assert!(rendered.contains("AAPL 2025 Form 10-K"));
     }
 
+    fn claim_with_evidence(claim_id: &str, evidence_ids: &[&str]) -> Claim {
+        Claim {
+            evidence_ids: evidence_ids.iter().map(|id| (*id).into()).collect(),
+            ..base_claim(claim_id.into())
+        }
+    }
+
+    fn section_with_claims(section_id: &str, claim_ids: &[&str]) -> AnswerSection {
+        AnswerSection {
+            section_id: section_id.into(),
+            heading: section_id.into(),
+            claim_ids: claim_ids.iter().map(|id| (*id).into()).collect(),
+            ..base_section()
+        }
+    }
+
+    #[test]
+    fn cited_evidence_order_is_first_occurrence_across_sections() {
+        // E1: sections→claims walk, first occurrence only. c2 re-cites e1
+        // (no duplicate) and a dangling claim id is skipped — the renderer
+        // stays the validation authority.
+        let mut answer = base_answer_ir();
+        answer.sections = vec![
+            section_with_claims("s1", &["c1", "missing"]),
+            section_with_claims("s2", &["c2", "c3"]),
+        ];
+        answer.claims = vec![
+            claim_with_evidence("c1", &["e1"]),
+            claim_with_evidence("c2", &["e2", "e1"]),
+            claim_with_evidence("c3", &["e3"]),
+        ];
+        assert_eq!(
+            cited_evidence_order(&answer),
+            vec!["e1".to_owned(), "e2".to_owned(), "e3".to_owned()]
+        );
+    }
+
+    #[test]
+    fn cited_order_matches_render_numbering() {
+        // Drift guard: the footnote numbers the renderer assigns must be
+        // exactly the position in `cited_evidence_order` (+1), so the wire
+        // list can never disagree with the rendered footnotes.
+        let mut answer = base_answer_ir();
+        answer.sections = vec![
+            section_with_claims("s1", &["c1"]),
+            section_with_claims("s2", &["c2", "c3"]),
+        ];
+        answer.claims = vec![
+            claim_with_evidence("c1", &["e1"]),
+            claim_with_evidence("c2", &["e2", "e1"]),
+            claim_with_evidence("c3", &["e3"]),
+        ];
+        // The fixture helper pins content_hash, so each record needs a
+        // distinct scope to keep a distinct evidence identity (append would
+        // otherwise dedup e2/e3 into e1).
+        let ledger = EvidenceLedger::from_records([
+            evidence("e1", "tenant-a"),
+            evidence("e2", "tenant-b"),
+            evidence("e3", "tenant-c"),
+        ])
+        .unwrap();
+        let rendered = render_markdown(&answer, &ledger).unwrap();
+        // c1 → [^1]; c2 → [^2] [^1] (re-citation keeps e1's number); c3 → [^3].
+        let c2_line = rendered
+            .lines()
+            .find(|line| line.contains("[^2] [^1]"))
+            .expect("c2 line carries [^2] [^1]");
+        assert!(c2_line.starts_with("- "));
+        assert!(rendered.lines().any(|line| line.contains("[^3]")));
+    }
+
     #[test]
     fn partial_global_answerability_blocks_strong_claim() {
         let ledger = EvidenceLedger::from_records([evidence("e1", "tenant-a")]).unwrap();
@@ -1828,7 +1947,7 @@ mod tests {
                 require_unit_for_numbers: true,
                 require_counter_signal_for_interpretation: true,
                 exact_follow_up_count: 3,
-            expected_locale: "ko-KR".to_owned(),
+                expected_locale: "ko-KR".to_owned(),
             },
         )
         .unwrap_err();

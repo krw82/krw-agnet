@@ -123,10 +123,20 @@ Authorization: Bearer <CLI token>
   "state": "final",
   "final_output": {
     "markdown": "## 결론\n...",
-    "final_output_hash": "sha256:..."
+    "final_output_hash": "sha256:...",
+    "visualizations": [],
+    "evidence_ids": ["e1", "e2"]
   }
 }
 ```
+
+- `visualizations` — 엔진이 컴파일한 결정적 차트 아티팩트(최대 3개, 이기 0020).
+- `evidence_ids` — **인용 계약(소유자 결정 D1, 2026-09-12 E1)**: 최종 마크다운의
+  각주가 실제로 인용한 근거 id만을 **각주 번호 순서로** 담는 문자열 목록(상한 64).
+  id만 반환한다 — evidence 본문, provider episode, raw MCP 결과는 절대 포함하지
+  않는다. typed 레인은 렌더러의 인용 워크와 공유된 `cited_evidence_order`에서,
+  결정적 폴백 레인은 자체 인용 목록에서 채운다. 직접-Markdown 레인과 E1 이전
+  번들은 전체 감사 인덱스(`evidence_ids`)로 폴백한다(마이그레이션 0029).
 
 Provider episode, model reasoning, raw MCP response, EvidenceLedger body, recovery artifact,
 session-memory carrier는 이 API로 반환하지 않는다. UI에 citation/evidence presentation이 필요하면

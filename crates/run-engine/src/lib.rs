@@ -787,9 +787,23 @@ pub struct AnswerBundle {
     /// model prose and therefore cannot become a new final-answer failure
     /// point.
     pub evidence_ledger_hash: ContentHash,
-    /// Sorted private audit index only. It is retained in the atomic answer
-    /// bundle for quality replay; renderers must never expose these IDs.
+    /// Sorted audit index of every ledger evidence id at commit time
+    /// (quality replay surface). Since migration 0024 the final projection
+    /// exposes a bounded copy of this list; E1 (2026-09-12) repoints the
+    /// projection at `cited_evidence_ids` below, keeping this field as the
+    /// audit index and the legacy/direct-Markdown fallback surface.
     pub evidence_ids: Vec<String>,
+    /// E1 (2026-09-12, owner decision D1): the cited-only evidence ids in
+    /// rendered-footnote order — the public citation contract the gateway
+    /// projection serves. Typed lanes fill it from the shared citation walk
+    /// (`krw_agent_evidence::cited_evidence_order`); the deterministic
+    /// ledger-fallback lane fills its already-cited list; direct-Markdown
+    /// lanes carry no typed linkage and leave it empty, where the projection
+    /// falls back to the audit index above. `skip_serializing_if` keeps the
+    /// canonical bundle bytes (and therefore `answer_bundle_hash`) unchanged
+    /// for every lane that does not set it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cited_evidence_ids: Vec<String>,
     pub answer_ir: Option<AnswerIr>,
     /// E1 sectioned-compose output: the validated report-sections/v1 batches
     /// accumulated across the compose→verify loop. `#[serde(default)]`
@@ -5314,6 +5328,10 @@ mod tests {
             outcome.answer_bundle.evidence_ids,
             vec!["evidence-1", "evidence-2"]
         );
+        // E1: direct-Markdown lanes carry no typed linkage — the public
+        // cited list stays empty and the projection falls back to the audit
+        // index above for these bundles.
+        assert!(outcome.answer_bundle.cited_evidence_ids.is_empty());
         let requests = rig.provider.requests.lock().unwrap();
         assert_eq!(requests[0].model, GLM_MODEL_ID);
         assert_eq!(requests[0].thinking.kind, ThinkingMode::Disabled);
@@ -6884,6 +6902,7 @@ mod tests {
             output: Value::String("fallback notice".into()),
             evidence_ledger_hash: ContentHash::sha256("ledger"),
             evidence_ids: Vec::new(),
+            cited_evidence_ids: Vec::new(),
             answer_ir: None,
             sections: Vec::new(),
             rendered_content: "fallback notice".into(),
@@ -12567,6 +12586,7 @@ mod tests {
             output: Value::String("결론 우선 답변".into()),
             evidence_ledger_hash: ContentHash::sha256("fixture-e1t5"),
             evidence_ids: vec!["ev1".into()],
+            cited_evidence_ids: Vec::new(),
             answer_ir: None,
             sections,
             rendered_content: "결론 우선 답변".into(),
